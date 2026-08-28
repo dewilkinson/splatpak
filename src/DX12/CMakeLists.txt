@@ -1,5 +1,19 @@
-# Pulls in addManifest() and copyTargetCommand() from the Cauldron framework.
+# Pulls in copyTargetCommand() from the Cauldron framework.
 include(${CMAKE_CURRENT_SOURCE_DIR}/../../libs/cauldron/common.cmake)
+
+# addManifest() is not part of Cauldron itself -- every Cauldron sample project
+# (glTFSample, FidelityFX-CAS, ...) defines this same helper locally to embed the
+# DPI-awareness manifest into the built exe.
+function(addManifest PROJECT_NAME)
+    if(MSVC)
+        add_custom_command(
+            TARGET ${PROJECT_NAME}
+            POST_BUILD
+            COMMAND "mt.exe" -manifest \"${CMAKE_CURRENT_SOURCE_DIR}\\dpiawarescaling.manifest\" -inputresource:\"$<TARGET_FILE:${PROJECT_NAME}>\"\;\#1 -outputresource:\"$<TARGET_FILE:${PROJECT_NAME}>\"\;\#1
+            COMMENT "Adding display aware manifest..."
+        )
+    endif()
+endfunction()
 
 set(sources
     stdafx.h
