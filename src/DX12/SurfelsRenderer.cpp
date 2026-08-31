@@ -16,7 +16,11 @@ void SurfelsRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
 
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    m_commandListRing.OnCreate(pDevice, BACK_BUFFER_COUNT, 1, queueDesc);
+    // CommandListRing::GetNewCommandList() increments its used-count then asserts
+    // used < commandListsPerBackBuffer, so passing 1 here fails on the very first
+    // GetNewCommandList() call of every frame. We only ever call it once per frame,
+    // so 2 gives exactly the headroom that check requires.
+    m_commandListRing.OnCreate(pDevice, BACK_BUFFER_COUNT, 2, queueDesc);
 
     m_imGui.OnCreate(pDevice, &m_uploadHeap, &m_resourceViewHeaps, &m_constantBufferRing, pSwapChain->GetFormat());
 

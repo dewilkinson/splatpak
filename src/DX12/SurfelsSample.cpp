@@ -24,6 +24,7 @@ void SurfelsSample::OnParseCommandLine(LPSTR /*lpCmdLine*/, uint32_t* pWidth, ui
 
 void SurfelsSample::OnCreate()
 {
+    InitDirectXCompiler();
     CreateShaderCache();
 
     m_pRenderer = new SurfelsRenderer();

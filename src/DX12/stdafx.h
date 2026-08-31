@@ -2,6 +2,7 @@
 #pragma once
 
 #define WIN32_LEAN_AND_MEAN
+#define NOMINMAX // otherwise windows.h's max()/min() macros break std::max/std::min call sites
 #include <windows.h>
 #include <windowsx.h>
 
@@ -23,10 +24,21 @@ using namespace DirectX;
 #include "base/DynamicBufferRing.h"
 #include "base/CommandListRing.h"
 #include "base/ShaderCompilerHelper.h"
+#include "base/DXCHelper.h" // InitDirectXCompiler() -- must be called before any shader compiles
 #include "base/Helper.h"
 #include "base/Imgui.h"
 #include "base/ImGuiHelper.h"
 
 #include "Misc/Misc.h"
+
+// Something transitively pulled in still leaves the windows.h min()/max() macros
+// active despite NOMINMAX above (observed with the vendored Cauldron/AGS headers) --
+// undef them defensively so std::max/std::min work in this and dependent files.
+#ifdef max
+#undef max
+#endif
+#ifdef min
+#undef min
+#endif
 
 using namespace CAULDRON_DX12;
