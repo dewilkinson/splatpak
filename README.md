@@ -46,24 +46,48 @@ command line with `cmake --build . --config Debug`. The executable and its
 shaders land in `bin/` (`bin/ShaderLibDX/Surfels.hlsl` gets copied there by the
 CMake build so `CompileShaderFromFile` can find it at runtime).
 
+**Use a Visual Studio generator, not Ninja.** Cauldron's own `src/Common` and
+`src/DX12` CMakeLists.txt both copy overlapping FidelityFX headers into the
+same `bin/ShaderLibDX` output path. MSBuild tolerates that; Ninja's single
+global build graph rejects it as "multiple rules generate ...". If you open
+this folder directly in Visual Studio (rather than running `cmake` yourself),
+check `CMakeSettings.json` — it needs `"generator"` set to a Visual Studio
+generator matching your installed version (e.g. `"Visual Studio 17 2022
+Win64"`), not the CMake Tools default of `"Ninja"`.
+
 If you already cloned without `--recurse-submodules`, run
 `git submodule update --init --recursive` first.
 
-## Known gaps / not yet verified
+This has been built and run end-to-end (not just compiled) on Windows with
+Visual Studio, confirming device/swapchain creation, shader compilation, the
+instanced splat draw, and the ImGui panel all work.
 
-This was written by reading Cauldron's headers and source directly (there was
-no local Windows/MSVC/CMake/DX12 toolchain available to actually build it), so
-treat the first build as the real test:
+## Known gaps
 
-- If you hit a build error, it's most likely a small API mismatch against the
-  exact Cauldron commit you land on after `git submodule update` — Cauldron's
-  `FrameworkWindows`/`Device`/`SwapChain` API has changed shape across its
-  history, and this code targets whatever `HEAD` looked like when this was
-  written.
 - No depth buffer / depth test — overlapping splats just draw in instance
   order, not sorted. Fine for a placeholder, not for real surfel rendering.
 - No Agility SDK opt-in (see the comment in `SurfelsSample.cpp`) — uses
   whatever D3D12 runtime Windows provides.
+- `SurfelsSample.cpp` calls `InitDirectXCompiler()` (from
+  `Common/base/DXCHelper.h`) before `CreateShaderCache()` — easy to miss
+  since the current `DX12/base/ShaderCompilerHelper.h` doesn't mention it at
+  all; skip it and every shader compile silently fails with a
+  `SpvSize != 0` assert and no useful error message (see the next point).
+- Cauldron's own `DXCHelper.cpp` (`DXCompileToDXO`) has a use-after-free in
+  its error-reporting path: it releases `pLibrary`, then on the failure
+  branch calls `pLibrary->GetBlobAsUtf8(...)` on the already-released
+  pointer. In practice this swallows the real DXC error text instead of
+  crashing outright, so a genuine shader compile error just looks like the
+  assert above with nothing in `Cauldron.log` to explain it. Not patched
+  here (it's vendored code); if a shader ever fails to compile, don't trust
+  the log until this is fixed upstream or patched locally.
+- The build's post-build step overwrites Cauldron's vendored DXC
+  (`dxcompiler.dll`/`dxil.dll`, v1.6.2106.3 from 2021) with the Windows
+  SDK's redistributable copy from `Windows Kits/10/Redist/D3D/x64`, purely
+  because that path is hardcoded to this dev machine's SDK install. If that
+  path doesn't exist, CMake just warns and leaves Cauldron's older DXC in
+  place — which turned out not to matter for the actual bug above, but is
+  still worth having a newer compiler.
 
 ## Where this goes next
 
