@@ -1277,42 +1277,50 @@ namespace Surfels
             gridMap[k].count++;
         }
 
-        if (gridMap.empty()) return;
-
-        // 4. Build HeatmapClusterCube list & determine min/max densities
+        // 4. Build HeatmapClusterCube list across entire 3D grid
         float minDensity = 1e9f;
         float maxDensity = -1e9f;
 
-        m_heatmapClusterCubes.reserve(gridMap.size());
-        for (const auto& pair : gridMap)
+        m_heatmapClusterCubes.reserve(rx * ry * rz);
+        for (int32_t iz = 0; iz < rz; iz++)
         {
-            const auto& vd = pair.second;
-            if (vd.count == 0) continue;
+            for (int32_t iy = 0; iy < ry; iy++)
+            {
+                for (int32_t ix = 0; ix < rx; ix++)
+                {
+                    VoxelKey k = { ix, iy, iz };
+                    auto it = gridMap.find(k);
+                    uint32_t count = (it != gridMap.end()) ? it->second.count : 0;
 
-            float cMinX = gMin.x + (float)pair.first.x * cellSize;
-            float cMinY = gMin.y + (float)pair.first.y * cellSize;
-            float cMinZ = gMin.z + (float)pair.first.z * cellSize;
-            float cMaxX = cMinX + cellSize;
-            float cMaxY = cMinY + cellSize;
-            float cMaxZ = cMinZ + cellSize;
+                    float cMinX = gMin.x + (float)ix * cellSize;
+                    float cMinY = gMin.y + (float)iy * cellSize;
+                    float cMinZ = gMin.z + (float)iz * cellSize;
+                    float cMaxX = cMinX + cellSize;
+                    float cMaxY = cMinY + cellSize;
+                    float cMaxZ = cMinZ + cellSize;
 
-            HeatmapClusterCube cube = {};
-            cube.aabbMin = XMFLOAT3(cMinX, cMinY, cMinZ);
-            cube.aabbMax = XMFLOAT3(cMaxX, cMaxY, cMaxZ);
-            cube.center = XMFLOAT3(
-                cMinX + cellSize * 0.5f,
-                cMinY + cellSize * 0.5f,
-                cMinZ + cellSize * 0.5f
-            );
-            cube.boundingRadius = cellSize * 0.866025f; // sqrt(3)/2 * cellSize
-            cube.pointCount = vd.count;
-            cube.volume = voxelVolume;
-            cube.density = (float)vd.count / voxelVolume;
+                    HeatmapClusterCube cube = {};
+                    cube.aabbMin = XMFLOAT3(cMinX, cMinY, cMinZ);
+                    cube.aabbMax = XMFLOAT3(cMaxX, cMaxY, cMaxZ);
+                    cube.center = XMFLOAT3(
+                        cMinX + cellSize * 0.5f,
+                        cMinY + cellSize * 0.5f,
+                        cMinZ + cellSize * 0.5f
+                    );
+                    cube.boundingRadius = cellSize * 0.866025f;
+                    cube.pointCount = count;
+                    cube.volume = voxelVolume;
+                    cube.density = (float)count / voxelVolume;
 
-            if (cube.density < minDensity) minDensity = cube.density;
-            if (cube.density > maxDensity) maxDensity = cube.density;
+                    if (count > 0)
+                    {
+                        if (cube.density < minDensity) minDensity = cube.density;
+                        if (cube.density > maxDensity) maxDensity = cube.density;
+                    }
 
-            m_heatmapClusterCubes.push_back(cube);
+                    m_heatmapClusterCubes.push_back(cube);
+                }
+            }
         }
 
         // 5. Normalize densities using log scale for vibrant contrast across sparse and dense areas
@@ -1322,8 +1330,15 @@ namespace Surfels
 
         for (auto& cube : m_heatmapClusterCubes)
         {
-            float logD = std::log(std::max(1.0f, cube.density));
-            cube.normDensity = std::max(0.0f, std::min(1.0f, (logD - logMin) / logRange));
+            if (cube.pointCount > 0)
+            {
+                float logD = std::log(std::max(1.0f, cube.density));
+                cube.normDensity = std::max(0.0f, std::min(1.0f, (logD - logMin) / logRange));
+            }
+            else
+            {
+                cube.normDensity = 0.0f;
+            }
         }
     }
 
@@ -1601,7 +1616,7 @@ namespace Surfels
 
                 bool isVisible = IsSphereInFrustum(cube.center, cube.boundingRadius);
 
-                if (isVisible)
+                if (isVisible && cube.pointCount > 0)
                 {
                     float t = cube.normDensity; // 0.0 (cool/sparse) to 1.0 (hot/dense)
                     float heatCurve = std::pow(t, 1.35f);
@@ -1616,9 +1631,10 @@ namespace Surfels
                 }
                 else if (m_showCulledChunks)
                 {
-                    ImU32 fillCol = IM_COL32(15, 30, 45, (uint8_t)(m_heatmapOpacity * 30.0f));
-                    ImU32 edgeCol = IM_COL32(35, 55, 75, (uint8_t)(m_wireframeOpacity * 40.0f));
-                    DrawFilledCube(cube.aabbMin, cube.aabbMax, fillCol, edgeCol, m_showHeatmapWireframe);
+                    // Dark blue: 5% tint (alpha 13), 20% wireframe (alpha 51)
+                    ImU32 culledFillCol = IM_COL32(10, 35, 100, 13);
+                    ImU32 culledEdgeCol = IM_COL32(30, 90, 220, 51);
+                    DrawFilledCube(cube.aabbMin, cube.aabbMax, culledFillCol, culledEdgeCol, true);
                 }
             }
 
@@ -1647,7 +1663,8 @@ namespace Surfels
         if (m_showOctreeVisualizer)
         {
             const ImU32 octreeColorVisible = IM_COL32(255, 190, 40, 240);
-            const ImU32 octreeColorCulled  = IM_COL32(110, 60, 15, 90);
+            const ImU32 culledFillCol = IM_COL32(10, 35, 100, 13);
+            const ImU32 culledEdgeCol = IM_COL32(30, 90, 220, 51);
 
             for (const auto& chunk : m_chunks)
             {
@@ -1658,7 +1675,7 @@ namespace Surfels
                 }
                 else if (m_showCulledChunks)
                 {
-                    DrawFilledCube(chunk.aabbMin, chunk.aabbMax, IM_COL32(110, 60, 15, 20), octreeColorCulled, true);
+                    DrawFilledCube(chunk.aabbMin, chunk.aabbMax, culledFillCol, culledEdgeCol, true);
                 }
             }
         }
