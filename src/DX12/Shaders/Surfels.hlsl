@@ -54,6 +54,9 @@ cbuffer SurfelsCB : register(b0)
     uint     g_UseChunkedPipeline; // 0 = Flat buffer, 1 = Micro-Chunked Hierarchical
     float3   g_AABBExtents;
     float    g_Pad2;
+    float4x4 g_CullViewProj;
+    uint     g_UseDetachedCullCam;
+    float3   g_Pad3;
 };
 
 struct ChunkPayload
@@ -135,8 +138,9 @@ void mainAS(
         chunkIdx = g_SortedChunkIndices[globalChunkIdx];
         MeshletChunk chunk = g_ChunkBuffer[chunkIdx];
 
-        // Frustum culling against bounding sphere
-        float4 clipCenter = mul(g_ViewProj, float4(chunk.center, 1.0));
+        // Frustum culling against bounding sphere (supports detached debug camera)
+        float4x4 cullMatrix = (g_UseDetachedCullCam == 1) ? g_CullViewProj : g_ViewProj;
+        float4 clipCenter = mul(cullMatrix, float4(chunk.center, 1.0));
         float r = chunk.boundingRadius;
 
         isVisible = (clipCenter.x + r >= -clipCenter.w) &&

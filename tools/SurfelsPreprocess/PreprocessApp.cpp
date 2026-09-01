@@ -798,12 +798,25 @@ namespace Surfels
             m_yaw += dtSeconds * radPerSec;
         }
 
+        if (!m_detachCamera)
+        {
+            m_detachedYaw = m_yaw;
+            m_detachedPitch = m_pitch;
+            m_detachedDistance = m_distance;
+            m_detachedTarget = m_target;
+        }
+
         m_state.autoRotate = m_autoRotate;
 
         m_state.camYaw = m_yaw;
         m_state.camPitch = m_pitch;
         m_state.camDistance = m_distance;
         m_state.camTarget = m_target;
+        m_state.detachCullCamera = m_detachCamera;
+        m_state.cullYaw = m_detachedYaw;
+        m_state.cullPitch = m_detachedPitch;
+        m_state.cullDistance = m_detachedDistance;
+        m_state.cullTarget = m_detachedTarget;
         m_state.aspectRatio = io.DisplaySize.y > 0.0f ? (io.DisplaySize.x / io.DisplaySize.y) : 1.0f;
         m_state.gpuRadixSort = m_gpuRadixSort;
         m_state.useChunkedPipeline = m_useChunkedPipeline;
@@ -1243,35 +1256,34 @@ namespace Surfels
         float cellSize = std::max(0.001f, maxExtent / (float)targetDiv);
         float voxelVolume = cellSize * cellSize * cellSize;
 
-        int rx = std::max(1, (int)std::ceil(gExtent.x / cellSize));
-        int ry = std::max(1, (int)std::ceil(gExtent.y / cellSize));
-        int rz = std::max(1, (int)std::ceil(gExtent.z / cellSize));
+        int32_t rx = std::max(1, (int32_t)std::ceil(gExtent.x / cellSize));
+        int32_t ry = std::max(1, (int32_t)std::ceil(gExtent.y / cellSize));
+        int32_t rz = std::max(1, (int32_t)std::ceil(gExtent.z / cellSize));
 
-        // 3. Bin all points across the model into spatial hash map
-        struct VoxelKey
-        {
+        // 3. Populate 3D spatial voxel hash grid
+        struct VoxelKey {
             int32_t x, y, z;
             bool operator==(const VoxelKey& o) const { return x == o.x && y == o.y && z == o.z; }
         };
-        struct VoxelKeyHash
-        {
-            size_t operator()(const VoxelKey& k) const
-            {
-                return ((size_t)k.x * 73856093) ^ ((size_t)k.y * 19349663) ^ ((size_t)k.z * 83492791);
+        struct VoxelKeyHash {
+            size_t operator()(const VoxelKey& k) const {
+                return (size_t)k.x * 73856093 ^ (size_t)k.y * 19349663 ^ (size_t)k.z * 83492791;
             }
         };
 
-        struct VoxelData
-        {
+        struct VoxelData {
             uint32_t count = 0;
         };
 
         std::unordered_map<VoxelKey, VoxelData, VoxelKeyHash> gridMap;
-        for (const auto& p : m_rawSurfels)
+        for (const auto& s : m_rawSurfels)
         {
-            int32_t ix = std::max(0, std::min(rx - 1, (int32_t)((p.position.x - gMin.x) / cellSize)));
-            int32_t iy = std::max(0, std::min(ry - 1, (int32_t)((p.position.y - gMin.y) / cellSize)));
-            int32_t iz = std::max(0, std::min(rz - 1, (int32_t)((p.position.z - gMin.z) / cellSize)));
+            int32_t ix = (int32_t)((s.position.x - gMin.x) / cellSize);
+            int32_t iy = (int32_t)((s.position.y - gMin.y) / cellSize);
+            int32_t iz = (int32_t)((s.position.z - gMin.z) / cellSize);
+            ix = std::max(0, std::min(rx - 1, ix));
+            iy = std::max(0, std::min(ry - 1, iy));
+            iz = std::max(0, std::min(rz - 1, iz));
 
             VoxelKey k = { ix, iy, iz };
             gridMap[k].count++;
@@ -1344,7 +1356,7 @@ namespace Surfels
 
     void PreprocessApp::DrawOctreeVisualizer()
     {
-        if (!m_showClusterHeatmap && !m_showOctreeVisualizer && !m_showGlobalBounds)
+        if (!m_showClusterHeatmap && !m_showOctreeVisualizer && !m_showGlobalBounds && !m_detachCamera)
             return;
 
         ImDrawList* drawList = ImGui::GetOverlayDrawList();
@@ -1357,7 +1369,7 @@ namespace Surfels
         if (screenW <= 10.0f || screenH <= 10.0f)
             return;
 
-        // Compute Camera Matrices
+        // 1. Active Viewport Camera Matrices (Used for 3D Screen Space Projection)
         const float cy = cosf(m_pitch), sy = sinf(m_pitch);
         const float sx = sinf(m_yaw), cx = cosf(m_yaw);
         XMFLOAT3 eyePos(
@@ -1370,14 +1382,38 @@ namespace Surfels
         XMVECTOR at = XMLoadFloat3(&m_target);
         XMVECTOR worldUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
-        XMVECTOR forwardVec = XMVector3Normalize(XMVectorSubtract(at, eye));
-        XMFLOAT3 forward;
-        XMStoreFloat3(&forward, forwardVec);
-
         XMMATRIX view = XMMatrixLookAtRH(eye, at, worldUp);
         float aspect = io.DisplaySize.y > 0.0f ? (io.DisplaySize.x / io.DisplaySize.y) : (screenW / screenH);
         XMMATRIX proj = XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect, 0.1f, 500.0f);
         XMMATRIX viewProj = XMMatrixMultiply(view, proj);
+
+        // 2. Culling Camera (Detached Frozen or Active)
+        float cPitch = m_detachCamera ? m_detachedPitch : m_pitch;
+        float cYaw   = m_detachCamera ? m_detachedYaw : m_yaw;
+        float cDist  = m_detachCamera ? m_detachedDistance : m_distance;
+        XMFLOAT3 cTarget = m_detachCamera ? m_detachedTarget : m_target;
+
+        const float c_cy = cosf(cPitch), c_sy = sinf(cPitch);
+        const float c_sx = sinf(cYaw), c_cx = cosf(cYaw);
+        XMFLOAT3 cullEyePos(
+            cTarget.x + cDist * c_cy * c_sx,
+            cTarget.y + cDist * c_sy,
+            cTarget.z + cDist * c_cy * c_cx
+        );
+        XMVECTOR cEye = XMLoadFloat3(&cullEyePos);
+        XMVECTOR cAt = XMLoadFloat3(&cTarget);
+        XMVECTOR cForwardVec = XMVector3Normalize(XMVectorSubtract(cAt, cEye));
+        XMVECTOR cRightVec = XMVector3Normalize(XMVector3Cross(worldUp, cForwardVec));
+        XMVECTOR cUpVec = XMVector3Cross(cForwardVec, cRightVec);
+
+        XMFLOAT3 cullForward, cullRight, cullUp;
+        XMStoreFloat3(&cullForward, cForwardVec);
+        XMStoreFloat3(&cullRight, cRightVec);
+        XMStoreFloat3(&cullUp, cUpVec);
+
+        XMMATRIX cView = XMMatrixLookAtRH(cEye, cAt, worldUp);
+        XMMATRIX cProj = XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect, 0.1f, 500.0f);
+        XMMATRIX cViewProj = XMMatrixMultiply(cView, cProj);
 
         auto ProjectToScreen = [&](const XMFLOAT3& p, ImVec2& outScreen) -> bool
         {
@@ -1385,12 +1421,9 @@ namespace Surfels
             XMVECTOR clipP = XMVector4Transform(XMVectorSetW(worldP, 1.0f), viewProj);
             XMFLOAT4 c;
             XMStoreFloat4(&c, clipP);
-            if (c.w < 0.05f)
-                return false;
-
+            if (c.w < 0.05f) return false;
             float ndcX = c.x / c.w;
             float ndcY = c.y / c.w;
-
             outScreen.x = (ndcX * 0.5f + 0.5f) * screenW;
             outScreen.y = (-ndcY * 0.5f + 0.5f) * screenH;
             return true;
@@ -1422,32 +1455,28 @@ namespace Surfels
                 else
                 {
                     float f = (t - 0.75f) / 0.25f;
-                    r = 1.0f; g = 1.0f - f * 0.85f; b = 0.0f;
+                    r = 1.0f; g = 1.0f - f; b = 0.0f;
                 }
             }
-            else if (scheme == 1) // Viridis: Purple -> Blue -> Teal -> Green -> Yellow
+            else if (scheme == 1) // Viridis (Perceptual): Purple -> Teal -> Green -> Yellow
             {
                 if (t < 0.33f)
                 {
                     float f = t / 0.33f;
-                    r = 0.27f * (1.0f - f) + 0.13f * f;
-                    g = 0.0f * (1.0f - f) + 0.57f * f;
+                    r = 0.27f - 0.07f * f; g = 0.00f + 0.38f * f; b = 0.33f + 0.18f * f;
                 }
                 else if (t < 0.66f)
                 {
                     float f = (t - 0.33f) / 0.33f;
-                    r = 0.13f * (1.0f - f) + 0.21f * f;
-                    g = 0.57f * (1.0f - f) + 0.77f * f;
+                    r = 0.20f - 0.07f * f; g = 0.38f + 0.34f * f; b = 0.51f + 0.04f * f;
                 }
                 else
                 {
                     float f = (t - 0.66f) / 0.34f;
-                    r = 0.21f * (1.0f - f) + 0.99f * f;
-                    g = 0.77f * (1.0f - f) + 0.90f * f;
-                    b = 0.35f * (1.0f - f) + 0.14f * f;
+                    r = 0.13f + 0.86f * f; g = 0.72f + 0.24f * f; b = 0.55f - 0.39f * f;
                 }
             }
-            else // Plasma: Deep Purple -> Magenta -> Orange -> Yellow
+            else // Plasma: Blue -> Magenta -> Orange -> Yellow
             {
                 if (t < 0.33f)
                 {
@@ -1473,9 +1502,9 @@ namespace Surfels
             return IM_COL32(ir, ig, ib, ia);
         };
 
-        // Extract 6 Frustum Planes from viewProj (Gribb-Hartmann)
+        // Extract 6 Frustum Planes from cViewProj for Culling (Gribb-Hartmann)
         XMFLOAT4X4 m;
-        XMStoreFloat4x4(&m, viewProj);
+        XMStoreFloat4x4(&m, cViewProj);
         XMFLOAT4 frustumPlanes[6] = {
             { m._14 + m._11, m._24 + m._21, m._34 + m._31, m._44 + m._41 }, // Left
             { m._14 - m._11, m._24 - m._21, m._34 - m._31, m._44 - m._41 }, // Right
@@ -1502,23 +1531,16 @@ namespace Surfels
             for (int i = 0; i < 6; i++)
             {
                 float dist = frustumPlanes[i].x * center.x + frustumPlanes[i].y * center.y + frustumPlanes[i].z * center.z + frustumPlanes[i].w;
-                if (dist < -radius)
-                    return false; // Outside frustum -> Culled!
+                if (dist < -radius) return false;
             }
-            return true; // Inside frustum -> Visible!
+            return true;
         };
 
         auto DrawFilledCube = [&](const XMFLOAT3& bMin, const XMFLOAT3& bMax, ImU32 fillCol, ImU32 edgeCol, bool drawWireframe)
         {
             XMFLOAT3 corners[8] = {
-                { bMin.x, bMin.y, bMin.z }, // 0
-                { bMax.x, bMin.y, bMin.z }, // 1
-                { bMax.x, bMax.y, bMin.z }, // 2
-                { bMin.x, bMax.y, bMin.z }, // 3
-                { bMin.x, bMin.y, bMax.z }, // 4
-                { bMax.x, bMin.y, bMax.z }, // 5
-                { bMax.x, bMax.y, bMax.z }, // 6
-                { bMin.x, bMax.y, bMax.z }  // 7
+                { bMin.x, bMin.y, bMin.z }, { bMax.x, bMin.y, bMin.z }, { bMax.x, bMax.y, bMin.z }, { bMin.x, bMax.y, bMin.z },
+                { bMin.x, bMin.y, bMax.z }, { bMax.x, bMin.y, bMax.z }, { bMax.x, bMax.y, bMax.z }, { bMin.x, bMax.y, bMax.z }
             };
             ImVec2 screenCorners[8];
             bool valid[8];
@@ -1527,156 +1549,87 @@ namespace Surfels
                 valid[i] = ProjectToScreen(corners[i], screenCorners[i]);
             }
 
-            // 6 Faces with outward normal vectors
-            struct CubeFace
-            {
-                int i0, i1, i2, i3;
-                XMFLOAT3 normal;
-                XMFLOAT3 center;
-            };
-
-            float midX = (bMin.x + bMax.x) * 0.5f;
-            float midY = (bMin.y + bMax.y) * 0.5f;
-            float midZ = (bMin.z + bMax.z) * 0.5f;
-
-            const CubeFace faces[6] = {
-                { 0, 1, 2, 3, {  0.0f,  0.0f, -1.0f }, { midX, midY, bMin.z } }, // -Z
-                { 4, 7, 6, 5, {  0.0f,  0.0f,  1.0f }, { midX, midY, bMax.z } }, // +Z
-                { 0, 3, 7, 4, { -1.0f,  0.0f,  0.0f }, { bMin.x, midY, midZ } }, // -X
-                { 1, 5, 6, 2, {  1.0f,  0.0f,  0.0f }, { bMax.x, midY, midZ } }, // +X
-                { 0, 4, 5, 1, {  0.0f, -1.0f,  0.0f }, { midX, bMin.y, midZ } }, // -Y
-                { 3, 2, 6, 7, {  0.0f,  1.0f,  0.0f }, { midX, bMax.y, midZ } }  // +Y
+            // 6 Faces
+            static const int faces[6][4] = {
+                { 0, 1, 2, 3 }, // Front (-Z)
+                { 5, 4, 7, 6 }, // Back (+Z)
+                { 4, 0, 3, 7 }, // Left (-X)
+                { 1, 5, 6, 2 }, // Right (+X)
+                { 3, 2, 6, 7 }, // Top (+Y)
+                { 4, 5, 1, 0 }  // Bottom (-Y)
             };
 
             for (int f = 0; f < 6; f++)
             {
-                // Backface culling: only draw faces directed towards the camera!
-                float toCamX = eyePos.x - faces[f].center.x;
-                float toCamY = eyePos.y - faces[f].center.y;
-                float toCamZ = eyePos.z - faces[f].center.z;
-                float dotProd = faces[f].normal.x * toCamX + faces[f].normal.y * toCamY + faces[f].normal.z * toCamZ;
-                if (dotProd <= 0.0f)
-                    continue; // Skip back face
-
-                int i0 = faces[f].i0, i1 = faces[f].i1, i2 = faces[f].i2, i3 = faces[f].i3;
+                int i0 = faces[f][0], i1 = faces[f][1], i2 = faces[f][2], i3 = faces[f][3];
                 if (valid[i0] && valid[i1] && valid[i2] && valid[i3])
                 {
                     drawList->AddQuadFilled(screenCorners[i0], screenCorners[i1], screenCorners[i2], screenCorners[i3], fillCol);
                 }
             }
 
-            // Draw 12 Edges
             if (drawWireframe)
             {
-                const int edges[12][2] = {
+                static const int edges[12][2] = {
                     { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 0 },
                     { 4, 5 }, { 5, 6 }, { 6, 7 }, { 7, 4 },
                     { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 }
                 };
-                for (int i = 0; i < 12; i++)
+                for (int e = 0; e < 12; e++)
                 {
-                    int u = edges[i][0], v = edges[i][1];
-                    if (valid[u] && valid[v])
+                    int i0 = edges[e][0], i1 = edges[e][1];
+                    if (valid[i0] && valid[i1])
                     {
-                        drawList->AddLine(screenCorners[u], screenCorners[v], edgeCol, 1.0f);
+                        drawList->AddLine(screenCorners[i0], screenCorners[i1], edgeCol, 1.0f);
                     }
                 }
             }
         };
 
-        // 1. Semi-Transparent Density Heatmap Cluster Cubes
+        // 1. Density Heatmap Spatial Blocks (Back-to-front depth sorted)
         if (m_showClusterHeatmap && !m_heatmapClusterCubes.empty())
         {
-            // Back-to-front sorting for smooth alpha transparency accumulation
             std::vector<size_t> sortedCubes(m_heatmapClusterCubes.size());
             for (size_t i = 0; i < sortedCubes.size(); i++) sortedCubes[i] = i;
 
             std::sort(sortedCubes.begin(), sortedCubes.end(), [&](size_t a, size_t b) {
                 const auto& ca = m_heatmapClusterCubes[a];
                 const auto& cb = m_heatmapClusterCubes[b];
-                float da = (ca.center.x - eyePos.x) * (ca.center.x - eyePos.x) +
-                           (ca.center.y - eyePos.y) * (ca.center.y - eyePos.y) +
-                           (ca.center.z - eyePos.z) * (ca.center.z - eyePos.z);
-                float db = (cb.center.x - eyePos.x) * (cb.center.x - eyePos.x) +
-                           (cb.center.y - eyePos.y) * (cb.center.y - eyePos.y) +
-                           (cb.center.z - eyePos.z) * (cb.center.z - eyePos.z);
-                return da > db; // Descending (far to near)
+                float da = (ca.center.x - eyePos.x)*(ca.center.x - eyePos.x) + (ca.center.y - eyePos.y)*(ca.center.y - eyePos.y) + (ca.center.z - eyePos.z)*(ca.center.z - eyePos.z);
+                float db = (cb.center.x - eyePos.x)*(cb.center.x - eyePos.x) + (cb.center.y - eyePos.y)*(cb.center.y - eyePos.y) + (cb.center.z - eyePos.z)*(cb.center.z - eyePos.z);
+                return da > db;
             });
 
             for (size_t idx : sortedCubes)
             {
                 const auto& cube = m_heatmapClusterCubes[idx];
-
-                // Near plane clipping distance check
-                float camDistProj = (cube.center.x - eyePos.x) * forward.x + 
-                                    (cube.center.y - eyePos.y) * forward.y + 
-                                    (cube.center.z - eyePos.z) * forward.z;
-                if (camDistProj < -cube.boundingRadius)
-                    continue;
-
                 bool isVisible = IsSphereInFrustum(cube.center, cube.boundingRadius);
 
                 if (isVisible && cube.pointCount > 0)
                 {
-                    float t = cube.normDensity; // 0.0 (cool/sparse) to 1.0 (hot/dense)
+                    float t = cube.normDensity;
                     float heatCurve = std::pow(t, 1.35f);
-
-                    // Cool cubes: very light & translucent; Hot cubes: bold & solid
                     float fillAlpha = std::min(0.95f, m_heatmapOpacity * (0.30f + heatCurve * m_hotspotOpacityScale));
                     float edgeAlpha = std::min(1.0f, m_wireframeOpacity * (0.40f + heatCurve * (m_hotspotOpacityScale * 0.75f)));
-
                     ImU32 fillCol = EvaluateHeatmapColor(t, fillAlpha, m_heatmapColorScheme);
                     ImU32 edgeCol = EvaluateHeatmapColor(t, edgeAlpha, m_heatmapColorScheme);
                     DrawFilledCube(cube.aabbMin, cube.aabbMax, fillCol, edgeCol, m_showHeatmapWireframe);
                 }
                 else if (m_showCulledChunks)
                 {
-                    // Dark blue: 5% tint (alpha 13), 20% wireframe (alpha 51)
-                    ImU32 culledFillCol = IM_COL32(10, 35, 100, 13);
-                    ImU32 culledEdgeCol = IM_COL32(30, 90, 220, 51);
-                    DrawFilledCube(cube.aabbMin, cube.aabbMax, culledFillCol, culledEdgeCol, true);
+                    DrawFilledCube(cube.aabbMin, cube.aabbMax, IM_COL32(10, 35, 100, 13), IM_COL32(30, 90, 220, 51), true);
                 }
             }
-
-            // Draw Heatmap Legend Bar in the corner
-            float legendX = screenW - 220.0f;
-            float legendY = screenH - 70.0f;
-            float legendW = 190.0f;
-            float legendH = 14.0f;
-
-            drawList->AddRectFilled(ImVec2(legendX - 10, legendY - 24), ImVec2(legendX + legendW + 10, legendY + legendH + 20), IM_COL32(15, 15, 20, 210), 6.0f);
-            drawList->AddText(ImVec2(legendX, legendY - 20), IM_COL32(230, 230, 230, 255), "Point Density Heatmap");
-
-            for (int s = 0; s < (int)legendW; s++)
-            {
-                float t = (float)s / legendW;
-                ImU32 col = EvaluateHeatmapColor(t, 0.9f, m_heatmapColorScheme);
-                drawList->AddLine(ImVec2(legendX + s, legendY), ImVec2(legendX + s, legendY + legendH), col, 1.0f);
-            }
-            drawList->AddRect(ImVec2(legendX, legendY), ImVec2(legendX + legendW, legendY + legendH), IM_COL32(255, 255, 255, 150), 0.0f, 0, 1.0f);
-
-            drawList->AddText(ImVec2(legendX, legendY + legendH + 3), IM_COL32(160, 180, 200, 255), "Sparse");
-            drawList->AddText(ImVec2(legendX + legendW - 35, legendY + legendH + 3), IM_COL32(255, 160, 160, 255), "Dense");
         }
 
-        // 2. Streaming Octree Macro-Chunks (Amber)
+        // 2. Streaming Octree Macro-Chunks
         if (m_showOctreeVisualizer)
         {
-            const ImU32 octreeColorVisible = IM_COL32(255, 190, 40, 240);
-            const ImU32 culledFillCol = IM_COL32(10, 35, 100, 13);
-            const ImU32 culledEdgeCol = IM_COL32(30, 90, 220, 51);
-
             for (const auto& chunk : m_chunks)
             {
                 bool isVisible = IsSphereInFrustum(chunk.center, chunk.boundingRadius);
-                if (isVisible)
-                {
-                    DrawFilledCube(chunk.aabbMin, chunk.aabbMax, IM_COL32(255, 190, 40, 40), octreeColorVisible, true);
-                }
-                else if (m_showCulledChunks)
-                {
-                    DrawFilledCube(chunk.aabbMin, chunk.aabbMax, culledFillCol, culledEdgeCol, true);
-                }
+                if (isVisible) DrawFilledCube(chunk.aabbMin, chunk.aabbMax, IM_COL32(255, 190, 40, 40), IM_COL32(255, 190, 40, 240), true);
+                else if (m_showCulledChunks) DrawFilledCube(chunk.aabbMin, chunk.aabbMax, IM_COL32(10, 35, 100, 13), IM_COL32(30, 90, 220, 51), true);
             }
         }
 
@@ -1685,6 +1638,76 @@ namespace Surfels
         {
             const ImU32 globalColor = IM_COL32(100, 160, 255, 255);
             DrawFilledCube(m_aabbMin, m_aabbMax, IM_COL32(80, 140, 255, 25), globalColor, true);
+        }
+
+        // 4. Detached Culling Camera Frustum Primitive Visualizer (Mid-Transparent Gray)
+        if (m_detachCamera)
+        {
+            float zn = 0.5f;
+            float zf = std::min(60.0f, std::max(10.0f, cDist * 1.8f));
+
+            float tanHalfFov = 0.41421356f; // tan(pi / 8) for 45 deg FOV
+            float hn = zn * tanHalfFov;
+            float wn = hn * aspect;
+            float hf = zf * tanHalfFov;
+            float wf = hf * aspect;
+
+            // 4 Near Corners
+            XMFLOAT3 N[4] = {
+                { cullEyePos.x + cullForward.x * zn - cullRight.x * wn - cullUp.x * hn, cullEyePos.y + cullForward.y * zn - cullRight.y * wn - cullUp.y * hn, cullEyePos.z + cullForward.z * zn - cullRight.z * wn - cullUp.z * hn },
+                { cullEyePos.x + cullForward.x * zn + cullRight.x * wn - cullUp.x * hn, cullEyePos.y + cullForward.y * zn + cullRight.x * wn - cullUp.y * hn, cullEyePos.z + cullForward.z * zn + cullRight.x * wn - cullUp.z * hn },
+                { cullEyePos.x + cullForward.x * zn + cullRight.x * wn + cullUp.x * hn, cullEyePos.y + cullForward.y * zn + cullRight.x * wn + cullUp.y * hn, cullEyePos.z + cullForward.z * zn + cullRight.x * wn + cullUp.z * hn },
+                { cullEyePos.x + cullForward.x * zn - cullRight.x * wn + cullUp.x * hn, cullEyePos.y + cullForward.y * zn - cullRight.x * wn + cullUp.y * hn, cullEyePos.z + cullForward.z * zn - cullRight.x * wn + cullUp.z * hn }
+            };
+
+            // 4 Far Corners
+            XMFLOAT3 F[4] = {
+                { cullEyePos.x + cullForward.x * zf - cullRight.x * wf - cullUp.x * hf, cullEyePos.y + cullForward.y * zf - cullRight.y * wf - cullUp.y * hf, cullEyePos.z + cullForward.z * zf - cullRight.z * wf - cullUp.z * hf },
+                { cullEyePos.x + cullForward.x * zf + cullRight.x * wf - cullUp.x * hf, cullEyePos.y + cullForward.y * zf + cullRight.x * wf - cullUp.y * hf, cullEyePos.z + cullForward.z * zf + cullRight.x * wf - cullUp.z * hf },
+                { cullEyePos.x + cullForward.x * zf + cullRight.x * wf + cullUp.x * hf, cullEyePos.y + cullForward.y * zf + cullRight.x * wf + cullUp.x * hf, cullEyePos.z + cullForward.z * zf + cullRight.x * wf + cullUp.z * hf },
+                { cullEyePos.x + cullForward.x * zf - cullRight.x * wf + cullUp.x * hf, cullEyePos.y + cullForward.y * zf - cullRight.x * wf + cullUp.y * hf, cullEyePos.z + cullForward.z * zf - cullRight.x * wf + cullUp.z * hf }
+            };
+
+            ImVec2 screenN[4], screenF[4], screenEye;
+            bool validN[4], validF[4];
+            bool validEye = ProjectToScreen(cullEyePos, screenEye);
+
+            for (int i = 0; i < 4; i++)
+            {
+                validN[i] = ProjectToScreen(N[i], screenN[i]);
+                validF[i] = ProjectToScreen(F[i], screenF[i]);
+            }
+
+            // Mid-Transparent Gray Fill (~18% alpha = 45/255) and Bright Gray Wireframe Outlines
+            const ImU32 frustumFillCol = IM_COL32(180, 185, 195, 45);
+            const ImU32 frustumWireCol = IM_COL32(230, 235, 245, 190);
+            const ImU32 frustumApexCol = IM_COL32(240, 245, 255, 140);
+
+            // 6 Frustum Quad Faces
+            if (validN[0] && validN[1] && validN[2] && validN[3]) drawList->AddQuadFilled(screenN[0], screenN[1], screenN[2], screenN[3], frustumFillCol);
+            if (validF[0] && validF[1] && validF[2] && validF[3]) drawList->AddQuadFilled(screenF[3], screenF[2], screenF[1], screenF[0], frustumFillCol);
+            if (validN[0] && validN[3] && validF[3] && validF[0]) drawList->AddQuadFilled(screenN[0], screenN[3], screenF[3], screenF[0], frustumFillCol);
+            if (validN[1] && validF[1] && validF[2] && validN[2]) drawList->AddQuadFilled(screenN[1], screenF[1], screenF[2], screenN[2], frustumFillCol);
+            if (validN[3] && validN[2] && validF[2] && validF[3]) drawList->AddQuadFilled(screenN[3], screenN[2], screenF[2], screenF[3], frustumFillCol);
+            if (validN[0] && validF[0] && validF[1] && validN[1]) drawList->AddQuadFilled(screenN[0], screenF[0], screenF[1], screenN[1], frustumFillCol);
+
+            // 12 Frustum Outer Edges
+            for (int i = 0; i < 4; i++)
+            {
+                int next = (i + 1) % 4;
+                if (validN[i] && validN[next]) drawList->AddLine(screenN[i], screenN[next], frustumWireCol, 1.5f);
+                if (validF[i] && validF[next]) drawList->AddLine(screenF[i], screenF[next], frustumWireCol, 1.5f);
+                if (validN[i] && validF[i])    drawList->AddLine(screenN[i], screenF[i], frustumWireCol, 1.5f);
+            }
+
+            // 4 Apex Rays from Eye Position to Near Corners
+            if (validEye)
+            {
+                for (int i = 0; i < 4; i++) { if (validN[i]) drawList->AddLine(screenEye, screenN[i], frustumApexCol, 1.0f); }
+                drawList->AddCircleFilled(screenEye, 5.0f, IM_COL32(255, 215, 60, 255));
+                drawList->AddCircle(screenEye, 7.0f, IM_COL32(20, 20, 30, 220), 0, 1.5f);
+                drawList->AddText(ImVec2(screenEye.x + 10, screenEye.y - 7), IM_COL32(255, 230, 120, 255), "Detached Camera");
+            }
         }
     }
 

@@ -830,7 +830,7 @@ namespace Surfels
         pCmdLst->RSSetViewports(1, &viewport);
         pCmdLst->RSSetScissorRects(1, &scissor);
 
-        // Camera calculations
+        // Active viewing camera
         const float cy = cosf(pState->camPitch), sy = sinf(pState->camPitch);
         const float sx = sinf(pState->camYaw), cx = cosf(pState->camYaw);
         XMFLOAT3 eyePos(
@@ -853,9 +853,30 @@ namespace Surfels
         XMMATRIX proj = XMMatrixPerspectiveFovRH(XM_PIDIV4, pState->aspectRatio, 0.1f, 500.0f);
         XMMATRIX viewProj = XMMatrixMultiply(view, proj);
 
-        XMFLOAT3 forwardNorm;
-        XMStoreFloat3(&forwardNorm, forward);
-        UpdateSurfelBuffers(pState, eyePos, forwardNorm);
+        // Culling camera (detached freeze or active)
+        float cPitch = pState->detachCullCamera ? pState->cullPitch : pState->camPitch;
+        float cYaw   = pState->detachCullCamera ? pState->cullYaw : pState->camYaw;
+        float cDist  = pState->detachCullCamera ? pState->cullDistance : pState->camDistance;
+        XMFLOAT3 cTarget = pState->detachCullCamera ? pState->cullTarget : pState->camTarget;
+
+        const float c_cy = cosf(cPitch), c_sy = sinf(cPitch);
+        const float c_sx = sinf(cYaw), c_cx = cosf(cYaw);
+        XMFLOAT3 cullEyePos(
+            cTarget.x + cDist * c_cy * c_sx,
+            cTarget.y + cDist * c_sy,
+            cTarget.z + cDist * c_cy * c_cx
+        );
+        XMVECTOR cEye = XMLoadFloat3(&cullEyePos);
+        XMVECTOR cAt = XMLoadFloat3(&cTarget);
+        XMVECTOR cForward = XMVector3Normalize(XMVectorSubtract(cAt, cEye));
+        XMFLOAT3 cullForwardNorm;
+        XMStoreFloat3(&cullForwardNorm, cForward);
+
+        XMMATRIX cView = XMMatrixLookAtRH(cEye, cAt, worldUp);
+        XMMATRIX cProj = XMMatrixPerspectiveFovRH(XM_PIDIV4, pState->aspectRatio, 0.1f, 500.0f);
+        XMMATRIX cViewProj = XMMatrixMultiply(cView, cProj);
+
+        UpdateSurfelBuffers(pState, cullEyePos, cullForwardNorm);
         uint32_t surfelCount = pState->surfelCount;
 
         SurfelsCB* pCB = nullptr;
@@ -888,6 +909,9 @@ namespace Surfels
         pCB->useChunkedPipeline = (pState->useChunkedPipeline && pState->chunkCount > 0 && m_pChunkGpuBuffer != nullptr) ? 1 : 0;
         pCB->aabbExtents = pState->aabbExtents;
         pCB->pad2 = 0.0f;
+        XMStoreFloat4x4(&pCB->cullViewProj, cViewProj);
+        pCB->useDetachedCullCam = pState->detachCullCamera ? 1 : 0;
+        pCB->pad3 = XMFLOAT3(0.0f, 0.0f, 0.0f);
 
         ID3D12Resource* pGpuRes = (pState->renderMode == 2) ? m_pRawSurfelGpuBuffer : m_pSurfelGpuBuffer;
         ID3D12Resource* pGpuOutRes = (pState->renderMode == 2) ? m_pRawSurfelGpuOutBuffer : m_pSurfelGpuOutBuffer;
@@ -958,8 +982,8 @@ namespace Surfels
                         };
 
                         BitonicCB baseCB = {};
-                        baseCB.camPos = eyePos;
-                        baseCB.camForward = forwardNorm;
+                        baseCB.camPos = cullEyePos;
+                        baseCB.camForward = cullForwardNorm;
                         baseCB.totalSurfels = chunkCount;
                         baseCB.numElements = numChunkElements;
                         baseCB.renderMode = pState->renderMode;
@@ -1148,8 +1172,8 @@ namespace Surfels
                     };
 
                     BitonicCB baseCB = {};
-                    baseCB.camPos = eyePos;
-                    baseCB.camForward = forwardNorm;
+                    baseCB.camPos = cullEyePos;
+                    baseCB.camForward = cullForwardNorm;
                     baseCB.totalSurfels = surfelCount;
                     baseCB.numElements = numElements;
                     baseCB.renderMode = pState->renderMode;

@@ -108,6 +108,12 @@ namespace Surfels
         float m_distance = 25.0f;
         XMFLOAT3 m_target = { 0.0f, 0.0f, 0.0f };
 
+        bool     m_detachCamera     = false; // Detach/freeze culling camera from viewing camera
+        float    m_detachedYaw      = 0.6f;
+        float    m_detachedPitch    = 0.35f;
+        float    m_detachedDistance = 25.0f;
+        XMFLOAT3 m_detachedTarget   = { 0.0f, 0.0f, 0.0f };
+
         bool  m_autoLOD              = true;  // Distance-adaptive dynamic LOD selection
         bool  m_autoRotate           = true;
         bool  m_gpuRadixSort         = true;  // Checkbox: "GPU Radix Sort" under Accelerators (Enabled by default)

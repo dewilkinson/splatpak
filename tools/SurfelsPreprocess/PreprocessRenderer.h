@@ -27,10 +27,15 @@ namespace Surfels
             const PackedSurfelGPU* pSurfels    = nullptr;
             const SurfelVertex*    pRawSurfels = nullptr;
             const MeshletChunkGPU* pChunks     = nullptr;
-            uint32_t surfelCount = 0;
-            uint32_t chunkCount  = 0;
-            bool     gpuRadixSort = true;
+            uint32_t surfelCount      = 0;
+            uint32_t chunkCount       = 0;
+            bool     gpuRadixSort     = true;
             bool     useChunkedPipeline = true;
+            bool     detachCullCamera = false;
+            float    cullYaw          = 0.6f;
+            float    cullPitch        = 0.35f;
+            float    cullDistance     = 15.0f;
+            XMFLOAT3 cullTarget       = { 0.0f, 0.0f, 0.0f };
         };
 
         struct FrameTimingMetrics
@@ -77,6 +82,9 @@ namespace Surfels
             uint32_t   useChunkedPipeline;
             XMFLOAT3   aabbExtents;
             float      pad2;
+            XMFLOAT4X4 cullViewProj;
+            uint32_t   useDetachedCullCam;
+            XMFLOAT3   pad3;
         };
 
         CAULDRON_DX12::Device* m_pDevice = nullptr;
