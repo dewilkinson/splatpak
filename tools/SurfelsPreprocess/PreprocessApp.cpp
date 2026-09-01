@@ -797,7 +797,7 @@ namespace Surfels
             }
             else
             {
-                // Arrow Keys without Shift: ROTATE / ORBIT Camera (Left/Right=Yaw, Up/Down=Pitch)
+                // Left/Right without Shift: Rotate Yaw
                 float keyRotSpeed = 0.03f;
                 if (GetKeyState(VK_LEFT) & 0x8000)
                 {
@@ -807,26 +807,19 @@ namespace Surfels
                 {
                     m_yaw += keyRotSpeed;
                 }
-                if (GetKeyState(VK_UP) & 0x8000)
+
+                // Up/Down without Shift: Zoom In / Out
+                float keyZoomSpeed = m_distance * 0.04f;
+                if ((GetKeyState(VK_UP) & 0x8000) || (GetKeyState('W') & 0x8000) || (GetKeyState(VK_PRIOR) & 0x8000) || (GetKeyState(VK_ADD) & 0x8000) || (GetKeyState(VK_OEM_PLUS) & 0x8000))
                 {
-                    m_pitch = std::max(-1.55f, std::min(1.55f, m_pitch - keyRotSpeed));
+                    m_distance -= keyZoomSpeed; // Zoom In
                 }
-                if (GetKeyState(VK_DOWN) & 0x8000)
+                if ((GetKeyState(VK_DOWN) & 0x8000) || (GetKeyState('S') & 0x8000) || (GetKeyState(VK_NEXT) & 0x8000) || (GetKeyState(VK_SUBTRACT) & 0x8000) || (GetKeyState(VK_OEM_MINUS) & 0x8000))
                 {
-                    m_pitch = std::max(-1.55f, std::min(1.55f, m_pitch + keyRotSpeed));
+                    m_distance += keyZoomSpeed; // Zoom Out
                 }
             }
 
-            // Zoom Keys: W/S, PageUp/PageDown, + / -
-            float keyZoomSpeed = m_distance * 0.04f;
-            if ((GetKeyState('W') & 0x8000) || (GetKeyState(VK_PRIOR) & 0x8000) || (GetKeyState(VK_ADD) & 0x8000) || (GetKeyState(VK_OEM_PLUS) & 0x8000))
-            {
-                m_distance -= keyZoomSpeed; // Zoom In
-            }
-            if ((GetKeyState('S') & 0x8000) || (GetKeyState(VK_NEXT) & 0x8000) || (GetKeyState(VK_SUBTRACT) & 0x8000) || (GetKeyState(VK_OEM_MINUS) & 0x8000))
-            {
-                m_distance += keyZoomSpeed; // Zoom Out
-            }
             m_distance = std::max(0.1f, std::min(1000.0f, m_distance));
         }
 
