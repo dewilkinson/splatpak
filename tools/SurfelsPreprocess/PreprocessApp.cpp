@@ -1119,11 +1119,11 @@ namespace Surfels
 
                 ImGui::Checkbox("Draw Cube Outlines", &m_showHeatmapWireframe);
 
-                ImGui::Checkbox("Show Partitioned Octree Chunks (Amber)", &m_showOctreeVisualizer);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders 3D bounding cubes for all %u active spatial streaming octree chunks.", (uint32_t)m_chunks.size());
-
                 ImGui::Checkbox("Show Culled Chunks (Darker Shade)", &m_showCulledChunks);
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders frustum-culled octree chunks and meshlet blocks in a dark translucent shade.");
+
+                ImGui::Checkbox("Show Partitioned Octree Chunks (Amber)", &m_showOctreeVisualizer);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders 3D bounding cubes for all %u active spatial streaming octree chunks.", (uint32_t)m_chunks.size());
 
                 ImGui::Checkbox("Show Global Model Bounds (Blue)", &m_showGlobalBounds);
             }
@@ -1677,7 +1677,7 @@ namespace Surfels
                 }
                 else if (m_showCulledChunks)
                 {
-                    DrawFilledCube(cube.aabbMin, cube.aabbMax, IM_COL32(10, 35, 100, 13), IM_COL32(30, 90, 220, 51), true);
+                    DrawFilledCube(cube.aabbMin, cube.aabbMax, IM_COL32(10, 35, 100, 13), IM_COL32(30, 90, 220, 51), m_showHeatmapWireframe);
                 }
             }
         }
