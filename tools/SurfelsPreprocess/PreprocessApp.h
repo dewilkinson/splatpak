@@ -153,10 +153,10 @@ namespace Surfels
         bool  m_devMode              = false;  // Loaded from config file (surfels_config.ini)
         bool  m_showClusterHeatmap   = true;   // Visualizes cluster cubes with heatmap point density fill
         int   m_targetClusterCubes   = 4096;   // Target cluster cubes (e.g. 512, 1024, 4096, 16384)
-        float m_heatmapOpacity       = 0.02f;  // Base alpha tint opacity for heatmap faces (lowest value of slider range [0.02f, 0.60f])
-        float m_wireframeOpacity     = 0.05f;  // Base opacity wireframe outlines (lowest value of slider range [0.05f, 1.00f])
-        float m_hotspotOpacityScale  = 1.0f;   // Opacity scale multiplier for dense/hot cubes (lowest value of slider range [1.0x, 6.0x])
-        bool  m_showHeatmapWireframe = false;  // Disabled by default
+        float m_heatmapOpacity       = 0.25f;  // Base alpha tint opacity for heatmap faces [0.05f, 1.0f]
+        float m_wireframeOpacity     = 0.40f;  // Base opacity wireframe outlines [0.05f, 1.0f]
+        float m_hotspotOpacityScale  = 2.0f;   // Opacity scale multiplier for dense/hot cubes
+        bool  m_showHeatmapWireframe = true;   // Enabled by default for clear cluster boundaries
         int   m_heatmapColorScheme   = 0;      // 0 = Turbo, 1 = Viridis, 2 = Plasma
         bool  m_showOctreeVisualizer = false;  // Show streaming octree chunks (amber boxes)
         bool  m_showCulledChunks     = false;  // Disabled by default

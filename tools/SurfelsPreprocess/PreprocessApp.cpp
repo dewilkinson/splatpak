@@ -1705,10 +1705,20 @@ namespace Surfels
                     }
 
                     const char* schemes[] = { "Turbo (Classic Rainbow)", "Viridis (Perceptual)", "Plasma (Magma)" };
-                    ImGui::Combo("Heatmap Color Scheme", &m_heatmapColorScheme, schemes, IM_ARRAYSIZE(schemes));
-
                     ImGui::Checkbox("Show Density Heatmap Cluster Cubes", &m_showClusterHeatmap);
-                    ImGui::Checkbox("Draw Cube Outlines", &m_showHeatmapWireframe);
+                    if (m_showClusterHeatmap)
+                    {
+                        ImGui::SliderFloat("Cube Fill Opacity", &m_heatmapOpacity, 0.05f, 1.0f, "%.2f");
+                        ImGui::Checkbox("Draw Cube Outlines", &m_showHeatmapWireframe);
+                        if (m_showHeatmapWireframe)
+                        {
+                            ImGui::SliderFloat("Outline Opacity", &m_wireframeOpacity, 0.05f, 1.0f, "%.2f");
+                        }
+                    }
+                    else
+                    {
+                        ImGui::Checkbox("Draw Cube Outlines", &m_showHeatmapWireframe);
+                    }
                     ImGui::Checkbox("Show Culled Chunks (Darker Shade)", &m_showCulledChunks);
                     ImGui::Checkbox("Show Macro Clusters (Amber)", &m_showOctreeVisualizer);
                     ImGui::Checkbox("Show Global Model Bounds (Blue)", &m_showGlobalBounds);
@@ -2248,7 +2258,7 @@ namespace Surfels
             for (size_t idx : sortedCubes)
             {
                 const auto& cube = m_heatmapClusterCubes[idx];
-                bool inFrustum = IsSphereInFrustum(cube.center, cube.boundingRadius);
+                bool inFrustum = !m_detachCamera || IsSphereInFrustum(cube.center, cube.boundingRadius);
 
                 // In detached camera mode:
                 // 1. Keep only front-facing shell wrt detached camera
