@@ -30,17 +30,23 @@ namespace Surfels
     void PreprocessApp::LoadConfigFile()
     {
         const char* configPaths[] = {
+            "config.json",
+            "../config.json",
+            "data/config.json",
+            "../data/config.json",
             "surfels_config.ini",
             "../surfels_config.ini",
             "config.ini",
             "../config.ini"
         };
 
+        bool foundAny = false;
         for (const char* path : configPaths)
         {
             std::ifstream file(path);
             if (file.is_open())
             {
+                foundAny = true;
                 std::string line;
                 while (std::getline(file, line))
                 {
@@ -58,9 +64,61 @@ namespace Surfels
                     {
                         m_devMode = false;
                     }
+
+                    // Benchmark Dataset Path (JSON or INI)
+                    size_t bPos = line.find("\"benchmark_dataset\":");
+                    if (bPos == std::string::npos) bPos = line.find("\"benchmark_path\":");
+                    if (bPos != std::string::npos)
+                    {
+                        size_t q1 = line.find("\"", bPos + 18);
+                        if (q1 != std::string::npos)
+                        {
+                            size_t q2 = line.find("\"", q1 + 1);
+                            if (q2 != std::string::npos)
+                            {
+                                m_benchmarkDatasetPath = line.substr(q1 + 1, q2 - q1 - 1);
+                            }
+                        }
+                    }
+                    else if (line.find("BenchmarkDataset=") != std::string::npos ||
+                             line.find("BenchmarkPath=") != std::string::npos ||
+                             line.find("benchmark_dataset=") != std::string::npos ||
+                             line.find("benchmark_path=") != std::string::npos)
+                    {
+                        size_t eqPos = line.find('=');
+                        if (eqPos != std::string::npos)
+                        {
+                            std::string val = line.substr(eqPos + 1);
+                            while (!val.empty() && (val.back() == '\r' || val.back() == ' ' || val.back() == '\n' || val.back() == '"')) val.pop_back();
+                            while (!val.empty() && (val.front() == ' ' || val.front() == '"')) val.erase(val.begin());
+                            if (!val.empty()) m_benchmarkDatasetPath = val;
+                        }
+                    }
                 }
+                file.close();
                 break;
             }
+        }
+
+        if (!foundAny)
+        {
+            SaveConfigFile();
+        }
+    }
+
+    void PreprocessApp::SaveConfigFile()
+    {
+        std::ofstream out("config.json");
+        if (out.is_open())
+        {
+            out << "{\n";
+            out << "  \"benchmark_dataset\": \"" << m_benchmarkDatasetPath << "\",\n";
+            out << "  \"fallback_synthetic_points\": 300000,\n";
+            out << "  \"default_chunk_size\": 16.0,\n";
+            out << "  \"default_max_lods\": 4,\n";
+            out << "  \"default_deadband_mm\": 3.0\n";
+            out << "}\n";
+            out.close();
         }
     }
 
@@ -572,19 +630,24 @@ namespace Surfels
 
     void PreprocessApp::GenerateSyntheticScene(uint32_t count)
     {
-        m_statusMessage = "Loading Venus de Milo Benchmark...";
+        m_statusMessage = "Loading synthetic benchmark...";
+        LoadConfigFile(); // Refresh config from disk
 
-        // Priority: Check project data / datasets folder for venus.ply
         std::vector<std::string> candidatePaths = {
+            m_benchmarkDatasetPath,
+            "data/" + m_benchmarkDatasetPath,
+            "datasets/" + m_benchmarkDatasetPath,
+            "../" + m_benchmarkDatasetPath,
+            "../data/" + m_benchmarkDatasetPath,
+            "../datasets/" + m_benchmarkDatasetPath,
             "data/venus.ply",
-            "datasets/venus.ply",
-            "../data/venus.ply",
-            "../datasets/venus.ply"
+            "datasets/venus.ply"
         };
 
         std::string foundPath = "";
         for (const auto& path : candidatePaths)
         {
+            if (path.empty()) continue;
             std::ifstream test(path, std::ios::binary);
             if (test.is_open())
             {
@@ -593,12 +656,26 @@ namespace Surfels
             }
         }
 
-        if (!foundPath.empty() && LoadPLYFile(foundPath))
+        if (!foundPath.empty())
         {
-            m_loadedFilePath = "Venus de Milo Benchmark (" + foundPath + ")";
-            m_statusMessage = "Successfully loaded Venus de Milo Benchmark (" + std::to_string(m_rawSurfels.size()) + " points).";
-            m_statusIsSuccess = true;
-            return;
+            std::string ext = foundPath.size() > 5 ? foundPath.substr(foundPath.size() - 5) : "";
+            std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+            if (ext == ".sflw")
+            {
+                if (LoadSFLWFile(foundPath))
+                {
+                    m_statusMessage = "Loaded Synthetic Benchmark Package: " + foundPath;
+                    m_statusIsSuccess = true;
+                    return;
+                }
+            }
+            else if (LoadFile(foundPath))
+            {
+                m_loadedFilePath = "Synthetic Benchmark (" + foundPath + ")";
+                m_statusMessage = "Successfully loaded benchmark dataset (" + std::to_string(m_rawSurfels.size()) + " points from " + foundPath + ").";
+                m_statusIsSuccess = true;
+                return;
+            }
         }
 
         // Fallback to procedural generator if disk file is missing
@@ -608,7 +685,7 @@ namespace Surfels
         m_rawFileSizeMB = (m_rawSurfels.size() * sizeof(SurfelVertex)) / (1024.0f * 1024.0f);
 
         RecomputeWaveletHierarchy();
-        m_statusMessage = "Generated " + std::to_string(m_rawSurfels.size()) + " surfels with normal vectors & materials.";
+        m_statusMessage = "Generated " + std::to_string(m_rawSurfels.size()) + " synthetic benchmark surfels.";
         m_statusIsSuccess = true;
     }
 
@@ -1149,7 +1226,7 @@ namespace Surfels
                 {
                     m_pendingAction = PendingAction::OpenCompressedFile;
                 }
-                if (ImGui::MenuItem("Load Venus Benchmark (data/venus.ply)"))
+                if (ImGui::MenuItem("Generate Synthetic Benchmark", "Ctrl+G"))
                 {
                     m_pendingAction = PendingAction::GenerateBenchmark;
                 }
@@ -1245,10 +1322,11 @@ namespace Surfels
             {
                 m_pendingAction = PendingAction::OpenFile;
             }
-            if (ImGui::Button("Load Venus Benchmark (data/venus.ply)", ImVec2(-1, 24)))
+            if (ImGui::Button("Generate Synthetic Benchmark", ImVec2(-1, 24)))
             {
                 m_pendingAction = PendingAction::GenerateBenchmark;
             }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Loads the configured benchmark dataset (default: %s) or generates synthetic points.", m_benchmarkDatasetPath.c_str());
 
             bool canSave = m_packageReadyToSave && !m_rawSurfels.empty() && !m_pipelineNeedsUpdate;
             bool canUpdate = m_pipelineNeedsUpdate && !m_isPipelineProcessing && !m_rawSurfels.empty();

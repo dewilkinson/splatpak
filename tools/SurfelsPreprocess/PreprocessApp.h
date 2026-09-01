@@ -36,6 +36,9 @@ namespace Surfels
         void ProcessAndExport(const std::string& outputPath);
         void CloseDataset();
 
+        void LoadConfigFile();
+        void SaveConfigFile();
+
     private:
         enum class PendingAction
         {
@@ -114,6 +117,7 @@ namespace Surfels
         std::string m_statusMessage = "Ready. Load a PLY file or generate a synthetic benchmark.";
         bool  m_statusIsSuccess     = true;
         bool  m_showAboutDialog     = false;
+        std::string m_benchmarkDatasetPath = "data/venus.ply";
 
         float m_yaw      = 0.6f;
         float m_pitch    = 0.35f;
@@ -160,7 +164,6 @@ namespace Surfels
         bool  m_cascadeLOD           = true;
         bool  m_showLODTint          = false;
         std::vector<SurfelVertex> m_previewLODSurfels;
-        void  LoadConfigFile();
         void  RebuildHeatmapClusterCubes();
         void  DrawOctreeVisualizer();
     };
