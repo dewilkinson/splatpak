@@ -1037,7 +1037,9 @@ namespace Surfels
                         RebuildHeatmapClusterCubes();
                     }
                     ImGui::SliderFloat("Heatmap Tint Opacity", &m_heatmapOpacity, 0.02f, 0.60f, "%.2f");
-                    ImGui::SliderFloat("Wireframe Opacity", &m_wireframeOpacity, 0.10f, 1.00f, "%.2f");
+                    ImGui::SliderFloat("Hot Spot Opacity Boost", &m_hotspotOpacityScale, 1.0f, 6.0f, "%.1fx");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Scales the opacity of hot/dense cubes higher so they stand out more solid than cool sparse cubes.");
+                    ImGui::SliderFloat("Wireframe Opacity", &m_wireframeOpacity, 0.05f, 1.00f, "%.2f");
                     const char* schemes[] = { "Turbo (Classic Rainbow)", "Viridis (Perceptual)", "Plasma (Magma)" };
                     ImGui::Combo("Heatmap Color Scheme", &m_heatmapColorScheme, schemes, IM_ARRAYSIZE(schemes));
                     ImGui::Checkbox("Draw Cube Outlines", &m_showHeatmapWireframe);
@@ -1601,14 +1603,21 @@ namespace Surfels
 
                 if (isVisible)
                 {
-                    ImU32 fillCol = EvaluateHeatmapColor(cube.normDensity, m_heatmapOpacity, m_heatmapColorScheme);
-                    ImU32 edgeCol = EvaluateHeatmapColor(cube.normDensity, m_wireframeOpacity, m_heatmapColorScheme);
+                    float t = cube.normDensity; // 0.0 (cool/sparse) to 1.0 (hot/dense)
+                    float heatCurve = std::pow(t, 1.35f);
+
+                    // Cool cubes: very light & translucent; Hot cubes: bold & solid
+                    float fillAlpha = std::min(0.95f, m_heatmapOpacity * (0.30f + heatCurve * m_hotspotOpacityScale));
+                    float edgeAlpha = std::min(1.0f, m_wireframeOpacity * (0.40f + heatCurve * (m_hotspotOpacityScale * 0.75f)));
+
+                    ImU32 fillCol = EvaluateHeatmapColor(t, fillAlpha, m_heatmapColorScheme);
+                    ImU32 edgeCol = EvaluateHeatmapColor(t, edgeAlpha, m_heatmapColorScheme);
                     DrawFilledCube(cube.aabbMin, cube.aabbMax, fillCol, edgeCol, m_showHeatmapWireframe);
                 }
                 else if (m_showCulledChunks)
                 {
-                    ImU32 fillCol = IM_COL32(15, 30, 45, (uint8_t)(m_heatmapOpacity * 40.0f));
-                    ImU32 edgeCol = IM_COL32(35, 55, 75, (uint8_t)(m_wireframeOpacity * 60.0f));
+                    ImU32 fillCol = IM_COL32(15, 30, 45, (uint8_t)(m_heatmapOpacity * 30.0f));
+                    ImU32 edgeCol = IM_COL32(35, 55, 75, (uint8_t)(m_wireframeOpacity * 40.0f));
                     DrawFilledCube(cube.aabbMin, cube.aabbMax, fillCol, edgeCol, m_showHeatmapWireframe);
                 }
             }
