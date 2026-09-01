@@ -99,10 +99,11 @@ namespace Surfels
         bool  m_enableWavelet      = true; // Checkbox: "Wavelet Transform" (Enabled by default)
         bool  m_enableQuantization = true; // Checkbox: "Apply Quantization" (Enabled by default)
 
-        int   m_activeTab           = 0;   // 0 = Preprocessor Studio, 1 = Stream Renderer
-        int   m_selectedPreviewLOD  = 0;
-        int   m_maxPreviewLODs      = 4;
-        float m_chunkSize           = 16.0f;
+        int   m_activeTab               = 0;   // 0 = Preprocessor Studio, 1 = Stream Renderer
+        bool  m_showPreprocessorPane    = true;// Toggle preprocessor pane visibility to reduce clutter in viewer mode
+        int   m_selectedPreviewLOD      = 0;
+        int   m_maxPreviewLODs          = 4;
+        float m_chunkSize               = 16.0f;
         int   m_maxLODLevels        = 4;
         float m_deadbandThresholdMM = 3.0f; // mm
         char  m_outputPathBuf[256]  = "scene";
