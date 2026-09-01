@@ -806,21 +806,34 @@ namespace Surfels
 
         if (!io.WantCaptureMouse)
         {
-            bool shiftDown = io.KeyShift || ((GetKeyState(VK_SHIFT) & 0x8000) != 0);
+            bool shiftDown = io.KeyShift || ((GetKeyState(VK_SHIFT) & 0x8000) != 0) || ((GetKeyState(VK_LSHIFT) & 0x8000) != 0) || ((GetKeyState(VK_RSHIFT) & 0x8000) != 0);
 
-            // Shift + Left Mouse Drag OR Middle/Right Mouse Drag: Pan Camera
-            if ((shiftDown && io.MouseDown[0]) || io.MouseDown[1] || io.MouseDown[2])
+            if (shiftDown)
             {
-                float panSpeed = m_distance * 0.0015f;
-                m_target.x += (rightDir.x * io.MouseDelta.x + upDir.x * io.MouseDelta.y) * panSpeed;
-                m_target.y += (rightDir.y * io.MouseDelta.x + upDir.y * io.MouseDelta.y) * panSpeed;
-                m_target.z += (rightDir.z * io.MouseDelta.x + upDir.z * io.MouseDelta.y) * panSpeed;
+                // SHIFT PRESSED = PAN CAMERA ONLY
+                if (io.MouseDown[0] || io.MouseDown[1] || io.MouseDown[2])
+                {
+                    float panSpeed = m_distance * 0.0015f;
+                    m_target.x += (rightDir.x * io.MouseDelta.x + upDir.x * io.MouseDelta.y) * panSpeed;
+                    m_target.y += (rightDir.y * io.MouseDelta.x + upDir.y * io.MouseDelta.y) * panSpeed;
+                    m_target.z += (rightDir.z * io.MouseDelta.x + upDir.z * io.MouseDelta.y) * panSpeed;
+                }
             }
-            else if (io.MouseDown[0])
+            else
             {
-                // Left Mouse Drag without Shift: Orbit Camera (Yaw / Pitch)
-                m_yaw += io.MouseDelta.x * 0.006f;
-                m_pitch = std::max(-1.55f, std::min(1.55f, m_pitch + io.MouseDelta.y * 0.006f));
+                // NO SHIFT = ROTATE OR ZOOM ONLY (ZERO PANNING)
+                if (io.MouseDown[0])
+                {
+                    // Left Mouse Drag: Orbit Camera (Yaw / Pitch)
+                    m_yaw += io.MouseDelta.x * 0.006f;
+                    m_pitch = std::max(-1.55f, std::min(1.55f, m_pitch + io.MouseDelta.y * 0.006f));
+                }
+                else if (io.MouseDown[1])
+                {
+                    // Right Mouse Drag: Zoom In / Out
+                    m_distance += io.MouseDelta.y * (m_distance * 0.005f);
+                    m_distance = std::max(0.1f, std::min(1000.0f, m_distance));
+                }
             }
 
             m_distance -= io.MouseWheel * (m_distance * 0.1f);
