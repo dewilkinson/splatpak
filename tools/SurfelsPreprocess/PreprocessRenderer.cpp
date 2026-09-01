@@ -1085,10 +1085,20 @@ namespace Surfels
                 pCmdLst->CopyResource(pGpuRes, pUploadRes);
                 if (m_pChunkGpuBuffer != nullptr && m_pChunkUploadBuffer != nullptr)
                 {
+                    if (m_chunkGpuBufferState != D3D12_RESOURCE_STATE_COPY_DEST)
+                    {
+                        D3D12_RESOURCE_BARRIER preCopy = CD3DX12_RESOURCE_BARRIER::Transition(
+                            m_pChunkGpuBuffer, m_chunkGpuBufferState, D3D12_RESOURCE_STATE_COPY_DEST);
+                        pCmdLst->ResourceBarrier(1, &preCopy);
+                        m_chunkGpuBufferState = D3D12_RESOURCE_STATE_COPY_DEST;
+                    }
+
                     pCmdLst->CopyResource(m_pChunkGpuBuffer, m_pChunkUploadBuffer);
+
                     D3D12_RESOURCE_BARRIER chunkToSrv = CD3DX12_RESOURCE_BARRIER::Transition(
                         m_pChunkGpuBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
                     pCmdLst->ResourceBarrier(1, &chunkToSrv);
+                    m_chunkGpuBufferState = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
                 }
                 m_needUploadToGpu = false;
             }
@@ -1279,6 +1289,15 @@ namespace Surfels
                         m_pSortedChunkIndicesGpuBuffer, m_sortedChunkIndicesState, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
                     pCmdLst->ResourceBarrier(1, &ensureSrv);
                     m_sortedChunkIndicesState = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+                }
+
+                // Ensure m_pChunkGpuBuffer is in ALL_SHADER_RESOURCE state before mesh dispatch
+                if (m_pChunkGpuBuffer && m_chunkGpuBufferState != D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE)
+                {
+                    D3D12_RESOURCE_BARRIER ensureChunkSrv = CD3DX12_RESOURCE_BARRIER::Transition(
+                        m_pChunkGpuBuffer, m_chunkGpuBufferState, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+                    pCmdLst->ResourceBarrier(1, &ensureChunkSrv);
+                    m_chunkGpuBufferState = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
                 }
 
                 // Transition surfel buffer to ALL_SHADER_RESOURCE for rendering

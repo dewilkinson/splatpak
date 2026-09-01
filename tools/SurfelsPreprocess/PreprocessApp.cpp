@@ -1289,14 +1289,14 @@ namespace Surfels
         {
             UpdateStreamingSimulation(m_deltaTime / 1000.0);
 
-            if (m_enableQuantization && !m_rendererSurfels.empty())
+            if (m_enableQuantization)
             {
                 m_state.renderMode = 1;
                 m_state.pSurfels = m_rendererSurfels.data();
                 m_state.pRawSurfels = nullptr;
                 m_state.surfelCount = (uint32_t)m_rendererSurfels.size();
             }
-            else if (!m_rendererRawSurfels.empty())
+            else
             {
                 m_state.renderMode = 2;
                 m_state.pRawSurfels = m_rendererRawSurfels.data();

@@ -150,6 +150,7 @@ namespace Surfels
         ID3D12Resource*            m_pChunkUploadBuffer = nullptr;
         uint8_t*                   m_pChunkUploadBufferMapped = nullptr;
         ID3D12Resource*            m_pChunkGpuBuffer = nullptr;
+        D3D12_RESOURCE_STATES      m_chunkGpuBufferState = D3D12_RESOURCE_STATE_COPY_DEST;
         ID3D12Resource*            m_pSortedChunkIndicesGpuBuffer = nullptr;
         D3D12_RESOURCE_STATES      m_sortedChunkIndicesState = D3D12_RESOURCE_STATE_COPY_DEST;
         ID3D12Resource*            m_pSortedChunkIndicesUploadBuffer = nullptr;
