@@ -174,6 +174,7 @@ namespace Surfels
         float  m_simulatedBytesDelivered    = 0.0f;   // Transferred bytes accumulator
         float  m_totalStreamBytes           = 0.0f;   // Total model transfer size
         float  m_streamRefinementProgress   = 1.0f;   // 0.0f to 1.0f
+        size_t m_evictedSurfelCount         = 0;      // Count of earlier slots evicted from GPU Ring Buffer
         std::vector<SurfelVertex> m_fullStreamingSurfels; // Complete ordered surfels array for progressive feed
 
         void   InitStreamingSimulation();

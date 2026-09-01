@@ -1629,11 +1629,10 @@ namespace Surfels
                         float deliveredMB = m_simulatedBytesDelivered / (1024.0f * 1024.0f);
                         float totalMB = m_totalStreamBytes / (1024.0f * 1024.0f);
                         char progressOverlay[128];
-                        bool isBufferCapped = (m_ringBufferCapacityMB * 1024.0f * 1024.0f < m_totalStreamBytes && m_simulatedBytesDelivered >= m_ringBufferCapacityMB * 1024.0f * 1024.0f);
-                        if (isBufferCapped)
+                        if (m_evictedSurfelCount > 0)
                         {
-                            snprintf(progressOverlay, sizeof(progressOverlay), "%.1f / %.1f MB (%.0f%% - VRAM Buffer Full) | %u pts",
-                                deliveredMB, totalMB, m_streamRefinementProgress * 100.0f, m_state.surfelCount);
+                            snprintf(progressOverlay, sizeof(progressOverlay), "%.1f / %.1f MB (%.0f%%) | %u in RingBuffer (%zu Evicted)",
+                                deliveredMB, totalMB, m_streamRefinementProgress * 100.0f, m_state.surfelCount, m_evictedSurfelCount);
                         }
                         else
                         {
