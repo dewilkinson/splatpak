@@ -1003,10 +1003,44 @@ namespace Surfels
                 {
                     if (m_detachCamera)
                     {
+                        // 1. Freeze culling camera at current viewpoint
                         m_detachedYaw = m_yaw;
                         m_detachedPitch = m_pitch;
                         m_detachedDistance = m_distance;
                         m_detachedTarget = m_target;
+
+                        // Calculate frozen detached camera eye position
+                        const float cy = cosf(m_detachedPitch), sy = sinf(m_detachedPitch);
+                        const float sx = sinf(m_detachedYaw), cx = cosf(m_detachedYaw);
+                        XMFLOAT3 cullEyePos(
+                            m_detachedTarget.x + m_detachedDistance * cy * sx,
+                            m_detachedTarget.y + m_detachedDistance * sy,
+                            m_detachedTarget.z + m_detachedDistance * cy * cx
+                        );
+
+                        // 2. Automatically position interactive viewer camera to the side overview:
+                        // Rotate 90 degrees (+PI/2) to place detached camera frustum on the LEFT and model on the RIGHT
+                        m_yaw = m_detachedYaw + 1.5707963f;
+                        m_pitch = 0.05f;
+
+                        // Center view on the midpoint between the detached camera and the model
+                        m_target = XMFLOAT3(
+                            (m_detachedTarget.x + cullEyePos.x) * 0.5f,
+                            m_detachedTarget.y,
+                            (m_detachedTarget.z + cullEyePos.z) * 0.5f
+                        );
+
+                        // Zoom out comfortably to fit both frustum and model in frame
+                        float maxDim = std::max(m_extents.x, std::max(m_extents.y, m_extents.z));
+                        m_distance = std::max(m_detachedDistance * 2.3f, maxDim * 2.2f);
+                    }
+                    else
+                    {
+                        // Restore viewer camera back to detached viewpoint
+                        m_yaw = m_detachedYaw;
+                        m_pitch = m_detachedPitch;
+                        m_distance = m_detachedDistance;
+                        m_target = m_detachedTarget;
                     }
                 }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Decouples the view from the current camera and freezes the culling frustum at its current position, allowing you to fly around freely to inspect the model and culling boundaries from any angle outside the frozen view.");
