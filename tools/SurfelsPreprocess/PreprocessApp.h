@@ -114,6 +114,7 @@ namespace Surfels
         bool  m_useChunkedPipeline   = true;  // Micro-chunked meshlet pipeline with AS culling
         bool  m_showOctreeVisualizer = true;  // Show streaming octree chunks (amber boxes)
         bool  m_showMeshletVisualizer= false; // Show GPU meshlet micro-clusters (disabled by default)
+        int   m_meshletVisualizerSampleCount = 300;
         bool  m_showGlobalBounds     = false;
         bool  m_cascadeLOD           = true;
         bool  m_showLODTint          = false;

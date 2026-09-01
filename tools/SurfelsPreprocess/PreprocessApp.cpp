@@ -1022,6 +1022,12 @@ namespace Surfels
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders 3D bounding cubes for all %u active spatial streaming octree chunks.", (uint32_t)m_chunks.size());
                 ImGui::Checkbox("Show Meshlet Micro-Clusters (Cyan)", &m_showMeshletVisualizer);
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders 3D bounding cubes for all %u hardware meshlet micro-clusters (64 surfels/cluster).", (uint32_t)m_meshletChunks.size());
+                if (m_showMeshletVisualizer)
+                {
+                    ImGui::Indent(15.0f);
+                    ImGui::SliderInt("Meshlet Box Samples", &m_meshletVisualizerSampleCount, 32, 1000);
+                    ImGui::Unindent(15.0f);
+                }
                 ImGui::Checkbox("Show Global Model Bounds (Blue)", &m_showGlobalBounds);
             }
 
@@ -1309,8 +1315,11 @@ namespace Surfels
         if (m_showMeshletVisualizer && !m_meshletChunks.empty())
         {
             const ImU32 meshletColor = IM_COL32(50, 220, 255, 180);
-            size_t maxClusters = std::min((size_t)256, m_meshletChunks.size());
-            for (size_t i = 0; i < maxClusters; i++)
+            size_t sampleTarget = std::max((size_t)1, (size_t)m_meshletVisualizerSampleCount);
+            size_t totalClusters = m_meshletChunks.size();
+            size_t stride = std::max((size_t)1, totalClusters / sampleTarget);
+
+            for (size_t i = 0; i < totalClusters; i += stride)
             {
                 const auto& mc = m_meshletChunks[i];
                 XMFLOAT3 bMax(mc.aabbMin.x + mc.aabbExtents.x, mc.aabbMin.y + mc.aabbExtents.y, mc.aabbMin.z + mc.aabbExtents.z);
