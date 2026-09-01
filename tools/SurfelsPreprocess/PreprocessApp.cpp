@@ -554,6 +554,12 @@ namespace Surfels
     {
         if (m_rawSurfels.empty()) return;
 
+        // Flush in-flight GPU execution to guarantee clean pipeline state reset across mode switches
+        if (m_pRenderer)
+        {
+            m_pRenderer->FlushGPU();
+        }
+
         m_state.aabbMin = m_aabbMin;
         m_state.aabbExtents = m_extents;
 
@@ -1230,7 +1236,11 @@ namespace Surfels
             // Section 5: Accelerators & Hardware Execution
             if (ImGui::CollapsingHeader("5. Accelerators & Meshlet Pipeline", ImGuiTreeNodeFlags_DefaultOpen))
             {
-                ImGui::Checkbox("GPU Radix Sort", &m_gpuRadixSort);
+                if (ImGui::Checkbox("GPU Radix Sort", &m_gpuRadixSort))
+                {
+                    if (m_pRenderer) m_pRenderer->FlushGPU();
+                    m_state.gpuRadixSort = m_gpuRadixSort;
+                }
                 m_state.gpuRadixSort = m_gpuRadixSort;
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Executes parallel 32-bit depth key sorting directly on GPU compute shader threads (NVIDIA Ada SM 6.7).");
 
@@ -1244,7 +1254,10 @@ namespace Surfels
                 }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reorders points along a 3D Morton Z-order space-filling curve to maximize GPU L1/L2 cache hit rate, memory bandwidth coalescing, and tight meshlet culling bounds.");
 
-                ImGui::Checkbox("Meshlet Micro-Chunking (64 pts/cluster + AS Culling)", &m_useChunkedPipeline);
+                if (ImGui::Checkbox("Meshlet Micro-Chunking (64 pts/cluster + AS Culling)", &m_useChunkedPipeline))
+                {
+                    UpdatePreviewSurfels();
+                }
                 m_state.useChunkedPipeline = m_useChunkedPipeline;
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hierarchical two-level sorting: coarse chunk sort + Amplification Shader frustum culling.");
 

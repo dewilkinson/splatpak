@@ -59,6 +59,8 @@ namespace Surfels
 
         void OnRender(State* pState, CAULDRON_DX12::SwapChain* pSwapChain);
 
+        void FlushGPU() { if (m_pDevice) m_pDevice->GPUFlush(); }
+
         const FrameTimingMetrics& GetTimingMetrics() const { return m_metrics; }
         float GetSmoothGpuSortMs() const { return m_smoothGpuSortMs; }
         float GetSmoothDispatchMs() const { return m_smoothDispatchMs; }
