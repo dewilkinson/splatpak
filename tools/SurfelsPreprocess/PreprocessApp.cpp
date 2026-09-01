@@ -1705,10 +1705,10 @@ namespace Surfels
                 validF[i] = ProjectToScreen(F[i], screenF[i]);
             }
 
-            // Mid-Transparent Gray Fill (~18% alpha = 45/255) and Bright Gray Wireframe Outlines
-            const ImU32 frustumFillCol = IM_COL32(180, 185, 195, 45);
-            const ImU32 frustumWireCol = IM_COL32(230, 235, 245, 190);
-            const ImU32 frustumApexCol = IM_COL32(240, 245, 255, 140);
+            // 10% Tint Opacity (26/255) and 30% Wireframe Opacity (77/255)
+            const ImU32 frustumFillCol = IM_COL32(180, 185, 195, 26);
+            const ImU32 frustumWireCol = IM_COL32(220, 225, 235, 77);
+            const ImU32 frustumApexCol = IM_COL32(220, 225, 235, 77);
 
             // 6 Frustum Quad Faces
             if (validN[0] && validN[1] && validN[2] && validN[3]) drawList->AddQuadFilled(screenN[0], screenN[1], screenN[2], screenN[3], frustumFillCol);
@@ -1722,18 +1722,18 @@ namespace Surfels
             for (int i = 0; i < 4; i++)
             {
                 int next = (i + 1) % 4;
-                if (validN[i] && validN[next]) drawList->AddLine(screenN[i], screenN[next], frustumWireCol, 1.5f);
-                if (validF[i] && validF[next]) drawList->AddLine(screenF[i], screenF[next], frustumWireCol, 1.5f);
-                if (validN[i] && validF[i])    drawList->AddLine(screenN[i], screenF[i], frustumWireCol, 1.5f);
+                if (validN[i] && validN[next]) drawList->AddLine(screenN[i], screenN[next], frustumWireCol, 1.0f);
+                if (validF[i] && validF[next]) drawList->AddLine(screenF[i], screenF[next], frustumWireCol, 1.0f);
+                if (validN[i] && validF[i])    drawList->AddLine(screenN[i], screenF[i], frustumWireCol, 1.0f);
             }
 
             // 4 Apex Rays from Eye Position to Near Corners
             if (validEye)
             {
-                for (int i = 0; i < 4; i++) { if (validN[i]) drawList->AddLine(screenEye, screenN[i], frustumApexCol, 1.0f); }
-                drawList->AddCircleFilled(screenEye, 5.0f, IM_COL32(255, 215, 60, 255));
-                drawList->AddCircle(screenEye, 7.0f, IM_COL32(20, 20, 30, 220), 0, 1.5f);
-                drawList->AddText(ImVec2(screenEye.x + 10, screenEye.y - 7), IM_COL32(255, 230, 120, 255), "Detached Camera");
+                for (int i = 0; i < 4; i++)
+                {
+                    if (validN[i]) drawList->AddLine(screenEye, screenN[i], frustumApexCol, 1.0f);
+                }
             }
         }
     }
