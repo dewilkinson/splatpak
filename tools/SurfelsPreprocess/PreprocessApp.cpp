@@ -804,7 +804,7 @@ namespace Surfels
         m_state.camPitch = m_pitch;
         m_state.camDistance = m_distance;
         m_state.camTarget = m_target;
-        m_state.aspectRatio = m_Height > 0 ? (float)m_Width / (float)m_Height : 1.0f;
+        m_state.aspectRatio = io.DisplaySize.y > 0.0f ? (io.DisplaySize.x / io.DisplaySize.y) : 1.0f;
         m_state.gpuRadixSort = m_gpuRadixSort;
         m_state.useChunkedPipeline = m_useChunkedPipeline;
         m_state.pChunks = m_meshletChunks.data();
@@ -1291,7 +1291,7 @@ namespace Surfels
         for (const auto& pair : gridMap)
         {
             const auto& vd = pair.second;
-            if (vd.count == 0) continue;
+            if (vd.count < 8) continue; // Filter outlier noise points in air
 
             float cMinX = gMin.x + (float)pair.first.x * cellSizeX;
             float cMinY = gMin.y + (float)pair.first.y * cellSizeY;
@@ -1367,7 +1367,7 @@ namespace Surfels
         XMStoreFloat3(&forward, forwardVec);
 
         XMMATRIX view = XMMatrixLookAtRH(eye, at, worldUp);
-        float aspect = (m_Height > 0 && m_Width > 0) ? ((float)m_Width / (float)m_Height) : (screenW / screenH);
+        float aspect = io.DisplaySize.y > 0.0f ? (io.DisplaySize.x / io.DisplaySize.y) : (screenW / screenH);
         XMMATRIX proj = XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect, 0.1f, 500.0f);
         XMMATRIX viewProj = XMMatrixMultiply(view, proj);
 

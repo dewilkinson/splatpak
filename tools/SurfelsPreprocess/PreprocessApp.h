@@ -127,8 +127,8 @@ namespace Surfels
         std::vector<HeatmapClusterCube> m_heatmapClusterCubes;
         bool  m_showClusterHeatmap   = true;   // Visualizes cluster cubes with heatmap point density fill
         int   m_targetClusterCubes   = 4096;   // Target cluster cubes (e.g. 512, 1024, 4096, 16384)
-        float m_heatmapOpacity       = 0.20f;  // 20% alpha tint opacity for heatmap faces
-        float m_wireframeOpacity     = 0.70f;  // 70% opacity wireframe outlines
+        float m_heatmapOpacity       = 0.10f;  // 10% alpha tint opacity for heatmap faces
+        float m_wireframeOpacity     = 0.20f;  // 20% opacity wireframe outlines
         bool  m_showHeatmapWireframe = true;   // Draw wireframe outlines around cluster cubes
         int   m_heatmapColorScheme   = 0;      // 0 = Turbo, 1 = Viridis, 2 = Plasma
         bool  m_showOctreeVisualizer = false;  // Show streaming octree chunks (amber boxes)
