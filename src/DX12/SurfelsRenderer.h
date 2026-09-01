@@ -59,7 +59,10 @@ private:
         XMFLOAT3   aabbMin;
         uint32_t   useChunkedPipeline;
         XMFLOAT3   aabbExtents;
-        float      pad2;
+        uint32_t   useDetachedCullCam;
+        XMFLOAT4X4 cullViewProj;
+        XMFLOAT3   cullEyePos;
+        float      pad3;
     };
 
     CAULDRON_DX12::Device* m_pDevice = nullptr;

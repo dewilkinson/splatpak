@@ -584,7 +584,10 @@ void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
     pCB->aabbMin = pState->aabbMin;
     pCB->useChunkedPipeline = 0;
     pCB->aabbExtents = pState->aabbExtents;
-    pCB->pad2 = 0.0f;
+    pCB->useDetachedCullCam = 0;
+    XMStoreFloat4x4(&pCB->cullViewProj, viewProj);
+    pCB->cullEyePos = eyePos;
+    pCB->pad3 = 0.0f;
 
     pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
     pCmdLst->SetPipelineState(m_pPipelineState);

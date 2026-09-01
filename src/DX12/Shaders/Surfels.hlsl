@@ -208,7 +208,7 @@ void mainMS(
         // 1. Procedural Fibonacci Sphere
         float3 dir = FibonacciSpherePoint(surfelIndex, g_SurfelCount);
         float pulse = 0.02 * sin(g_Time * 2.0 + (float)surfelIndex);
-        worldPos = g_SphereCenter + dir * (g_SphereRadius + pulse);
+        worldPos = dir * (g_SphereRadius + pulse);
         normal = dir;
         color = HashColor(surfelIndex);
 
