@@ -1580,14 +1580,49 @@ namespace Surfels
 
                         // Bandwidth Preset Buttons
                         ImGui::Text("Network Profiles:");
-                        if (ImGui::Button("3G (1.5 MB/s)", ImVec2(95, 22))) m_bandwidthThrottleMBps = 1.5f;
+                        if (ImGui::Button("3G (1.5 MB/s)", ImVec2(85, 22)))
+                        {
+                            m_bandwidthThrottleMBps = 1.5f;
+                            m_unthrottledBandwidth = false;
+                        }
                         ImGui::SameLine();
-                        if (ImGui::Button("4G LTE (15 MB/s)", ImVec2(110, 22))) m_bandwidthThrottleMBps = 15.0f;
+                        if (ImGui::Button("4G (15 MB/s)", ImVec2(80, 22)))
+                        {
+                            m_bandwidthThrottleMBps = 15.0f;
+                            m_unthrottledBandwidth = false;
+                        }
                         ImGui::SameLine();
-                        if (ImGui::Button("5G (60 MB/s)", ImVec2(95, 22))) m_bandwidthThrottleMBps = 60.0f;
+                        if (ImGui::Button("5G (60 MB/s)", ImVec2(80, 22)))
+                        {
+                            m_bandwidthThrottleMBps = 60.0f;
+                            m_unthrottledBandwidth = false;
+                        }
+                        ImGui::SameLine();
+                        ImGui::PushStyleColor(ImGuiCol_Button, m_unthrottledBandwidth ? ImVec4(0.18f, 0.55f, 0.35f, 1.0f) : ImVec4(0.25f, 0.25f, 0.28f, 1.0f));
+                        if (ImGui::Button("Full", ImVec2(48, 22)))
+                        {
+                            m_unthrottledBandwidth = !m_unthrottledBandwidth;
+                        }
+                        ImGui::PopStyleColor();
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Removes bandwidth throttle caps and streams at uncapped maximum rate.");
 
                         float maxRingMB = std::max(512.0f, std::ceil(m_totalStreamBytes / (1024.0f * 1024.0f) * 2.0f));
-                        ImGui::SliderFloat("Bandwidth Throttle", &m_bandwidthThrottleMBps, 0.2f, 100.0f, "%.1f MB/s");
+
+                        if (m_unthrottledBandwidth)
+                        {
+                            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
+                            float dummyVal = 100.0f;
+                            ImGui::SliderFloat("Bandwidth Throttle", &dummyVal, 0.2f, 100.0f, "Full (Uncapped)");
+                            ImGui::PopStyleVar();
+                        }
+                        else
+                        {
+                            if (ImGui::SliderFloat("Bandwidth Throttle", &m_bandwidthThrottleMBps, 0.2f, 100.0f, "%.1f MB/s"))
+                            {
+                                m_unthrottledBandwidth = false;
+                            }
+                        }
+
                         ImGui::SliderFloat("GPU Ring Buffer Size", &m_ringBufferCapacityMB, 4.0f, maxRingMB, "%.0f MB");
 
                         // Streaming Progress Bar

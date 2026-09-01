@@ -167,6 +167,7 @@ namespace Surfels
 
         // Progressive Network Streaming & Bandwidth Throttle Simulator
         bool   m_enableStreamingSimulation  = false; // Simulated network connection
+        bool   m_unthrottledBandwidth       = false; // Full uncapped bandwidth (removes throttle cap)
         float  m_bandwidthThrottleMBps      = 10.0f;  // Simulated bandwidth in MB/s
         float  m_ringBufferCapacityMB       = 64.0f;  // GPU Ring Buffer capacity limit in MB
         bool   m_isStreamingPaused          = false;  // Pause/Resume packet streaming
