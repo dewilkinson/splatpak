@@ -1254,12 +1254,12 @@ namespace Surfels
                 }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reorders points along a 3D Morton Z-order space-filling curve to maximize GPU L1/L2 cache hit rate, memory bandwidth coalescing, and tight meshlet culling bounds.");
 
-                if (ImGui::Checkbox("Meshlet Micro-Chunking (64 pts/cluster + AS Culling)", &m_useChunkedPipeline))
+                if (ImGui::Checkbox("Micro-Chunking (Amplification Shader)", &m_useChunkedPipeline))
                 {
                     UpdatePreviewSurfels();
                 }
                 m_state.useChunkedPipeline = m_useChunkedPipeline;
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hierarchical two-level sorting: coarse chunk sort + Amplification Shader frustum culling.");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hierarchical two-level sorting: 64-surfel meshlet clusters with Amplification Shader (AS) frustum culling & payload dispatch.");
 
                 if (ImGui::Checkbox("VSync (Lock Framerate to Display)", &m_vsync))
                 {
