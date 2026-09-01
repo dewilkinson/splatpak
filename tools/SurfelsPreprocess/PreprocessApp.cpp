@@ -1585,6 +1585,9 @@ namespace Surfels
                         ImGui::TextColored(m_isStreamingPaused ? ImVec4(1.0f, 0.6f, 0.2f, 1.0f) : ImVec4(0.3f, 1.0f, 0.4f, 1.0f),
                             m_isStreamingPaused ? "[PAUSED]" : "[STREAMING]");
 
+                        ImGui::Checkbox("Prioritize View Frustum & Proximity", &m_prioritizeFrustumAndProximity);
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Streams the coarsest base LOD first, followed by high-detail chunks in the current camera frustum and near the viewer.");
+
                         // Bandwidth Preset Buttons
                         ImGui::Text("Network Profiles:");
                         if (ImGui::Button("3G (1.5 MB/s)", ImVec2(85, 22)))
@@ -2032,7 +2035,7 @@ namespace Surfels
         ImDrawList* drawList = ImGui::GetWindowDrawList();
         float availWidth = ImGui::GetContentRegionAvailWidth();
 
-        ImGui::TextColored(ImVec4(0.4f, 0.85f, 1.0f, 1.0f), "Resident Block Span by LOD Tier:");
+        ImGui::TextColored(ImVec4(0.4f, 0.85f, 1.0f, 1.0f), "Resident Block Span by LOD Tier (Coarse to Fine):");
         ImGui::Spacing();
 
         for (int lodIdx = 0; lodIdx < numLODs; lodIdx++)
@@ -2042,35 +2045,22 @@ namespace Surfels
             size_t totalPts = lodData.rawSurfels.size();
             float totalMB = (float)(totalPts * (m_enableQuantization ? sizeof(PackedSurfelGPU) : sizeof(SurfelVertex))) / (1024.0f * 1024.0f);
 
-            float startFraction = 0.0f;
-            float endFraction = 1.0f;
+            float fraction = 1.0f;
             uint32_t residentBlocks = totalBlocks;
 
-            if (m_enableStreamingSimulation && !m_fullStreamingSurfels.empty())
+            if (m_enableStreamingSimulation)
             {
-                // Progressive Network Streaming mode: active window in GPU ring buffer
-                float fullCount = (float)m_fullStreamingSurfels.size();
-                float residentCount = (float)m_state.surfelCount;
-                float evictedCount = (float)m_evictedSurfelCount;
+                size_t residentPts = (lodIdx < (int)m_lodResidentSurfels.size()) ? m_lodResidentSurfels[lodIdx] : 0;
+                size_t totalLevelPts = (lodIdx < (int)m_lodTotalSurfels.size() && m_lodTotalSurfels[lodIdx] > 0) ? m_lodTotalSurfels[lodIdx] : totalPts;
 
-                startFraction = std::max(0.0f, std::min(1.0f, evictedCount / fullCount));
-                float residentRatio = std::max(0.0f, std::min(1.0f, residentCount / fullCount));
-                endFraction = std::min(1.0f, startFraction + residentRatio);
-
-                residentBlocks = (uint32_t)std::round(totalBlocks * residentRatio);
-            }
-            else
-            {
-                // Standard mode: fully resident
-                startFraction = 0.0f;
-                endFraction = 1.0f;
-                residentBlocks = totalBlocks;
+                fraction = (totalLevelPts > 0) ? std::min(1.0f, (float)residentPts / (float)totalLevelPts) : 0.0f;
+                residentBlocks = (uint32_t)std::round(totalBlocks * fraction);
             }
 
-            float residentPct = (endFraction - startFraction) * 100.0f;
+            float residentPct = fraction * 100.0f;
             bool isActiveLOD = (lodIdx == m_selectedPreviewLOD);
 
-            // Row Header with block count and memory footprint
+            // Row Header
             if (isActiveLOD)
             {
                 ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.5f, 1.0f), "LOD %d%s [%.1f%% Resident] - %u / %u blocks (%zu pts | %.1f MB) [ACTIVE VIEW]",
@@ -2096,46 +2086,38 @@ namespace Surfels
             drawList->AddRectFilled(p0, ImVec2(p0.x + availWidth, p0.y + barHeight), IM_COL32(16, 18, 22, 255), 2.0f);
             drawList->AddRect(p0, ImVec2(p0.x + availWidth, p0.y + barHeight), IM_COL32(32, 35, 42, 255), 2.0f);
 
+            int litSegments = (int)std::round(fraction * numSegments);
+
             for (int s = 0; s < numSegments; s++)
             {
-                float segStart = (float)s / (float)numSegments;
-                float segEnd = (float)(s + 1) / (float)numSegments;
-
-                bool isLit = (segEnd > startFraction) && (segStart < endFraction) && (residentPct > 0.001f);
+                bool isLit = (s < litSegments) && (residentPct > 0.001f);
 
                 ImVec2 segMin = ImVec2(p0.x + s * (segWidth + gap) + 1.0f, p0.y + 1.5f);
                 ImVec2 segMax = ImVec2(segMin.x + segWidth - 1.0f, p0.y + barHeight - 1.5f);
 
                 if (isLit)
                 {
-                    // Multi-tier Equalizer coloring based on position along the frequency/LOD band
                     ImU32 colBase;
                     ImU32 colHighlight;
 
                     float segFrac = (float)s / (float)numSegments;
                     if (segFrac < 0.60f)
                     {
-                        // Green tier (0 - 60%)
                         colBase = IM_COL32(35, 205, 85, 255);
                         colHighlight = IM_COL32(95, 255, 140, 255);
                     }
                     else if (segFrac < 0.85f)
                     {
-                        // Amber / Yellow tier (60 - 85%)
                         colBase = IM_COL32(250, 180, 25, 255);
                         colHighlight = IM_COL32(255, 220, 90, 255);
                     }
                     else
                     {
-                        // Cyan / Aqua tier (85 - 100%)
                         colBase = IM_COL32(30, 200, 250, 255);
                         colHighlight = IM_COL32(130, 235, 255, 255);
                     }
 
-                    // Main illuminated LED segment
                     drawList->AddRectFilled(segMin, segMax, colBase, 1.5f);
-
-                    // Glossy top edge highlight
                     drawList->AddLine(
                         ImVec2(segMin.x + 1.0f, segMin.y + 1.0f),
                         ImVec2(segMax.x - 1.0f, segMin.y + 1.0f),
@@ -2143,7 +2125,6 @@ namespace Surfels
                 }
                 else
                 {
-                    // Dark Gray unilluminated segment
                     drawList->AddRectFilled(segMin, segMax, IM_COL32(30, 32, 38, 255), 1.5f);
                     drawList->AddRect(segMin, segMax, IM_COL32(20, 22, 26, 255), 1.5f);
                 }

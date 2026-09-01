@@ -176,8 +176,20 @@ namespace Surfels
         void PrecacheResidentLODs();
 
         // Progressive Network Streaming & Bandwidth Throttle Simulator
+        struct StreamChunk
+        {
+            int      lodLevel = 0;
+            XMFLOAT3 center = { 0, 0, 0 };
+            float    radius = 0.0f;
+            std::vector<SurfelVertex> surfels;
+            size_t   byteSize = 0;
+            float    currentPriority = 0.0f;
+            bool     isResident = false;
+        };
+
         bool   m_enableStreamingSimulation  = false; // Simulated network connection
         bool   m_unthrottledBandwidth       = false; // Full uncapped bandwidth (removes throttle cap)
+        bool   m_prioritizeFrustumAndProximity = true; // Stream view frustum & close proximity chunks first
         float  m_bandwidthThrottleMBps      = 10.0f;  // Simulated bandwidth in MB/s
         float  m_ringBufferCapacityMB       = 64.0f;  // GPU Ring Buffer capacity limit in MB
         bool   m_isStreamingPaused          = false;  // Pause/Resume packet streaming
@@ -185,6 +197,9 @@ namespace Surfels
         float  m_totalStreamBytes           = 0.0f;   // Total model transfer size
         float  m_streamRefinementProgress   = 1.0f;   // 0.0f to 1.0f
         size_t m_evictedSurfelCount         = 0;      // Count of earlier slots evicted from GPU Ring Buffer
+        std::vector<StreamChunk> m_allStreamChunks;   // Hierarchical chunks (coarsest base up to finest detail)
+        std::vector<size_t>      m_lodTotalSurfels;   // Total surfels per LOD level
+        std::vector<size_t>      m_lodResidentSurfels;// Resident surfels per LOD level
         std::vector<SurfelVertex> m_fullStreamingSurfels; // Complete ordered surfels array for progressive feed
 
         void   InitStreamingSimulation();
