@@ -113,8 +113,10 @@ namespace Surfels
         bool  m_gpuRadixSort         = true;  // Checkbox: "GPU Radix Sort" under Accelerators (Enabled by default)
         bool  m_useChunkedPipeline   = true;  // Micro-chunked meshlet pipeline with AS culling
         bool  m_showOctreeVisualizer = true;  // Show streaming octree chunks (amber boxes)
-        bool  m_showMeshletVisualizer= false; // Show GPU meshlet micro-clusters (disabled by default)
-        int   m_meshletVisualizerSampleCount = 300;
+        bool  m_showMeshletVisualizer= false; // Show GPU meshlet micro-clusters
+        bool  m_showCulledChunks     = true;  // Visualizes frustum-culled chunks in darker shade
+        bool  m_showAllMeshlets      = true;  // Render all visible meshlets with fast lines
+        int   m_meshletVisualizerSampleCount = 500;
         bool  m_showGlobalBounds     = false;
         bool  m_cascadeLOD           = true;
         bool  m_showLODTint          = false;

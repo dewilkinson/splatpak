@@ -1025,9 +1025,11 @@ namespace Surfels
                 if (m_showMeshletVisualizer)
                 {
                     ImGui::Indent(15.0f);
-                    ImGui::SliderInt("Meshlet Box Samples", &m_meshletVisualizerSampleCount, 32, 1000);
+                    ImGui::SliderInt("Meshlet Box Samples", &m_meshletVisualizerSampleCount, 32, 2000);
                     ImGui::Unindent(15.0f);
                 }
+                ImGui::Checkbox("Show Culled Chunks (Darker Shade)", &m_showCulledChunks);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders frustum-culled octree chunks and meshlets in a darker translucent shade to visualize culling efficiency.");
                 ImGui::Checkbox("Show Global Model Bounds (Blue)", &m_showGlobalBounds);
             }
 
@@ -1301,20 +1303,91 @@ namespace Surfels
             }
         };
 
-        // 1. Streaming Octree Macro-Chunks (Amber)
-        if (m_showOctreeVisualizer)
+        // Extract 6 Frustum Planes from viewProj (Gribb-Hartmann)
+        XMFLOAT4X4 m;
+        XMStoreFloat4x4(&m, viewProj);
+        XMFLOAT4 frustumPlanes[6] = {
+            { m._14 + m._11, m._24 + m._21, m._34 + m._31, m._44 + m._41 }, // Left
+            { m._14 - m._11, m._24 - m._21, m._34 - m._31, m._44 - m._41 }, // Right
+            { m._14 + m._12, m._24 + m._22, m._34 + m._32, m._44 + m._42 }, // Bottom
+            { m._14 - m._12, m._24 - m._22, m._34 - m._32, m._44 - m._42 }, // Top
+            { m._13,         m._23,         m._33,         m._43         }, // Near
+            { m._14 - m._13, m._24 - m._23, m._34 - m._33, m._44 - m._43 }  // Far
+        };
+
+        for (int i = 0; i < 6; i++)
         {
-            const ImU32 octreeColor = IM_COL32(255, 190, 40, 240);
-            for (const auto& chunk : m_chunks)
+            float len = sqrtf(frustumPlanes[i].x * frustumPlanes[i].x + frustumPlanes[i].y * frustumPlanes[i].y + frustumPlanes[i].z * frustumPlanes[i].z);
+            if (len > 1e-6f)
             {
-                DrawDottedCube(chunk.aabbMin, chunk.aabbMax, octreeColor, 1.5f);
+                frustumPlanes[i].x /= len;
+                frustumPlanes[i].y /= len;
+                frustumPlanes[i].z /= len;
+                frustumPlanes[i].w /= len;
             }
         }
 
-        // 2. Hardware Meshlet Micro-Clusters (64 surfels/cluster) (Bright Cyan)
+        auto IsSphereInFrustum = [&](const XMFLOAT3& center, float radius) -> bool
+        {
+            for (int i = 0; i < 6; i++)
+            {
+                float dist = frustumPlanes[i].x * center.x + frustumPlanes[i].y * center.y + frustumPlanes[i].z * center.z + frustumPlanes[i].w;
+                if (dist < -radius)
+                    return false; // Outside frustum -> Culled!
+            }
+            return true; // Inside frustum -> Visible!
+        };
+
+        auto DrawSolidCube = [&](const XMFLOAT3& bMin, const XMFLOAT3& bMax, ImU32 col, float thickness = 1.0f)
+        {
+            XMFLOAT3 corners[8] = {
+                { bMin.x, bMin.y, bMin.z }, { bMax.x, bMin.y, bMin.z },
+                { bMax.x, bMax.y, bMin.z }, { bMin.x, bMax.y, bMin.z },
+                { bMin.x, bMin.y, bMax.z }, { bMax.x, bMin.y, bMax.z },
+                { bMax.x, bMax.y, bMax.z }, { bMin.x, bMax.y, bMax.z }
+            };
+            ImVec2 screenCorners[8];
+            bool valid[8];
+            for (int i = 0; i < 8; i++) valid[i] = ProjectToScreen(corners[i], screenCorners[i]);
+
+            const int edges[12][2] = {
+                { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 0 },
+                { 4, 5 }, { 5, 6 }, { 6, 7 }, { 7, 4 },
+                { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 }
+            };
+            for (int i = 0; i < 12; i++)
+            {
+                int u = edges[i][0], v = edges[i][1];
+                if (valid[u] && valid[v]) drawList->AddLine(screenCorners[u], screenCorners[v], col, thickness);
+            }
+        };
+
+        // 1. Streaming Octree Macro-Chunks (Bright Amber = Visible, Dark Amber = Culled)
+        if (m_showOctreeVisualizer)
+        {
+            const ImU32 octreeColorVisible = IM_COL32(255, 190, 40, 240);
+            const ImU32 octreeColorCulled  = IM_COL32(110, 60, 15, 90);
+
+            for (const auto& chunk : m_chunks)
+            {
+                bool isVisible = IsSphereInFrustum(chunk.center, chunk.boundingRadius);
+                if (isVisible)
+                {
+                    DrawDottedCube(chunk.aabbMin, chunk.aabbMax, octreeColorVisible, 1.5f);
+                }
+                else if (m_showCulledChunks)
+                {
+                    DrawDottedCube(chunk.aabbMin, chunk.aabbMax, octreeColorCulled, 1.0f);
+                }
+            }
+        }
+
+        // 2. Hardware Meshlet Micro-Clusters (Bright Cyan = Visible, Dark Navy/Cyan = Culled)
         if (m_showMeshletVisualizer && !m_meshletChunks.empty())
         {
-            const ImU32 meshletColor = IM_COL32(50, 220, 255, 180);
+            const ImU32 meshletColorVisible = IM_COL32(50, 220, 255, 200);
+            const ImU32 meshletColorCulled  = IM_COL32(15, 60, 95, 75);
+
             size_t sampleTarget = std::max((size_t)1, (size_t)m_meshletVisualizerSampleCount);
             size_t totalClusters = m_meshletChunks.size();
             size_t stride = std::max((size_t)1, totalClusters / sampleTarget);
@@ -1322,8 +1395,17 @@ namespace Surfels
             for (size_t i = 0; i < totalClusters; i += stride)
             {
                 const auto& mc = m_meshletChunks[i];
+                bool isVisible = IsSphereInFrustum(mc.center, mc.boundingRadius);
                 XMFLOAT3 bMax(mc.aabbMin.x + mc.aabbExtents.x, mc.aabbMin.y + mc.aabbExtents.y, mc.aabbMin.z + mc.aabbExtents.z);
-                DrawDottedCube(mc.aabbMin, bMax, meshletColor, 1.0f);
+
+                if (isVisible)
+                {
+                    DrawSolidCube(mc.aabbMin, bMax, meshletColorVisible, 1.0f);
+                }
+                else if (m_showCulledChunks)
+                {
+                    DrawSolidCube(mc.aabbMin, bMax, meshletColorCulled, 1.0f);
+                }
             }
         }
 
