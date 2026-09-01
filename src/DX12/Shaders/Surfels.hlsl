@@ -284,6 +284,19 @@ void mainMS(
         }
     }
 
+    // When Camera is Detached: Cull individual points falling outside the frozen culling frustum
+    if (g_UseDetachedCullCam == 1)
+    {
+        float4 cullClip = mul(g_CullViewProj, float4(worldPos, 1.0));
+        if (cullClip.x < -cullClip.w || cullClip.x > cullClip.w ||
+            cullClip.y < -cullClip.w || cullClip.y > cullClip.w ||
+            cullClip.z < 0.0 || cullClip.z > cullClip.w)
+        {
+            tangentX = float3(0.0, 0.0, 0.0);
+            tangentY = float3(0.0, 0.0, 0.0);
+        }
+    }
+
     // Quad corners in local 2D tangent space: 0(-1,-1) 1(1,-1) 2(-1,1) 3(1,1)
     float2 corners[4] = { float2(-1.0, -1.0), float2(1.0, -1.0), float2(-1.0, 1.0), float2(1.0, 1.0) };
 

@@ -1,4 +1,5 @@
 #include "PreprocessApp.h"
+#include <DirectXCollision.h>
 #include <iomanip>
 #include <sstream>
 #include <shobjidl.h>
@@ -1562,38 +1563,15 @@ namespace Surfels
             return IM_COL32(ir, ig, ib, ia);
         };
 
-        // Extract 6 Frustum Planes from cViewProj for Culling (Gribb-Hartmann)
-        XMFLOAT4X4 m;
-        XMStoreFloat4x4(&m, cViewProj);
-        XMFLOAT4 frustumPlanes[6] = {
-            { m._14 + m._11, m._24 + m._21, m._34 + m._31, m._44 + m._41 }, // Left
-            { m._14 - m._11, m._24 - m._21, m._34 - m._31, m._44 - m._41 }, // Right
-            { m._14 + m._12, m._24 + m._22, m._34 + m._32, m._44 + m._42 }, // Bottom
-            { m._14 - m._12, m._24 - m._22, m._34 - m._32, m._44 - m._42 }, // Top
-            { m._13,         m._23,         m._33,         m._43         }, // Near
-            { m._14 - m._13, m._24 - m._23, m._34 - m._33, m._44 - m._43 }  // Far
-        };
-
-        for (int i = 0; i < 6; i++)
-        {
-            float len = sqrtf(frustumPlanes[i].x * frustumPlanes[i].x + frustumPlanes[i].y * frustumPlanes[i].y + frustumPlanes[i].z * frustumPlanes[i].z);
-            if (len > 1e-6f)
-            {
-                frustumPlanes[i].x /= len;
-                frustumPlanes[i].y /= len;
-                frustumPlanes[i].z /= len;
-                frustumPlanes[i].w /= len;
-            }
-        }
+        // Construct Exact BoundingFrustum from cProj and cView in World Space (supports detached camera)
+        DirectX::BoundingFrustum cullFrustum(cProj);
+        XMMATRIX invCView = XMMatrixInverse(nullptr, cView);
+        cullFrustum.Transform(cullFrustum, invCView);
 
         auto IsSphereInFrustum = [&](const XMFLOAT3& center, float radius) -> bool
         {
-            for (int i = 0; i < 6; i++)
-            {
-                float dist = frustumPlanes[i].x * center.x + frustumPlanes[i].y * center.y + frustumPlanes[i].z * center.z + frustumPlanes[i].w;
-                if (dist < -radius) return false;
-            }
-            return true;
+            DirectX::BoundingSphere sphere(center, radius);
+            return cullFrustum.Contains(sphere) != DirectX::DISJOINT;
         };
 
         auto DrawFilledCube = [&](const XMFLOAT3& bMin, const XMFLOAT3& bMax, ImU32 fillCol, ImU32 edgeCol, bool drawWireframe)
@@ -1646,7 +1624,7 @@ namespace Surfels
             }
         };
 
-        // 1. Density Heatmap Spatial Blocks (Back-to-front depth sorted)
+        // 1. Density Heatmap Spatial Blocks (Back-to-front depth sorted by detached camera view direction)
         if (m_showClusterHeatmap && !m_heatmapClusterCubes.empty())
         {
             std::vector<size_t> sortedCubes(m_heatmapClusterCubes.size());
@@ -1655,8 +1633,12 @@ namespace Surfels
             std::sort(sortedCubes.begin(), sortedCubes.end(), [&](size_t a, size_t b) {
                 const auto& ca = m_heatmapClusterCubes[a];
                 const auto& cb = m_heatmapClusterCubes[b];
-                float da = (ca.center.x - eyePos.x)*(ca.center.x - eyePos.x) + (ca.center.y - eyePos.y)*(ca.center.y - eyePos.y) + (ca.center.z - eyePos.z)*(ca.center.z - eyePos.z);
-                float db = (cb.center.x - eyePos.x)*(cb.center.x - eyePos.x) + (cb.center.y - eyePos.y)*(cb.center.y - eyePos.y) + (cb.center.z - eyePos.z)*(cb.center.z - eyePos.z);
+                float da = (ca.center.x - cullEyePos.x) * cullForward.x +
+                           (ca.center.y - cullEyePos.y) * cullForward.y +
+                           (ca.center.z - cullEyePos.z) * cullForward.z;
+                float db = (cb.center.x - cullEyePos.x) * cullForward.x +
+                           (cb.center.y - cullEyePos.y) * cullForward.y +
+                           (cb.center.z - cullEyePos.z) * cullForward.z;
                 return da > db;
             });
 
