@@ -59,8 +59,8 @@ namespace Surfels
         void RecomputeWaveletHierarchy();
         void UpdatePreviewSurfels();
 
-        std::string OpenFileDialog(const char* filter);
-        std::string SaveFileDialog(const char* filter, const char* defaultExt);
+        std::string OpenFileDialog(const char* filter, const char* title = "Open File", const char* defaultExt = nullptr);
+        std::string SaveFileDialog(const char* filter, const char* defaultExt = "sflw", const char* title = "Save File");
 
         PreprocessRenderer*       m_pRenderer = nullptr;
         PreprocessRenderer::State m_state;

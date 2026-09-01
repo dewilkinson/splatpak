@@ -264,7 +264,7 @@ namespace Surfels
         m_statusIsSuccess = true;
     }
 
-    std::string PreprocessApp::OpenFileDialog(const char* filter)
+    std::string PreprocessApp::OpenFileDialog(const char* filter, const char* title, const char* defaultExt)
     {
         char currentDir[MAX_PATH] = "";
         GetCurrentDirectoryA(MAX_PATH, currentDir);
@@ -278,26 +278,71 @@ namespace Surfels
         hr = CoCreateInstance(CLSID_FileOpenDialog, NULL, CLSCTX_ALL, IID_IFileOpenDialog, reinterpret_cast<void**>(&pFileOpen));
         if (SUCCEEDED(hr))
         {
-            COMDLG_FILTERSPEC fileTypes[] = {
-                { L"3D Point Clouds & Splats (*.ply; *.splat)", L"*.ply;*.splat" },
-                { L"Polygon Point Cloud (*.ply)", L"*.ply" },
-                { L"3D Gaussian Splat (*.splat)", L"*.splat" },
-                { L"All Files (*.*)", L"*.*" }
-            };
-            pFileOpen->SetFileTypes(4, fileTypes);
-            pFileOpen->SetTitle(L"Open Point Cloud / Splat");
+            std::vector<std::wstring> nameBufs;
+            std::vector<std::wstring> specBufs;
+            std::vector<COMDLG_FILTERSPEC> fileTypes;
 
-            // Point default folder to datasets/
-            IShellItem* pDefaultFolder = nullptr;
-            wchar_t fullDatasetsPath[MAX_PATH] = L"";
-            GetFullPathNameW(L"..\\datasets", MAX_PATH, fullDatasetsPath, NULL);
-            if (GetFileAttributesW(fullDatasetsPath) == INVALID_FILE_ATTRIBUTES)
+            if (filter && filter[0] != '\0')
             {
-                GetFullPathNameW(L"datasets", MAX_PATH, fullDatasetsPath, NULL);
+                const char* ptr = filter;
+                while (*ptr != '\0')
+                {
+                    std::string name(ptr);
+                    ptr += name.size() + 1;
+                    if (*ptr == '\0') break;
+                    std::string spec(ptr);
+                    ptr += spec.size() + 1;
+
+                    nameBufs.emplace_back(name.begin(), name.end());
+                    specBufs.emplace_back(spec.begin(), spec.end());
+                }
+                for (size_t i = 0; i < nameBufs.size(); i++)
+                {
+                    COMDLG_FILTERSPEC fs;
+                    fs.pszName = nameBufs[i].c_str();
+                    fs.pszSpec = specBufs[i].c_str();
+                    fileTypes.push_back(fs);
+                }
             }
-            if (GetFileAttributesW(fullDatasetsPath) != INVALID_FILE_ATTRIBUTES)
+
+            if (fileTypes.empty())
             {
-                if (SUCCEEDED(SHCreateItemFromParsingName(fullDatasetsPath, NULL, IID_IShellItem, reinterpret_cast<void**>(&pDefaultFolder))))
+                fileTypes = {
+                    { L"All Files (*.*)", L"*.*" }
+                };
+            }
+
+            pFileOpen->SetFileTypes((UINT)fileTypes.size(), fileTypes.data());
+            if (title && strlen(title) > 0)
+            {
+                std::wstring wTitle(title, title + strlen(title));
+                pFileOpen->SetTitle(wTitle.c_str());
+            }
+            if (defaultExt && strlen(defaultExt) > 0)
+            {
+                std::wstring wDef(defaultExt, defaultExt + strlen(defaultExt));
+                pFileOpen->SetDefaultExtension(wDef.c_str());
+            }
+
+            // Point default folder to data/ or datasets/
+            IShellItem* pDefaultFolder = nullptr;
+            wchar_t fullDataPath[MAX_PATH] = L"";
+            GetFullPathNameW(L"data", MAX_PATH, fullDataPath, NULL);
+            if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
+            {
+                GetFullPathNameW(L"..\\data", MAX_PATH, fullDataPath, NULL);
+            }
+            if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
+            {
+                GetFullPathNameW(L"datasets", MAX_PATH, fullDataPath, NULL);
+            }
+            if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
+            {
+                GetFullPathNameW(L"..\\datasets", MAX_PATH, fullDataPath, NULL);
+            }
+            if (GetFileAttributesW(fullDataPath) != INVALID_FILE_ATTRIBUTES)
+            {
+                if (SUCCEEDED(SHCreateItemFromParsingName(fullDataPath, NULL, IID_IShellItem, reinterpret_cast<void**>(&pDefaultFolder))))
                 {
                     pFileOpen->SetFolder(pDefaultFolder);
                     pDefaultFolder->Release();
@@ -334,6 +379,8 @@ namespace Surfels
             ofn.lpstrFilter = filter;
             ofn.lpstrFile = filename;
             ofn.nMaxFile = MAX_PATH;
+            if (title) ofn.lpstrTitle = title;
+            if (defaultExt) ofn.lpstrDefExt = defaultExt;
             ofn.Flags = OFN_FILEMUSTEXIST | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
 
             if (GetOpenFileNameA(&ofn))
@@ -355,7 +402,7 @@ namespace Surfels
         return resultPath;
     }
 
-    std::string PreprocessApp::SaveFileDialog(const char* filter, const char* defaultExt)
+    std::string PreprocessApp::SaveFileDialog(const char* filter, const char* defaultExt, const char* title)
     {
         char currentDir[MAX_PATH] = "";
         GetCurrentDirectoryA(MAX_PATH, currentDir);
@@ -369,15 +416,48 @@ namespace Surfels
         hr = CoCreateInstance(CLSID_FileSaveDialog, NULL, CLSCTX_ALL, IID_IFileSaveDialog, reinterpret_cast<void**>(&pFileSave));
         if (SUCCEEDED(hr))
         {
-            COMDLG_FILTERSPEC fileTypes[] = {
-                { L"Surfel Wavelet Stream (*.sflw)", L"*.sflw" },
-                { L"Polygon Point Cloud (*.ply)", L"*.ply" },
-                { L"All Files (*.*)", L"*.*" }
-            };
-            pFileSave->SetFileTypes(3, fileTypes);
+            std::vector<std::wstring> nameBufs;
+            std::vector<std::wstring> specBufs;
+            std::vector<COMDLG_FILTERSPEC> fileTypes;
+
+            if (filter && filter[0] != '\0')
+            {
+                const char* ptr = filter;
+                while (*ptr != '\0')
+                {
+                    std::string name(ptr);
+                    ptr += name.size() + 1;
+                    if (*ptr == '\0') break;
+                    std::string spec(ptr);
+                    ptr += spec.size() + 1;
+
+                    nameBufs.emplace_back(name.begin(), name.end());
+                    specBufs.emplace_back(spec.begin(), spec.end());
+                }
+                for (size_t i = 0; i < nameBufs.size(); i++)
+                {
+                    COMDLG_FILTERSPEC fs;
+                    fs.pszName = nameBufs[i].c_str();
+                    fs.pszSpec = specBufs[i].c_str();
+                    fileTypes.push_back(fs);
+                }
+            }
+
+            if (fileTypes.empty())
+            {
+                fileTypes = {
+                    { L"All Files (*.*)", L"*.*" }
+                };
+            }
+
+            pFileSave->SetFileTypes((UINT)fileTypes.size(), fileTypes.data());
             std::wstring wDefExt = defaultExt ? std::wstring(defaultExt, defaultExt + strlen(defaultExt)) : L"sflw";
             pFileSave->SetDefaultExtension(wDefExt.c_str());
-            pFileSave->SetTitle(L"Export Dataset");
+            if (title && strlen(title) > 0)
+            {
+                std::wstring wTitle(title, title + strlen(title));
+                pFileSave->SetTitle(wTitle.c_str());
+            }
 
             hr = pFileSave->Show(m_windowHwnd);
             if (SUCCEEDED(hr))
@@ -410,6 +490,7 @@ namespace Surfels
             ofn.lpstrFile = filename;
             ofn.nMaxFile = MAX_PATH;
             ofn.lpstrDefExt = defaultExt;
+            if (title) ofn.lpstrTitle = title;
             ofn.Flags = OFN_OVERWRITEPROMPT | OFN_PATHMUSTEXIST | OFN_NOCHANGEDIR;
 
             if (GetSaveFileNameA(&ofn))
@@ -910,7 +991,7 @@ namespace Surfels
         {
         case PendingAction::OpenFile:
         {
-            std::string file = OpenFileDialog("3D Point Clouds (*.ply;*.splat)\0*.ply;*.splat\0Polygon File Format (*.ply)\0*.ply\0Gaussian Splat (*.splat)\0*.splat\0All Files (*.*)\0*.*\0");
+            std::string file = OpenFileDialog("3D Point Clouds & Splats (*.ply; *.splat)\0*.ply;*.splat\0Polygon Point Cloud (*.ply)\0*.ply\03D Gaussian Splat (*.splat)\0*.splat\0All Files (*.*)\0*.*\0", "Open Point Cloud / Splat", "ply");
             if (!file.empty())
             {
                 LoadFile(file);
@@ -919,7 +1000,7 @@ namespace Surfels
         }
         case PendingAction::OpenCompressedFile:
         {
-            std::string file = OpenFileDialog("Surfels Compressed Stream (*.sflw)\0*.sflw\0");
+            std::string file = OpenFileDialog("Surfels Wavelet Package (*.sflw)\0*.sflw\0", "Open Compressed Model (.sflw)", "sflw");
             if (!file.empty())
             {
                 LoadSFLWFile(file);
@@ -933,7 +1014,7 @@ namespace Surfels
         }
         case PendingAction::ExportStream:
         {
-            std::string savePath = SaveFileDialog("Surfels Wavelet Package (*.sflw)\0*.sflw\0", "sflw");
+            std::string savePath = SaveFileDialog("Surfels Wavelet Package (*.sflw)\0*.sflw\0", "sflw", "Save Compressed Package (.sflw)");
             if (!savePath.empty())
             {
                 if (savePath.size() > 5 && savePath.substr(savePath.size() - 5) == ".sflw")
@@ -946,7 +1027,7 @@ namespace Surfels
         }
         case PendingAction::ExportPLY:
         {
-            std::string savePath = SaveFileDialog("Polygon File Format (*.ply)\0*.ply\0", "ply");
+            std::string savePath = SaveFileDialog("Polygon File Format (*.ply)\0*.ply\0", "ply", "Export Current LOD as PLY");
             if (!savePath.empty())
             {
                 m_statusMessage = "Exporting current LOD as PLY...";
@@ -966,7 +1047,7 @@ namespace Surfels
         }
         case PendingAction::ExportSPLAT:
         {
-            std::string savePath = SaveFileDialog("Gaussian Splat (*.splat)\0*.splat\0", "splat");
+            std::string savePath = SaveFileDialog("Gaussian Splat (*.splat)\0*.splat\0", "splat", "Export Current LOD as SPLAT");
             if (!savePath.empty())
             {
                 m_statusMessage = "Exporting current LOD as SPLAT...";
