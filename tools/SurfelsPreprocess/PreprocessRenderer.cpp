@@ -332,118 +332,194 @@ namespace Surfels
 
             if (surfelCount > 0 && pRawSurfels != nullptr && m_pRawSurfelBufferMapped != nullptr)
             {
-                if (pState->gpuRadixSort)
-                {
-                    m_metrics.isGPUSortActive = true;
-                    m_metrics.cpuSortTimeMs = 0.0f;
+                SurfelVertex* pDst = reinterpret_cast<SurfelVertex*>(m_pRawSurfelBufferMapped);
 
-                    if (modelChanged)
+                if (pState->useChunkedPipeline)
+                {
+                    // Micro-chunked pipeline: keep points partitioned in chunk contiguous ranges
+                    if (pState->gpuRadixSort)
                     {
-                        SurfelVertex* pDst = reinterpret_cast<SurfelVertex*>(m_pRawSurfelBufferMapped);
+                        m_metrics.isGPUSortActive = true;
+                        m_metrics.cpuSortTimeMs = 0.0f;
+
+                        if (modelChanged)
+                        {
+                            #pragma omp parallel for
+                            for (int i = 0; i < (int)surfelCount; i++)
+                            {
+                                pDst[i] = pRawSurfels[i];
+                            }
+                            for (uint32_t i = surfelCount; i < numElements; i++)
+                            {
+                                pDst[i] = {};
+                            }
+                            m_needUploadToGpu = true;
+                            m_gpuSortNeedsRun = true;
+                        }
+                    }
+                    else
+                    {
+                        // CPU Intra-Chunk Sort: sort 64 surfels within each chunk
+                        m_metrics.isGPUSortActive = false;
+                        m_metrics.wasSortedThisFrame = true;
+                        auto sortStart = std::chrono::high_resolution_clock::now();
+
+                        #pragma omp parallel for
+                        for (int c = 0; c < (int)pState->chunkCount; c++)
+                        {
+                            const auto& chunk = pState->pChunks[c];
+                            uint32_t start = chunk.surfelOffset;
+                            uint32_t count = chunk.surfelCount;
+                            if (start >= surfelCount) continue;
+                            count = std::min(count, surfelCount - start);
+
+                            std::pair<float, uint32_t> localDists[64];
+                            for (uint32_t i = 0; i < count && i < 64; i++)
+                            {
+                                const auto& pos = pRawSurfels[start + i].position;
+                                float d = (pos.x - eyePos.x) * forward.x + (pos.y - eyePos.y) * forward.y + (pos.z - eyePos.z) * forward.z;
+                                localDists[i] = { d, start + i };
+                            }
+
+                            std::sort(localDists, localDists + count, [](const auto& a, const auto& b) {
+                                return a.first > b.first; // Far to near
+                            });
+
+                            for (uint32_t i = 0; i < count; i++)
+                            {
+                                pDst[start + i] = pRawSurfels[localDists[i].second];
+                            }
+                        }
+
+                        for (uint32_t i = surfelCount; i < numElements; i++)
+                        {
+                            pDst[i] = {};
+                        }
+
+                        m_needUploadToGpu = true;
+                        auto sortEnd = std::chrono::high_resolution_clock::now();
+                        m_metrics.cpuSortTimeMs = std::chrono::duration<float, std::milli>(sortEnd - sortStart).count();
+                        m_metrics.gpuSortTimeMs = 0.0f;
+                    }
+                }
+                else
+                {
+                    // Flat pipeline mode: global sort of all surfels
+                    if (pState->gpuRadixSort)
+                    {
+                        m_metrics.isGPUSortActive = true;
+                        m_metrics.cpuSortTimeMs = 0.0f;
+
+                        if (modelChanged)
+                        {
+                            #pragma omp parallel for
+                            for (int i = 0; i < (int)surfelCount; i++)
+                            {
+                                pDst[i] = pRawSurfels[i];
+                            }
+                            for (uint32_t i = surfelCount; i < numElements; i++)
+                            {
+                                pDst[i] = {};
+                            }
+                            m_needUploadToGpu = true;
+                            m_gpuSortNeedsRun = true;
+                        }
+
+                        m_gpuSortNeedsRun = true;
+                        m_lastSortEye = eyePos;
+                        m_lastSortForward = forward;
+                    }
+                    else
+                    {
+                        m_metrics.isGPUSortActive = false;
+                        m_metrics.wasSortedThisFrame = true;
+                        auto sortStart = std::chrono::high_resolution_clock::now();
+
+                        m_lastSortEye = eyePos;
+                        m_lastSortForward = forward;
+
+                        if (m_sortIndicesA.size() < surfelCount)
+                        {
+                            m_sortIndicesA.resize(surfelCount);
+                            m_sortIndicesB.resize(surfelCount);
+                            m_sortKeys.resize(surfelCount);
+                            m_sortDists.resize(surfelCount);
+                        }
+
+                        // 1. Parallel Projected Distance Calculation
+                        float minD = 1e9f, maxD = -1e9f;
+                        #pragma omp parallel for reduction(min:minD) reduction(max:maxD)
+                        for (int i = 0; i < (int)surfelCount; i++)
+                        {
+                            const auto& pos = pRawSurfels[i].position;
+                            float d = (pos.x - eyePos.x) * forward.x + (pos.y - eyePos.y) * forward.y + (pos.z - eyePos.z) * forward.z;
+                            m_sortDists[i] = d;
+                            if (d < minD) minD = d;
+                            if (d > maxD) maxD = d;
+                        }
+
+                        float range = std::max(0.001f, maxD - minD);
+                        float scale = 65535.0f / range;
+
+                        // 2. Parallel 16-bit key computation
                         #pragma omp parallel for
                         for (int i = 0; i < (int)surfelCount; i++)
                         {
-                            pDst[i] = pRawSurfels[i];
+                            uint32_t k = (uint32_t)((m_sortDists[i] - minD) * scale);
+                            if (k > 65535) k = 65535;
+                            m_sortKeys[i] = 65535 - k;
+                            m_sortIndicesA[i] = i;
+                        }
+
+                        // 3. Pass 1: Radix sort low 8 bits (Byte 0)
+                        uint32_t count0[256] = {};
+                        for (uint32_t i = 0; i < surfelCount; i++)
+                            count0[m_sortKeys[i] & 0xFF]++;
+
+                        uint32_t offset0[256] = {};
+                        for (uint32_t i = 1; i < 256; i++)
+                            offset0[i] = offset0[i - 1] + count0[i - 1];
+
+                        for (uint32_t i = 0; i < surfelCount; i++)
+                        {
+                            uint32_t idx = m_sortIndicesA[i];
+                            uint8_t byte0 = (uint8_t)(m_sortKeys[idx] & 0xFF);
+                            m_sortIndicesB[offset0[byte0]++] = idx;
+                        }
+
+                        // 4. Pass 2: Radix sort high 8 bits (Byte 1)
+                        uint32_t count1[256] = {};
+                        for (uint32_t i = 0; i < surfelCount; i++)
+                            count1[(m_sortKeys[m_sortIndicesB[i]] >> 8) & 0xFF]++;
+
+                        uint32_t offset1[256] = {};
+                        for (uint32_t i = 1; i < 256; i++)
+                            offset1[i] = offset1[i - 1] + count1[i - 1];
+
+                        for (uint32_t i = 0; i < surfelCount; i++)
+                        {
+                            uint32_t idx = m_sortIndicesB[i];
+                            uint8_t byte1 = (uint8_t)((m_sortKeys[idx] >> 8) & 0xFF);
+                            m_sortIndicesA[offset1[byte1]++] = idx;
+                        }
+
+                        // 5. Parallel Gather sorted surfels into mapped GPU upload buffer
+                        #pragma omp parallel for
+                        for (int i = 0; i < (int)surfelCount; i++)
+                        {
+                            pDst[i] = pRawSurfels[m_sortIndicesA[i]];
                         }
                         for (uint32_t i = surfelCount; i < numElements; i++)
                         {
                             pDst[i] = {};
                         }
+
                         m_needUploadToGpu = true;
-                        m_gpuSortNeedsRun = true;
+
+                        auto sortEnd = std::chrono::high_resolution_clock::now();
+                        m_metrics.cpuSortTimeMs = std::chrono::duration<float, std::milli>(sortEnd - sortStart).count();
+                        m_metrics.gpuSortTimeMs = 0.0f;
                     }
-
-                    m_gpuSortNeedsRun = true;
-                    m_lastSortEye = eyePos;
-                    m_lastSortForward = forward;
-                }
-                else
-                {
-                    m_metrics.isGPUSortActive = false;
-                    m_metrics.wasSortedThisFrame = true;
-                    auto sortStart = std::chrono::high_resolution_clock::now();
-
-                    m_lastSortEye = eyePos;
-                    m_lastSortForward = forward;
-
-                    if (m_sortIndicesA.size() < surfelCount)
-                    {
-                        m_sortIndicesA.resize(surfelCount);
-                        m_sortIndicesB.resize(surfelCount);
-                        m_sortKeys.resize(surfelCount);
-                        m_sortDists.resize(surfelCount);
-                    }
-
-                    // 1. Parallel Projected Distance Calculation (OpenMP multi-threaded)
-                    float minD = 1e9f, maxD = -1e9f;
-                    #pragma omp parallel for reduction(min:minD) reduction(max:maxD)
-                    for (int i = 0; i < (int)surfelCount; i++)
-                    {
-                        const auto& pos = pRawSurfels[i].position;
-                        float d = (pos.x - eyePos.x) * forward.x + (pos.y - eyePos.y) * forward.y + (pos.z - eyePos.z) * forward.z;
-                        m_sortDists[i] = d;
-                        if (d < minD) minD = d;
-                        if (d > maxD) maxD = d;
-                    }
-
-                    float range = std::max(0.001f, maxD - minD);
-                    float scale = 65535.0f / range;
-
-                    // 2. Parallel 16-bit key computation
-                    #pragma omp parallel for
-                    for (int i = 0; i < (int)surfelCount; i++)
-                    {
-                        uint32_t k = (uint32_t)((m_sortDists[i] - minD) * scale);
-                        if (k > 65535) k = 65535;
-                        m_sortKeys[i] = 65535 - k;
-                        m_sortIndicesA[i] = i;
-                    }
-
-                    // 3. Pass 1: Radix sort low 8 bits (Byte 0)
-                    uint32_t count0[256] = {};
-                    for (uint32_t i = 0; i < surfelCount; i++)
-                        count0[m_sortKeys[i] & 0xFF]++;
-
-                    uint32_t offset0[256] = {};
-                    for (uint32_t i = 1; i < 256; i++)
-                        offset0[i] = offset0[i - 1] + count0[i - 1];
-
-                    for (uint32_t i = 0; i < surfelCount; i++)
-                    {
-                        uint32_t idx = m_sortIndicesA[i];
-                        uint8_t byte0 = (uint8_t)(m_sortKeys[idx] & 0xFF);
-                        m_sortIndicesB[offset0[byte0]++] = idx;
-                    }
-
-                    // 4. Pass 2: Radix sort high 8 bits (Byte 1)
-                    uint32_t count1[256] = {};
-                    for (uint32_t i = 0; i < surfelCount; i++)
-                        count1[(m_sortKeys[m_sortIndicesB[i]] >> 8) & 0xFF]++;
-
-                    uint32_t offset1[256] = {};
-                    for (uint32_t i = 1; i < 256; i++)
-                        offset1[i] = offset1[i - 1] + count1[i - 1];
-
-                    for (uint32_t i = 0; i < surfelCount; i++)
-                    {
-                        uint32_t idx = m_sortIndicesB[i];
-                        uint8_t byte1 = (uint8_t)((m_sortKeys[idx] >> 8) & 0xFF);
-                        m_sortIndicesA[offset1[byte1]++] = idx;
-                    }
-
-                    // 5. Parallel Gather sorted surfels into mapped GPU upload buffer
-                    SurfelVertex* pDst = reinterpret_cast<SurfelVertex*>(m_pRawSurfelBufferMapped);
-                    #pragma omp parallel for
-                    for (int i = 0; i < (int)surfelCount; i++)
-                    {
-                        pDst[i] = pRawSurfels[m_sortIndicesA[i]];
-                    }
-
-                    m_needUploadToGpu = true;
-
-                    auto sortEnd = std::chrono::high_resolution_clock::now();
-                    m_metrics.cpuSortTimeMs = std::chrono::duration<float, std::milli>(sortEnd - sortStart).count();
-                    m_metrics.gpuSortTimeMs = 0.0f;
                 }
             }
 
@@ -519,18 +595,209 @@ namespace Surfels
 
             if (surfelCount > 0 && pSurfels != nullptr && m_pSurfelBufferMapped != nullptr)
             {
-                if (pState->gpuRadixSort)
-                {
-                    m_metrics.isGPUSortActive = true;
-                    m_metrics.cpuSortTimeMs = 0.0f;
+                PackedSurfelGPU* pDst = reinterpret_cast<PackedSurfelGPU*>(m_pSurfelBufferMapped);
 
-                    if (modelChanged)
+                if (pState->useChunkedPipeline)
+                {
+                    // Micro-chunked pipeline: keep points partitioned in chunk contiguous ranges
+                    if (pState->gpuRadixSort)
                     {
-                        PackedSurfelGPU* pDst = reinterpret_cast<PackedSurfelGPU*>(m_pSurfelBufferMapped);
+                        m_metrics.isGPUSortActive = true;
+                        m_metrics.cpuSortTimeMs = 0.0f;
+
+                        if (modelChanged)
+                        {
+                            #pragma omp parallel for
+                            for (int i = 0; i < (int)surfelCount; i++)
+                            {
+                                pDst[i] = pSurfels[i];
+                            }
+                            for (uint32_t i = surfelCount; i < numElements; i++)
+                            {
+                                pDst[i].packedPosRadius = 0xFFFFFFFF;
+                                pDst[i].packedNormal = 0xFFFF;
+                                pDst[i].packedColor = 0xFFFF;
+                            }
+                            m_needUploadToGpu = true;
+                            m_gpuSortNeedsRun = true;
+                        }
+                    }
+                    else
+                    {
+                        // CPU Intra-Chunk Sort: sort 64 surfels within each chunk
+                        m_metrics.isGPUSortActive = false;
+                        m_metrics.wasSortedThisFrame = true;
+                        auto sortStart = std::chrono::high_resolution_clock::now();
+                        XMFLOAT3 aabbExtents(pState->aabbExtents.x, pState->aabbExtents.y, pState->aabbExtents.z);
+
+                        #pragma omp parallel for
+                        for (int c = 0; c < (int)pState->chunkCount; c++)
+                        {
+                            const auto& chunk = pState->pChunks[c];
+                            uint32_t start = chunk.surfelOffset;
+                            uint32_t count = chunk.surfelCount;
+                            if (start >= surfelCount) continue;
+                            count = std::min(count, surfelCount - start);
+
+                            std::pair<float, uint32_t> localDists[64];
+                            for (uint32_t i = 0; i < count && i < 64; i++)
+                            {
+                                const auto& p = pSurfels[start + i];
+                                uint32_t qx = p.packedPosRadius & 0x3FF;
+                                uint32_t qy = (p.packedPosRadius >> 10) & 0x3FF;
+                                uint32_t qz = (p.packedPosRadius >> 20) & 0x3FF;
+                                float px = pState->aabbMin.x + (qx / 1023.0f) * aabbExtents.x;
+                                float py = pState->aabbMin.y + (qy / 1023.0f) * aabbExtents.y;
+                                float pz = pState->aabbMin.z + (qz / 1023.0f) * aabbExtents.z;
+                                float d = (px - eyePos.x) * forward.x + (py - eyePos.y) * forward.y + (pz - eyePos.z) * forward.z;
+                                localDists[i] = { d, start + i };
+                            }
+
+                            std::sort(localDists, localDists + count, [](const auto& a, const auto& b) {
+                                return a.first > b.first; // Far to near
+                            });
+
+                            for (uint32_t i = 0; i < count; i++)
+                            {
+                                pDst[start + i] = pSurfels[localDists[i].second];
+                            }
+                        }
+
+                        for (uint32_t i = surfelCount; i < numElements; i++)
+                        {
+                            pDst[i].packedPosRadius = 0xFFFFFFFF;
+                            pDst[i].packedNormal = 0xFFFF;
+                            pDst[i].packedColor = 0xFFFF;
+                        }
+
+                        m_needUploadToGpu = true;
+                        auto sortEnd = std::chrono::high_resolution_clock::now();
+                        m_metrics.cpuSortTimeMs = std::chrono::duration<float, std::milli>(sortEnd - sortStart).count();
+                        m_metrics.gpuSortTimeMs = 0.0f;
+                    }
+                }
+                else
+                {
+                    // Flat pipeline mode: global sort of all surfels
+                    if (pState->gpuRadixSort)
+                    {
+                        m_metrics.isGPUSortActive = true;
+                        m_metrics.cpuSortTimeMs = 0.0f;
+
+                        if (modelChanged)
+                        {
+                            #pragma omp parallel for
+                            for (int i = 0; i < (int)surfelCount; i++)
+                            {
+                                pDst[i] = pSurfels[i];
+                            }
+                            for (uint32_t i = surfelCount; i < numElements; i++)
+                            {
+                                pDst[i].packedPosRadius = 0xFFFFFFFF;
+                                pDst[i].packedNormal = 0xFFFF;
+                                pDst[i].packedColor = 0xFFFF;
+                            }
+                            m_needUploadToGpu = true;
+                            m_gpuSortNeedsRun = true;
+                        }
+
+                        m_gpuSortNeedsRun = true;
+                        m_lastSortEye = eyePos;
+                        m_lastSortForward = forward;
+                    }
+                    else
+                    {
+                        m_metrics.isGPUSortActive = false;
+                        m_metrics.wasSortedThisFrame = true;
+                        auto sortStart = std::chrono::high_resolution_clock::now();
+
+                        m_lastSortEye = eyePos;
+                        m_lastSortForward = forward;
+
+                        if (m_sortIndicesA.size() < surfelCount)
+                        {
+                            m_sortIndicesA.resize(surfelCount);
+                            m_sortIndicesB.resize(surfelCount);
+                            m_sortKeys.resize(surfelCount);
+                            m_sortDists.resize(surfelCount);
+                        }
+
+                        // 1. Calculate projected distance along camera forward vector for packed surfels
+                        float minD = 1e9f, maxD = -1e9f;
+                        XMFLOAT3 aabbExtents(
+                            pState->aabbExtents.x,
+                            pState->aabbExtents.y,
+                            pState->aabbExtents.z
+                        );
+
+                        #pragma omp parallel for reduction(min:minD) reduction(max:maxD)
+                        for (int i = 0; i < (int)surfelCount; i++)
+                        {
+                            const auto& p = pSurfels[i];
+                            uint32_t qx = p.packedPosRadius & 0x3FF;
+                            uint32_t qy = (p.packedPosRadius >> 10) & 0x3FF;
+                            uint32_t qz = (p.packedPosRadius >> 20) & 0x3FF;
+
+                            float px = pState->aabbMin.x + (qx / 1023.0f) * aabbExtents.x;
+                            float py = pState->aabbMin.y + (qy / 1023.0f) * aabbExtents.y;
+                            float pz = pState->aabbMin.z + (qz / 1023.0f) * aabbExtents.z;
+
+                            float d = (px - eyePos.x) * forward.x + (py - eyePos.y) * forward.y + (pz - eyePos.z) * forward.z;
+                            m_sortDists[i] = d;
+                            if (d < minD) minD = d;
+                            if (d > maxD) maxD = d;
+                        }
+
+                        float range = std::max(0.001f, maxD - minD);
+                        float scale = 65535.0f / range;
+
+                        // 2. Compute 16-bit keys (inverted for back-to-front descending order)
                         #pragma omp parallel for
                         for (int i = 0; i < (int)surfelCount; i++)
                         {
-                            pDst[i] = pSurfels[i];
+                            uint32_t k = (uint32_t)((m_sortDists[i] - minD) * scale);
+                            if (k > 65535) k = 65535;
+                            m_sortKeys[i] = 65535 - k;
+                            m_sortIndicesA[i] = i;
+                        }
+
+                        // 3. Pass 1: Radix sort low 8 bits (Byte 0)
+                        uint32_t count0[256] = {};
+                        for (uint32_t i = 0; i < surfelCount; i++)
+                            count0[m_sortKeys[i] & 0xFF]++;
+
+                        uint32_t offset0[256] = {};
+                        for (uint32_t i = 1; i < 256; i++)
+                            offset0[i] = offset0[i - 1] + count0[i - 1];
+
+                        for (uint32_t i = 0; i < surfelCount; i++)
+                        {
+                            uint32_t idx = m_sortIndicesA[i];
+                            uint8_t byte0 = (uint8_t)(m_sortKeys[idx] & 0xFF);
+                            m_sortIndicesB[offset0[byte0]++] = idx;
+                        }
+
+                        // 4. Pass 2: Radix sort high 8 bits (Byte 1)
+                        uint32_t count1[256] = {};
+                        for (uint32_t i = 0; i < surfelCount; i++)
+                            count1[(m_sortKeys[m_sortIndicesB[i]] >> 8) & 0xFF]++;
+
+                        uint32_t offset1[256] = {};
+                        for (uint32_t i = 1; i < 256; i++)
+                            offset1[i] = offset1[i - 1] + count1[i - 1];
+
+                        for (uint32_t i = 0; i < surfelCount; i++)
+                        {
+                            uint32_t idx = m_sortIndicesB[i];
+                            uint8_t byte1 = (uint8_t)((m_sortKeys[idx] >> 8) & 0xFF);
+                            m_sortIndicesA[offset1[byte1]++] = idx;
+                        }
+
+                        // 5. Gather sorted packed surfels directly into mapped GPU upload buffer
+                        #pragma omp parallel for
+                        for (int i = 0; i < (int)surfelCount; i++)
+                        {
+                            pDst[i] = pSurfels[m_sortIndicesA[i]];
                         }
                         for (uint32_t i = surfelCount; i < numElements; i++)
                         {
@@ -538,113 +805,13 @@ namespace Surfels
                             pDst[i].packedNormal = 0xFFFF;
                             pDst[i].packedColor = 0xFFFF;
                         }
+
                         m_needUploadToGpu = true;
-                        m_gpuSortNeedsRun = true;
+
+                        auto sortEnd = std::chrono::high_resolution_clock::now();
+                        m_metrics.cpuSortTimeMs = std::chrono::duration<float, std::milli>(sortEnd - sortStart).count();
+                        m_metrics.gpuSortTimeMs = 0.0f;
                     }
-
-                    m_gpuSortNeedsRun = true;
-                    m_lastSortEye = eyePos;
-                    m_lastSortForward = forward;
-                }
-                else
-                {
-                    m_metrics.isGPUSortActive = false;
-                    m_metrics.wasSortedThisFrame = true;
-                    auto sortStart = std::chrono::high_resolution_clock::now();
-
-                    m_lastSortEye = eyePos;
-                    m_lastSortForward = forward;
-
-                    if (m_sortIndicesA.size() < surfelCount)
-                    {
-                        m_sortIndicesA.resize(surfelCount);
-                        m_sortIndicesB.resize(surfelCount);
-                        m_sortKeys.resize(surfelCount);
-                        m_sortDists.resize(surfelCount);
-                    }
-
-                    // 1. Calculate projected distance along camera forward vector for packed surfels
-                    float minD = 1e9f, maxD = -1e9f;
-                    XMFLOAT3 aabbExtents(
-                        pState->aabbExtents.x,
-                        pState->aabbExtents.y,
-                        pState->aabbExtents.z
-                    );
-
-                    for (uint32_t i = 0; i < surfelCount; i++)
-                    {
-                        const auto& p = pSurfels[i];
-                        uint32_t qx = p.packedPosRadius & 0x3FF;
-                        uint32_t qy = (p.packedPosRadius >> 10) & 0x3FF;
-                        uint32_t qz = (p.packedPosRadius >> 20) & 0x3FF;
-
-                        float px = pState->aabbMin.x + (qx / 1023.0f) * aabbExtents.x;
-                        float py = pState->aabbMin.y + (qy / 1023.0f) * aabbExtents.y;
-                        float pz = pState->aabbMin.z + (qz / 1023.0f) * aabbExtents.z;
-
-                        float d = (px - eyePos.x) * forward.x + (py - eyePos.y) * forward.y + (pz - eyePos.z) * forward.z;
-                        m_sortDists[i] = d;
-                        if (d < minD) minD = d;
-                        if (d > maxD) maxD = d;
-                    }
-
-                    float range = std::max(0.001f, maxD - minD);
-                    float scale = 65535.0f / range;
-
-                    // 2. Compute 16-bit keys (inverted for back-to-front descending order)
-                    for (uint32_t i = 0; i < surfelCount; i++)
-                    {
-                        uint32_t k = (uint32_t)((m_sortDists[i] - minD) * scale);
-                        if (k > 65535) k = 65535;
-                        m_sortKeys[i] = 65535 - k;
-                        m_sortIndicesA[i] = i;
-                    }
-
-                    // 3. Pass 1: Radix sort low 8 bits (Byte 0)
-                    uint32_t count0[256] = {};
-                    for (uint32_t i = 0; i < surfelCount; i++)
-                        count0[m_sortKeys[i] & 0xFF]++;
-
-                    uint32_t offset0[256] = {};
-                    for (uint32_t i = 1; i < 256; i++)
-                        offset0[i] = offset0[i - 1] + count0[i - 1];
-
-                    for (uint32_t i = 0; i < surfelCount; i++)
-                    {
-                        uint32_t idx = m_sortIndicesA[i];
-                        uint8_t byte0 = (uint8_t)(m_sortKeys[idx] & 0xFF);
-                        m_sortIndicesB[offset0[byte0]++] = idx;
-                    }
-
-                    // 4. Pass 2: Radix sort high 8 bits (Byte 1)
-                    uint32_t count1[256] = {};
-                    for (uint32_t i = 0; i < surfelCount; i++)
-                        count1[(m_sortKeys[m_sortIndicesB[i]] >> 8) & 0xFF]++;
-
-                    uint32_t offset1[256] = {};
-                    for (uint32_t i = 1; i < 256; i++)
-                        offset1[i] = offset1[i - 1] + count1[i - 1];
-
-                    for (uint32_t i = 0; i < surfelCount; i++)
-                    {
-                        uint32_t idx = m_sortIndicesB[i];
-                        uint8_t byte1 = (uint8_t)((m_sortKeys[idx] >> 8) & 0xFF);
-                        m_sortIndicesA[offset1[byte1]++] = idx;
-                    }
-
-                    // 5. Gather sorted packed surfels directly into mapped GPU upload buffer
-                    PackedSurfelGPU* pDst = reinterpret_cast<PackedSurfelGPU*>(m_pSurfelBufferMapped);
-                    #pragma omp parallel for
-                    for (int i = 0; i < (int)surfelCount; i++)
-                    {
-                        pDst[i] = pSurfels[m_sortIndicesA[i]];
-                    }
-
-                    m_needUploadToGpu = true;
-
-                    auto sortEnd = std::chrono::high_resolution_clock::now();
-                    m_metrics.cpuSortTimeMs = std::chrono::duration<float, std::milli>(sortEnd - sortStart).count();
-                    m_metrics.gpuSortTimeMs = 0.0f;
                 }
             }
 
