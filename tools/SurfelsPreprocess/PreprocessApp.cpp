@@ -1282,28 +1282,29 @@ namespace Surfels
         m_state.aspectRatio = io.DisplaySize.y > 0.0f ? (io.DisplaySize.x / io.DisplaySize.y) : 1.0f;
         m_state.gpuRadixSort = m_gpuRadixSort;
         m_state.useChunkedPipeline = m_useChunkedPipeline;
-        m_state.pChunks = m_rendererMeshletChunks.data();
         m_state.aabbMin = m_aabbMin;
         m_state.aabbExtents = m_extents;
 
         if (m_enableStreamingSimulation)
         {
             UpdateStreamingSimulation(m_deltaTime / 1000.0);
-        }
 
-        if (m_enableQuantization && !m_rendererSurfels.empty())
-        {
-            m_state.renderMode = 1;
-            m_state.pSurfels = m_rendererSurfels.data();
-            m_state.pRawSurfels = nullptr;
-            m_state.surfelCount = (uint32_t)m_rendererSurfels.size();
-        }
-        else if (!m_rendererRawSurfels.empty())
-        {
-            m_state.renderMode = 2;
-            m_state.pRawSurfels = m_rendererRawSurfels.data();
-            m_state.pSurfels = nullptr;
-            m_state.surfelCount = (uint32_t)m_rendererRawSurfels.size();
+            if (m_enableQuantization && !m_rendererSurfels.empty())
+            {
+                m_state.renderMode = 1;
+                m_state.pSurfels = m_rendererSurfels.data();
+                m_state.pRawSurfels = nullptr;
+                m_state.surfelCount = (uint32_t)m_rendererSurfels.size();
+            }
+            else if (!m_rendererRawSurfels.empty())
+            {
+                m_state.renderMode = 2;
+                m_state.pRawSurfels = m_rendererRawSurfels.data();
+                m_state.pSurfels = nullptr;
+                m_state.surfelCount = (uint32_t)m_rendererRawSurfels.size();
+            }
+            m_state.pChunks = m_rendererMeshletChunks.data();
+            m_state.chunkCount = (uint32_t)m_rendererMeshletChunks.size();
         }
     }
 
