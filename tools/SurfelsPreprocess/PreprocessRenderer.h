@@ -81,10 +81,9 @@ namespace Surfels
             XMFLOAT3   aabbMin;
             uint32_t   useChunkedPipeline;
             XMFLOAT3   aabbExtents;
-            float      pad2;
             XMFLOAT4X4 cullViewProj;
             uint32_t   useDetachedCullCam;
-            XMFLOAT3   pad3;
+            XMFLOAT3   cullEyePos;
         };
 
         CAULDRON_DX12::Device* m_pDevice = nullptr;

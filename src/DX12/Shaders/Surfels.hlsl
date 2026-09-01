@@ -56,7 +56,7 @@ cbuffer SurfelsCB : register(b0)
     float    g_Pad2;
     float4x4 g_CullViewProj;
     uint     g_UseDetachedCullCam;
-    float3   g_Pad3;
+    float3   g_CullEyePos;
 };
 
 struct ChunkPayload
@@ -284,13 +284,22 @@ void mainMS(
         }
     }
 
-    // When Camera is Detached: Cull individual points falling outside the frozen culling frustum
+    // When Camera is Detached: Cull individual points falling outside the frozen culling frustum or facing away
     if (g_UseDetachedCullCam == 1)
     {
         float4 cullClip = mul(g_CullViewProj, float4(worldPos, 1.0));
-        if (cullClip.x < -cullClip.w || cullClip.x > cullClip.w ||
-            cullClip.y < -cullClip.w || cullClip.y > cullClip.w ||
-            cullClip.z < 0.0 || cullClip.z > cullClip.w)
+        bool outsideFrustum = (cullClip.x < -cullClip.w || cullClip.x > cullClip.w ||
+                               cullClip.y < -cullClip.w || cullClip.y > cullClip.w ||
+                               cullClip.z < 0.0 || cullClip.z > cullClip.w);
+
+        float3 toCullCam = g_CullEyePos - worldPos;
+        bool isBackFacing = false;
+        if (dot(normal, normal) > 0.1)
+        {
+            isBackFacing = (dot(normal, toCullCam) <= 0.0);
+        }
+
+        if (outsideFrustum || isBackFacing)
         {
             tangentX = float3(0.0, 0.0, 0.0);
             tangentY = float3(0.0, 0.0, 0.0);

@@ -911,10 +911,9 @@ namespace Surfels
         pCB->aabbMin = pState->aabbMin;
         pCB->useChunkedPipeline = (pState->useChunkedPipeline && pState->chunkCount > 0 && m_pChunkGpuBuffer != nullptr) ? 1 : 0;
         pCB->aabbExtents = pState->aabbExtents;
-        pCB->pad2 = 0.0f;
         XMStoreFloat4x4(&pCB->cullViewProj, cViewProj);
         pCB->useDetachedCullCam = pState->detachCullCamera ? 1 : 0;
-        pCB->pad3 = XMFLOAT3(0.0f, 0.0f, 0.0f);
+        pCB->cullEyePos = cullEyePos;
 
         ID3D12Resource* pGpuRes = (pState->renderMode == 2) ? m_pRawSurfelGpuBuffer : m_pSurfelGpuBuffer;
         ID3D12Resource* pGpuOutRes = (pState->renderMode == 2) ? m_pRawSurfelGpuOutBuffer : m_pSurfelGpuOutBuffer;

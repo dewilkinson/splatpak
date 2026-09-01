@@ -128,6 +128,7 @@ namespace Surfels
             float    volume;
             float    density;     // pointCount / volume
             float    normDensity; // 0.0 to 1.0 (heatmap parameter t)
+            XMFLOAT3 avgNormal;
         };
 
         std::vector<HeatmapClusterCube> m_heatmapClusterCubes;

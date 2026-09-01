@@ -1334,6 +1334,7 @@ namespace Surfels
 
         struct VoxelData {
             uint32_t count = 0;
+            XMFLOAT3 normalSum = { 0.0f, 0.0f, 0.0f };
         };
 
         std::unordered_map<VoxelKey, VoxelData, VoxelKeyHash> gridMap;
@@ -1348,6 +1349,9 @@ namespace Surfels
 
             VoxelKey k = { ix, iy, iz };
             gridMap[k].count++;
+            gridMap[k].normalSum.x += s.normal.x;
+            gridMap[k].normalSum.y += s.normal.y;
+            gridMap[k].normalSum.z += s.normal.z;
         }
 
         // 4. Build HeatmapClusterCube list across entire 3D grid
@@ -1387,8 +1391,21 @@ namespace Surfels
 
                     if (count > 0)
                     {
+                        float nx = it->second.normalSum.x;
+                        float ny = it->second.normalSum.y;
+                        float nz = it->second.normalSum.z;
+                        float len = sqrtf(nx*nx + ny*ny + nz*nz);
+                        if (len > 1e-4f)
+                            cube.avgNormal = XMFLOAT3(nx/len, ny/len, nz/len);
+                        else
+                            cube.avgNormal = XMFLOAT3(0.0f, 0.0f, 0.0f);
+
                         if (cube.density < minDensity) minDensity = cube.density;
                         if (cube.density > maxDensity) maxDensity = cube.density;
+                    }
+                    else
+                    {
+                        cube.avgNormal = XMFLOAT3(0.0f, 0.0f, 0.0f);
                     }
 
                     m_heatmapClusterCubes.push_back(cube);
@@ -1648,7 +1665,21 @@ namespace Surfels
             for (size_t idx : sortedCubes)
             {
                 const auto& cube = m_heatmapClusterCubes[idx];
-                bool isVisible = IsSphereInFrustum(cube.center, cube.boundingRadius);
+                bool inFrustum = IsSphereInFrustum(cube.center, cube.boundingRadius);
+
+                // Normal / Backface Culling against detached camera:
+                // Test if the cluster's average surface normal faces the detached camera
+                float nLenSq = cube.avgNormal.x * cube.avgNormal.x + cube.avgNormal.y * cube.avgNormal.y + cube.avgNormal.z * cube.avgNormal.z;
+                bool isFrontFacing = true;
+                if (nLenSq > 0.05f)
+                {
+                    float toCamX = cullEyePos.x - cube.center.x;
+                    float toCamY = cullEyePos.y - cube.center.y;
+                    float toCamZ = cullEyePos.z - cube.center.z;
+                    isFrontFacing = (toCamX * cube.avgNormal.x + toCamY * cube.avgNormal.y + toCamZ * cube.avgNormal.z > 0.0f);
+                }
+
+                bool isVisible = inFrustum && isFrontFacing;
 
                 if (isVisible && cube.pointCount > 0)
                 {
@@ -1660,7 +1691,7 @@ namespace Surfels
                     ImU32 edgeCol = EvaluateHeatmapColor(t, edgeAlpha, m_heatmapColorScheme);
                     DrawFilledCube(cube.aabbMin, cube.aabbMax, fillCol, edgeCol, m_showHeatmapWireframe);
                 }
-                else if (m_showCulledChunks)
+                else if (m_showCulledChunks && cube.pointCount > 0)
                 {
                     DrawFilledCube(cube.aabbMin, cube.aabbMax, IM_COL32(10, 35, 100, 13), IM_COL32(30, 90, 220, 51), m_showHeatmapWireframe);
                 }
