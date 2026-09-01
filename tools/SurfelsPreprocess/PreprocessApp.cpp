@@ -2296,22 +2296,21 @@ namespace Surfels
                 if (isVisible && cube.pointCount > 0)
                 {
                     float t = cube.normDensity;
-                    float heatCurve = std::pow(t, 1.35f);
-                    float fillAlpha = std::min(0.95f, m_heatmapOpacity * (0.30f + heatCurve * m_hotspotOpacityScale));
-                    float edgeAlpha = std::min(1.0f, m_wireframeOpacity * (0.40f + heatCurve * (m_hotspotOpacityScale * 0.75f)));
+                    float fillAlpha = std::max(0.0f, std::min(1.0f, m_heatmapOpacity));
+                    float edgeAlpha = std::max(0.0f, std::min(1.0f, m_wireframeOpacity));
 
                     ImU32 fillCol, edgeCol;
                     if (isCavity)
                     {
                         // Dark AO cavity inside the mold
-                        fillCol = IM_COL32(25, 28, 35, (int)(fillAlpha * 255.0f * 1.5f));
+                        fillCol = IM_COL32(25, 28, 35, (int)(fillAlpha * 255.0f));
                         edgeCol = IM_COL32(45, 50, 60, (int)(edgeAlpha * 255.0f));
                     }
                     else if (isRim)
                     {
                         // Distinct plaster rim transition highlight
-                        fillCol = IM_COL32(210, 225, 255, (int)(fillAlpha * 255.0f * 2.0f));
-                        edgeCol = IM_COL32(230, 240, 255, (int)(edgeAlpha * 255.0f * 2.0f));
+                        fillCol = IM_COL32(210, 225, 255, (int)(fillAlpha * 255.0f));
+                        edgeCol = IM_COL32(230, 240, 255, (int)(edgeAlpha * 255.0f));
                     }
                     else
                     {
@@ -2328,15 +2327,21 @@ namespace Surfels
             }
         }
 
-        // 2. Streaming Octree Macro-Chunks
+        // 2. Streaming Octree Macro-Clusters (Amber / Gold)
         if (m_showOctreeVisualizer)
         {
             const auto& octreeBoxes = !m_rendererOctreeChunks.empty() ? m_rendererOctreeChunks : m_chunks;
             for (const auto& chunk : octreeBoxes)
             {
-                bool isVisible = IsSphereInFrustum(chunk.center, chunk.boundingRadius);
-                if (isVisible) DrawFilledCube(chunk.aabbMin, chunk.aabbMax, IM_COL32(255, 190, 40, 40), IM_COL32(255, 190, 40, 240), true);
-                else if (m_showCulledChunks) DrawFilledCube(chunk.aabbMin, chunk.aabbMax, IM_COL32(10, 35, 100, 13), IM_COL32(30, 90, 220, 51), true);
+                bool isVisible = !m_detachCamera || IsSphereInFrustum(chunk.center, chunk.boundingRadius);
+                if (isVisible)
+                {
+                    DrawFilledCube(chunk.aabbMin, chunk.aabbMax, IM_COL32(255, 180, 30, 40), IM_COL32(255, 190, 40, 240), true);
+                }
+                else if (m_showCulledChunks)
+                {
+                    DrawFilledCube(chunk.aabbMin, chunk.aabbMax, IM_COL32(10, 35, 100, 13), IM_COL32(30, 90, 220, 51), true);
+                }
             }
         }
 
