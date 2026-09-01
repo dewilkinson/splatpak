@@ -341,6 +341,7 @@ namespace Surfels
                     {
                         m_metrics.isGPUSortActive = true;
                         m_metrics.cpuSortTimeMs = 0.0f;
+                        m_gpuSortNeedsRun = true;
 
                         if (modelChanged)
                         {
@@ -354,7 +355,6 @@ namespace Surfels
                                 pDst[i] = {};
                             }
                             m_needUploadToGpu = true;
-                            m_gpuSortNeedsRun = true;
                         }
                     }
                     else
@@ -409,6 +409,7 @@ namespace Surfels
                     {
                         m_metrics.isGPUSortActive = true;
                         m_metrics.cpuSortTimeMs = 0.0f;
+                        m_gpuSortNeedsRun = true;
 
                         if (modelChanged)
                         {
@@ -422,10 +423,8 @@ namespace Surfels
                                 pDst[i] = {};
                             }
                             m_needUploadToGpu = true;
-                            m_gpuSortNeedsRun = true;
                         }
 
-                        m_gpuSortNeedsRun = true;
                         m_lastSortEye = eyePos;
                         m_lastSortForward = forward;
                     }
@@ -604,6 +603,7 @@ namespace Surfels
                     {
                         m_metrics.isGPUSortActive = true;
                         m_metrics.cpuSortTimeMs = 0.0f;
+                        m_gpuSortNeedsRun = true;
 
                         if (modelChanged)
                         {
@@ -619,7 +619,6 @@ namespace Surfels
                                 pDst[i].packedColor = 0xFFFF;
                             }
                             m_needUploadToGpu = true;
-                            m_gpuSortNeedsRun = true;
                         }
                     }
                     else
@@ -683,6 +682,7 @@ namespace Surfels
                     {
                         m_metrics.isGPUSortActive = true;
                         m_metrics.cpuSortTimeMs = 0.0f;
+                        m_gpuSortNeedsRun = true;
 
                         if (modelChanged)
                         {
@@ -698,10 +698,8 @@ namespace Surfels
                                 pDst[i].packedColor = 0xFFFF;
                             }
                             m_needUploadToGpu = true;
-                            m_gpuSortNeedsRun = true;
                         }
 
-                        m_gpuSortNeedsRun = true;
                         m_lastSortEye = eyePos;
                         m_lastSortForward = forward;
                     }
