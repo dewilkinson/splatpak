@@ -842,7 +842,7 @@ namespace Surfels
         }
         case PendingAction::OpenCompressedFile:
         {
-            std::string file = OpenFileDialog("Surfels Compressed Stream (*.sflw;*.json)\0*.sflw;*.json\0Surfels Binary Package (*.sflw)\0*.sflw\0Manifest File (*.json)\0*.json\0All Files (*.*)\0*.*\0");
+            std::string file = OpenFileDialog("Surfels Compressed Stream (*.sflw)\0*.sflw\0");
             if (!file.empty())
             {
                 LoadSFLWFile(file);
@@ -1145,7 +1145,7 @@ namespace Surfels
                 {
                     m_pendingAction = PendingAction::OpenFile;
                 }
-                if (ImGui::MenuItem("Open Compressed Model... (.sflw / .json)", "Ctrl+L"))
+                if (ImGui::MenuItem("Open Compressed Model... (.sflw)", "Ctrl+L"))
                 {
                     m_pendingAction = PendingAction::OpenCompressedFile;
                 }
