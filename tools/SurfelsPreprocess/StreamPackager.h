@@ -241,68 +241,90 @@ namespace Surfels
             while ((pos = content.find("\"id\":", pos)) != std::string::npos)
             {
                 ChunkManifest cm = {};
-                sscanf_s(content.c_str() + pos, "\"id\": %u,", &cm.chunkId);
+                sscanf_s(content.c_str() + pos, "\"id\": %u", &cm.chunkId);
 
-                size_t bminPos = content.find("\"bounds_min\": [", pos);
-                if (bminPos != std::string::npos)
+                size_t bminPos = content.find("\"bounds_min\":", pos);
+                if (bminPos != std::string::npos && bminPos < pos + 400)
                 {
-                    sscanf_s(content.c_str() + bminPos, "\"bounds_min\": [%f, %f, %f],", &cm.aabbMin.x, &cm.aabbMin.y, &cm.aabbMin.z);
+                    const char* p = strchr(content.c_str() + bminPos, '[');
+                    if (p) sscanf_s(p, "[%f, %f, %f]", &cm.aabbMin.x, &cm.aabbMin.y, &cm.aabbMin.z);
                 }
 
-                size_t bmaxPos = content.find("\"bounds_max\": [", pos);
-                if (bmaxPos != std::string::npos)
+                size_t bmaxPos = content.find("\"bounds_max\":", pos);
+                if (bmaxPos != std::string::npos && bmaxPos < pos + 400)
                 {
-                    sscanf_s(content.c_str() + bmaxPos, "\"bounds_max\": [%f, %f, %f],", &cm.aabbMax.x, &cm.aabbMax.y, &cm.aabbMax.z);
+                    const char* p = strchr(content.c_str() + bmaxPos, '[');
+                    if (p) sscanf_s(p, "[%f, %f, %f]", &cm.aabbMax.x, &cm.aabbMax.y, &cm.aabbMax.z);
                 }
 
-                size_t ctrPos = content.find("\"center\": [", pos);
-                if (ctrPos != std::string::npos)
+                size_t ctrPos = content.find("\"center\":", pos);
+                if (ctrPos != std::string::npos && ctrPos < pos + 400)
                 {
-                    sscanf_s(content.c_str() + ctrPos, "\"center\": [%f, %f, %f],", &cm.center.x, &cm.center.y, &cm.center.z);
+                    const char* p = strchr(content.c_str() + ctrPos, '[');
+                    if (p) sscanf_s(p, "[%f, %f, %f]", &cm.center.x, &cm.center.y, &cm.center.z);
                 }
 
                 size_t radPos = content.find("\"radius\":", pos);
-                if (radPos != std::string::npos)
+                if (radPos != std::string::npos && radPos < pos + 400)
                 {
-                    sscanf_s(content.c_str() + radPos, "\"radius\": %f,", &cm.boundingRadius);
+                    sscanf_s(content.c_str() + radPos, "\"radius\": %f", &cm.boundingRadius);
                 }
 
-                size_t lodsPos = content.find("\"lods\": [", pos);
-                size_t lodsEnd = content.find("]", lodsPos);
-                if (lodsPos != std::string::npos && lodsEnd != std::string::npos)
+                size_t lodsPos = content.find("\"lods\":", pos);
+                if (lodsPos != std::string::npos && lodsPos < pos + 400)
                 {
-                    size_t curLod = lodsPos;
-                    while ((curLod = content.find("{\"level\":", curLod)) != std::string::npos || (curLod = content.find("{ \"level\":", curLod)) != std::string::npos)
+                    size_t lodsEnd = content.find("]", lodsPos);
+                    if (lodsEnd != std::string::npos)
                     {
-                        if (curLod > lodsEnd) break;
-                        ChunkLODHeader lh = {};
+                        size_t curLod = lodsPos;
+                        while (curLod < lodsEnd)
+                        {
+                            size_t lvlPos = content.find("\"level\":", curLod);
+                            if (lvlPos == std::string::npos || lvlPos >= lodsEnd) break;
 
-                        size_t lPos = content.find("\"level\":", curLod);
-                        if (lPos != std::string::npos && lPos < lodsEnd) sscanf_s(content.c_str() + lPos, "\"level\": %u", &lh.lodLevel);
+                            ChunkLODHeader lh = {};
+                            sscanf_s(content.c_str() + lvlPos, "\"level\": %u", &lh.lodLevel);
 
-                        size_t cntPos = content.find("\"count\":", curLod);
-                        if (cntPos != std::string::npos && cntPos < lodsEnd) sscanf_s(content.c_str() + cntPos, "\"count\": %u", &lh.surfelCount);
+                            size_t cntPos = content.find("\"count\":", lvlPos);
+                            if (cntPos != std::string::npos && cntPos < lodsEnd)
+                                sscanf_s(content.c_str() + cntPos, "\"count\": %u", &lh.surfelCount);
 
-                        size_t rawPos = content.find("\"raw_bytes\":", curLod);
-                        if (rawPos != std::string::npos && rawPos < lodsEnd) sscanf_s(content.c_str() + rawPos, "\"raw_bytes\": %u", &lh.uncompressedByteSize);
+                            size_t rawPos = content.find("\"raw_bytes\":", lvlPos);
+                            if (rawPos != std::string::npos && rawPos < lodsEnd)
+                                sscanf_s(content.c_str() + rawPos, "\"raw_bytes\": %u", &lh.uncompressedByteSize);
 
-                        size_t cmpPos = content.find("\"compressed_bytes\":", curLod);
-                        if (cmpPos != std::string::npos && cmpPos < lodsEnd) sscanf_s(content.c_str() + cmpPos, "\"compressed_bytes\": %u", &lh.compressedByteSize);
+                            size_t cmpPos = content.find("\"compressed_bytes\":", lvlPos);
+                            if (cmpPos != std::string::npos && cmpPos < lodsEnd)
+                                sscanf_s(content.c_str() + cmpPos, "\"compressed_bytes\": %u", &lh.compressedByteSize);
 
-                        size_t offPos = content.find("\"offset\":", curLod);
-                        if (offPos != std::string::npos && offPos < lodsEnd) sscanf_s(content.c_str() + offPos, "\"offset\": %llu", &lh.fileOffset);
+                            size_t offPos = content.find("\"offset\":", lvlPos);
+                            if (offPos != std::string::npos && offPos < lodsEnd)
+                                sscanf_s(content.c_str() + offPos, "\"offset\": %llu", &lh.fileOffset);
 
-                        size_t errPos = content.find("\"error\":", curLod);
-                        if (errPos != std::string::npos && errPos < lodsEnd) sscanf_s(content.c_str() + errPos, "\"error\": %f", &lh.geometricError);
+                            size_t errPos = content.find("\"error\":", lvlPos);
+                            if (errPos != std::string::npos && errPos < lodsEnd)
+                                sscanf_s(content.c_str() + errPos, "\"error\": %f", &lh.geometricError);
 
-                        cm.lods.push_back(lh);
-                        curLod += 10;
+                            cm.lods.push_back(lh);
+
+                            size_t nextObj = content.find("}", lvlPos);
+                            if (nextObj == std::string::npos || nextObj >= lodsEnd) break;
+                            curLod = nextObj + 1;
+                        }
+                        pos = lodsEnd + 1;
                     }
+                    else
+                    {
+                        pos += 10;
+                    }
+                }
+                else
+                {
+                    pos += 10;
                 }
 
                 cm.numLODs = (uint32_t)cm.lods.size();
                 outPackage.chunkManifests.push_back(std::move(cm));
-                pos += 10;
             }
 
             outPackage.chunkLOD0Surfels.resize(outPackage.chunkManifests.size());

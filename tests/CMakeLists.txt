@@ -30,3 +30,12 @@ set_target_properties(CompressVenus PROPERTIES
     DEBUG_POSTFIX "d"
 )
 
+add_executable(TestLoadPackage ${CMAKE_CURRENT_SOURCE_DIR}/TestLoadPackage.cpp)
+set_target_properties(TestLoadPackage PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    FOLDER "Tests"
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_HOME_DIRECTORY}"
+    DEBUG_POSTFIX "d"
+)
+

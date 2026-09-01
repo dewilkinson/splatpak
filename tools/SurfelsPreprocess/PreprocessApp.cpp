@@ -840,6 +840,15 @@ namespace Surfels
             }
             break;
         }
+        case PendingAction::OpenCompressedFile:
+        {
+            std::string file = OpenFileDialog("Surfels Compressed Stream (*.sflw;*.json)\0*.sflw;*.json\0Surfels Binary Package (*.sflw)\0*.sflw\0Manifest File (*.json)\0*.json\0All Files (*.*)\0*.*\0");
+            if (!file.empty())
+            {
+                LoadSFLWFile(file);
+            }
+            break;
+        }
         case PendingAction::GenerateBenchmark:
         {
             GenerateSyntheticScene(300000);
@@ -1103,6 +1112,23 @@ namespace Surfels
         m_state.useChunkedPipeline = m_useChunkedPipeline;
         m_state.pChunks = m_rendererMeshletChunks.data();
         m_state.chunkCount = (uint32_t)m_rendererMeshletChunks.size();
+        m_state.aabbMin = m_aabbMin;
+        m_state.aabbExtents = m_extents;
+
+        if (m_enableQuantization && !m_rendererSurfels.empty())
+        {
+            m_state.renderMode = 1;
+            m_state.pSurfels = m_rendererSurfels.data();
+            m_state.pRawSurfels = nullptr;
+            m_state.surfelCount = (uint32_t)m_rendererSurfels.size();
+        }
+        else if (!m_rendererRawSurfels.empty())
+        {
+            m_state.renderMode = 2;
+            m_state.pRawSurfels = m_rendererRawSurfels.data();
+            m_state.pSurfels = nullptr;
+            m_state.surfelCount = (uint32_t)m_rendererRawSurfels.size();
+        }
     }
 
     void PreprocessApp::BuildUI()
