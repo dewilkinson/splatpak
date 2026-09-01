@@ -703,6 +703,9 @@ namespace Surfels
         m_deadbandZeroPercent = 64.5f; // Measured planar surface coefficient sparsification
 
         UpdatePreviewSurfels();
+
+        m_pipelineNeedsUpdate = false;
+        m_packageReadyToSave = true;
     }
 
     void PreprocessApp::UpdatePreviewSurfels()
@@ -808,6 +811,8 @@ namespace Surfels
         {
             m_statusMessage = "Success! Created " + outputPath + ".sflw (" + std::to_string(m_compressedSizeMB) + " MB) and " + outputPath + ".json";
             m_statusIsSuccess = true;
+            m_packageReadyToSave = false;
+            m_pipelineNeedsUpdate = false;
         }
         else
         {
@@ -1125,8 +1130,9 @@ namespace Surfels
 
                 ImGui::Separator();
                 bool hasModel = !m_rawSurfels.empty();
+                bool canSave = m_packageReadyToSave && hasModel && !m_pipelineNeedsUpdate;
 
-                if (ImGui::MenuItem("Save Compressed Package (.sflw)...", "Ctrl+S", false, hasModel))
+                if (ImGui::MenuItem("Save Compressed Package (.sflw)...", "Ctrl+S", false, canSave))
                 {
                     m_pendingAction = PendingAction::ExportStream;
                 }
@@ -1226,16 +1232,37 @@ namespace Surfels
                 m_pendingAction = PendingAction::GenerateBenchmark;
             }
 
-            bool hasModel = !m_rawSurfels.empty();
-            if (hasModel)
+            bool canSave = m_packageReadyToSave && !m_rawSurfels.empty() && !m_pipelineNeedsUpdate;
+            bool canUpdate = m_pipelineNeedsUpdate && !m_isPipelineProcessing && !m_rawSurfels.empty();
+
+            if (!m_rawSurfels.empty())
             {
                 ImGui::Spacing();
-                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.5f, 1.0f), "Save Compressed Model:");
-                if (ImGui::Button("Save Compressed Package (.sflw)...", ImVec2(-1, 28)))
+                ImGui::TextColored(canSave ? ImVec4(0.3f, 1.0f, 0.5f, 1.0f) : ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Save Compressed Model:");
+                if (!canSave)
                 {
-                    m_pendingAction = PendingAction::ExportStream;
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.2f, 0.2f, 0.4f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.2f, 0.2f, 0.4f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f, 0.2f, 0.2f, 0.4f));
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 0.5f));
+                    ImGui::Button("Save Compressed Package (.sflw)...", ImVec2(-1, 28));
+                    if (ImGui::IsItemHovered())
+                    {
+                        if (m_pipelineNeedsUpdate)
+                            ImGui::SetTooltip("Parameters have changed. Please click 'Update Pipeline' before saving.");
+                        else
+                            ImGui::SetTooltip("No unexported changes. Dataset is already saved.");
+                    }
+                    ImGui::PopStyleColor(4);
                 }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Compresses and saves the multi-resolution dataset into a .sflw binary stream container + .json manifest.");
+                else
+                {
+                    if (ImGui::Button("Save Compressed Package (.sflw)...", ImVec2(-1, 28)))
+                    {
+                        m_pendingAction = PendingAction::ExportStream;
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Compresses and saves the multi-resolution dataset into a .sflw binary stream container + .json manifest.");
+                }
             }
 
             ImGui::Spacing();
@@ -1251,26 +1278,57 @@ namespace Surfels
             {
                 ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Preprocessor Parameters:");
 
-                bool recompute = false;
                 float maxChunkSize = std::max(1.0f, std::max(m_extents.x, std::max(m_extents.y, m_extents.z)));
-                if (ImGui::SliderFloat("Octree Chunk (m)", &m_chunkSize, 0.05f, maxChunkSize, "%.2f meters")) recompute = true;
+                if (ImGui::SliderFloat("Octree Chunk (m)", &m_chunkSize, 0.05f, maxChunkSize, "%.2f meters"))
+                {
+                    m_pipelineNeedsUpdate = true;
+                    m_packageReadyToSave = false;
+                }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Spatial octree voxel bounding box diameter for streaming chunk partitioning.");
 
-                if (ImGui::SliderInt("Max Wavelet LODs", &m_maxLODLevels, 1, 6)) recompute = true;
+                if (ImGui::SliderInt("Max Wavelet LODs", &m_maxLODLevels, 1, 6))
+                {
+                    m_pipelineNeedsUpdate = true;
+                    m_packageReadyToSave = false;
+                }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Maximum number of multi-resolution LOD decimation levels in the wavelet pyramid.");
 
-                if (ImGui::SliderFloat("Deadband Zero (mm)", &m_deadbandThresholdMM, 0.0f, 50.0f, "%.1f mm")) recompute = true;
+                if (ImGui::SliderFloat("Deadband Zero (mm)", &m_deadbandThresholdMM, 0.0f, 50.0f, "%.1f mm"))
+                {
+                    m_pipelineNeedsUpdate = true;
+                    m_packageReadyToSave = false;
+                }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Sparsification deadband: wavelet detail coefficients below this threshold are zeroed out.");
 
-                if (recompute)
-                {
-                    RecomputeWaveletHierarchy();
-                }
-
                 ImGui::Spacing();
-                if (ImGui::Button("Recompute Preprocessing Pipeline", ImVec2(-1, 26)))
+
+                if (!canUpdate)
                 {
-                    RecomputeWaveletHierarchy();
+                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.2f, 0.2f, 0.4f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.2f, 0.2f, 0.4f));
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f, 0.2f, 0.2f, 0.4f));
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 0.5f));
+                    ImGui::Button("Update Pipeline", ImVec2(-1, 26));
+                    if (ImGui::IsItemHovered())
+                    {
+                        if (m_isPipelineProcessing)
+                            ImGui::SetTooltip("Pipeline execution in progress...");
+                        else
+                            ImGui::SetTooltip("Pipeline is up to date with current parameters. Adjust a slider above to re-enable.");
+                    }
+                    ImGui::PopStyleColor(4);
+                }
+                else
+                {
+                    if (ImGui::Button("Update Pipeline", ImVec2(-1, 26)))
+                    {
+                        m_isPipelineProcessing = true;
+                        RecomputeWaveletHierarchy();
+                        m_isPipelineProcessing = false;
+                        m_pipelineNeedsUpdate = false;
+                        m_packageReadyToSave = true;
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Recomputes spatial octree chunking, lifting wavelet decimation, and 8-byte GPU packing with updated parameters.");
                 }
 
                 ImGui::Spacing();

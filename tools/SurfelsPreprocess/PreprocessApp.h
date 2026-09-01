@@ -101,6 +101,9 @@ namespace Surfels
 
         int   m_activeTab               = 0;   // 0 = Preprocessor Studio, 1 = Stream Renderer
         bool  m_showPreprocessorPane    = true;// Toggle preprocessor pane visibility to reduce clutter in viewer mode
+        bool  m_pipelineNeedsUpdate     = false;// True when sliders/parameters change
+        bool  m_isPipelineProcessing    = false;// True while pipeline execution is in progress
+        bool  m_packageReadyToSave      = false;// True when pipeline processing has completed and is ready for export
         int   m_selectedPreviewLOD      = 0;
         int   m_maxPreviewLODs          = 4;
         float m_chunkSize               = 16.0f;
