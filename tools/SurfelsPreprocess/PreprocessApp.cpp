@@ -1586,15 +1586,25 @@ namespace Surfels
                         ImGui::SameLine();
                         if (ImGui::Button("5G (60 MB/s)", ImVec2(95, 22))) m_bandwidthThrottleMBps = 60.0f;
 
+                        float maxRingMB = std::max(512.0f, std::ceil(m_totalStreamBytes / (1024.0f * 1024.0f) * 2.0f));
                         ImGui::SliderFloat("Bandwidth Throttle", &m_bandwidthThrottleMBps, 0.2f, 100.0f, "%.1f MB/s");
-                        ImGui::SliderFloat("GPU Ring Buffer Size", &m_ringBufferCapacityMB, 4.0f, 256.0f, "%.0f MB");
+                        ImGui::SliderFloat("GPU Ring Buffer Size", &m_ringBufferCapacityMB, 4.0f, maxRingMB, "%.0f MB");
 
                         // Streaming Progress Bar
                         float deliveredMB = m_simulatedBytesDelivered / (1024.0f * 1024.0f);
                         float totalMB = m_totalStreamBytes / (1024.0f * 1024.0f);
                         char progressOverlay[128];
-                        snprintf(progressOverlay, sizeof(progressOverlay), "%.1f / %.1f MB (%.0f%%) | %u pts",
-                            deliveredMB, totalMB, m_streamRefinementProgress * 100.0f, m_state.surfelCount);
+                        bool isBufferCapped = (m_ringBufferCapacityMB * 1024.0f * 1024.0f < m_totalStreamBytes && m_simulatedBytesDelivered >= m_ringBufferCapacityMB * 1024.0f * 1024.0f);
+                        if (isBufferCapped)
+                        {
+                            snprintf(progressOverlay, sizeof(progressOverlay), "%.1f / %.1f MB (%.0f%% - VRAM Buffer Full) | %u pts",
+                                deliveredMB, totalMB, m_streamRefinementProgress * 100.0f, m_state.surfelCount);
+                        }
+                        else
+                        {
+                            snprintf(progressOverlay, sizeof(progressOverlay), "%.1f / %.1f MB (%.0f%%) | %u / %zu pts",
+                                deliveredMB, totalMB, m_streamRefinementProgress * 100.0f, m_state.surfelCount, m_fullStreamingSurfels.size());
+                        }
                         ImGui::ProgressBar(m_streamRefinementProgress, ImVec2(-1, 20), progressOverlay);
 
                         // Playback Controls
