@@ -761,34 +761,60 @@ namespace Surfels
         XMFLOAT3 rightDir(-cx, 0.0f, sx);
         XMFLOAT3 upDir(-sy * sx, cy, -sy * cx);
 
-        // Keyboard Controls: Arrow Keys Pan, W/S/PageUp/PageDown Zoom
+        bool shiftDown = io.KeyShift || ((GetKeyState(VK_SHIFT) & 0x8000) != 0) || ((GetKeyState(VK_LSHIFT) & 0x8000) != 0) || ((GetKeyState(VK_RSHIFT) & 0x8000) != 0);
+
+        // Keyboard Controls: Arrow Keys (Shift=Pan, No Shift=Rotate), W/S/PageUp/PageDown Zoom
         if (!io.WantCaptureKeyboard)
         {
-            // Arrow Keys: Pan Camera along View Plane
-            float keyPanSpeed = m_distance * 0.02f;
-            if (GetKeyState(VK_LEFT) & 0x8000)
+            if (shiftDown)
             {
-                m_target.x -= rightDir.x * keyPanSpeed;
-                m_target.y -= rightDir.y * keyPanSpeed;
-                m_target.z -= rightDir.z * keyPanSpeed;
+                // Shift + Arrow Keys: PAN Camera along View Plane
+                float keyPanSpeed = m_distance * 0.02f;
+                if (GetKeyState(VK_LEFT) & 0x8000)
+                {
+                    m_target.x -= rightDir.x * keyPanSpeed;
+                    m_target.y -= rightDir.y * keyPanSpeed;
+                    m_target.z -= rightDir.z * keyPanSpeed;
+                }
+                if (GetKeyState(VK_RIGHT) & 0x8000)
+                {
+                    m_target.x += rightDir.x * keyPanSpeed;
+                    m_target.y += rightDir.y * keyPanSpeed;
+                    m_target.z += rightDir.z * keyPanSpeed;
+                }
+                if (GetKeyState(VK_UP) & 0x8000)
+                {
+                    m_target.x += upDir.x * keyPanSpeed;
+                    m_target.y += upDir.y * keyPanSpeed;
+                    m_target.z += upDir.z * keyPanSpeed;
+                }
+                if (GetKeyState(VK_DOWN) & 0x8000)
+                {
+                    m_target.x -= upDir.x * keyPanSpeed;
+                    m_target.y -= upDir.y * keyPanSpeed;
+                    m_target.z -= upDir.z * keyPanSpeed;
+                }
             }
-            if (GetKeyState(VK_RIGHT) & 0x8000)
+            else
             {
-                m_target.x += rightDir.x * keyPanSpeed;
-                m_target.y += rightDir.y * keyPanSpeed;
-                m_target.z += rightDir.z * keyPanSpeed;
-            }
-            if (GetKeyState(VK_UP) & 0x8000)
-            {
-                m_target.x += upDir.x * keyPanSpeed;
-                m_target.y += upDir.y * keyPanSpeed;
-                m_target.z += upDir.z * keyPanSpeed;
-            }
-            if (GetKeyState(VK_DOWN) & 0x8000)
-            {
-                m_target.x -= upDir.x * keyPanSpeed;
-                m_target.y -= upDir.y * keyPanSpeed;
-                m_target.z -= upDir.z * keyPanSpeed;
+                // Arrow Keys without Shift: ROTATE / ORBIT Camera (Left/Right=Yaw, Up/Down=Pitch)
+                float keyRotSpeed = 0.03f;
+                if (GetKeyState(VK_LEFT) & 0x8000)
+                {
+                    m_yaw -= keyRotSpeed;
+                }
+                if (GetKeyState(VK_RIGHT) & 0x8000)
+                {
+                    m_yaw += keyRotSpeed;
+                }
+                if (GetKeyState(VK_UP) & 0x8000)
+                {
+                    m_pitch = std::max(-1.55f, std::min(1.55f, m_pitch - keyRotSpeed));
+                }
+                if (GetKeyState(VK_DOWN) & 0x8000)
+                {
+                    m_pitch = std::max(-1.55f, std::min(1.55f, m_pitch + keyRotSpeed));
+                }
             }
 
             // Zoom Keys: W/S, PageUp/PageDown, + / -
@@ -806,7 +832,6 @@ namespace Surfels
 
         if (!io.WantCaptureMouse)
         {
-            bool shiftDown = io.KeyShift || ((GetKeyState(VK_SHIFT) & 0x8000) != 0) || ((GetKeyState(VK_LSHIFT) & 0x8000) != 0) || ((GetKeyState(VK_RSHIFT) & 0x8000) != 0);
 
             if (shiftDown)
             {
