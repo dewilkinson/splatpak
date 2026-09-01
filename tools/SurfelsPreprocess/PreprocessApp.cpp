@@ -1036,7 +1036,8 @@ namespace Surfels
                         m_targetClusterCubes = cubeValues[currentPreset];
                         RebuildHeatmapClusterCubes();
                     }
-                    ImGui::SliderFloat("Heatmap Opacity", &m_heatmapOpacity, 0.05f, 0.75f, "%.2f");
+                    ImGui::SliderFloat("Heatmap Tint Opacity", &m_heatmapOpacity, 0.02f, 0.60f, "%.2f");
+                    ImGui::SliderFloat("Wireframe Opacity", &m_wireframeOpacity, 0.10f, 1.00f, "%.2f");
                     const char* schemes[] = { "Turbo (Classic Rainbow)", "Viridis (Perceptual)", "Plasma (Magma)" };
                     ImGui::Combo("Heatmap Color Scheme", &m_heatmapColorScheme, schemes, IM_ARRAYSIZE(schemes));
                     ImGui::Checkbox("Draw Cube Outlines", &m_showHeatmapWireframe);
@@ -1354,8 +1355,12 @@ namespace Surfels
         XMVECTOR at = XMLoadFloat3(&m_target);
         XMVECTOR worldUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
+        XMVECTOR forwardVec = XMVector3Normalize(XMVectorSubtract(at, eye));
+        XMFLOAT3 forward;
+        XMStoreFloat3(&forward, forwardVec);
+
         XMMATRIX view = XMMatrixLookAtRH(eye, at, worldUp);
-        float aspect = screenW / screenH;
+        float aspect = (m_Height > 0 && m_Width > 0) ? ((float)m_Width / (float)m_Height) : (screenW / screenH);
         XMMATRIX proj = XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect, 0.1f, 500.0f);
         XMMATRIX viewProj = XMMatrixMultiply(view, proj);
 
@@ -1365,12 +1370,12 @@ namespace Surfels
             XMVECTOR clipP = XMVector4Transform(XMVectorSetW(worldP, 1.0f), viewProj);
             XMFLOAT4 c;
             XMStoreFloat4(&c, clipP);
-            if (c.w < 0.1f)
+            if (c.w < 0.3f)
                 return false;
 
             float ndcX = c.x / c.w;
             float ndcY = c.y / c.w;
-            if (ndcX < -2.0f || ndcX > 2.0f || ndcY < -2.0f || ndcY > 2.0f)
+            if (ndcX < -1.15f || ndcX > 1.15f || ndcY < -1.15f || ndcY > 1.15f)
                 return false;
 
             outScreen.x = (ndcX * 0.5f + 0.5f) * screenW;
@@ -1504,7 +1509,11 @@ namespace Surfels
             };
             ImVec2 screenCorners[8];
             bool valid[8];
-            for (int i = 0; i < 8; i++) valid[i] = ProjectToScreen(corners[i], screenCorners[i]);
+            for (int i = 0; i < 8; i++)
+            {
+                valid[i] = ProjectToScreen(corners[i], screenCorners[i]);
+                if (!valid[i]) return; // Strictly require all corners to be on screen to prevent near-plane shooting artifacts!
+            }
 
             // Draw 6 Quad Faces
             const int faces[6][4] = {
@@ -1516,14 +1525,11 @@ namespace Surfels
             for (int f = 0; f < 6; f++)
             {
                 int i0 = faces[f][0], i1 = faces[f][1], i2 = faces[f][2], i3 = faces[f][3];
-                if (valid[i0] && valid[i1] && valid[i2] && valid[i3])
+                float dx = fabsf(screenCorners[i0].x - screenCorners[i2].x);
+                float dy = fabsf(screenCorners[i0].y - screenCorners[i2].y);
+                if (dx < screenW * 0.75f && dy < screenH * 0.75f)
                 {
-                    float dx = fabsf(screenCorners[i0].x - screenCorners[i2].x);
-                    float dy = fabsf(screenCorners[i0].y - screenCorners[i2].y);
-                    if (dx < screenW * 0.85f && dy < screenH * 0.85f)
-                    {
-                        drawList->AddQuadFilled(screenCorners[i0], screenCorners[i1], screenCorners[i2], screenCorners[i3], fillCol);
-                    }
+                    drawList->AddQuadFilled(screenCorners[i0], screenCorners[i1], screenCorners[i2], screenCorners[i3], fillCol);
                 }
             }
 
@@ -1538,14 +1544,11 @@ namespace Surfels
                 for (int i = 0; i < 12; i++)
                 {
                     int u = edges[i][0], v = edges[i][1];
-                    if (valid[u] && valid[v])
+                    float dx = fabsf(screenCorners[u].x - screenCorners[v].x);
+                    float dy = fabsf(screenCorners[u].y - screenCorners[v].y);
+                    if (dx < screenW * 0.75f && dy < screenH * 0.75f)
                     {
-                        float dx = fabsf(screenCorners[u].x - screenCorners[v].x);
-                        float dy = fabsf(screenCorners[u].y - screenCorners[v].y);
-                        if (dx < screenW * 0.85f && dy < screenH * 0.85f)
-                        {
-                            drawList->AddLine(screenCorners[u], screenCorners[v], edgeCol, 1.0f);
-                        }
+                        drawList->AddLine(screenCorners[u], screenCorners[v], edgeCol, 1.0f);
                     }
                 }
             }
@@ -1573,18 +1576,26 @@ namespace Surfels
             for (size_t idx : sortedCubes)
             {
                 const auto& cube = m_heatmapClusterCubes[idx];
+
+                // Near plane clipping distance check
+                float camDistProj = (cube.center.x - eyePos.x) * forward.x + 
+                                    (cube.center.y - eyePos.y) * forward.y + 
+                                    (cube.center.z - eyePos.z) * forward.z;
+                if (camDistProj < cube.boundingRadius + 0.35f)
+                    continue;
+
                 bool isVisible = IsSphereInFrustum(cube.center, cube.boundingRadius);
 
                 if (isVisible)
                 {
                     ImU32 fillCol = EvaluateHeatmapColor(cube.normDensity, m_heatmapOpacity, m_heatmapColorScheme);
-                    ImU32 edgeCol = EvaluateHeatmapColor(cube.normDensity, std::min(1.0f, m_heatmapOpacity * 2.5f + 0.35f), m_heatmapColorScheme);
+                    ImU32 edgeCol = EvaluateHeatmapColor(cube.normDensity, m_wireframeOpacity, m_heatmapColorScheme);
                     DrawFilledCube(cube.aabbMin, cube.aabbMax, fillCol, edgeCol, m_showHeatmapWireframe);
                 }
                 else if (m_showCulledChunks)
                 {
-                    ImU32 fillCol = IM_COL32(15, 30, 45, (uint8_t)(m_heatmapOpacity * 60.0f));
-                    ImU32 edgeCol = IM_COL32(35, 55, 75, 50);
+                    ImU32 fillCol = IM_COL32(15, 30, 45, (uint8_t)(m_heatmapOpacity * 40.0f));
+                    ImU32 edgeCol = IM_COL32(35, 55, 75, (uint8_t)(m_wireframeOpacity * 60.0f));
                     DrawFilledCube(cube.aabbMin, cube.aabbMax, fillCol, edgeCol, m_showHeatmapWireframe);
                 }
             }
