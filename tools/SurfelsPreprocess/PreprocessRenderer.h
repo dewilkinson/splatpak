@@ -141,8 +141,13 @@ namespace Surfels
         uint8_t*                   m_pChunkUploadBufferMapped = nullptr;
         ID3D12Resource*            m_pChunkGpuBuffer = nullptr;
         ID3D12Resource*            m_pSortedChunkIndicesGpuBuffer = nullptr;
+        ID3D12Resource*            m_pSortedChunkIndicesUploadBuffer = nullptr;
+        uint32_t*                  m_pSortedChunkIndicesUploadBufferMapped = nullptr;
         uint32_t                   m_chunkBufferCapacityBytes = 0;
         uint32_t                   m_sortedChunkIndicesCapacityBytes = 0;
+        bool                       m_lastGpuRadixSort = false;
+        bool                       m_lastUseChunkedPipeline = false;
+        bool                       m_needUploadChunkIndicesToGpu = false;
 
         // GPU-Driven Pipeline & Bitonic LDS Sorting PSOs
         ID3D12CommandSignature*    m_pCommandSignature = nullptr;

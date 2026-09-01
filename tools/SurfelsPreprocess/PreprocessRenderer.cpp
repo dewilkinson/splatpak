@@ -249,7 +249,11 @@ namespace Surfels
             return;
         }
 
-        bool modelChanged = (m_lastSurfelsPtr != activePtr) || (m_lastSurfelCount != surfelCount) || (m_lastRenderMode != renderMode);
+        bool pipelineModeChanged = (pState->gpuRadixSort != m_lastGpuRadixSort) || (pState->useChunkedPipeline != m_lastUseChunkedPipeline);
+        m_lastGpuRadixSort = pState->gpuRadixSort;
+        m_lastUseChunkedPipeline = pState->useChunkedPipeline;
+
+        bool modelChanged = (m_lastSurfelsPtr != activePtr) || (m_lastSurfelCount != surfelCount) || (m_lastRenderMode != renderMode) || pipelineModeChanged;
         float camMoved = std::abs(eyePos.x - m_lastSortEye.x) + std::abs(eyePos.y - m_lastSortEye.y) + std::abs(eyePos.z - m_lastSortEye.z);
         float forwardMoved = std::abs(forward.x - m_lastSortForward.x) + std::abs(forward.y - m_lastSortForward.y) + std::abs(forward.z - m_lastSortForward.z);
         bool needsSort = modelChanged || (camMoved > 0.05f) || (forwardMoved > 0.02f);
@@ -328,7 +332,7 @@ namespace Surfels
 
             if (surfelCount > 0 && pRawSurfels != nullptr && m_pRawSurfelBufferMapped != nullptr)
             {
-                if (pState->gpuRadixSort)
+                if (pState->useChunkedPipeline || pState->gpuRadixSort)
                 {
                     m_metrics.isGPUSortActive = true;
                     m_metrics.cpuSortTimeMs = 0.0f;
@@ -525,7 +529,7 @@ namespace Surfels
 
             if (surfelCount > 0 && pSurfels != nullptr && m_pSurfelBufferMapped != nullptr)
             {
-                if (pState->gpuRadixSort)
+                if (pState->useChunkedPipeline || pState->gpuRadixSort)
                 {
                     m_metrics.isGPUSortActive = true;
                     m_metrics.cpuSortTimeMs = 0.0f;
@@ -643,7 +647,8 @@ namespace Surfels
 
                     // 5. Gather sorted packed surfels directly into mapped GPU upload buffer
                     PackedSurfelGPU* pDst = reinterpret_cast<PackedSurfelGPU*>(m_pSurfelBufferMapped);
-                    for (uint32_t i = 0; i < surfelCount; i++)
+                    #pragma omp parallel for
+                    for (int i = 0; i < (int)surfelCount; i++)
                     {
                         pDst[i] = pSurfels[m_sortIndicesA[i]];
                     }
@@ -707,10 +712,21 @@ namespace Surfels
                     &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
                     D3D12_HEAP_FLAG_NONE,
                     &idxBufDesc,
-                    D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE,
+                    D3D12_RESOURCE_STATE_COPY_DEST,
                     nullptr,
                     IID_PPV_ARGS(&m_pSortedChunkIndicesGpuBuffer)));
                 SetName(m_pSortedChunkIndicesGpuBuffer, "PreprocessRenderer::m_pSortedChunkIndicesGpuBuffer");
+
+                if (m_pSortedChunkIndicesUploadBuffer) { m_pSortedChunkIndicesUploadBuffer->Unmap(0, nullptr); m_pSortedChunkIndicesUploadBuffer->Release(); m_pSortedChunkIndicesUploadBuffer = nullptr; }
+                ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
+                    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+                    D3D12_HEAP_FLAG_NONE,
+                    &CD3DX12_RESOURCE_DESC::Buffer(idxBytes),
+                    D3D12_RESOURCE_STATE_GENERIC_READ,
+                    nullptr,
+                    IID_PPV_ARGS(&m_pSortedChunkIndicesUploadBuffer)));
+                SetName(m_pSortedChunkIndicesUploadBuffer, "PreprocessRenderer::m_pSortedChunkIndicesUploadBuffer");
+                m_pSortedChunkIndicesUploadBuffer->Map(0, nullptr, reinterpret_cast<void**>(&m_pSortedChunkIndicesUploadBufferMapped));
 
                 m_pChunkUploadBuffer->Map(0, nullptr, reinterpret_cast<void**>(&m_pChunkUploadBufferMapped));
                 m_chunkBufferCapacityBytes = chunkBytes;
@@ -729,6 +745,39 @@ namespace Surfels
                 {
                     pDstChunks[i] = {};
                 }
+            }
+
+            // If CPU sort is active in Chunked Pipeline, compute chunk sorting on CPU and prepare upload
+            if (pState->useChunkedPipeline && !pState->gpuRadixSort && needsSort && m_pSortedChunkIndicesUploadBufferMapped != nullptr)
+            {
+                auto sortStart = std::chrono::high_resolution_clock::now();
+                std::vector<std::pair<float, uint32_t>> chunkDists(chunkCount);
+                #pragma omp parallel for
+                for (int i = 0; i < (int)chunkCount; i++)
+                {
+                    const auto& c = pState->pChunks[i];
+                    float d = (c.center.x - eyePos.x) * forward.x + (c.center.y - eyePos.y) * forward.y + (c.center.z - eyePos.z) * forward.z;
+                    chunkDists[i] = { d, (uint32_t)i };
+                }
+
+                // Descending sort (far to near)
+                std::sort(chunkDists.begin(), chunkDists.end(), [](const auto& a, const auto& b) {
+                    return a.first > b.first;
+                });
+
+                for (uint32_t i = 0; i < chunkCount; i++)
+                {
+                    m_pSortedChunkIndicesUploadBufferMapped[i] = chunkDists[i].second;
+                }
+                for (uint32_t i = chunkCount; i < numChunkElements; i++)
+                {
+                    m_pSortedChunkIndicesUploadBufferMapped[i] = 0;
+                }
+
+                m_needUploadChunkIndicesToGpu = true;
+                auto sortEnd = std::chrono::high_resolution_clock::now();
+                m_metrics.cpuSortTimeMs = std::chrono::duration<float, std::milli>(sortEnd - sortStart).count();
+                m_metrics.wasSortedThisFrame = true;
             }
         }
     }
@@ -1016,6 +1065,14 @@ namespace Surfels
                         m_gpuSortNeedsRun = false;
                     }
                 }
+                else if (m_needUploadChunkIndicesToGpu && m_pSortedChunkIndicesGpuBuffer && m_pSortedChunkIndicesUploadBuffer)
+                {
+                    pCmdLst->CopyResource(m_pSortedChunkIndicesGpuBuffer, m_pSortedChunkIndicesUploadBuffer);
+                    D3D12_RESOURCE_BARRIER idxToSrv = CD3DX12_RESOURCE_BARRIER::Transition(
+                        m_pSortedChunkIndicesGpuBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+                    pCmdLst->ResourceBarrier(1, &idxToSrv);
+                    m_needUploadChunkIndicesToGpu = false;
+                }
 
                 // Transition surfel buffer to ALL_SHADER_RESOURCE for rendering
                 D3D12_RESOURCE_BARRIER toSrv = CD3DX12_RESOURCE_BARRIER::Transition(
@@ -1037,9 +1094,17 @@ namespace Surfels
                 cmdList6->DispatchMesh(asGroupCount, 1, 1);
 
                 // Transition back to COPY_DEST for next frame
-                D3D12_RESOURCE_BARRIER toCopyDest = CD3DX12_RESOURCE_BARRIER::Transition(
+                D3D12_RESOURCE_BARRIER barriersToDest[2] = {};
+                barriersToDest[0] = CD3DX12_RESOURCE_BARRIER::Transition(
                     pGpuRes, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
-                pCmdLst->ResourceBarrier(1, &toCopyDest);
+                uint32_t barrierCount = 1;
+                if (!pState->gpuRadixSort)
+                {
+                    barriersToDest[1] = CD3DX12_RESOURCE_BARRIER::Transition(
+                        m_pSortedChunkIndicesGpuBuffer, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+                    barrierCount = 2;
+                }
+                pCmdLst->ResourceBarrier(barrierCount, barriersToDest);
             }
             // Execute Flat GPU LDS Key-Index Sorting Pipeline
             else if (pState->gpuRadixSort && m_pProjectKeysPSO && m_pBitonicLocalSortPSO && m_pBitonicGlobalSortPSO && m_pBitonicLocalMergePSO && m_pGatherSurfelsPSO && m_pComputeRootSignature && pGpuOutRes != nullptr && m_pGPUSortPairBuffer != nullptr)
