@@ -1442,6 +1442,9 @@ namespace Surfels
         XMVECTOR eye = XMLoadFloat3(&eyePos);
         XMVECTOR at = XMLoadFloat3(&m_target);
         XMVECTOR worldUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+        XMVECTOR forward = XMVector3Normalize(XMVectorSubtract(at, eye));
+        XMFLOAT3 forwardNorm;
+        XMStoreFloat3(&forwardNorm, forward);
 
         XMMATRIX view = XMMatrixLookAtRH(eye, at, worldUp);
         float aspect = io.DisplaySize.y > 0.0f ? (io.DisplaySize.x / io.DisplaySize.y) : (screenW / screenH);
@@ -1624,7 +1627,7 @@ namespace Surfels
             }
         };
 
-        // 1. Density Heatmap Spatial Blocks (Back-to-front depth sorted by detached camera view direction)
+        // 1. Density Heatmap Spatial Blocks (Back-to-front depth sorted by viewer camera view direction)
         if (m_showClusterHeatmap && !m_heatmapClusterCubes.empty())
         {
             std::vector<size_t> sortedCubes(m_heatmapClusterCubes.size());
@@ -1633,12 +1636,12 @@ namespace Surfels
             std::sort(sortedCubes.begin(), sortedCubes.end(), [&](size_t a, size_t b) {
                 const auto& ca = m_heatmapClusterCubes[a];
                 const auto& cb = m_heatmapClusterCubes[b];
-                float da = (ca.center.x - cullEyePos.x) * cullForward.x +
-                           (ca.center.y - cullEyePos.y) * cullForward.y +
-                           (ca.center.z - cullEyePos.z) * cullForward.z;
-                float db = (cb.center.x - cullEyePos.x) * cullForward.x +
-                           (cb.center.y - cullEyePos.y) * cullForward.y +
-                           (cb.center.z - cullEyePos.z) * cullForward.z;
+                float da = (ca.center.x - eyePos.x) * forwardNorm.x +
+                           (ca.center.y - eyePos.y) * forwardNorm.y +
+                           (ca.center.z - eyePos.z) * forwardNorm.z;
+                float db = (cb.center.x - eyePos.x) * forwardNorm.x +
+                           (cb.center.y - eyePos.y) * forwardNorm.y +
+                           (cb.center.z - eyePos.z) * forwardNorm.z;
                 return da > db;
             });
 

@@ -846,6 +846,8 @@ namespace Surfels
         XMVECTOR worldUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
 
         XMVECTOR forward = XMVector3Normalize(XMVectorSubtract(at, eye));
+        XMFLOAT3 forwardNorm;
+        XMStoreFloat3(&forwardNorm, forward);
         XMVECTOR right = XMVector3Normalize(XMVector3Cross(worldUp, forward));
         XMVECTOR camUp = XMVector3Cross(forward, right);
 
@@ -876,7 +878,8 @@ namespace Surfels
         XMMATRIX cProj = XMMatrixPerspectiveFovRH(XM_PIDIV4, pState->aspectRatio, 0.1f, 500.0f);
         XMMATRIX cViewProj = XMMatrixMultiply(cView, cProj);
 
-        UpdateSurfelBuffers(pState, cullEyePos, cullForwardNorm);
+        // Depth sorting is ALWAYS executed from the active viewer's perspective
+        UpdateSurfelBuffers(pState, eyePos, forwardNorm);
         uint32_t surfelCount = pState->surfelCount;
 
         SurfelsCB* pCB = nullptr;
