@@ -562,36 +562,24 @@ namespace Surfels
         // Camera Framing
         m_target = m_center;
         float maxDim = std::max(m_extents.x, std::max(m_extents.y, m_extents.z));
-        m_distance = std::max(1.0f, maxDim * 1.8f);
+        m_distance = std::max(0.1f, maxDim * 0.85f);
 
-        // Populate dedicated renderer streaming buffers (independent memory copy)
+        // Splat sizing & orientation
+        m_state.splatRadius = std::max(0.005f, maxDim * 0.003f);
+
+        // Collect all raw surfels from package
         m_rendererSurfels.clear();
-        m_rendererMeshletChunks.clear();
         m_rendererOctreeChunks.clear();
+        m_chunks.clear();
 
-        uint32_t currentOffset = 0;
         for (size_t c = 0; c < m_loadedPackage.chunkManifests.size(); c++)
         {
             const auto& cm = m_loadedPackage.chunkManifests[c];
             const auto& surfels = m_loadedPackage.chunkLOD0Surfels[c];
 
-            MeshletChunkGPU chunk = {};
-            chunk.center = cm.center;
-            chunk.boundingRadius = cm.boundingRadius;
-            chunk.aabbMin = cm.aabbMin;
-            chunk.aabbExtents = XMFLOAT3(
-                cm.aabbMax.x - cm.aabbMin.x,
-                cm.aabbMax.y - cm.aabbMin.y,
-                cm.aabbMax.z - cm.aabbMin.z
-            );
-            chunk.surfelOffset = currentOffset;
-            chunk.surfelCount = (uint32_t)surfels.size();
-
-            m_rendererMeshletChunks.push_back(chunk);
             m_rendererSurfels.insert(m_rendererSurfels.end(), surfels.begin(), surfels.end());
-            currentOffset += (uint32_t)surfels.size();
 
-            // Populate octree boxes for renderer visualizer
+            // Octree bounding boxes for visualizer
             ChunkData cd;
             cd.chunkId = cm.chunkId;
             cd.center = cm.center;
@@ -599,10 +587,23 @@ namespace Surfels
             cd.aabbMin = cm.aabbMin;
             cd.aabbMax = cm.aabbMax;
             m_rendererOctreeChunks.push_back(cd);
+            m_chunks.push_back(cd);
         }
 
-        // Unquantize surfels for Mode 2 and visualizer
+        // Unquantize surfels to raw format
         m_rendererRawSurfels = Quantizer::UnquantizeSurfels(m_rendererSurfels, m_aabbMin, m_aabbMax);
+
+        // Partition into GPU micro-meshlets (64 surfels per meshlet chunk)
+        m_rendererMeshletChunks.clear();
+        SpatialOctree::PartitionIntoMeshletChunks(
+            m_rendererRawSurfels,
+            m_rendererMeshletChunks,
+            64,
+            m_enableMortonOrder
+        );
+
+        // Re-quantize to guarantee exact alignment with meshlet ordering
+        m_rendererSurfels = Quantizer::QuantizeSurfels(m_rendererRawSurfels, m_aabbMin, m_aabbMax);
 
         // Populate wavelet result metadata for LOD display table
         m_waveletResult.lodLevels.clear();
@@ -635,7 +636,7 @@ namespace Surfels
 
         m_activeTab = 1; // Switch directly to Stream Renderer tab
 
-        m_statusMessage = "Successfully loaded compressed model: " + filepath + " (" + std::to_string(m_rendererSurfels.size()) + " surfels across " + std::to_string(m_rendererMeshletChunks.size()) + " chunks, " + std::to_string(m_compressedSizeMB) + " MB)";
+        m_statusMessage = "Successfully loaded compressed model: " + filepath + " (" + std::to_string(m_rendererSurfels.size()) + " surfels across " + std::to_string(m_rendererMeshletChunks.size()) + " meshlets, " + std::to_string(m_compressedSizeMB) + " MB)";
         m_statusIsSuccess = true;
         return true;
     }
