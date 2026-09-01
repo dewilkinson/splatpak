@@ -31,6 +31,7 @@ namespace Surfels
         bool LoadFile(const std::string& filepath);
         bool LoadPLYFile(const std::string& filepath);
         bool LoadSPLATFile(const std::string& filepath);
+        bool LoadSFLWFile(const std::string& filepath);
         void GenerateSyntheticScene(uint32_t count = 300000);
         void ProcessAndExport(const std::string& outputPath);
         void CloseDataset();
@@ -40,6 +41,7 @@ namespace Surfels
         {
             None,
             OpenFile,
+            OpenCompressedFile,
             GenerateBenchmark,
             ExportStream,
             ExportPLY,
@@ -68,15 +70,20 @@ namespace Surfels
         // is set to break on every C++ exception.
         bool m_deviceLost = false;
 
-        // Current loaded model data
+        // Preprocessor Working Structures (Source Model -> Wavelet Hierarchy)
         std::string               m_loadedFilePath = "No dataset loaded";
         std::vector<SurfelVertex> m_rawSurfels;
         std::vector<ChunkData>    m_chunks;
-        std::vector<MeshletChunkGPU> m_meshletChunks;
         WaveletDecompositionResult m_waveletResult;
 
-        // Packed preview surfels for currently selected preview LOD
-        std::vector<PackedSurfelGPU> m_previewSurfels;
+        // Renderer Active Streaming Buffers (Decoupled Independent Copy for GPU & Viewport)
+        bool                      m_isLoadedFromSFLW = false;
+        std::string               m_rendererSourceDescription = "No model active";
+        StreamPackager::SFLWPackageData m_loadedPackage;
+        std::vector<PackedSurfelGPU>    m_rendererSurfels;
+        std::vector<SurfelVertex>       m_rendererRawSurfels;
+        std::vector<MeshletChunkGPU>    m_rendererMeshletChunks;
+        std::vector<ChunkData>          m_rendererOctreeChunks;
 
         // Bounding box & stats
         XMFLOAT3 m_aabbMin = { 0, 0, 0 };
@@ -92,6 +99,7 @@ namespace Surfels
         bool  m_enableWavelet      = true; // Checkbox: "Wavelet Transform" (Enabled by default)
         bool  m_enableQuantization = true; // Checkbox: "Apply Quantization" (Enabled by default)
 
+        int   m_activeTab           = 0;   // 0 = Preprocessor Studio, 1 = Stream Renderer
         int   m_selectedPreviewLOD  = 0;
         int   m_maxPreviewLODs      = 4;
         float m_chunkSize           = 16.0f;

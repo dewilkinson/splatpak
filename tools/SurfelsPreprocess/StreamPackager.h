@@ -177,6 +177,166 @@ namespace Surfels
 
             return true;
         }
+
+        struct SFLWPackageData
+        {
+            SFLWFileHeader header = {};
+            std::vector<ChunkManifest> chunkManifests;
+            std::vector<std::vector<PackedSurfelGPU>> chunkLOD0Surfels;
+            uint64_t totalSurfels = 0;
+            size_t totalCompressedBytes = 0;
+        };
+
+        static bool LoadPackage(const std::string& inputPath, SFLWPackageData& outPackage)
+        {
+            std::string sflwPath = inputPath;
+            std::string jsonPath = inputPath;
+
+            std::string lowerPath = inputPath;
+            std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::tolower);
+            if (lowerPath.size() >= 5 && lowerPath.substr(lowerPath.size() - 5) == ".sflw")
+            {
+                sflwPath = inputPath;
+                jsonPath = inputPath.substr(0, inputPath.size() - 5) + ".json";
+            }
+            else if (lowerPath.size() >= 5 && lowerPath.substr(lowerPath.size() - 5) == ".json")
+            {
+                jsonPath = inputPath;
+                sflwPath = inputPath.substr(0, inputPath.size() - 5) + ".sflw";
+            }
+            else
+            {
+                sflwPath = inputPath + ".sflw";
+                jsonPath = inputPath + ".json";
+            }
+
+            std::ifstream sflwIn(sflwPath, std::ios::binary);
+            if (!sflwIn.is_open())
+            {
+                std::cerr << "Failed to open .sflw file: " << sflwPath << std::endl;
+                return false;
+            }
+
+            sflwIn.read(reinterpret_cast<char*>(&outPackage.header), sizeof(SFLWFileHeader));
+            if (outPackage.header.magic != SFLW_MAGIC)
+            {
+                std::cerr << "Invalid SFLW magic header in " << sflwPath << std::endl;
+                return false;
+            }
+
+            std::ifstream jsonIn(jsonPath);
+            if (!jsonIn.is_open())
+            {
+                std::cerr << "Failed to open companion .json manifest: " << jsonPath << std::endl;
+                return false;
+            }
+
+            std::string content((std::istreambuf_iterator<char>(jsonIn)), std::istreambuf_iterator<char>());
+            jsonIn.close();
+
+            outPackage.chunkManifests.clear();
+            size_t pos = content.find("\"chunks\":");
+            if (pos == std::string::npos) return false;
+
+            while ((pos = content.find("\"id\":", pos)) != std::string::npos)
+            {
+                ChunkManifest cm = {};
+                sscanf_s(content.c_str() + pos, "\"id\": %u,", &cm.chunkId);
+
+                size_t bminPos = content.find("\"bounds_min\": [", pos);
+                if (bminPos != std::string::npos)
+                {
+                    sscanf_s(content.c_str() + bminPos, "\"bounds_min\": [%f, %f, %f],", &cm.aabbMin.x, &cm.aabbMin.y, &cm.aabbMin.z);
+                }
+
+                size_t bmaxPos = content.find("\"bounds_max\": [", pos);
+                if (bmaxPos != std::string::npos)
+                {
+                    sscanf_s(content.c_str() + bmaxPos, "\"bounds_max\": [%f, %f, %f],", &cm.aabbMax.x, &cm.aabbMax.y, &cm.aabbMax.z);
+                }
+
+                size_t ctrPos = content.find("\"center\": [", pos);
+                if (ctrPos != std::string::npos)
+                {
+                    sscanf_s(content.c_str() + ctrPos, "\"center\": [%f, %f, %f],", &cm.center.x, &cm.center.y, &cm.center.z);
+                }
+
+                size_t radPos = content.find("\"radius\":", pos);
+                if (radPos != std::string::npos)
+                {
+                    sscanf_s(content.c_str() + radPos, "\"radius\": %f,", &cm.boundingRadius);
+                }
+
+                size_t lodsPos = content.find("\"lods\": [", pos);
+                size_t lodsEnd = content.find("]", lodsPos);
+                if (lodsPos != std::string::npos && lodsEnd != std::string::npos)
+                {
+                    size_t curLod = lodsPos;
+                    while ((curLod = content.find("{\"level\":", curLod)) != std::string::npos || (curLod = content.find("{ \"level\":", curLod)) != std::string::npos)
+                    {
+                        if (curLod > lodsEnd) break;
+                        ChunkLODHeader lh = {};
+
+                        size_t lPos = content.find("\"level\":", curLod);
+                        if (lPos != std::string::npos && lPos < lodsEnd) sscanf_s(content.c_str() + lPos, "\"level\": %u", &lh.lodLevel);
+
+                        size_t cntPos = content.find("\"count\":", curLod);
+                        if (cntPos != std::string::npos && cntPos < lodsEnd) sscanf_s(content.c_str() + cntPos, "\"count\": %u", &lh.surfelCount);
+
+                        size_t rawPos = content.find("\"raw_bytes\":", curLod);
+                        if (rawPos != std::string::npos && rawPos < lodsEnd) sscanf_s(content.c_str() + rawPos, "\"raw_bytes\": %u", &lh.uncompressedByteSize);
+
+                        size_t cmpPos = content.find("\"compressed_bytes\":", curLod);
+                        if (cmpPos != std::string::npos && cmpPos < lodsEnd) sscanf_s(content.c_str() + cmpPos, "\"compressed_bytes\": %u", &lh.compressedByteSize);
+
+                        size_t offPos = content.find("\"offset\":", curLod);
+                        if (offPos != std::string::npos && offPos < lodsEnd) sscanf_s(content.c_str() + offPos, "\"offset\": %llu", &lh.fileOffset);
+
+                        size_t errPos = content.find("\"error\":", curLod);
+                        if (errPos != std::string::npos && errPos < lodsEnd) sscanf_s(content.c_str() + errPos, "\"error\": %f", &lh.geometricError);
+
+                        cm.lods.push_back(lh);
+                        curLod += 10;
+                    }
+                }
+
+                cm.numLODs = (uint32_t)cm.lods.size();
+                outPackage.chunkManifests.push_back(std::move(cm));
+                pos += 10;
+            }
+
+            outPackage.chunkLOD0Surfels.resize(outPackage.chunkManifests.size());
+            outPackage.totalSurfels = 0;
+            outPackage.totalCompressedBytes = 0;
+
+            for (size_t c = 0; c < outPackage.chunkManifests.size(); c++)
+            {
+                const auto& cm = outPackage.chunkManifests[c];
+                if (cm.lods.empty()) continue;
+
+                const auto& lod0 = cm.lods[0];
+                outPackage.totalCompressedBytes += lod0.compressedByteSize;
+                std::vector<uint8_t> compressedBytes(lod0.compressedByteSize);
+                sflwIn.seekg(lod0.fileOffset, std::ios::beg);
+                sflwIn.read(reinterpret_cast<char*>(compressedBytes.data()), lod0.compressedByteSize);
+
+                std::vector<uint8_t> shuffled(lod0.uncompressedByteSize);
+                if (ByteShuffle::DecompressShuffled(compressedBytes.data(), compressedBytes.size(), shuffled.data(), lod0.uncompressedByteSize))
+                {
+                    outPackage.chunkLOD0Surfels[c].resize(lod0.surfelCount);
+                    ByteShuffle::Unshuffle(
+                        shuffled.data(),
+                        reinterpret_cast<uint8_t*>(outPackage.chunkLOD0Surfels[c].data()),
+                        lod0.surfelCount,
+                        sizeof(PackedSurfelGPU)
+                    );
+                    outPackage.totalSurfels += lod0.surfelCount;
+                }
+            }
+
+            sflwIn.close();
+            return true;
+        }
     };
 }
 

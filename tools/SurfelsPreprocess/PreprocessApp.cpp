@@ -180,8 +180,13 @@ namespace Surfels
         m_rawSurfels.clear();
         m_chunks.clear();
         m_waveletResult.lodLevels.clear();
-        m_previewSurfels.clear();
+        m_rendererSurfels.clear();
+        m_rendererRawSurfels.clear();
+        m_rendererMeshletChunks.clear();
+        m_rendererOctreeChunks.clear();
         m_loadedFilePath = "No dataset loaded";
+        m_rendererSourceDescription = "No model active";
+        m_isLoadedFromSFLW = false;
         m_inputPathBuf[0] = '\0';
         m_aabbMin = { 0, 0, 0 };
         m_aabbMax = { 0, 0, 0 };
@@ -192,7 +197,11 @@ namespace Surfels
         m_compressionRatio = 1.0f;
         m_deadbandZeroPercent = 0.0f;
         m_state.pSurfels = nullptr;
+        m_state.pRawSurfels = nullptr;
+        m_state.pChunks = nullptr;
         m_state.surfelCount = 0;
+        m_state.chunkCount = 0;
+        if (m_pRenderer) m_pRenderer->FlushGPU();
         m_statusMessage = "Dataset closed. Use File -> Open to load a model.";
         m_statusIsSuccess = true;
     }
@@ -368,7 +377,11 @@ namespace Surfels
     {
         std::string lowerPath = filepath;
         std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::tolower);
-        if (lowerPath.size() >= 6 && lowerPath.substr(lowerPath.size() - 6) == ".splat")
+        if (lowerPath.size() >= 5 && (lowerPath.substr(lowerPath.size() - 5) == ".sflw" || lowerPath.substr(lowerPath.size() - 5) == ".json"))
+        {
+            return LoadSFLWFile(filepath);
+        }
+        else if (lowerPath.size() >= 6 && lowerPath.substr(lowerPath.size() - 6) == ".splat")
         {
             return LoadSPLATFile(filepath);
         }
@@ -376,6 +389,116 @@ namespace Surfels
         {
             return LoadPLYFile(filepath);
         }
+    }
+
+    bool PreprocessApp::LoadSFLWFile(const std::string& filepath)
+    {
+        m_statusMessage = "Loading compressed surfel stream package (.sflw)...";
+        if (!StreamPackager::LoadPackage(filepath, m_loadedPackage))
+        {
+            m_statusMessage = "Failed to load compressed package: " + filepath;
+            m_statusIsSuccess = false;
+            return false;
+        }
+
+        m_loadedFilePath = filepath;
+        m_rendererSourceDescription = filepath;
+        strncpy_s(m_inputPathBuf, sizeof(m_inputPathBuf), filepath.c_str(), _TRUNCATE);
+        m_isLoadedFromSFLW = true;
+
+        // Set Bounding Box from package header
+        m_aabbMin = m_loadedPackage.header.globalBoundsMin;
+        m_aabbMax = m_loadedPackage.header.globalBoundsMax;
+        m_center = XMFLOAT3(
+            (m_aabbMin.x + m_aabbMax.x) * 0.5f,
+            (m_aabbMin.y + m_aabbMax.y) * 0.5f,
+            (m_aabbMin.z + m_aabbMax.z) * 0.5f
+        );
+        m_extents = XMFLOAT3(
+            m_aabbMax.x - m_aabbMin.x,
+            m_aabbMax.y - m_aabbMin.y,
+            m_aabbMax.z - m_aabbMin.z
+        );
+
+        // Camera Framing
+        m_target = m_center;
+        float maxDim = std::max(m_extents.x, std::max(m_extents.y, m_extents.z));
+        m_distance = std::max(1.0f, maxDim * 1.8f);
+
+        // Populate dedicated renderer streaming buffers (independent memory copy)
+        m_rendererSurfels.clear();
+        m_rendererMeshletChunks.clear();
+        m_rendererOctreeChunks.clear();
+
+        uint32_t currentOffset = 0;
+        for (size_t c = 0; c < m_loadedPackage.chunkManifests.size(); c++)
+        {
+            const auto& cm = m_loadedPackage.chunkManifests[c];
+            const auto& surfels = m_loadedPackage.chunkLOD0Surfels[c];
+
+            MeshletChunkGPU chunk = {};
+            chunk.center = cm.center;
+            chunk.boundingRadius = cm.boundingRadius;
+            chunk.aabbMin = cm.aabbMin;
+            chunk.aabbExtents = XMFLOAT3(
+                cm.aabbMax.x - cm.aabbMin.x,
+                cm.aabbMax.y - cm.aabbMin.y,
+                cm.aabbMax.z - cm.aabbMin.z
+            );
+            chunk.surfelOffset = currentOffset;
+            chunk.surfelCount = (uint32_t)surfels.size();
+
+            m_rendererMeshletChunks.push_back(chunk);
+            m_rendererSurfels.insert(m_rendererSurfels.end(), surfels.begin(), surfels.end());
+            currentOffset += (uint32_t)surfels.size();
+
+            // Populate octree boxes for renderer visualizer
+            ChunkData cd;
+            cd.chunkId = cm.chunkId;
+            cd.center = cm.center;
+            cd.boundingRadius = cm.boundingRadius;
+            cd.aabbMin = cm.aabbMin;
+            cd.aabbMax = cm.aabbMax;
+            m_rendererOctreeChunks.push_back(cd);
+        }
+
+        // Unquantize surfels for Mode 2 and visualizer
+        m_rendererRawSurfels = Quantizer::UnquantizeSurfels(m_rendererSurfels, m_aabbMin, m_aabbMax);
+
+        // Populate wavelet result metadata for LOD display table
+        m_waveletResult.lodLevels.clear();
+        WaveletLODLevel lod0;
+        lod0.level = 0;
+        lod0.surfels = m_rendererRawSurfels;
+        lod0.geometricError = 0.0f;
+        m_waveletResult.lodLevels.push_back(lod0);
+
+        m_rawFileSizeMB = (m_rendererSurfels.size() * sizeof(SurfelVertex)) / (1024.0f * 1024.0f);
+        m_compressedSizeMB = (float)m_loadedPackage.totalCompressedBytes / (1024.0f * 1024.0f);
+        m_compressionRatio = m_rawFileSizeMB > 0 ? (m_rawFileSizeMB / std::max(0.001f, m_compressedSizeMB)) : 1.0f;
+
+        RebuildHeatmapClusterCubes();
+
+        // Setup active renderer state pointing to renderer's dedicated buffers
+        m_state.pSurfels = m_rendererSurfels.data();
+        m_state.pRawSurfels = m_rendererRawSurfels.data();
+        m_state.surfelCount = (uint32_t)m_rendererSurfels.size();
+        m_state.pChunks = m_rendererMeshletChunks.data();
+        m_state.chunkCount = (uint32_t)m_rendererMeshletChunks.size();
+        m_state.aabbMin = m_aabbMin;
+        m_state.aabbExtents = m_extents;
+        m_state.renderMode = m_enableQuantization ? 1 : 2;
+
+        if (m_pRenderer)
+        {
+            m_pRenderer->FlushGPU();
+        }
+
+        m_activeTab = 1; // Switch directly to Stream Renderer tab
+
+        m_statusMessage = "Successfully loaded compressed model: " + filepath + " (" + std::to_string(m_rendererSurfels.size()) + " surfels across " + std::to_string(m_rendererMeshletChunks.size()) + " chunks, " + std::to_string(m_compressedSizeMB) + " MB)";
+        m_statusIsSuccess = true;
+        return true;
     }
 
     bool PreprocessApp::LoadSPLATFile(const std::string& filepath)
@@ -392,6 +515,7 @@ namespace Surfels
 
         m_rawSurfels = std::move(loadedPoints);
         m_loadedFilePath = filepath;
+        m_isLoadedFromSFLW = false;
         strncpy_s(m_inputPathBuf, sizeof(m_inputPathBuf), filepath.c_str(), _TRUNCATE);
 
         std::ifstream in(filepath, std::ios::ate | std::ios::binary);
@@ -425,6 +549,7 @@ namespace Surfels
 
         m_rawSurfels = std::move(loadedPoints);
         m_loadedFilePath = filepath;
+        m_isLoadedFromSFLW = false;
         strncpy_s(m_inputPathBuf, sizeof(m_inputPathBuf), filepath.c_str(), _TRUNCATE);
 
         // Estimate file size
@@ -450,6 +575,7 @@ namespace Surfels
         m_statusMessage = "Generating synthetic urban street benchmark...";
         m_rawSurfels = SyntheticGenerator::GenerateUrbanStreetScene(count);
         m_loadedFilePath = "Synthetic Urban Benchmark (" + std::to_string(count / 1000) + "K points)";
+        m_isLoadedFromSFLW = false;
         m_rawFileSizeMB = (m_rawSurfels.size() * sizeof(SurfelVertex)) / (1024.0f * 1024.0f);
 
         RecomputeWaveletHierarchy();
@@ -552,7 +678,7 @@ namespace Surfels
 
     void PreprocessApp::UpdatePreviewSurfels()
     {
-        if (m_rawSurfels.empty()) return;
+        if (m_rawSurfels.empty() && m_rendererRawSurfels.empty()) return;
 
         // Flush in-flight GPU execution to guarantee clean pipeline state reset across mode switches
         if (m_pRenderer)
@@ -563,7 +689,7 @@ namespace Surfels
         m_state.aabbMin = m_aabbMin;
         m_state.aabbExtents = m_extents;
 
-        m_previewLODSurfels.clear();
+        std::vector<SurfelVertex> previewLODSurfels;
 
         // Step 1: Wavelet Transform Stage
         if (m_enableWavelet && !m_waveletResult.lodLevels.empty())
@@ -579,7 +705,7 @@ namespace Surfels
                 if (selectedLOD == 0)
                 {
                     // LOD 0 = 100% full dataset
-                    m_previewLODSurfels = m_rawSurfels;
+                    previewLODSurfels = m_rawSurfels;
                 }
                 else
                 {
@@ -589,7 +715,7 @@ namespace Surfels
                         const auto& levelData = m_waveletResult.lodLevels[lvl];
                         for (const auto& s : levelData.surfels)
                         {
-                            m_previewLODSurfels.push_back(s);
+                            previewLODSurfels.push_back(s);
                         }
                     }
                 }
@@ -598,43 +724,45 @@ namespace Surfels
             {
                 // Single LOD level in isolation
                 const auto& currentLOD = m_waveletResult.lodLevels[selectedLOD];
-                m_previewLODSurfels.reserve(currentLOD.surfels.size());
-                for (const auto& s : currentLOD.surfels)
-                {
-                    m_previewLODSurfels.push_back(s);
-                }
+                previewLODSurfels = currentLOD.surfels;
             }
         }
         else
         {
             // Full raw dataset (no wavelet filtering)
-            m_previewLODSurfels = m_rawSurfels;
+            previewLODSurfels = !m_rawSurfels.empty() ? m_rawSurfels : m_rendererRawSurfels;
         }
 
         // Step 2: Spatial Morton Ordering & Meshlet Chunk Partitioning (64 surfels per Meshlet)
-        SpatialOctree::PartitionIntoMeshletChunks(m_previewLODSurfels, m_meshletChunks, 64, m_enableMortonOrder);
-        m_state.pChunks = m_meshletChunks.data();
-        m_state.chunkCount = (uint32_t)m_meshletChunks.size();
-        m_state.useChunkedPipeline = m_useChunkedPipeline;
+        std::vector<MeshletChunkGPU> meshletChunks;
+        SpatialOctree::PartitionIntoMeshletChunks(previewLODSurfels, meshletChunks, 64, m_enableMortonOrder);
 
         // Step 3: Quantization Stage
+        std::vector<PackedSurfelGPU> packedSurfels = Quantizer::QuantizeSurfels(previewLODSurfels, m_aabbMin, m_aabbMax);
+
+        // Step 4: Deep Copy into dedicated renderer buffers (decoupled memory)
+        m_rendererSurfels = std::move(packedSurfels);
+        m_rendererRawSurfels = std::move(previewLODSurfels);
+        m_rendererMeshletChunks = std::move(meshletChunks);
+        m_rendererOctreeChunks = m_chunks;
+
+        m_state.pChunks = m_rendererMeshletChunks.data();
+        m_state.chunkCount = (uint32_t)m_rendererMeshletChunks.size();
+        m_state.useChunkedPipeline = m_useChunkedPipeline;
+
         if (m_enableQuantization)
         {
-            // Quantize to packed 8-byte GPU structs
-            m_previewSurfels = Quantizer::QuantizeSurfels(m_previewLODSurfels, m_aabbMin, m_aabbMax);
-
             m_state.renderMode = 1; // Quantized 8-byte GPU stream
-            m_state.pSurfels = m_previewSurfels.data();
+            m_state.pSurfels = m_rendererSurfels.data();
             m_state.pRawSurfels = nullptr;
-            m_state.surfelCount = (uint32_t)m_previewSurfels.size();
+            m_state.surfelCount = (uint32_t)m_rendererSurfels.size();
         }
         else
         {
-            // Render uncompressed 32-bit Float32 points
             m_state.renderMode = 2; // Raw Float32 direct stream
-            m_state.pRawSurfels = m_previewLODSurfels.data();
+            m_state.pRawSurfels = m_rendererRawSurfels.data();
             m_state.pSurfels = nullptr;
-            m_state.surfelCount = (uint32_t)m_previewLODSurfels.size();
+            m_state.surfelCount = (uint32_t)m_rendererRawSurfels.size();
         }
 
         RebuildHeatmapClusterCubes();
@@ -739,17 +867,27 @@ namespace Surfels
         case PendingAction::CloseDataset:
         {
             m_rawSurfels.clear();
-            m_previewSurfels.clear();
             m_chunks.clear();
+            m_rendererSurfels.clear();
+            m_rendererRawSurfels.clear();
+            m_rendererMeshletChunks.clear();
+            m_rendererOctreeChunks.clear();
             m_waveletResult = WaveletDecompositionResult();
             m_loadedFilePath = "No dataset loaded";
+            m_rendererSourceDescription = "No model active";
+            m_isLoadedFromSFLW = false;
             m_rawFileSizeMB = 0.0f;
             m_compressedSizeMB = 0.0f;
             m_compressionRatio = 1.0f;
             m_deadbandZeroPercent = 0.0f;
+            m_state.surfelCount = 0;
+            m_state.chunkCount = 0;
+            m_state.pSurfels = nullptr;
+            m_state.pRawSurfels = nullptr;
+            m_state.pChunks = nullptr;
+            if (m_pRenderer) m_pRenderer->FlushGPU();
             m_statusMessage = "Dataset closed.";
             m_statusIsSuccess = true;
-            UpdatePreviewSurfels();
             break;
         }
         case PendingAction::ExitApp:
@@ -929,8 +1067,8 @@ namespace Surfels
         m_state.aspectRatio = io.DisplaySize.y > 0.0f ? (io.DisplaySize.x / io.DisplaySize.y) : 1.0f;
         m_state.gpuRadixSort = m_gpuRadixSort;
         m_state.useChunkedPipeline = m_useChunkedPipeline;
-        m_state.pChunks = m_meshletChunks.data();
-        m_state.chunkCount = (uint32_t)m_meshletChunks.size();
+        m_state.pChunks = m_rendererMeshletChunks.data();
+        m_state.chunkCount = (uint32_t)m_rendererMeshletChunks.size();
     }
 
     void PreprocessApp::BuildUI()
@@ -943,9 +1081,13 @@ namespace Surfels
         {
             if (ImGui::BeginMenu("File"))
             {
-                if (ImGui::MenuItem("Open Point Cloud / Splat... (PLY / SPLAT)", "Ctrl+O"))
+                if (ImGui::MenuItem("Open Raw Point Cloud... (PLY / SPLAT)", "Ctrl+O"))
                 {
                     m_pendingAction = PendingAction::OpenFile;
+                }
+                if (ImGui::MenuItem("Open Compressed Model... (.sflw / .json)", "Ctrl+L"))
+                {
+                    m_pendingAction = PendingAction::OpenCompressedFile;
                 }
                 if (ImGui::MenuItem("Generate Synthetic Benchmark (300K pts)"))
                 {
@@ -955,7 +1097,7 @@ namespace Surfels
                 ImGui::Separator();
                 bool hasModel = !m_rawSurfels.empty();
 
-                if (ImGui::MenuItem("Export .sflw Stream Package...", "Ctrl+E", false, hasModel))
+                if (ImGui::MenuItem("Save Compressed Package (.sflw)...", "Ctrl+S", false, hasModel))
                 {
                     m_pendingAction = PendingAction::ExportStream;
                 }
@@ -1007,265 +1149,290 @@ namespace Surfels
             ImGui::EndMainMenuBar();
         }
 
-        // 2. Left Control & Configuration Panel
+        // 2. Left Control Panel: Decoupled Preprocessor & Renderer Tabs
         ImGui::SetNextWindowPos(ImVec2(10, 30), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(390, (float)m_Height - 40), ImGuiCond_FirstUseEver);
-        ImGui::Begin("Studio Controls & Wavelet Settings", nullptr, ImGuiWindowFlags_NoCollapse);
+        ImGui::SetNextWindowSize(ImVec2(410, (float)m_Height - 40), ImGuiCond_FirstUseEver);
+        ImGui::Begin("Surfels Wavelet Studio", nullptr, ImGuiWindowFlags_NoCollapse);
 
-        ImGui::TextColored(ImVec4(0.3f, 0.8f, 1.0f, 1.0f), "Dataset: %s", m_loadedFilePath.c_str());
+        // Tab Selector Buttons
+        float tabWidth = (ImGui::GetContentRegionAvailWidth() - 6.0f) * 0.5f;
+        ImGui::PushStyleColor(ImGuiCol_Button, m_activeTab == 0 ? ImVec4(0.18f, 0.45f, 0.75f, 1.0f) : ImVec4(0.22f, 0.22f, 0.25f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, m_activeTab == 0 ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
+        if (ImGui::Button("1. Preprocessor Studio", ImVec2(tabWidth, 28))) m_activeTab = 0;
+        ImGui::PopStyleColor(2);
+
+        ImGui::SameLine();
+
+        ImGui::PushStyleColor(ImGuiCol_Button, m_activeTab == 1 ? ImVec4(0.18f, 0.45f, 0.75f, 1.0f) : ImVec4(0.22f, 0.22f, 0.25f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, m_activeTab == 1 ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
+        if (ImGui::Button("2. Stream Renderer", ImVec2(tabWidth, 28))) m_activeTab = 1;
+        ImGui::PopStyleColor(2);
+
         ImGui::Separator();
 
-        if (m_rawSurfels.empty())
+        // =========================================================================
+        // TAB 1: PREPROCESSOR STUDIO (Raw Model -> Octree -> Wavelet Decimation -> SFLW Export)
+        // =========================================================================
+        if (m_activeTab == 0)
         {
             ImGui::Spacing();
-            ImGui::TextDisabled("No dataset currently loaded.");
-            ImGui::Spacing();
-            ImGui::TextWrapped("Load a model via the top menu bar:\n\n  1. File -> Open Point Cloud / Splat...\n  2. Or File -> Generate Synthetic Benchmark");
+            ImGui::TextColored(ImVec4(0.3f, 0.85f, 1.0f, 1.0f), "Raw Input Source:");
+            ImGui::TextWrapped("%s", m_loadedFilePath.c_str());
+            ImGui::Separator();
+
+            if (ImGui::Button("Open Raw Point Cloud (.ply / .splat)...", ImVec2(-1, 26)))
+            {
+                m_pendingAction = PendingAction::OpenFile;
+            }
+            if (ImGui::Button("Generate Synthetic Benchmark", ImVec2(-1, 24)))
+            {
+                m_pendingAction = PendingAction::GenerateBenchmark;
+            }
+
             ImGui::Spacing();
             ImGui::Separator();
-        }
-        else
-        {
-            // Section 1: Pipeline Configuration & Stages
-            if (ImGui::CollapsingHeader("1. Pipeline Stage Configuration", ImGuiTreeNodeFlags_DefaultOpen))
+
+            if (m_rawSurfels.empty())
             {
-                ImGui::Text("Active Processing Stages:");
-
-                if (ImGui::Checkbox("Wavelet Transform (Multi-Res LODs)", &m_enableWavelet))
-                {
-                    UpdatePreviewSurfels();
-                }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enables 2nd-generation Lifting Wavelet multi-resolution pyramid decimation.");
-
-                if (ImGui::Checkbox("Apply Quantization (8-Byte GPU Packing)", &m_enableQuantization))
-                {
-                    UpdatePreviewSurfels();
-                }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Packs points into 8-byte GPU structures (10:10:10:2 pos, Oct16 normal, RGB565 color).");
-
-                if (!m_enableWavelet && !m_enableQuantization)
-                {
-                    ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "Status: Rendering Full Raw Dataset (Float32 Direct)");
-                }
-                else
-                {
-                    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Status: %s + %s",
-                        m_enableWavelet ? "Wavelet LODs" : "No Wavelet",
-                        m_enableQuantization ? "8-Byte Quantized" : "Float32 Direct");
-                }
+                ImGui::Spacing();
+                ImGui::TextDisabled("No raw dataset currently loaded for preprocessing.");
+                ImGui::TextWrapped("Open a PLY or SPLAT point cloud to configure octree chunking and wavelet decimation.");
             }
-
-            // Section 2: 3D Viewport & Splat Sizing
-            if (ImGui::CollapsingHeader("2. 3D Viewport & Splat Sizing", ImGuiTreeNodeFlags_DefaultOpen))
+            else
             {
-                ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Active Display: %u points (%.1f%% of raw)",
-                    m_state.surfelCount,
-                    (m_state.surfelCount * 100.0f) / std::max(1ULL, (unsigned long long)m_rawSurfels.size()));
+                ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Preprocessor Parameters:");
 
-                ImGui::SliderFloat("Splat Radius Scale", &m_state.splatRadius, 0.10f, 10.0f, "%.2fx");
-                m_state.orientMode = 1; // Force camera-facing billboards (3DGS standard)
-
-                ImGui::Checkbox("Auto Rotate Model##Viewport", &m_autoRotate);
-                m_state.autoRotate = m_autoRotate;
-
-                // Detach Camera Option under 3D Viewport
-                if (ImGui::Checkbox("Detach Camera (Freeze Culling Frustum)", &m_detachCamera))
-                {
-                    if (m_detachCamera)
-                    {
-                        // 1. Freeze culling camera at current viewpoint
-                        m_detachedYaw = m_yaw;
-                        m_detachedPitch = m_pitch;
-                        m_detachedDistance = m_distance;
-                        m_detachedTarget = m_target;
-
-                        // Calculate frozen detached camera eye position
-                        const float cy = cosf(m_detachedPitch), sy = sinf(m_detachedPitch);
-                        const float sx = sinf(m_detachedYaw), cx = cosf(m_detachedYaw);
-                        XMFLOAT3 cullEyePos(
-                            m_detachedTarget.x + m_detachedDistance * cy * sx,
-                            m_detachedTarget.y + m_detachedDistance * sy,
-                            m_detachedTarget.z + m_detachedDistance * cy * cx
-                        );
-
-                        // 2. Automatically position interactive viewer camera to the side overview:
-                        // Rotate 90 degrees (+PI/2) to place detached camera frustum on the LEFT and model on the RIGHT
-                        m_yaw = m_detachedYaw + 1.5707963f;
-                        m_pitch = 0.05f;
-
-                        // Center view on the midpoint between the detached camera and the model
-                        m_target = XMFLOAT3(
-                            (m_detachedTarget.x + cullEyePos.x) * 0.5f,
-                            m_detachedTarget.y,
-                            (m_detachedTarget.z + cullEyePos.z) * 0.5f
-                        );
-
-                        // Zoom out comfortably to fit both frustum and model in frame
-                        float maxDim = std::max(m_extents.x, std::max(m_extents.y, m_extents.z));
-                        m_distance = std::max(m_detachedDistance * 2.3f, maxDim * 2.2f);
-                    }
-                    else
-                    {
-                        // Restore viewer camera back to detached viewpoint
-                        m_yaw = m_detachedYaw;
-                        m_pitch = m_detachedPitch;
-                        m_distance = m_detachedDistance;
-                        m_target = m_detachedTarget;
-                    }
-                }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Decouples the view from the current camera and freezes the culling frustum at its current position, allowing you to fly around freely to inspect the model and culling boundaries from any angle outside the frozen view.");
-                if (m_detachCamera)
-                {
-                    ImGui::SameLine();
-                    ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "[CULLING FROZEN]");
-                }
-
-                if (ImGui::Button("Center Camera on Model", ImVec2(-1, 24)))
-                {
-                    m_target = m_center;
-                    m_distance = std::max(m_extents.x, std::max(m_extents.y, m_extents.z)) * 0.85f;
-                }
-            }
-
-            // Section 3: LOD Settings
-            if (ImGui::CollapsingHeader("3. LOD Settings", ImGuiTreeNodeFlags_DefaultOpen))
-            {
-                int maxLODIndex = std::max(0, (int)m_waveletResult.lodLevels.size() - 1);
-                if (maxLODIndex == 0 && !m_rawSurfels.empty())
-                {
-                    ImGui::TextDisabled("Load or recompute wavelet hierarchy to explore LODs.");
-                }
-                else if (maxLODIndex > 0)
-                {
-                    // Clamp m_selectedPreviewLOD within [0, maxLODIndex]
-                    m_selectedPreviewLOD = std::max(0, std::min(maxLODIndex, m_selectedPreviewLOD));
-
-                    if (ImGui::Checkbox("Auto Distance LOD", &m_autoLOD))
-                    {
-                        UpdatePreviewSurfels();
-                    }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Automatically adapts active LOD level dynamically based on distance from camera.");
-
-                    // Responsive LOD Slider: Left = LOD 0 (100% Full Dataset), Right = LOD N (Coarsest)
-                    ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x - 95.0f);
-                    if (ImGui::SliderInt("##LODSlider", &m_selectedPreviewLOD, 0, maxLODIndex, "LOD %d"))
-                    {
-                        m_selectedPreviewLOD = std::max(0, std::min(maxLODIndex, m_selectedPreviewLOD));
-                        m_autoLOD = false; // Disable auto when user manually drags slider
-                        m_enableWavelet = true;
-                        UpdatePreviewSurfels();
-                    }
-                    ImGui::PopItemWidth();
-
-                    ImGui::SameLine();
-                    if (ImGui::Checkbox("Cascade", &m_cascadeLOD))
-                    {
-                        UpdatePreviewSurfels();
-                    }
-
-                    ImGui::Separator();
-                    if (ImGui::Checkbox("Wavelet Transform", &m_enableWavelet))
-                    {
-                        UpdatePreviewSurfels();
-                    }
-
-                    if (ImGui::Checkbox("Apply Quantization", &m_enableQuantization))
-                    {
-                        UpdatePreviewSurfels();
-                    }
-                }
-            }
-
-            // Section 4: Preprocessing & Wavelet Parameters
-            if (ImGui::CollapsingHeader("4. Wavelet & Octree Settings", ImGuiTreeNodeFlags_DefaultOpen))
-            {
                 bool recompute = false;
                 float maxChunkSize = std::max(1.0f, std::max(m_extents.x, std::max(m_extents.y, m_extents.z)));
                 if (ImGui::SliderFloat("Octree Chunk (m)", &m_chunkSize, 0.05f, maxChunkSize, "%.2f meters")) recompute = true;
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Spatial octree voxel bounding box diameter for streaming chunk partitioning.");
+
                 if (ImGui::SliderInt("Max Wavelet LODs", &m_maxLODLevels, 1, 6)) recompute = true;
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Maximum number of multi-resolution LOD decimation levels in the wavelet pyramid.");
+
                 if (ImGui::SliderFloat("Deadband Zero (mm)", &m_deadbandThresholdMM, 0.0f, 50.0f, "%.1f mm")) recompute = true;
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Sparsification deadband: wavelet detail coefficients below this threshold are zeroed out.");
 
                 if (recompute)
                 {
                     RecomputeWaveletHierarchy();
                 }
 
+                ImGui::Spacing();
+                if (ImGui::Button("Recompute Preprocessing Pipeline", ImVec2(-1, 26)))
+                {
+                    RecomputeWaveletHierarchy();
+                }
+
+                ImGui::Spacing();
                 ImGui::Separator();
-                ImGui::Text("Visualizer Settings:");
-
-                // 1. Selectors & Sliders First (Release build controls)
-                const char* cubePresets[] = { "512 Cubes", "1,024 Cubes", "2,048 Cubes", "4,096 Cubes", "8,192 Cubes", "16,384 Cubes" };
-                int cubeValues[] = { 512, 1024, 2048, 4096, 8192, 16384 };
-                int currentPreset = 3; // 4096 default
-                for (int i = 0; i < 6; i++) { if (m_targetClusterCubes == cubeValues[i]) currentPreset = i; }
-                if (ImGui::Combo("Cluster Block Resolution", &currentPreset, cubePresets, IM_ARRAYSIZE(cubePresets)))
+                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.5f, 1.0f), "Save Compressed Model:");
+                if (ImGui::Button("Save Compressed Package (.sflw)...", ImVec2(-1, 28)))
                 {
-                    m_targetClusterCubes = cubeValues[currentPreset];
-                    RebuildHeatmapClusterCubes();
+                    m_pendingAction = PendingAction::ExportStream;
                 }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Compresses and saves the multi-resolution dataset into a .sflw binary stream container + .json manifest.");
 
-                const char* schemes[] = { "Turbo (Classic Rainbow)", "Viridis (Perceptual)", "Plasma (Magma)" };
-                ImGui::Combo("Heatmap Color Scheme", &m_heatmapColorScheme, schemes, IM_ARRAYSIZE(schemes));
-
-                // Dev-only tuning sliders (enabled when DeveloperMode=true in surfels_config.ini)
-                if (m_devMode)
-                {
-                    ImGui::Separator();
-                    ImGui::TextDisabled("Developer Tuning (surfels_config.ini):");
-                    ImGui::SliderFloat("Heatmap Tint Opacity", &m_heatmapOpacity, 0.02f, 0.60f, "%.2f");
-                    ImGui::SliderFloat("Hot Spot Opacity Boost", &m_hotspotOpacityScale, 1.0f, 6.0f, "%.1fx");
-                    ImGui::SliderFloat("Wireframe Opacity", &m_wireframeOpacity, 0.05f, 1.00f, "%.2f");
-                    ImGui::Separator();
-                }
-
-                // 2. Checkboxes Below Sliders
-                ImGui::Checkbox("Show Density Heatmap Cluster Cubes", &m_showClusterHeatmap);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Visualizes uniform spatial blocks of cluster cubes with semi-transparent heatmap face shading based on localized point cloud density.");
-
-                ImGui::Checkbox("Draw Cube Outlines", &m_showHeatmapWireframe);
-
-                ImGui::Checkbox("Show Culled Chunks (Darker Shade)", &m_showCulledChunks);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders frustum-culled octree chunks and meshlet blocks in a dark translucent shade.");
-
-                ImGui::Checkbox("Show Partitioned Octree Chunks (Amber)", &m_showOctreeVisualizer);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders 3D bounding cubes for all %u active spatial streaming octree chunks.", (uint32_t)m_chunks.size());
-
-                ImGui::Checkbox("Show Global Model Bounds (Blue)", &m_showGlobalBounds);
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Text("Preprocessor Analytics:");
+                ImGui::Text("• Total Raw Vertices: %u", (uint32_t)m_rawSurfels.size());
+                ImGui::Text("• Partitioned Chunks: %u", (uint32_t)m_chunks.size());
+                ImGui::Text("• Raw Uncompressed:   %.2f MB", m_rawFileSizeMB);
+                ImGui::Text("• Tier 4 Compressed:  %.2f MB (%.1fx)", m_compressedSizeMB, m_compressionRatio);
+            }
+        }
+        // =========================================================================
+        // TAB 2: STREAM VIEWER & RENDERER (Real-Time LODs, Viewport, Accelerators)
+        // =========================================================================
+        else
+        {
+            ImGui::Spacing();
+            if (m_isLoadedFromSFLW)
+            {
+                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "Source: Loaded .sflw Package");
+            }
+            else if (!m_rawSurfels.empty())
+            {
+                ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Source: In-Memory Preprocessed Stream");
+            }
+            else
+            {
+                ImGui::TextDisabled("No active model loaded in renderer.");
             }
 
-            // Section 5: Accelerators & Hardware Execution
-            if (ImGui::CollapsingHeader("5. Accelerators & Meshlet Pipeline", ImGuiTreeNodeFlags_DefaultOpen))
+            if (ImGui::Button("Load Compressed Model (.sflw)...", ImVec2(-1, 26)))
             {
-                if (ImGui::Checkbox("GPU Radix Sort", &m_gpuRadixSort))
+                m_pendingAction = PendingAction::OpenCompressedFile;
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Directly loads and streams a pre-compressed .sflw model from disk, overriding memory data structures.");
+
+            ImGui::Separator();
+
+            if (!m_rawSurfels.empty() || m_isLoadedFromSFLW)
+            {
+                // Section 1: Runtime LOD Settings
+                if (ImGui::CollapsingHeader("1. Runtime LOD & Quality", ImGuiTreeNodeFlags_DefaultOpen))
                 {
-                    if (m_pRenderer) m_pRenderer->FlushGPU();
+                    int maxLODIndex = std::max(0, (int)m_waveletResult.lodLevels.size() - 1);
+                    if (maxLODIndex > 0)
+                    {
+                        m_selectedPreviewLOD = std::max(0, std::min(maxLODIndex, m_selectedPreviewLOD));
+
+                        if (ImGui::Checkbox("Auto Distance LOD", &m_autoLOD))
+                        {
+                            UpdatePreviewSurfels();
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Automatically adapts active LOD level dynamically based on distance from camera.");
+
+                        ImGui::PushItemWidth(ImGui::GetContentRegionAvailWidth() - 95.0f);
+                        if (ImGui::SliderInt("##LODSlider", &m_selectedPreviewLOD, 0, maxLODIndex, "LOD %d"))
+                        {
+                            m_selectedPreviewLOD = std::max(0, std::min(maxLODIndex, m_selectedPreviewLOD));
+                            m_autoLOD = false;
+                            m_enableWavelet = true;
+                            UpdatePreviewSurfels();
+                        }
+                        ImGui::PopItemWidth();
+
+                        ImGui::SameLine();
+                        if (ImGui::Checkbox("Cascade", &m_cascadeLOD))
+                        {
+                            UpdatePreviewSurfels();
+                        }
+
+                        ImGui::Separator();
+                    }
+
+                    if (ImGui::Checkbox("Wavelet Transform", &m_enableWavelet))
+                    {
+                        UpdatePreviewSurfels();
+                    }
+
+                    if (ImGui::Checkbox("Apply Quantization (8-Byte GPU)", &m_enableQuantization))
+                    {
+                        UpdatePreviewSurfels();
+                    }
+                }
+
+                // Section 2: 3D Viewport & Splat Sizing
+                if (ImGui::CollapsingHeader("2. 3D Viewport & Splat Sizing", ImGuiTreeNodeFlags_DefaultOpen))
+                {
+                    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Active Display: %u points", m_state.surfelCount);
+
+                    ImGui::SliderFloat("Splat Radius Scale", &m_state.splatRadius, 0.10f, 10.0f, "%.2fx");
+                    m_state.orientMode = 1;
+
+                    ImGui::Checkbox("Auto Rotate Model##Viewport", &m_autoRotate);
+                    m_state.autoRotate = m_autoRotate;
+
+                    if (ImGui::Checkbox("Detach Camera (Freeze Culling Frustum)", &m_detachCamera))
+                    {
+                        if (m_detachCamera)
+                        {
+                            m_detachedYaw = m_yaw;
+                            m_detachedPitch = m_pitch;
+                            m_detachedDistance = m_distance;
+                            m_detachedTarget = m_target;
+
+                            const float cy = cosf(m_detachedPitch), sy = sinf(m_detachedPitch);
+                            const float sx = sinf(m_detachedYaw), cx = cosf(m_detachedYaw);
+                            XMFLOAT3 cullEyePos(
+                                m_detachedTarget.x + m_detachedDistance * cy * sx,
+                                m_detachedTarget.y + m_detachedDistance * sy,
+                                m_detachedTarget.z + m_detachedDistance * cy * cx
+                            );
+
+                            m_yaw = m_detachedYaw + 1.5707963f;
+                            m_pitch = 0.05f;
+
+                            m_target = XMFLOAT3(
+                                (m_detachedTarget.x + cullEyePos.x) * 0.5f,
+                                m_detachedTarget.y,
+                                (m_detachedTarget.z + cullEyePos.z) * 0.5f
+                            );
+
+                            float maxDim = std::max(m_extents.x, std::max(m_extents.y, m_extents.z));
+                            m_distance = std::max(m_detachedDistance * 2.3f, maxDim * 2.2f);
+                        }
+                        else
+                        {
+                            m_yaw = m_detachedYaw;
+                            m_pitch = m_detachedPitch;
+                            m_distance = m_detachedDistance;
+                            m_target = m_detachedTarget;
+                        }
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Decouples the view and freezes the culling frustum, allowing inspection of culling boundaries from any angle.");
+                    if (m_detachCamera)
+                    {
+                        ImGui::SameLine();
+                        ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "[CULLING FROZEN]");
+                    }
+
+                    if (ImGui::Button("Center Camera on Model", ImVec2(-1, 24)))
+                    {
+                        m_target = m_center;
+                        m_distance = std::max(m_extents.x, std::max(m_extents.y, m_extents.z)) * 0.85f;
+                    }
+                }
+
+                // Section 3: Hardware Accelerators & Pipeline
+                if (ImGui::CollapsingHeader("3. Accelerators & Meshlet Pipeline", ImGuiTreeNodeFlags_DefaultOpen))
+                {
+                    if (ImGui::Checkbox("GPU Radix Sort", &m_gpuRadixSort))
+                    {
+                        if (m_pRenderer) m_pRenderer->FlushGPU();
+                        m_state.gpuRadixSort = m_gpuRadixSort;
+                    }
                     m_state.gpuRadixSort = m_gpuRadixSort;
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Executes parallel 32-bit depth key sorting directly on GPU compute shader threads.");
+
+                    ImGui::SameLine();
+                    ImGui::TextColored(m_gpuRadixSort ? ImVec4(0.3f, 1.0f, 0.4f, 1.0f) : ImVec4(1.0f, 0.6f, 0.2f, 1.0f),
+                        m_gpuRadixSort ? "[Compute Shader]" : "[CPU Threads]");
+
+                    if (ImGui::Checkbox("Morton Spatial Curve Ordering", &m_enableMortonOrder))
+                    {
+                        UpdatePreviewSurfels();
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reorders points along a 3D Morton Z-order space-filling curve.");
+
+                    if (ImGui::Checkbox("Micro-Chunking (Amplification Shader)", &m_useChunkedPipeline))
+                    {
+                        UpdatePreviewSurfels();
+                    }
+                    m_state.useChunkedPipeline = m_useChunkedPipeline;
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hierarchical two-level sorting: 64-surfel meshlet clusters with Amplification Shader (AS) frustum culling.");
+
+                    if (ImGui::Checkbox("VSync (Lock Framerate to Display)", &m_vsync))
+                    {
+                        m_swapChain.SetVSync(m_vsync);
+                    }
                 }
-                m_state.gpuRadixSort = m_gpuRadixSort;
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Executes parallel 32-bit depth key sorting directly on GPU compute shader threads (NVIDIA Ada SM 6.7).");
 
-                ImGui::SameLine();
-                ImGui::TextColored(m_gpuRadixSort ? ImVec4(0.3f, 1.0f, 0.4f, 1.0f) : ImVec4(1.0f, 0.6f, 0.2f, 1.0f),
-                    m_gpuRadixSort ? "[Active: Compute Shader]" : "[CPU Multi-Threaded]");
-
-                if (ImGui::Checkbox("Morton Spatial Curve Ordering", &m_enableMortonOrder))
+                // Section 4: Spatial & Cluster Visualizers
+                if (ImGui::CollapsingHeader("4. Spatial & Cluster Visualizers", ImGuiTreeNodeFlags_DefaultOpen))
                 {
-                    UpdatePreviewSurfels();
-                }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reorders points along a 3D Morton Z-order space-filling curve to maximize GPU L1/L2 cache hit rate, memory bandwidth coalescing, and tight meshlet culling bounds.");
+                    const char* cubePresets[] = { "512 Cubes", "1,024 Cubes", "2,048 Cubes", "4,096 Cubes", "8,192 Cubes", "16,384 Cubes" };
+                    int cubeValues[] = { 512, 1024, 2048, 4096, 8192, 16384 };
+                    int currentPreset = 3;
+                    for (int i = 0; i < 6; i++) { if (m_targetClusterCubes == cubeValues[i]) currentPreset = i; }
+                    if (ImGui::Combo("Cluster Block Resolution", &currentPreset, cubePresets, IM_ARRAYSIZE(cubePresets)))
+                    {
+                        m_targetClusterCubes = cubeValues[currentPreset];
+                        RebuildHeatmapClusterCubes();
+                    }
 
-                if (ImGui::Checkbox("Micro-Chunking (Amplification Shader)", &m_useChunkedPipeline))
-                {
-                    UpdatePreviewSurfels();
-                }
-                m_state.useChunkedPipeline = m_useChunkedPipeline;
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hierarchical two-level sorting: 64-surfel meshlet clusters with Amplification Shader (AS) frustum culling & payload dispatch.");
+                    const char* schemes[] = { "Turbo (Classic Rainbow)", "Viridis (Perceptual)", "Plasma (Magma)" };
+                    ImGui::Combo("Heatmap Color Scheme", &m_heatmapColorScheme, schemes, IM_ARRAYSIZE(schemes));
 
-                if (ImGui::Checkbox("VSync (Lock Framerate to Display)", &m_vsync))
-                {
-                    m_swapChain.SetVSync(m_vsync);
+                    ImGui::Checkbox("Show Density Heatmap Cluster Cubes", &m_showClusterHeatmap);
+                    ImGui::Checkbox("Draw Cube Outlines", &m_showHeatmapWireframe);
+                    ImGui::Checkbox("Show Culled Chunks (Darker Shade)", &m_showCulledChunks);
+                    ImGui::Checkbox("Show Partitioned Octree Chunks (Amber)", &m_showOctreeVisualizer);
+                    ImGui::Checkbox("Show Global Model Bounds (Blue)", &m_showGlobalBounds);
                 }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("When unchecked, removes the display refresh rate cap to expose true raw pipeline execution performance and GPU vs CPU sorting timings.");
             }
         }
 
@@ -1303,21 +1470,25 @@ namespace Surfels
         // Model Metrics
         if (ImGui::CollapsingHeader("Input Model Metrics", ImGuiTreeNodeFlags_DefaultOpen))
         {
-            ImGui::Text("Total Vertices:   %u points", (uint32_t)m_rawSurfels.size());
-            ImGui::Text("Uncompressed PLY: %.2f MB", m_rawFileSizeMB);
-            ImGui::Text("Bounding Box Min: [%.2f, %.2f, %.2f]", m_aabbMin.x, m_aabbMin.y, m_aabbMin.z);
-            ImGui::Text("Bounding Box Max: [%.2f, %.2f, %.2f]", m_aabbMax.x, m_aabbMax.y, m_aabbMax.z);
-            ImGui::Text("Spatial Extents:  %.1f x %.1f x %.1f m", m_extents.x, m_extents.y, m_extents.z);
+            uint32_t totalVertices = (uint32_t)(!m_rendererSurfels.empty() ? m_rendererSurfels.size() : m_rawSurfels.size());
+            ImGui::Text("Active Source:   %s", m_rendererSourceDescription.c_str());
+            ImGui::Text("Total Vertices:  %u points", totalVertices);
+            ImGui::Text("Uncompressed:    %.2f MB", m_rawFileSizeMB);
+            ImGui::Text("Bounding Box Min:[%.2f, %.2f, %.2f]", m_aabbMin.x, m_aabbMin.y, m_aabbMin.z);
+            ImGui::Text("Bounding Box Max:[%.2f, %.2f, %.2f]", m_aabbMax.x, m_aabbMax.y, m_aabbMax.z);
+            ImGui::Text("Spatial Extents: %.1f x %.1f x %.1f m", m_extents.x, m_extents.y, m_extents.z);
         }
 
         // Spatial Octree Metrics
         if (ImGui::CollapsingHeader("Spatial Partitioning", ImGuiTreeNodeFlags_DefaultOpen))
         {
+            uint32_t totalChunks = (uint32_t)(!m_rendererOctreeChunks.empty() ? m_rendererOctreeChunks.size() : m_chunks.size());
+            uint32_t totalVertices = (uint32_t)(!m_rendererSurfels.empty() ? m_rendererSurfels.size() : m_rawSurfels.size());
             ImGui::Text("Chunk Voxel Size: %.1f meters", m_chunkSize);
-            ImGui::Text("Total Chunks:     %u spatial chunks", (uint32_t)m_chunks.size());
-            if (!m_chunks.empty())
+            ImGui::Text("Total Chunks:     %u spatial chunks", totalChunks);
+            if (totalChunks > 0)
             {
-                ImGui::Text("Avg Points/Chunk: %u points", (uint32_t)(m_rawSurfels.size() / m_chunks.size()));
+                ImGui::Text("Avg Points/Chunk: %u points", totalVertices / totalChunks);
             }
         }
 
@@ -1861,7 +2032,8 @@ namespace Surfels
         // 2. Streaming Octree Macro-Chunks
         if (m_showOctreeVisualizer)
         {
-            for (const auto& chunk : m_chunks)
+            const auto& octreeBoxes = !m_rendererOctreeChunks.empty() ? m_rendererOctreeChunks : m_chunks;
+            for (const auto& chunk : octreeBoxes)
             {
                 bool isVisible = IsSphereInFrustum(chunk.center, chunk.boundingRadius);
                 if (isVisible) DrawFilledCube(chunk.aabbMin, chunk.aabbMax, IM_COL32(255, 190, 40, 40), IM_COL32(255, 190, 40, 240), true);
@@ -1870,7 +2042,7 @@ namespace Surfels
         }
 
         // 3. Global Model Bounding Box (Deep Blue)
-        if (m_showGlobalBounds && !m_rawSurfels.empty())
+        if (m_showGlobalBounds && (!m_rawSurfels.empty() || !m_rendererSurfels.empty()))
         {
             const ImU32 globalColor = IM_COL32(100, 160, 255, 255);
             DrawFilledCube(m_aabbMin, m_aabbMax, IM_COL32(80, 140, 255, 25), globalColor, true);
