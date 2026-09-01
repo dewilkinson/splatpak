@@ -1197,6 +1197,18 @@ namespace Surfels
                 m_pendingAction = PendingAction::GenerateBenchmark;
             }
 
+            bool hasModel = !m_rawSurfels.empty();
+            if (hasModel)
+            {
+                ImGui::Spacing();
+                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.5f, 1.0f), "Save Compressed Model:");
+                if (ImGui::Button("Save Compressed Package (.sflw)...", ImVec2(-1, 28)))
+                {
+                    m_pendingAction = PendingAction::ExportStream;
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Compresses and saves the multi-resolution dataset into a .sflw binary stream container + .json manifest.");
+            }
+
             ImGui::Spacing();
             ImGui::Separator();
 
@@ -1231,15 +1243,6 @@ namespace Surfels
                 {
                     RecomputeWaveletHierarchy();
                 }
-
-                ImGui::Spacing();
-                ImGui::Separator();
-                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.5f, 1.0f), "Save Compressed Model:");
-                if (ImGui::Button("Save Compressed Package (.sflw)...", ImVec2(-1, 28)))
-                {
-                    m_pendingAction = PendingAction::ExportStream;
-                }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Compresses and saves the multi-resolution dataset into a .sflw binary stream container + .json manifest.");
 
                 ImGui::Spacing();
                 ImGui::Separator();
