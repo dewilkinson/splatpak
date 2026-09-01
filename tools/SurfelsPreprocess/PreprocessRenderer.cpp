@@ -332,7 +332,7 @@ namespace Surfels
 
             if (surfelCount > 0 && pRawSurfels != nullptr && m_pRawSurfelBufferMapped != nullptr)
             {
-                if (pState->useChunkedPipeline || pState->gpuRadixSort)
+                if (pState->gpuRadixSort)
                 {
                     m_metrics.isGPUSortActive = true;
                     m_metrics.cpuSortTimeMs = 0.0f;
@@ -347,23 +347,17 @@ namespace Surfels
                         }
                         for (uint32_t i = surfelCount; i < numElements; i++)
                         {
-                            pDst[i].position = XMFLOAT3(0.0f, 0.0f, 0.0f);
-                            pDst[i].normal = XMFLOAT3(0, 1, 0);
-                            pDst[i].color = XMFLOAT3(0, 0, 0);
-                            pDst[i].radius = -1.0f;
+                            pDst[i] = {};
                         }
                         m_needUploadToGpu = true;
                         m_gpuSortNeedsRun = true;
                     }
 
-                    if (needsSort)
-                    {
-                        m_gpuSortNeedsRun = true;
-                        m_lastSortEye = eyePos;
-                        m_lastSortForward = forward;
-                    }
+                    m_gpuSortNeedsRun = true;
+                    m_lastSortEye = eyePos;
+                    m_lastSortForward = forward;
                 }
-                else if (needsSort)
+                else
                 {
                     m_metrics.isGPUSortActive = false;
                     m_metrics.wasSortedThisFrame = true;
@@ -451,10 +445,6 @@ namespace Surfels
                     m_metrics.cpuSortTimeMs = std::chrono::duration<float, std::milli>(sortEnd - sortStart).count();
                     m_metrics.gpuSortTimeMs = 0.0f;
                 }
-                else
-                {
-                    m_metrics.wasSortedThisFrame = false;
-                }
             }
 
             m_rawSurfelBufferGPUAddress = m_pRawSurfelBuffer->GetGPUVirtualAddress();
@@ -529,7 +519,7 @@ namespace Surfels
 
             if (surfelCount > 0 && pSurfels != nullptr && m_pSurfelBufferMapped != nullptr)
             {
-                if (pState->useChunkedPipeline || pState->gpuRadixSort)
+                if (pState->gpuRadixSort)
                 {
                     m_metrics.isGPUSortActive = true;
                     m_metrics.cpuSortTimeMs = 0.0f;
@@ -552,14 +542,11 @@ namespace Surfels
                         m_gpuSortNeedsRun = true;
                     }
 
-                    if (needsSort)
-                    {
-                        m_gpuSortNeedsRun = true;
-                        m_lastSortEye = eyePos;
-                        m_lastSortForward = forward;
-                    }
+                    m_gpuSortNeedsRun = true;
+                    m_lastSortEye = eyePos;
+                    m_lastSortForward = forward;
                 }
-                else if (needsSort)
+                else
                 {
                     m_metrics.isGPUSortActive = false;
                     m_metrics.wasSortedThisFrame = true;
@@ -658,10 +645,6 @@ namespace Surfels
                     auto sortEnd = std::chrono::high_resolution_clock::now();
                     m_metrics.cpuSortTimeMs = std::chrono::duration<float, std::milli>(sortEnd - sortStart).count();
                     m_metrics.gpuSortTimeMs = 0.0f;
-                }
-                else
-                {
-                    m_metrics.wasSortedThisFrame = false;
                 }
             }
 
