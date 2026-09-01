@@ -22,6 +22,10 @@ set(sources
     SurfelsSample.cpp
     SurfelsRenderer.h
     SurfelsRenderer.cpp
+    Wavelet/WaveletTypes.h
+    Wavelet/StreamingManager.h
+    Wavelet/LODSelector.h
+    Wavelet/ZstdDecompressor.h
     dpiawarescaling.manifest
 )
 
@@ -42,7 +46,11 @@ add_executable(Surfels_DX12 WIN32 ${sources} ${shaders})
 target_link_libraries(Surfels_DX12 LINK_PUBLIC Cauldron_DX12 ImGUI amd_ags d3d12 dxgi)
 add_dependencies(Surfels_DX12 copied_surfels_shaders)
 
-set_target_properties(Surfels_DX12 PROPERTIES VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_HOME_DIRECTORY}/bin" DEBUG_POSTFIX "d")
+set_target_properties(Surfels_DX12 PROPERTIES 
+    FOLDER "Apps"
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_HOME_DIRECTORY}/bin" 
+    DEBUG_POSTFIX "d"
+)
 
 addManifest(Surfels_DX12)
 

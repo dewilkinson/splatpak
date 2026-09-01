@@ -10,6 +10,7 @@
 #include <algorithm>
 #include <string>
 #include <vector>
+#include <chrono>
 
 #include <DirectXMath.h>
 using namespace DirectX;
@@ -26,6 +27,7 @@ using namespace DirectX;
 #include "base/ShaderCompilerHelper.h"
 #include "base/DXCHelper.h" // InitDirectXCompiler() -- must be called before any shader compiles
 #include "base/Helper.h"
+#include "base/GPUTimestamps.h"
 #include "base/Imgui.h"
 #include "base/ImGuiHelper.h"
 

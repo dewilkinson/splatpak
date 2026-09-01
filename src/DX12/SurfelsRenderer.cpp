@@ -21,14 +21,15 @@ typedef CD3DX12_PIPELINE_STATE_STREAM_SUBOBJECT<D3D12_SHADER_BYTECODE, D3D12_PIP
 
 struct MeshShaderPipelineStateStream
 {
-    CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE       RootSignature;
-    CD3DX12_PIPELINE_STATE_STREAM_MS                   MS;
-    CD3DX12_PIPELINE_STATE_STREAM_PS                   PS;
-    CD3DX12_PIPELINE_STATE_STREAM_RASTERIZER           RasterizerState;
-    CD3DX12_PIPELINE_STATE_STREAM_BLEND_DESC           BlendState;
-    CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL        DepthStencilState;
+    CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE        RootSignature;
+    CD3DX12_PIPELINE_STATE_STREAM_MS                    MS;
+    CD3DX12_PIPELINE_STATE_STREAM_PS                    PS;
+    CD3DX12_PIPELINE_STATE_STREAM_RASTERIZER            RasterizerState;
+    CD3DX12_PIPELINE_STATE_STREAM_BLEND_DESC            BlendState;
+    CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL         DepthStencilState;
+    CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL_FORMAT  DSVFormat;
     CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
-    CD3DX12_PIPELINE_STATE_STREAM_SAMPLE_DESC          SampleDesc;
+    CD3DX12_PIPELINE_STATE_STREAM_SAMPLE_DESC           SampleDesc;
 };
 
 void SurfelsRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
@@ -47,26 +48,27 @@ void SurfelsRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
     }
 
     // Descriptor heaps, upload ring, per-frame constant buffer ring, command lists.
-    m_resourceViewHeaps.OnCreate(pDevice, 10, 10, 10, 0, 10, 10);
+    m_resourceViewHeaps.OnCreate(pDevice, 10, 10, 10, 10, 10, 10);
+    m_resourceViewHeaps.AllocDSVDescriptor(1, &m_depthBufferDSV);
     m_uploadHeap.OnCreate(pDevice, 32 * 1024 * 1024);
-    m_constantBufferRing.OnCreate(pDevice, BACK_BUFFER_COUNT, 4 * 1024 * 1024, &m_resourceViewHeaps);
+    m_constantBufferRing.OnCreate(pDevice, BACK_BUFFER_COUNT, 32 * 1024 * 1024, &m_resourceViewHeaps);
 
     D3D12_COMMAND_QUEUE_DESC queueDesc = {};
     queueDesc.Type = D3D12_COMMAND_LIST_TYPE_DIRECT;
-    // CommandListRing::GetNewCommandList() increments its used-count then asserts
-    // used < commandListsPerBackBuffer, so passing 1 here fails on the very first
-    // GetNewCommandList() call of every frame. We only ever call it once per frame,
-    // so 2 gives exactly the headroom that check requires.
     m_commandListRing.OnCreate(pDevice, BACK_BUFFER_COUNT, 2, queueDesc);
+
+    m_gpuTimer.OnCreate(pDevice, BACK_BUFFER_COUNT);
 
     m_imGui.OnCreate(pDevice, &m_uploadHeap, &m_resourceViewHeaps, &m_constantBufferRing, pSwapChain->GetFormat());
 
-    // Root signature: a single CBV (view-proj, camera basis, surfel params).
-    CD3DX12_ROOT_PARAMETER rootParams[1];
-    rootParams[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL);
+    // Root signature: CBV at b0, StructuredBuffer SRV at t0, Raw StructuredBuffer SRV at t1
+    CD3DX12_ROOT_PARAMETER rootParams[3];
+    rootParams[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL); // b0
+    rootParams[1].InitAsShaderResourceView(0, 0, D3D12_SHADER_VISIBILITY_ALL); // t0
+    rootParams[2].InitAsShaderResourceView(1, 0, D3D12_SHADER_VISIBILITY_ALL); // t1
 
     CD3DX12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = 1;
+    rsDesc.NumParameters = 3;
     rsDesc.pParameters = rootParams;
     rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE; // no input assembler stage with mesh shaders
 
@@ -75,10 +77,6 @@ void SurfelsRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
     m_pDevice->GetDevice()->CreateRootSignature(0, pOutBlob->GetBufferPointer(), pOutBlob->GetBufferSize(), IID_PPV_ARGS(&m_pRootSignature));
     SetName(m_pRootSignature, "Surfels::RootSignature");
 
-    // Fully procedural: no vertex/index buffers and no draw-level instancing either.
-    // The mesh shader builds SURFELS_PER_GROUP surfels' worth of geometry per
-    // threadgroup from SV_GroupID/SV_GroupThreadID alone; DispatchMesh() in OnRender
-    // replaces DrawInstanced().
     D3D12_SHADER_BYTECODE ms = {};
     D3D12_SHADER_BYTECODE ps = {};
     CompileShaderFromFile("Surfels.hlsl", NULL, "mainMS", "-T ms_6_5", &ms);
@@ -88,20 +86,33 @@ void SurfelsRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
     rasterizer.CullMode = D3D12_CULL_MODE_NONE;
 
     CD3DX12_DEPTH_STENCIL_DESC depthStencil(D3D12_DEFAULT);
-    depthStencil.DepthEnable = FALSE;
+    depthStencil.DepthEnable = TRUE;
+    depthStencil.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+    depthStencil.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
     depthStencil.StencilEnable = FALSE;
 
     D3D12_RT_FORMAT_ARRAY rtvFormats = {};
     rtvFormats.NumRenderTargets = 1;
     rtvFormats.RTFormats[0] = pSwapChain->GetFormat();
 
+    CD3DX12_BLEND_DESC blendDesc(D3D12_DEFAULT);
+    blendDesc.RenderTarget[0].BlendEnable = TRUE;
+    blendDesc.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    blendDesc.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+    blendDesc.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+    blendDesc.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+    blendDesc.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+    blendDesc.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+    blendDesc.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+
     MeshShaderPipelineStateStream stream = {};
     stream.RootSignature = m_pRootSignature;
     stream.MS = ms;
     stream.PS = ps;
     stream.RasterizerState = rasterizer;
-    stream.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    stream.BlendState = blendDesc;
     stream.DepthStencilState = depthStencil;
+    stream.DSVFormat = DXGI_FORMAT_D32_FLOAT;
     stream.RTVFormats = rtvFormats;
     stream.SampleDesc = DXGI_SAMPLE_DESC{ 1, 0 };
 
@@ -129,6 +140,7 @@ void SurfelsRenderer::OnDestroy()
     if (m_pPipelineState) { m_pPipelineState->Release(); m_pPipelineState = nullptr; }
     if (m_pRootSignature) { m_pRootSignature->Release(); m_pRootSignature = nullptr; }
 
+    m_gpuTimer.OnDestroy();
     m_imGui.OnDestroy();
     m_commandListRing.OnDestroy();
     m_constantBufferRing.OnDestroy();
@@ -140,10 +152,14 @@ void SurfelsRenderer::OnCreateWindowSizeDependentResources(SwapChain* /*pSwapCha
 {
     m_width = width;
     m_height = height;
+
+    m_depthBuffer.InitDepthStencil(m_pDevice, "SurfelsRenderer::m_depthBuffer", &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_D32_FLOAT, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL), 1.0f);
+    m_depthBuffer.CreateDSV(0, &m_depthBufferDSV);
 }
 
 void SurfelsRenderer::OnDestroyWindowSizeDependentResources()
 {
+    m_depthBuffer.OnDestroy();
 }
 
 void SurfelsRenderer::OnUpdateDisplayDependentResources(SwapChain* pSwapChain)
@@ -157,13 +173,21 @@ void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
     // ahead of the GPU before reusing this frame's command allocator.
     pSwapChain->WaitForSwapChain();
 
+    // Read back previous frame's GPU timings
+    UINT64 gpuTicksPerSecond = 0;
+    m_pDevice->GetGraphicsQueue()->GetTimestampFrequency(&gpuTicksPerSecond);
+    m_gpuTimer.OnBeginFrame(gpuTicksPerSecond, &m_gpuTimestamps);
+
     m_commandListRing.OnBeginFrame();
     m_constantBufferRing.OnBeginFrame();
 
     ID3D12GraphicsCommandList2* pCmdLst = m_commandListRing.GetNewCommandList();
 
+    m_gpuTimer.GetTimeStamp(pCmdLst, "Frame Begin");
+
     ID3D12Resource* pBackBuffer = pSwapChain->GetCurrentBackBufferResource();
     D3D12_CPU_DESCRIPTOR_HANDLE* pRTV = pSwapChain->GetCurrentBackBufferRTV();
+    D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = m_depthBufferDSV.GetCPU();
 
     {
         D3D12_RESOURCE_BARRIER toRT = CD3DX12_RESOURCE_BARRIER::Transition(pBackBuffer, D3D12_RESOURCE_STATE_PRESENT, D3D12_RESOURCE_STATE_RENDER_TARGET);
@@ -171,13 +195,16 @@ void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
     }
 
     const float clearColor[4] = { 0.02f, 0.02f, 0.05f, 1.0f };
-    pCmdLst->OMSetRenderTargets(1, pRTV, TRUE, nullptr);
+    pCmdLst->OMSetRenderTargets(1, pRTV, TRUE, &dsvHandle);
     pCmdLst->ClearRenderTargetView(*pRTV, clearColor, 0, nullptr);
+    pCmdLst->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
     D3D12_VIEWPORT viewport = { 0.0f, 0.0f, (float)m_width, (float)m_height, 0.0f, 1.0f };
     D3D12_RECT scissor = { 0, 0, (LONG)m_width, (LONG)m_height };
     pCmdLst->RSSetViewports(1, &viewport);
     pCmdLst->RSSetScissorRects(1, &scissor);
+
+    m_gpuTimer.GetTimeStamp(pCmdLst, "Clear & Setup");
 
     // ---- Orbit camera ----
     const float cy = cosf(pState->camPitch), sy = sinf(pState->camPitch);
@@ -194,33 +221,77 @@ void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
     XMMATRIX proj = XMMatrixPerspectiveFovRH(XM_PIDIV4, pState->aspectRatio, 0.1f, 100.0f);
     XMMATRIX viewProj = XMMatrixMultiply(view, proj);
 
+    uint32_t surfelCount = pState->surfelCount;
+    D3D12_GPU_VIRTUAL_ADDRESS surfelBufferGPUAddress = 0;
+
+    if (pState->renderMode == 1 && pState->pStreamedSurfels != nullptr && pState->streamedSurfelCount > 0)
+    {
+        surfelCount = pState->streamedSurfelCount;
+        uint32_t surfelBytes = surfelCount * sizeof(Surfels::PackedSurfelGPU);
+        void* pDest = nullptr;
+        m_constantBufferRing.AllocConstantBuffer(surfelBytes, &pDest, &surfelBufferGPUAddress);
+        if (pDest)
+        {
+            memcpy(pDest, pState->pStreamedSurfels, surfelBytes);
+        }
+    }
+    else
+    {
+        void* pDummy = nullptr;
+        m_constantBufferRing.AllocConstantBuffer(256, &pDummy, &surfelBufferGPUAddress);
+    }
+
     SurfelsCB* pCB = nullptr;
     D3D12_GPU_VIRTUAL_ADDRESS cbAddress = 0;
     m_constantBufferRing.AllocConstantBuffer(sizeof(SurfelsCB), (void**)&pCB, &cbAddress);
 
-    XMStoreFloat4x4(&pCB->viewProj, XMMatrixTranspose(viewProj));
+    // DirectXMath matrices are row-major, meant to be used as v * M. HLSL's default
+    // float4x4 packing is column-major, which for an UNtransposed upload already
+    // reinterprets the bytes correctly for mul(M, v) in the shader (the two
+    // transposes -- one explicit here, one implicit in HLSL's packing -- must not
+    // both happen, or you get M * v instead of v * M: a different, wrong transform,
+    // not a broken one -- it still looks like *something*, just badly degenerate.
+    XMStoreFloat4x4(&pCB->viewProj, viewProj);
     XMStoreFloat3(&pCB->camRight, right);
     pCB->radius = pState->splatRadius;
     XMStoreFloat3(&pCB->camUp, camUp);
     pCB->time = pState->time;
     pCB->sphereCenter = XMFLOAT3(0.0f, 0.0f, 0.0f);
     pCB->sphereRadius = pState->sphereRadius;
-    pCB->surfelCount = pState->surfelCount;
-    pCB->pad = XMFLOAT3(0.0f, 0.0f, 0.0f);
+    pCB->surfelCount = surfelCount;
+    pCB->renderMode = pState->renderMode;
+    pCB->orientMode = pState->orientMode;
+    pCB->pad0 = 0.0f;
+    pCB->aabbMin = XMFLOAT3(-40.0f, -2.0f, -80.0f);
+    pCB->pad1 = 0.0f;
+    pCB->aabbExtents = XMFLOAT3(80.0f, 30.0f, 160.0f);
+    pCB->pad2 = 0.0f;
 
     pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
     pCmdLst->SetPipelineState(m_pPipelineState);
     pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
+    pCmdLst->SetGraphicsRootShaderResourceView(1, surfelBufferGPUAddress);
+    pCmdLst->SetGraphicsRootShaderResourceView(2, surfelBufferGPUAddress);
 
     // DispatchMesh needs the newer command list interface; GetNewCommandList() only
     // returns ID3D12GraphicsCommandList2.
     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> cmdList6;
     pCmdLst->QueryInterface(IID_PPV_ARGS(&cmdList6));
-    uint32_t groupCount = (pState->surfelCount + SURFELS_PER_GROUP - 1) / SURFELS_PER_GROUP;
-    cmdList6->DispatchMesh(groupCount, 1, 1);
+    uint32_t groupCount = (surfelCount + SURFELS_PER_GROUP - 1) / SURFELS_PER_GROUP;
+    if (groupCount > 0)
+    {
+        cmdList6->DispatchMesh(groupCount, 1, 1);
+    }
+
+    m_gpuTimer.GetTimeStamp(pCmdLst, "Surfels Mesh Shader");
 
     // ImGui draws on top of whatever is currently bound (still our backbuffer RTV).
     m_imGui.Draw(pCmdLst);
+
+    m_gpuTimer.GetTimeStamp(pCmdLst, "ImGui UI");
+
+    // Resolve timestamp queries into readback buffer
+    m_gpuTimer.CollectTimings(pCmdLst);
 
     {
         D3D12_RESOURCE_BARRIER toPresent = CD3DX12_RESOURCE_BARRIER::Transition(pBackBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
@@ -231,4 +302,6 @@ void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
 
     ID3D12CommandList* pCmdLists[] = { pCmdLst };
     m_pDevice->GetGraphicsQueue()->ExecuteCommandLists(1, pCmdLists);
+
+    m_gpuTimer.OnEndFrame();
 }

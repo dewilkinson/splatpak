@@ -15,21 +15,33 @@ its header/source (device + swapchain are now owned by the framework base class,
 `OnCreate()` takes no window handle, etc.) rather than copied from an existing
 sample.
 
-## What's here
+## Solution & Workspace Structure
 
-- `src/DX12/SurfelsSample.{h,cpp}` — the app shell: window/input handling,
-  ImGui panel, orbit camera, `WinMain`. Subclasses Cauldron's `FrameworkWindows`.
-- `src/DX12/SurfelsRenderer.{h,cpp}` — the GPU side: descriptor heaps, upload
-  heap, constant buffer ring, command list ring, a mesh-shader pipeline state
-  (built via the D3D12 pipeline-state-stream API — Cauldron's vendored
-  `d3dx12.h` predates mesh shaders, see "Known gaps"), and the per-frame
-  render loop (clear backbuffer → `DispatchMesh` → ImGui → present).
-- `src/DX12/Shaders/Surfels.hlsl` — mesh/pixel shaders for the splats.
-  `mainMS` builds `SURFELS_PER_GROUP` (32) surfels per threadgroup —
-  4 vertices + 2 triangles each — entirely from `SV_GroupID`/`SV_GroupThreadID`,
-  placed via a Fibonacci-sphere formula. No amplification shader; `DispatchMesh`
-  just launches `ceil(surfelCount / 32)` groups directly.
-- `libs/cauldron` — the Cauldron framework, as a git submodule.
+The solution contains two complementary projects organized into **Apps** and **Tools**:
+
+1. **`Surfels_DX12` (Apps)**: The real-time DirectX 12 Mesh Shader Viewer:
+   - Dynamic progressive disk streaming of multi-resolution wavelet packages (`.sflw` + `.json`).
+   - Normal-oriented elliptical discs with procedural circular pixel clipping.
+   - Screen-Space Error (SSE) hierarchical AutoLOD selection and frustum culling.
+   - Built-in CPU/GPU frame profiler and real-time streaming telemetry HUD.
+   - Procedural Fibonacci sphere benchmark mode.
+
+2. **`SurfelsPreprocess` (Tools)**: The offline PLY and dataset processing tool:
+   - Built-in synthetic urban street benchmark generator (`--generate <N>`).
+   - Binary & ASCII `.ply` parser.
+   - 64-bit Morton Z-order curve spatial partitioning into cubic chunks.
+   - Second-Generation Lifting Wavelet decomposition with deadband sparsification.
+   - 8-byte GPU surfel quantization (`10:10:10:2` pos, `oct16` normal, `rgb565` color) and stream compression.
+
+### Convenient Scripts & Visual Studio Targets
+- In Visual Studio's **Select Startup Item** dropdown, you can pick:
+  - `Surfels_DX12 (DirectX 12 Viewer)`
+  - `SurfelsPreprocess (Generate 300K Benchmark)`
+  - `SurfelsPreprocess (Process Custom PLY)`
+- Or run helper scripts in `bin/`:
+  - `bin/launch.cmd`: Launches the viewer.
+  - `bin/preprocess_benchmark.cmd`: Regenerates a 300K benchmark dataset.
+  - `bin/preprocess_ply.cmd`: Drag-and-drop any `.ply` file to convert it for streaming.
 
 ## Building
 
@@ -112,3 +124,7 @@ procedural Fibonacci-sphere placement with surfels seeded from real scene
 geometry (e.g. loaded via Cauldron's glTF loader), add a depth buffer, and
 add an irradiance-accumulation/shading pass instead of the flat hash-color
 shading the splats currently get.
+
+## License
+
+This project is licensed under the [Apache License, Version 2.0](LICENSE).
