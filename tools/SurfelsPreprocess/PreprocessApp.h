@@ -117,6 +117,7 @@ namespace Surfels
         bool  m_autoLOD              = true;  // Distance-adaptive dynamic LOD selection
         bool  m_autoRotate           = false; // Disabled by default
         bool  m_gpuRadixSort         = true;  // Checkbox: "GPU Radix Sort" under Accelerators (Enabled by default)
+        bool  m_enableMortonOrder    = true;  // Checkbox: "Morton Spatial Curve Ordering" under Accelerators
         bool  m_useChunkedPipeline   = true;  // Micro-chunked meshlet pipeline with AS culling
         struct HeatmapClusterCube
         {

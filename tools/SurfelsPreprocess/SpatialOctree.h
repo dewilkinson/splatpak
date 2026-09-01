@@ -158,66 +158,71 @@ namespace Surfels
         static void PartitionIntoMeshletChunks(
             std::vector<SurfelVertex>& inOutPoints,
             std::vector<MeshletChunkGPU>& outMeshletChunks,
-            uint32_t surfelsPerMeshlet = 128)
+            uint32_t surfelsPerMeshlet = 128,
+            bool enableMorton = true)
         {
             outMeshletChunks.clear();
             if (inOutPoints.empty()) return;
 
-            // 1. Compute Global AABB
-            XMFLOAT3 gMin(1e9f, 1e9f, 1e9f);
-            XMFLOAT3 gMax(-1e9f, -1e9f, -1e9f);
-            for (const auto& p : inOutPoints)
-            {
-                gMin.x = std::min(gMin.x, p.position.x);
-                gMin.y = std::min(gMin.y, p.position.y);
-                gMin.z = std::min(gMin.z, p.position.z);
-
-                gMax.x = std::max(gMax.x, p.position.x);
-                gMax.y = std::max(gMax.y, p.position.y);
-                gMax.z = std::max(gMax.z, p.position.z);
-            }
-
-            XMFLOAT3 gExtent(
-                std::max(1e-4f, gMax.x - gMin.x),
-                std::max(1e-4f, gMax.y - gMin.y),
-                std::max(1e-4f, gMax.z - gMin.z)
-            );
-
-            // 2. Compute 30-bit Morton Code for each point and sort
-            struct MortonPoint
-            {
-                uint32_t code;
-                uint32_t originalIndex;
-            };
-
             size_t numPoints = inOutPoints.size();
-            std::vector<MortonPoint> mortonList(numPoints);
 
-            #pragma omp parallel for
-            for (int i = 0; i < (int)numPoints; i++)
+            if (enableMorton)
             {
-                const auto& p = inOutPoints[i];
-                float nx = (p.position.x - gMin.x) / gExtent.x;
-                float ny = (p.position.y - gMin.y) / gExtent.y;
-                float nz = (p.position.z - gMin.z) / gExtent.z;
+                // 1. Compute Global AABB
+                XMFLOAT3 gMin(1e9f, 1e9f, 1e9f);
+                XMFLOAT3 gMax(-1e9f, -1e9f, -1e9f);
+                for (const auto& p : inOutPoints)
+                {
+                    gMin.x = std::min(gMin.x, p.position.x);
+                    gMin.y = std::min(gMin.y, p.position.y);
+                    gMin.z = std::min(gMin.z, p.position.z);
 
-                mortonList[i].code = ComputeMorton30(nx, ny, nz);
-                mortonList[i].originalIndex = (uint32_t)i;
+                    gMax.x = std::max(gMax.x, p.position.x);
+                    gMax.y = std::max(gMax.y, p.position.y);
+                    gMax.z = std::max(gMax.z, p.position.z);
+                }
+
+                XMFLOAT3 gExtent(
+                    std::max(1e-4f, gMax.x - gMin.x),
+                    std::max(1e-4f, gMax.y - gMin.y),
+                    std::max(1e-4f, gMax.z - gMin.z)
+                );
+
+                // 2. Compute 30-bit Morton Code for each point and sort
+                struct MortonPoint
+                {
+                    uint32_t code;
+                    uint32_t originalIndex;
+                };
+
+                std::vector<MortonPoint> mortonList(numPoints);
+
+                #pragma omp parallel for
+                for (int i = 0; i < (int)numPoints; i++)
+                {
+                    const auto& p = inOutPoints[i];
+                    float nx = (p.position.x - gMin.x) / gExtent.x;
+                    float ny = (p.position.y - gMin.y) / gExtent.y;
+                    float nz = (p.position.z - gMin.z) / gExtent.z;
+
+                    mortonList[i].code = ComputeMorton30(nx, ny, nz);
+                    mortonList[i].originalIndex = (uint32_t)i;
+                }
+
+                std::sort(mortonList.begin(), mortonList.end(), [](const MortonPoint& a, const MortonPoint& b) {
+                    if (a.code != b.code) return a.code < b.code;
+                    return a.originalIndex < b.originalIndex;
+                });
+
+                // 3. Reorder points in Morton order
+                std::vector<SurfelVertex> reorderedPoints(numPoints);
+                #pragma omp parallel for
+                for (int i = 0; i < (int)numPoints; i++)
+                {
+                    reorderedPoints[i] = inOutPoints[mortonList[i].originalIndex];
+                }
+                inOutPoints = std::move(reorderedPoints);
             }
-
-            std::sort(mortonList.begin(), mortonList.end(), [](const MortonPoint& a, const MortonPoint& b) {
-                if (a.code != b.code) return a.code < b.code;
-                return a.originalIndex < b.originalIndex;
-            });
-
-            // 3. Reorder points in Morton order
-            std::vector<SurfelVertex> reorderedPoints(numPoints);
-            #pragma omp parallel for
-            for (int i = 0; i < (int)numPoints; i++)
-            {
-                reorderedPoints[i] = inOutPoints[mortonList[i].originalIndex];
-            }
-            inOutPoints = std::move(reorderedPoints);
 
             // 4. Build 128-surfel Meshlet chunks
             uint32_t numChunks = (uint32_t)((numPoints + surfelsPerMeshlet - 1) / surfelsPerMeshlet);

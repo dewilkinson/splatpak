@@ -604,7 +604,7 @@ namespace Surfels
         }
 
         // Step 2: Spatial Morton Ordering & Meshlet Chunk Partitioning (64 surfels per Meshlet)
-        SpatialOctree::PartitionIntoMeshletChunks(m_previewLODSurfels, m_meshletChunks, 64);
+        SpatialOctree::PartitionIntoMeshletChunks(m_previewLODSurfels, m_meshletChunks, 64, m_enableMortonOrder);
         m_state.pChunks = m_meshletChunks.data();
         m_state.chunkCount = (uint32_t)m_meshletChunks.size();
         m_state.useChunkedPipeline = m_useChunkedPipeline;
@@ -1236,6 +1236,12 @@ namespace Surfels
                 ImGui::TextColored(m_gpuRadixSort ? ImVec4(0.3f, 1.0f, 0.4f, 1.0f) : ImVec4(1.0f, 0.6f, 0.2f, 1.0f),
                     m_gpuRadixSort ? "[Active: Compute Shader]" : "[CPU Multi-Threaded]");
 
+                if (ImGui::Checkbox("Morton Spatial Curve Ordering", &m_enableMortonOrder))
+                {
+                    UpdatePreviewSurfels();
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reorders points along a 3D Morton Z-order space-filling curve to maximize GPU L1/L2 cache hit rate, memory bandwidth coalescing, and tight meshlet culling bounds.");
+
                 ImGui::Checkbox("Meshlet Micro-Chunking (64 pts/cluster + AS Culling)", &m_useChunkedPipeline);
                 m_state.useChunkedPipeline = m_useChunkedPipeline;
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hierarchical two-level sorting: coarse chunk sort + Amplification Shader frustum culling.");
@@ -1341,8 +1347,8 @@ namespace Surfels
             ImGui::Text("Tier 2 (8-Byte GPU):  %.2f MB (5.0x reduction)", (m_rawSurfels.size() * 8.0f) / (1024.0f * 1024.0f));
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 2 Quantization: 8-byte packed GPU format (10:10:10:2 position, Oct16 normal, RGB565 color).");
 
-            ImGui::Text("Tier 3 (Byte-Shuffle): Contiguous 8-channel planes");
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 3 Transposition: Groups identical byte channels contiguously to maximize run-length entropy redundancy.");
+            ImGui::Text("Tier 3 (Morton + Byte-Shuffle): Contiguous 8-channel planes");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 3 Spatial Morton Ordering & Transposition: Groups spatially coherent bitplanes via 3D Z-order curve and transposes 8-byte structures into 8 contiguous channels to maximize entropy redundancy.");
 
             ImGui::Text("Tier 4 (Codec: Byte-RLE / Zstd Entropy): %.2f MB", m_compressedSizeMB);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 4 Bitstream Codec: Byte-plane Run-Length Entropy & Zstandard lossless stream compression on transposed 8-byte channels.");
