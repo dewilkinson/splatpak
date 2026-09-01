@@ -959,6 +959,24 @@ namespace Surfels
                 ImGui::Checkbox("Auto Rotate Model##Viewport", &m_autoRotate);
                 m_state.autoRotate = m_autoRotate;
 
+                // Detach Camera Option under 3D Viewport
+                if (ImGui::Checkbox("Detach Camera (Freeze Culling Frustum)", &m_detachCamera))
+                {
+                    if (m_detachCamera)
+                    {
+                        m_detachedYaw = m_yaw;
+                        m_detachedPitch = m_pitch;
+                        m_detachedDistance = m_distance;
+                        m_detachedTarget = m_target;
+                    }
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Decouples the view from the current camera and freezes the culling frustum at its current position, allowing you to fly around freely to inspect the model and culling boundaries from any angle outside the frozen view.");
+                if (m_detachCamera)
+                {
+                    ImGui::SameLine();
+                    ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "[CULLING FROZEN]");
+                }
+
                 if (ImGui::Button("Center Camera on Model", ImVec2(-1, 24)))
                 {
                     m_target = m_center;
