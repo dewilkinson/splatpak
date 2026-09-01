@@ -931,6 +931,9 @@ namespace Surfels
             PrecacheResidentLODs();
         }
 
+        m_lastStreamCamPos = { 1e9f, 1e9f, 1e9f };
+        m_streamStateDirty = true;
+
         m_state.aabbMin = m_aabbMin;
         m_state.aabbExtents = m_extents;
 
