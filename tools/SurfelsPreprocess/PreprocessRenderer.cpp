@@ -250,6 +250,13 @@ namespace Surfels
         }
 
         bool pipelineModeChanged = (pState->gpuRadixSort != m_lastGpuRadixSort) || (pState->useChunkedPipeline != m_lastUseChunkedPipeline);
+        if (pipelineModeChanged)
+        {
+            m_pDevice->GPUFlush(D3D12_COMMAND_LIST_TYPE_DIRECT);
+            m_needUploadToGpu = true;
+            m_needUploadChunkIndicesToGpu = true;
+            m_gpuSortNeedsRun = true;
+        }
         m_lastGpuRadixSort = pState->gpuRadixSort;
         m_lastUseChunkedPipeline = pState->useChunkedPipeline;
 
@@ -864,6 +871,7 @@ namespace Surfels
                     nullptr,
                     IID_PPV_ARGS(&m_pSortedChunkIndicesGpuBuffer)));
                 SetName(m_pSortedChunkIndicesGpuBuffer, "PreprocessRenderer::m_pSortedChunkIndicesGpuBuffer");
+                m_sortedChunkIndicesState = D3D12_RESOURCE_STATE_COPY_DEST;
 
                 if (m_pSortedChunkIndicesUploadBuffer) { m_pSortedChunkIndicesUploadBuffer->Unmap(0, nullptr); m_pSortedChunkIndicesUploadBuffer->Release(); m_pSortedChunkIndicesUploadBuffer = nullptr; }
                 ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
@@ -1103,9 +1111,13 @@ namespace Surfels
                     {
                         auto gpuSortStart = std::chrono::high_resolution_clock::now();
 
-                        D3D12_RESOURCE_BARRIER preBarrier = CD3DX12_RESOURCE_BARRIER::Transition(
-                            m_pSortedChunkIndicesGpuBuffer, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                        pCmdLst->ResourceBarrier(1, &preBarrier);
+                        if (m_sortedChunkIndicesState != D3D12_RESOURCE_STATE_UNORDERED_ACCESS)
+                        {
+                            D3D12_RESOURCE_BARRIER preBarrier = CD3DX12_RESOURCE_BARRIER::Transition(
+                                m_pSortedChunkIndicesGpuBuffer, m_sortedChunkIndicesState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                            pCmdLst->ResourceBarrier(1, &preBarrier);
+                            m_sortedChunkIndicesState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+                        }
 
                         pCmdLst->SetComputeRootSignature(m_pComputeRootSignature);
                         pCmdLst->SetComputeRootShaderResourceView(1, m_pSurfelGpuBuffer ? m_pSurfelGpuBuffer->GetGPUVirtualAddress() : 0);
@@ -1232,6 +1244,7 @@ namespace Surfels
                         D3D12_RESOURCE_BARRIER postBarrier = CD3DX12_RESOURCE_BARRIER::Transition(
                             m_pSortedChunkIndicesGpuBuffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
                         pCmdLst->ResourceBarrier(1, &postBarrier);
+                        m_sortedChunkIndicesState = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
 
                         auto gpuSortEnd = std::chrono::high_resolution_clock::now();
                         m_metrics.gpuSortTimeMs = std::chrono::duration<float, std::milli>(gpuSortEnd - gpuSortStart).count();
@@ -1242,11 +1255,30 @@ namespace Surfels
                 }
                 else if (m_needUploadChunkIndicesToGpu && m_pSortedChunkIndicesGpuBuffer && m_pSortedChunkIndicesUploadBuffer)
                 {
+                    if (m_sortedChunkIndicesState != D3D12_RESOURCE_STATE_COPY_DEST)
+                    {
+                        D3D12_RESOURCE_BARRIER preCopy = CD3DX12_RESOURCE_BARRIER::Transition(
+                            m_pSortedChunkIndicesGpuBuffer, m_sortedChunkIndicesState, D3D12_RESOURCE_STATE_COPY_DEST);
+                        pCmdLst->ResourceBarrier(1, &preCopy);
+                        m_sortedChunkIndicesState = D3D12_RESOURCE_STATE_COPY_DEST;
+                    }
+
                     pCmdLst->CopyResource(m_pSortedChunkIndicesGpuBuffer, m_pSortedChunkIndicesUploadBuffer);
+
                     D3D12_RESOURCE_BARRIER idxToSrv = CD3DX12_RESOURCE_BARRIER::Transition(
                         m_pSortedChunkIndicesGpuBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
                     pCmdLst->ResourceBarrier(1, &idxToSrv);
+                    m_sortedChunkIndicesState = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
                     m_needUploadChunkIndicesToGpu = false;
+                }
+
+                // Ensure m_pSortedChunkIndicesGpuBuffer is in ALL_SHADER_RESOURCE state before mesh dispatch
+                if (m_pSortedChunkIndicesGpuBuffer && m_sortedChunkIndicesState != D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE)
+                {
+                    D3D12_RESOURCE_BARRIER ensureSrv = CD3DX12_RESOURCE_BARRIER::Transition(
+                        m_pSortedChunkIndicesGpuBuffer, m_sortedChunkIndicesState, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+                    pCmdLst->ResourceBarrier(1, &ensureSrv);
+                    m_sortedChunkIndicesState = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
                 }
 
                 // Transition surfel buffer to ALL_SHADER_RESOURCE for rendering
@@ -1268,18 +1300,10 @@ namespace Surfels
                 uint32_t asGroupCount = (chunkCount + AS_GROUP_SIZE - 1) / AS_GROUP_SIZE;
                 cmdList6->DispatchMesh(asGroupCount, 1, 1);
 
-                // Transition back to COPY_DEST for next frame
-                D3D12_RESOURCE_BARRIER barriersToDest[2] = {};
-                barriersToDest[0] = CD3DX12_RESOURCE_BARRIER::Transition(
+                // Transition surfel buffer back to COPY_DEST for next frame
+                D3D12_RESOURCE_BARRIER barrierToDest = CD3DX12_RESOURCE_BARRIER::Transition(
                     pGpuRes, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
-                uint32_t barrierCount = 1;
-                if (!pState->gpuRadixSort)
-                {
-                    barriersToDest[1] = CD3DX12_RESOURCE_BARRIER::Transition(
-                        m_pSortedChunkIndicesGpuBuffer, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
-                    barrierCount = 2;
-                }
-                pCmdLst->ResourceBarrier(barrierCount, barriersToDest);
+                pCmdLst->ResourceBarrier(1, &barrierToDest);
             }
             // Execute Flat GPU LDS Key-Index Sorting Pipeline
             else if (pState->gpuRadixSort && m_pProjectKeysPSO && m_pBitonicLocalSortPSO && m_pBitonicGlobalSortPSO && m_pBitonicLocalMergePSO && m_pGatherSurfelsPSO && m_pComputeRootSignature && pGpuOutRes != nullptr && m_pGPUSortPairBuffer != nullptr)
