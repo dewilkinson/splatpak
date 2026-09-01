@@ -26,8 +26,46 @@ namespace Surfels
         }
     }
 
+    void PreprocessApp::LoadConfigFile()
+    {
+        const char* configPaths[] = {
+            "surfels_config.ini",
+            "../surfels_config.ini",
+            "config.ini",
+            "../config.ini"
+        };
+
+        for (const char* path : configPaths)
+        {
+            std::ifstream file(path);
+            if (file.is_open())
+            {
+                std::string line;
+                while (std::getline(file, line))
+                {
+                    if (line.find("DeveloperMode=true") != std::string::npos ||
+                        line.find("DeveloperMode=1") != std::string::npos ||
+                        line.find("developer_mode=true") != std::string::npos ||
+                        line.find("developer_mode=1") != std::string::npos ||
+                        line.find("dev_mode=true") != std::string::npos ||
+                        line.find("dev_mode=1") != std::string::npos)
+                    {
+                        m_devMode = true;
+                    }
+                    else if (line.find("DeveloperMode=false") != std::string::npos ||
+                             line.find("DeveloperMode=0") != std::string::npos)
+                    {
+                        m_devMode = false;
+                    }
+                }
+                break;
+            }
+        }
+    }
+
     void PreprocessApp::OnCreate()
     {
+        LoadConfigFile();
         InitDirectXCompiler();
         CreateShaderCache();
 
@@ -1049,45 +1087,37 @@ namespace Surfels
 
                 ImGui::Separator();
                 ImGui::Text("Visualizer Settings:");
-                ImGui::Checkbox("Auto Rotate Model##Settings", &m_autoRotate);
-                m_state.autoRotate = m_autoRotate;
 
-                // Density Heatmap Cluster Cubes
+                // 1. Selectors & Sliders First (Release build controls)
+                const char* cubePresets[] = { "512 Cubes", "1,024 Cubes", "2,048 Cubes", "4,096 Cubes", "8,192 Cubes", "16,384 Cubes" };
+                int cubeValues[] = { 512, 1024, 2048, 4096, 8192, 16384 };
+                int currentPreset = 3; // 4096 default
+                for (int i = 0; i < 6; i++) { if (m_targetClusterCubes == cubeValues[i]) currentPreset = i; }
+                if (ImGui::Combo("Cluster Block Resolution", &currentPreset, cubePresets, IM_ARRAYSIZE(cubePresets)))
+                {
+                    m_targetClusterCubes = cubeValues[currentPreset];
+                    RebuildHeatmapClusterCubes();
+                }
+
+                const char* schemes[] = { "Turbo (Classic Rainbow)", "Viridis (Perceptual)", "Plasma (Magma)" };
+                ImGui::Combo("Heatmap Color Scheme", &m_heatmapColorScheme, schemes, IM_ARRAYSIZE(schemes));
+
+                // Dev-only tuning sliders (enabled when DeveloperMode=true in surfels_config.ini)
+                if (m_devMode)
+                {
+                    ImGui::Separator();
+                    ImGui::TextDisabled("Developer Tuning (surfels_config.ini):");
+                    ImGui::SliderFloat("Heatmap Tint Opacity", &m_heatmapOpacity, 0.02f, 0.60f, "%.2f");
+                    ImGui::SliderFloat("Hot Spot Opacity Boost", &m_hotspotOpacityScale, 1.0f, 6.0f, "%.1fx");
+                    ImGui::SliderFloat("Wireframe Opacity", &m_wireframeOpacity, 0.05f, 1.00f, "%.2f");
+                    ImGui::Separator();
+                }
+
+                // 2. Checkboxes Below Sliders
                 ImGui::Checkbox("Show Density Heatmap Cluster Cubes", &m_showClusterHeatmap);
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Visualizes uniform spatial blocks of cluster cubes with semi-transparent heatmap face shading based on localized point cloud density.");
-                if (m_showClusterHeatmap)
-                {
-                    // Clean Release Controls: Resolution, Outlines, Color Scheme
-                    const char* cubePresets[] = { "512 Cubes", "1,024 Cubes", "2,048 Cubes", "4,096 Cubes", "8,192 Cubes", "16,384 Cubes" };
-                    int cubeValues[] = { 512, 1024, 2048, 4096, 8192, 16384 };
-                    int currentPreset = 3; // 4096 default
-                    for (int i = 0; i < 6; i++) { if (m_targetClusterCubes == cubeValues[i]) currentPreset = i; }
-                    if (ImGui::Combo("Cluster Block Resolution", &currentPreset, cubePresets, IM_ARRAYSIZE(cubePresets)))
-                    {
-                        m_targetClusterCubes = cubeValues[currentPreset];
-                        RebuildHeatmapClusterCubes();
-                    }
 
-                    ImGui::Checkbox("Draw Cube Outlines", &m_showHeatmapWireframe);
-
-                    const char* schemes[] = { "Turbo (Classic Rainbow)", "Viridis (Perceptual)", "Plasma (Magma)" };
-                    ImGui::Combo("Heatmap Color Scheme", &m_heatmapColorScheme, schemes, IM_ARRAYSIZE(schemes));
-
-                    // Dev Switch: Fine-grained Opacity and Boost Sliders
-                    ImGui::Checkbox("Developer Tuning Controls", &m_showDevSettings);
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Exposes internal alpha tint opacity and dynamic contrast scaling controls.");
-
-                    if (m_showDevSettings)
-                    {
-                        ImGui::Indent(15.0f);
-                        ImGui::SliderFloat("Heatmap Tint Opacity", &m_heatmapOpacity, 0.02f, 0.60f, "%.2f");
-                        ImGui::SliderFloat("Hot Spot Opacity Boost", &m_hotspotOpacityScale, 1.0f, 6.0f, "%.1fx");
-                        ImGui::SliderFloat("Wireframe Opacity", &m_wireframeOpacity, 0.05f, 1.00f, "%.2f");
-                        ImGui::Unindent(15.0f);
-                    }
-
-                    ImGui::Unindent(15.0f);
-                }
+                ImGui::Checkbox("Draw Cube Outlines", &m_showHeatmapWireframe);
 
                 ImGui::Checkbox("Show Partitioned Octree Chunks (Amber)", &m_showOctreeVisualizer);
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders 3D bounding cubes for all %u active spatial streaming octree chunks.", (uint32_t)m_chunks.size());

@@ -131,7 +131,7 @@ namespace Surfels
         };
 
         std::vector<HeatmapClusterCube> m_heatmapClusterCubes;
-        bool  m_showDevSettings      = false;  // Dev switch to expose fine-grained opacity/tuning sliders
+        bool  m_devMode              = false;  // Loaded from config file (surfels_config.ini)
         bool  m_showClusterHeatmap   = true;   // Visualizes cluster cubes with heatmap point density fill
         int   m_targetClusterCubes   = 4096;   // Target cluster cubes (e.g. 512, 1024, 4096, 16384)
         float m_heatmapOpacity       = 0.02f;  // Base alpha tint opacity for heatmap faces (lowest value of slider range [0.02f, 0.60f])
@@ -145,6 +145,7 @@ namespace Surfels
         bool  m_cascadeLOD           = true;
         bool  m_showLODTint          = false;
         std::vector<SurfelVertex> m_previewLODSurfels;
+        void  LoadConfigFile();
         void  RebuildHeatmapClusterCubes();
         void  DrawOctreeVisualizer();
     };
