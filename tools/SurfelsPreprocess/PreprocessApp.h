@@ -115,7 +115,7 @@ namespace Surfels
         XMFLOAT3 m_detachedTarget   = { 0.0f, 0.0f, 0.0f };
 
         bool  m_autoLOD              = true;  // Distance-adaptive dynamic LOD selection
-        bool  m_autoRotate           = true;
+        bool  m_autoRotate           = false; // Disabled by default
         bool  m_gpuRadixSort         = true;  // Checkbox: "GPU Radix Sort" under Accelerators (Enabled by default)
         bool  m_useChunkedPipeline   = true;  // Micro-chunked meshlet pipeline with AS culling
         struct HeatmapClusterCube
@@ -138,10 +138,10 @@ namespace Surfels
         float m_heatmapOpacity       = 0.02f;  // Base alpha tint opacity for heatmap faces (lowest value of slider range [0.02f, 0.60f])
         float m_wireframeOpacity     = 0.05f;  // Base opacity wireframe outlines (lowest value of slider range [0.05f, 1.00f])
         float m_hotspotOpacityScale  = 1.0f;   // Opacity scale multiplier for dense/hot cubes (lowest value of slider range [1.0x, 6.0x])
-        bool  m_showHeatmapWireframe = true;   // Draw wireframe outlines around cluster cubes
+        bool  m_showHeatmapWireframe = false;  // Disabled by default
         int   m_heatmapColorScheme   = 0;      // 0 = Turbo, 1 = Viridis, 2 = Plasma
         bool  m_showOctreeVisualizer = false;  // Show streaming octree chunks (amber boxes)
-        bool  m_showCulledChunks     = true;   // Visualizes frustum-culled chunks in darker shade
+        bool  m_showCulledChunks     = false;  // Disabled by default
         bool  m_showGlobalBounds     = false;
         bool  m_cascadeLOD           = true;
         bool  m_showLODTint          = false;
