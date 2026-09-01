@@ -1875,7 +1875,8 @@ namespace Surfels
     void PreprocessApp::RebuildHeatmapClusterCubes()
     {
         m_heatmapClusterCubes.clear();
-        if (m_rawSurfels.empty()) return;
+        const auto& sourcePoints = !m_rawSurfels.empty() ? m_rawSurfels : m_rendererRawSurfels;
+        if (sourcePoints.empty()) return;
 
         // 1. Determine global model extents
         XMFLOAT3 gMin = m_aabbMin;
@@ -1920,7 +1921,7 @@ namespace Surfels
         };
 
         std::unordered_map<VoxelKey, VoxelData, VoxelKeyHash> gridMap;
-        for (const auto& s : m_rawSurfels)
+        for (const auto& s : sourcePoints)
         {
             int32_t ix = (int32_t)((s.position.x - gMin.x) / cellSize);
             int32_t iy = (int32_t)((s.position.y - gMin.y) / cellSize);
