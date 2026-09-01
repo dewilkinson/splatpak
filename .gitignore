@@ -21,3 +21,8 @@ datasets/*.sflw
 datasets/*.ply
 datasets/*.xyz
 datasets/*.bin
+data/*.splat
+data/*.sflw
+data/*.ply
+data/*.xyz
+data/*.bin

@@ -1,0 +1,188 @@
+{
+  "version": 1,
+  "total_surfels_lod0": 4426059,
+  "num_chunks": 13,
+  "max_lods": 4,
+  "bounds_min": [-5.17435, 15.4894, -2.73718],
+  "bounds_max": [4.01435, 45.2878, 6.60523],
+  "chunks": [
+    {
+      "id": 0,
+      "bounds_min": [-2.87615, 30.3493, -2.73718],
+      "bounds_max": [2.31454, 37.8571, 4.7609],
+      "center": [-0.280804, 34.1032, 1.01186],
+      "radius": 5.90618,
+      "lods": [
+        { "level": 0, "count": 579410, "raw_bytes": 4635280, "compressed_bytes": 4100359, "offset": 72, "error": 0 },
+        { "level": 1, "count": 289705, "raw_bytes": 2317640, "compressed_bytes": 2181688, "offset": 4100431, "error": 4.25062 },
+        { "level": 2, "count": 144852, "raw_bytes": 1158816, "compressed_bytes": 1114812, "offset": 6282119, "error": 5.08554 },
+        { "level": 3, "count": 72426, "raw_bytes": 579408, "compressed_bytes": 564183, "offset": 7396931, "error": 5.37884 },
+        { "level": 4, "count": 36213, "raw_bytes": 289704, "compressed_bytes": 273524, "offset": 7961114, "error": 4.87512 }
+      ]
+    },
+    {
+      "id": 1,
+      "bounds_min": [-0.796579, 30.4095, 4.68549],
+      "bounds_max": [1.81105, 31.6268, 5.00075],
+      "center": [0.507235, 31.0182, 4.84312],
+      "radius": 1.44748,
+      "lods": [
+        { "level": 0, "count": 14411, "raw_bytes": 115288, "compressed_bytes": 99736, "offset": 8234638, "error": 0 },
+        { "level": 1, "count": 7205, "raw_bytes": 57640, "compressed_bytes": 52350, "offset": 8334374, "error": 0.51939 },
+        { "level": 2, "count": 3602, "raw_bytes": 28816, "compressed_bytes": 27606, "offset": 8386724, "error": 0.620981 },
+        { "level": 3, "count": 1801, "raw_bytes": 14408, "compressed_bytes": 13942, "offset": 8414330, "error": 0.747785 },
+        { "level": 4, "count": 900, "raw_bytes": 7200, "compressed_bytes": 6706, "offset": 8428272, "error": 0.598182 }
+      ]
+    },
+    {
+      "id": 2,
+      "bounds_min": [2.23871, 15.5124, -2.1778],
+      "bounds_max": [4.01435, 22.9914, 4.76119],
+      "center": [3.12653, 19.2519, 1.2917],
+      "radius": 5.17779,
+      "lods": [
+        { "level": 0, "count": 205271, "raw_bytes": 1642168, "compressed_bytes": 1445262, "offset": 8434978, "error": 0 },
+        { "level": 1, "count": 102635, "raw_bytes": 821080, "compressed_bytes": 773005, "offset": 9880240, "error": 3.691 },
+        { "level": 2, "count": 51317, "raw_bytes": 410536, "compressed_bytes": 393650, "offset": 10653245, "error": 4.36208 },
+        { "level": 3, "count": 25658, "raw_bytes": 205264, "compressed_bytes": 199282, "offset": 11046895, "error": 4.03872 },
+        { "level": 4, "count": 12829, "raw_bytes": 102632, "compressed_bytes": 96358, "offset": 11246177, "error": 3.9523 }
+      ]
+    },
+    {
+      "id": 3,
+      "bounds_min": [-3.44762, 37.7824, -2.70881],
+      "bounds_max": [2.3142, 45.2743, 4.22558],
+      "center": [-0.56671, 41.5283, 0.758385],
+      "radius": 5.86117,
+      "lods": [
+        { "level": 0, "count": 1146934, "raw_bytes": 9175472, "compressed_bytes": 7899220, "offset": 11342535, "error": 0 },
+        { "level": 1, "count": 573467, "raw_bytes": 4587736, "compressed_bytes": 4152834, "offset": 19241755, "error": 4.18036 },
+        { "level": 2, "count": 286733, "raw_bytes": 2293864, "compressed_bytes": 2156044, "offset": 23394589, "error": 4.26828 },
+        { "level": 3, "count": 143366, "raw_bytes": 1146928, "compressed_bytes": 1116573, "offset": 25550633, "error": 4.62965 },
+        { "level": 4, "count": 71683, "raw_bytes": 573464, "compressed_bytes": 555194, "offset": 26667206, "error": 3.92221 }
+      ]
+    },
+    {
+      "id": 4,
+      "bounds_min": [2.23871, 30.3493, -2.37603],
+      "bounds_max": [3.92534, 37.8577, 4.53836],
+      "center": [3.08203, 34.1035, 1.08117],
+      "radius": 5.17277,
+      "lods": [
+        { "level": 0, "count": 266784, "raw_bytes": 2134272, "compressed_bytes": 1873174, "offset": 27222400, "error": 0 },
+        { "level": 1, "count": 133392, "raw_bytes": 1067136, "compressed_bytes": 989467, "offset": 29095574, "error": 3.78714 },
+        { "level": 2, "count": 66696, "raw_bytes": 533568, "compressed_bytes": 511308, "offset": 30085041, "error": 3.21422 },
+        { "level": 3, "count": 33348, "raw_bytes": 266784, "compressed_bytes": 260693, "offset": 30596349, "error": 3.94308 },
+        { "level": 4, "count": 16674, "raw_bytes": 133392, "compressed_bytes": 126635, "offset": 30857042, "error": 4.29188 }
+      ]
+    },
+    {
+      "id": 5,
+      "bounds_min": [2.23871, 37.783, -0.692378],
+      "bounds_max": [2.99972, 40.6658, 3.68987],
+      "center": [2.61922, 39.2244, 1.49875],
+      "radius": 2.65019,
+      "lods": [
+        { "level": 0, "count": 52176, "raw_bytes": 417408, "compressed_bytes": 367313, "offset": 30983677, "error": 0 },
+        { "level": 1, "count": 26088, "raw_bytes": 208704, "compressed_bytes": 192958, "offset": 31350990, "error": 1.47908 },
+        { "level": 2, "count": 13044, "raw_bytes": 104352, "compressed_bytes": 99958, "offset": 31543948, "error": 1.56294 },
+        { "level": 3, "count": 6522, "raw_bytes": 52176, "compressed_bytes": 51168, "offset": 31643906, "error": 1.57299 },
+        { "level": 4, "count": 3261, "raw_bytes": 26088, "compressed_bytes": 24917, "offset": 31695074, "error": 1.4299 }
+      ]
+    },
+    {
+      "id": 6,
+      "bounds_min": [-4.96542, 15.4894, -2.46776],
+      "bounds_max": [2.31454, 22.9921, 4.76119],
+      "center": [-1.32544, 19.2408, 1.14672],
+      "radius": 6.35505,
+      "lods": [
+        { "level": 0, "count": 626907, "raw_bytes": 5015256, "compressed_bytes": 4399770, "offset": 31719991, "error": 0 },
+        { "level": 1, "count": 313453, "raw_bytes": 2507624, "compressed_bytes": 2350677, "offset": 36119761, "error": 4.24602 },
+        { "level": 2, "count": 156726, "raw_bytes": 1253808, "compressed_bytes": 1191666, "offset": 38470438, "error": 5.11717 },
+        { "level": 3, "count": 78363, "raw_bytes": 626904, "compressed_bytes": 607428, "offset": 39662104, "error": 4.8862 },
+        { "level": 4, "count": 39181, "raw_bytes": 313448, "compressed_bytes": 295638, "offset": 40269532, "error": 4.95837 }
+      ]
+    },
+    {
+      "id": 7,
+      "bounds_min": [-2.5676, 22.9165, 4.68578],
+      "bounds_max": [0.495112, 27.8084, 6.10409],
+      "center": [-1.03625, 25.3625, 5.39493],
+      "radius": 2.97165,
+      "lods": [
+        { "level": 0, "count": 65062, "raw_bytes": 520496, "compressed_bytes": 459433, "offset": 40565170, "error": 0 },
+        { "level": 1, "count": 32531, "raw_bytes": 260248, "compressed_bytes": 244431, "offset": 41024603, "error": 2.13119 },
+        { "level": 2, "count": 16265, "raw_bytes": 130120, "compressed_bytes": 125674, "offset": 41269034, "error": 2.04644 },
+        { "level": 3, "count": 8132, "raw_bytes": 65056, "compressed_bytes": 63241, "offset": 41394708, "error": 1.82466 },
+        { "level": 4, "count": 4066, "raw_bytes": 32528, "compressed_bytes": 30219, "offset": 41457949, "error": 2.11176 }
+      ]
+    },
+    {
+      "id": 8,
+      "bounds_min": [-5.17435, 22.9165, -2.68609],
+      "bounds_max": [2.31454, 30.4248, 4.76119],
+      "center": [-1.4299, 26.6707, 1.03755],
+      "radius": 6.47921,
+      "lods": [
+        { "level": 0, "count": 984733, "raw_bytes": 7877864, "compressed_bytes": 6926419, "offset": 41488168, "error": 0 },
+        { "level": 1, "count": 492366, "raw_bytes": 3938928, "compressed_bytes": 3685917, "offset": 48414587, "error": 4.10253 },
+        { "level": 2, "count": 246183, "raw_bytes": 1969464, "compressed_bytes": 1884522, "offset": 52100504, "error": 4.75149 },
+        { "level": 3, "count": 123091, "raw_bytes": 984728, "compressed_bytes": 957321, "offset": 53985026, "error": 4.8068 },
+        { "level": 4, "count": 61545, "raw_bytes": 492360, "compressed_bytes": 465661, "offset": 54942347, "error": 4.50555 }
+      ]
+    },
+    {
+      "id": 9,
+      "bounds_min": [-3.08564, 15.5578, 4.68549],
+      "bounds_max": [2.31164, 22.9921, 6.60523],
+      "center": [-0.387001, 19.275, 5.64536],
+      "radius": 4.69267,
+      "lods": [
+        { "level": 0, "count": 241853, "raw_bytes": 1934824, "compressed_bytes": 1701916, "offset": 55408008, "error": 0 },
+        { "level": 1, "count": 120926, "raw_bytes": 967408, "compressed_bytes": 903410, "offset": 57109924, "error": 3.50081 },
+        { "level": 2, "count": 60463, "raw_bytes": 483704, "compressed_bytes": 461576, "offset": 58013334, "error": 3.82326 },
+        { "level": 3, "count": 30231, "raw_bytes": 241848, "compressed_bytes": 234693, "offset": 58474910, "error": 3.97895 },
+        { "level": 4, "count": 15115, "raw_bytes": 120920, "compressed_bytes": 114038, "offset": 58709603, "error": 4.04618 }
+      ]
+    },
+    {
+      "id": 10,
+      "bounds_min": [2.24111, 15.5739, 4.68771],
+      "bounds_max": [3.2081, 17.183, 5.50789],
+      "center": [2.72461, 16.3784, 5.0978],
+      "radius": 1.02433,
+      "lods": [
+        { "level": 0, "count": 4456, "raw_bytes": 35648, "compressed_bytes": 31184, "offset": 58823641, "error": 0 },
+        { "level": 1, "count": 2228, "raw_bytes": 17824, "compressed_bytes": 16355, "offset": 58854825, "error": 0.836145 },
+        { "level": 2, "count": 1114, "raw_bytes": 8912, "compressed_bytes": 8656, "offset": 58871180, "error": 0.497627 },
+        { "level": 3, "count": 557, "raw_bytes": 4456, "compressed_bytes": 4350, "offset": 58879836, "error": 0.840375 },
+        { "level": 4, "count": 278, "raw_bytes": 2224, "compressed_bytes": 2110, "offset": 58884186, "error": 0.949627 }
+      ]
+    },
+    {
+      "id": 11,
+      "bounds_min": [2.23871, 22.9173, -2.11354],
+      "bounds_max": [3.43407, 30.4248, 4.04511],
+      "center": [2.83639, 26.671, 0.965785],
+      "radius": 4.89186,
+      "lods": [
+        { "level": 0, "count": 238061, "raw_bytes": 1904488, "compressed_bytes": 1645788, "offset": 58886296, "error": 0 },
+        { "level": 1, "count": 119030, "raw_bytes": 952240, "compressed_bytes": 865610, "offset": 60532084, "error": 3.72431 },
+        { "level": 2, "count": 59515, "raw_bytes": 476120, "compressed_bytes": 449575, "offset": 61397694, "error": 4.44523 },
+        { "level": 3, "count": 29757, "raw_bytes": 238056, "compressed_bytes": 231946, "offset": 61847269, "error": 4.71665 },
+        { "level": 4, "count": 14878, "raw_bytes": 119024, "compressed_bytes": 114297, "offset": 62079215, "error": 4.619 }
+      ]
+    },
+    {
+      "id": 12,
+      "bounds_min": [-1.36418, 45.2183, -0.104828],
+      "bounds_max": [-1.29467, 45.2878, -0.0353166],
+      "center": [-1.32943, 45.253, -0.0700721],
+      "radius": 0.0601984,
+      "lods": [
+        { "level": 0, "count": 1, "raw_bytes": 8, "compressed_bytes": 8, "offset": 62193512, "error": 0 }
+      ]
+    }
+  ]
+}

@@ -21,3 +21,12 @@ set_target_properties(TestBitonicCPU PROPERTIES
     DEBUG_POSTFIX "d"
 )
 
+add_executable(CompressVenus ${CMAKE_CURRENT_SOURCE_DIR}/CompressVenus.cpp)
+set_target_properties(CompressVenus PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    FOLDER "Tests"
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_HOME_DIRECTORY}"
+    DEBUG_POSTFIX "d"
+)
+

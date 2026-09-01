@@ -572,9 +572,38 @@ namespace Surfels
 
     void PreprocessApp::GenerateSyntheticScene(uint32_t count)
     {
-        m_statusMessage = "Generating synthetic urban street benchmark...";
+        m_statusMessage = "Loading Venus de Milo Benchmark...";
+
+        // Priority: Check project data / datasets folder for venus.ply
+        std::vector<std::string> candidatePaths = {
+            "data/venus.ply",
+            "datasets/venus.ply",
+            "../data/venus.ply",
+            "../datasets/venus.ply"
+        };
+
+        std::string foundPath = "";
+        for (const auto& path : candidatePaths)
+        {
+            std::ifstream test(path, std::ios::binary);
+            if (test.is_open())
+            {
+                foundPath = path;
+                break;
+            }
+        }
+
+        if (!foundPath.empty() && LoadPLYFile(foundPath))
+        {
+            m_loadedFilePath = "Venus de Milo Benchmark (" + foundPath + ")";
+            m_statusMessage = "Successfully loaded Venus de Milo Benchmark (" + std::to_string(m_rawSurfels.size()) + " points).";
+            m_statusIsSuccess = true;
+            return;
+        }
+
+        // Fallback to procedural generator if disk file is missing
         m_rawSurfels = SyntheticGenerator::GenerateUrbanStreetScene(count);
-        m_loadedFilePath = "Synthetic Urban Benchmark (" + std::to_string(count / 1000) + "K points)";
+        m_loadedFilePath = "Synthetic Benchmark (" + std::to_string(count / 1000) + "K points)";
         m_isLoadedFromSFLW = false;
         m_rawFileSizeMB = (m_rawSurfels.size() * sizeof(SurfelVertex)) / (1024.0f * 1024.0f);
 
@@ -1089,7 +1118,7 @@ namespace Surfels
                 {
                     m_pendingAction = PendingAction::OpenCompressedFile;
                 }
-                if (ImGui::MenuItem("Generate Synthetic Benchmark (300K pts)"))
+                if (ImGui::MenuItem("Load Venus Benchmark (data/venus.ply)"))
                 {
                     m_pendingAction = PendingAction::GenerateBenchmark;
                 }
@@ -1128,7 +1157,7 @@ namespace Surfels
 
             if (ImGui::BeginMenu("View"))
             {
-                ImGui::MenuItem("Show Splat Crunch Pane", nullptr, &m_showPreprocessorPane);
+                ImGui::MenuItem("Show Splat Cruncher Pane", nullptr, &m_showPreprocessorPane);
                 ImGui::MenuItem("Auto Rotate Viewport", nullptr, &m_state.autoRotate);
                 if (ImGui::MenuItem("Reset Camera to Center"))
                 {
@@ -1140,7 +1169,7 @@ namespace Surfels
 
             if (ImGui::BeginMenu("Help"))
             {
-                if (ImGui::MenuItem("About Splat Crunch..."))
+                if (ImGui::MenuItem("About Surfel Generator..."))
                 {
                     m_showAboutDialog = true;
                 }
@@ -1153,7 +1182,7 @@ namespace Surfels
         // 2. Left Control Panel: Decoupled Preprocessor & Renderer Tabs
         ImGui::SetNextWindowPos(ImVec2(10, 30), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(410, (float)m_Height - 40), ImGuiCond_FirstUseEver);
-        ImGui::Begin("Splat Crunch", nullptr, ImGuiWindowFlags_NoCollapse);
+        ImGui::Begin("Surfel Generator", nullptr, ImGuiWindowFlags_NoCollapse);
 
         if (!m_showPreprocessorPane)
         {
@@ -1165,7 +1194,7 @@ namespace Surfels
             float tabWidth = (ImGui::GetContentRegionAvailWidth() - 6.0f) * 0.5f;
             ImGui::PushStyleColor(ImGuiCol_Button, m_activeTab == 0 ? ImVec4(0.18f, 0.45f, 0.75f, 1.0f) : ImVec4(0.22f, 0.22f, 0.25f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_Text, m_activeTab == 0 ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
-            if (ImGui::Button("1. Splat Crunch", ImVec2(tabWidth, 28))) m_activeTab = 0;
+            if (ImGui::Button("1. Splat Cruncher", ImVec2(tabWidth, 28))) m_activeTab = 0;
             ImGui::PopStyleColor(2);
 
             ImGui::SameLine();
@@ -1179,7 +1208,7 @@ namespace Surfels
         }
 
         // =========================================================================
-        // TAB 1: SPLAT CRUNCH PREPROCESSOR (Raw Model -> Octree -> Wavelet Decimation -> SFLW Export)
+        // TAB 1: SPLAT CRUNCHER PREPROCESSOR (Raw Model -> Octree -> Wavelet Decimation -> SFLW Export)
         // =========================================================================
         if (m_activeTab == 0 && m_showPreprocessorPane)
         {
@@ -1192,7 +1221,7 @@ namespace Surfels
             {
                 m_pendingAction = PendingAction::OpenFile;
             }
-            if (ImGui::Button("Generate Synthetic Benchmark", ImVec2(-1, 24)))
+            if (ImGui::Button("Load Venus Benchmark (data/venus.ply)", ImVec2(-1, 24)))
             {
                 m_pendingAction = PendingAction::GenerateBenchmark;
             }
@@ -1578,9 +1607,9 @@ namespace Surfels
         {
             ImGui::SetNextWindowSize(ImVec2(480, 280), ImGuiCond_FirstUseEver);
             ImGui::SetNextWindowPos(ImVec2(((float)m_Width - 480) * 0.5f, ((float)m_Height - 280) * 0.5f), ImGuiCond_FirstUseEver);
-            if (ImGui::Begin("About Splat Crunch", &m_showAboutDialog, ImGuiWindowFlags_NoCollapse))
+            if (ImGui::Begin("About Surfel Generator", &m_showAboutDialog, ImGuiWindowFlags_NoCollapse))
             {
-                ImGui::TextColored(ImVec4(0.3f, 0.85f, 1.0f, 1.0f), "Splat Crunch - Point Cloud Preprocessor & Wavelet Streaming");
+                ImGui::TextColored(ImVec4(0.3f, 0.85f, 1.0f, 1.0f), "Surfel Generator & Splat Cruncher");
                 ImGui::Separator();
                 ImGui::Spacing();
 
