@@ -1057,7 +1057,7 @@ namespace Surfels
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Visualizes uniform spatial blocks of cluster cubes with semi-transparent heatmap face shading based on localized point cloud density.");
                 if (m_showClusterHeatmap)
                 {
-                    ImGui::Indent(15.0f);
+                    // Clean Release Controls: Resolution, Outlines, Color Scheme
                     const char* cubePresets[] = { "512 Cubes", "1,024 Cubes", "2,048 Cubes", "4,096 Cubes", "8,192 Cubes", "16,384 Cubes" };
                     int cubeValues[] = { 512, 1024, 2048, 4096, 8192, 16384 };
                     int currentPreset = 3; // 4096 default
@@ -1067,13 +1067,25 @@ namespace Surfels
                         m_targetClusterCubes = cubeValues[currentPreset];
                         RebuildHeatmapClusterCubes();
                     }
-                    ImGui::SliderFloat("Heatmap Tint Opacity", &m_heatmapOpacity, 0.02f, 0.60f, "%.2f");
-                    ImGui::SliderFloat("Hot Spot Opacity Boost", &m_hotspotOpacityScale, 1.0f, 6.0f, "%.1fx");
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Scales the opacity of hot/dense cubes higher so they stand out more solid than cool sparse cubes.");
-                    ImGui::SliderFloat("Wireframe Opacity", &m_wireframeOpacity, 0.05f, 1.00f, "%.2f");
+
+                    ImGui::Checkbox("Draw Cube Outlines", &m_showHeatmapWireframe);
+
                     const char* schemes[] = { "Turbo (Classic Rainbow)", "Viridis (Perceptual)", "Plasma (Magma)" };
                     ImGui::Combo("Heatmap Color Scheme", &m_heatmapColorScheme, schemes, IM_ARRAYSIZE(schemes));
-                    ImGui::Checkbox("Draw Cube Outlines", &m_showHeatmapWireframe);
+
+                    // Dev Switch: Fine-grained Opacity and Boost Sliders
+                    ImGui::Checkbox("Developer Tuning Controls", &m_showDevSettings);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Exposes internal alpha tint opacity and dynamic contrast scaling controls.");
+
+                    if (m_showDevSettings)
+                    {
+                        ImGui::Indent(15.0f);
+                        ImGui::SliderFloat("Heatmap Tint Opacity", &m_heatmapOpacity, 0.02f, 0.60f, "%.2f");
+                        ImGui::SliderFloat("Hot Spot Opacity Boost", &m_hotspotOpacityScale, 1.0f, 6.0f, "%.1fx");
+                        ImGui::SliderFloat("Wireframe Opacity", &m_wireframeOpacity, 0.05f, 1.00f, "%.2f");
+                        ImGui::Unindent(15.0f);
+                    }
+
                     ImGui::Unindent(15.0f);
                 }
 
