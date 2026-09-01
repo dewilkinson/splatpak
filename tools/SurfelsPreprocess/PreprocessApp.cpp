@@ -1646,8 +1646,8 @@ namespace Surfels
                         }
                         else
                         {
-                            snprintf(progressOverlay, sizeof(progressOverlay), "%.1f / %.1f MB (%.0f%%) | %u / %zu pts",
-                                deliveredMB, totalMB, m_streamRefinementProgress * 100.0f, m_state.surfelCount, m_fullStreamingSurfels.size());
+                            snprintf(progressOverlay, sizeof(progressOverlay), "%.1f / %.1f MB (%.0f%%) | %u resident pts",
+                                deliveredMB, totalMB, m_streamRefinementProgress * 100.0f, m_state.surfelCount);
                         }
                         ImGui::ProgressBar(m_streamRefinementProgress, ImVec2(-1, 20), progressOverlay);
 
@@ -2025,13 +2025,13 @@ namespace Surfels
             PrecacheResidentLODs();
         }
 
-        if (m_residentLODs.empty())
+        int numLODs = (int)m_residentLODs.size();
+        if (numLODs == 0)
         {
             ImGui::TextDisabled("No resident LOD levels available.");
             return;
         }
 
-        int numLODs = (int)m_residentLODs.size();
         ImDrawList* drawList = ImGui::GetWindowDrawList();
         float availWidth = ImGui::GetContentRegionAvailWidth();
 
@@ -2040,16 +2040,6 @@ namespace Surfels
 
         // Base segment count on the top row (Coarsest Base LOD)
         int baseSegments = (numLODs <= 2) ? 8 : 4;
-
-        // Group stream chunks by LOD level
-        std::vector<std::vector<const StreamChunk*>> lodChunkMap(numLODs);
-        for (const auto& sc : m_allStreamChunks)
-        {
-            if (sc.lodLevel >= 0 && sc.lodLevel < numLODs)
-            {
-                lodChunkMap[sc.lodLevel].push_back(&sc);
-            }
-        }
 
         // Display rows: Top row = Highest LOD / Coarsest Base (numLODs - 1), moving down to LOD 0 (Fine)
         for (int rowIdx = 0; rowIdx < numLODs; rowIdx++)
@@ -2064,8 +2054,8 @@ namespace Surfels
             int numSegments = baseSegments * (1 << rowIdx);
             const float barHeight = 14.0f;
 
-            const auto& levelChunks = lodChunkMap[lodIdx];
-            size_t T = levelChunks.size();
+            const auto* pLevelChunks = (lodIdx < (int)m_lodStreamChunks.size()) ? &m_lodStreamChunks[lodIdx] : nullptr;
+            size_t T = pLevelChunks ? pLevelChunks->size() : 0;
 
             // Calculate residency stats
             size_t residentPts = 0;
@@ -2120,13 +2110,13 @@ namespace Surfels
                 {
                     isLit = true;
                 }
-                else if (T > 0)
+                else if (pLevelChunks && T > 0)
                 {
                     size_t idxStart = (size_t)(((float)s / (float)numSegments) * T);
                     size_t idxEnd = std::min(T, std::max(idxStart + 1, (size_t)(((float)(s + 1) / (float)numSegments) * T)));
                     for (size_t c = idxStart; c < idxEnd; c++)
                     {
-                        if (levelChunks[c]->isResident)
+                        if ((*pLevelChunks)[c].isResident)
                         {
                             isLit = true;
                             break;

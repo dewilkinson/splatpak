@@ -181,7 +181,8 @@ namespace Surfels
             int      lodLevel = 0;
             XMFLOAT3 center = { 0, 0, 0 };
             float    radius = 0.0f;
-            std::vector<SurfelVertex> surfels;
+            std::vector<SurfelVertex>   rawSurfels;
+            std::vector<PackedSurfelGPU> packedSurfels;
             size_t   byteSize = 0;
             float    currentPriority = 0.0f;
             bool     isResident = false;
@@ -197,10 +198,18 @@ namespace Surfels
         float  m_totalStreamBytes           = 0.0f;   // Total model transfer size
         float  m_streamRefinementProgress   = 1.0f;   // 0.0f to 1.0f
         size_t m_evictedSurfelCount         = 0;      // Count of earlier slots evicted from GPU Ring Buffer
-        std::vector<StreamChunk> m_allStreamChunks;   // Hierarchical chunks (coarsest base up to finest detail)
-        std::vector<size_t>      m_lodTotalSurfels;   // Total surfels per LOD level
-        std::vector<size_t>      m_lodResidentSurfels;// Resident surfels per LOD level
-        std::vector<SurfelVertex> m_fullStreamingSurfels; // Complete ordered surfels array for progressive feed
+
+        std::vector<std::vector<StreamChunk>> m_lodStreamChunks; // Chunks grouped by LOD level for O(1) equalizer
+        std::vector<StreamChunk*>             m_allStreamChunkPtrs; // Flat list of pointers for priority sorting
+        std::vector<size_t>                   m_lodTotalSurfels;   // Total surfels per LOD level
+        std::vector<size_t>                   m_lodResidentSurfels;// Resident surfels per LOD level
+
+        // Throttling for frustum priority re-sorting
+        XMFLOAT3 m_lastStreamCamPos = { 1e9f, 1e9f, 1e9f };
+        float    m_lastStreamYaw = 1e9f;
+        float    m_lastStreamPitch = 1e9f;
+        float    m_priorityUpdateTimer = 0.0f;
+        bool     m_streamStateDirty = true;
 
         void   InitStreamingSimulation();
         void   UpdateStreamingSimulation(double dtSeconds);
