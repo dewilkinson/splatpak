@@ -1117,13 +1117,16 @@ namespace Surfels
 
         bool shiftDown = io.KeyShift || ((GetKeyState(VK_SHIFT) & 0x8000) != 0) || ((GetKeyState(VK_LSHIFT) & 0x8000) != 0) || ((GetKeyState(VK_RSHIFT) & 0x8000) != 0);
 
+        float dtSeconds = (float)(m_deltaTime / 1000.0f);
+        if (dtSeconds <= 0.0f || dtSeconds > 0.1f) dtSeconds = 0.016f; // Safe fallback
+
         // Keyboard Controls: Arrow Keys (Shift=Pan, No Shift=Rotate), W/S/PageUp/PageDown Zoom
         if (!io.WantCaptureKeyboard)
         {
             if (shiftDown)
             {
                 // Shift + Arrow Keys: PAN Camera along View Plane
-                float keyPanSpeed = m_distance * 0.02f;
+                float keyPanSpeed = m_distance * 1.5f * dtSeconds;
                 if (GetKeyState(VK_LEFT) & 0x8000)
                 {
                     m_target.x -= rightDir.x * keyPanSpeed;
@@ -1151,8 +1154,8 @@ namespace Surfels
             }
             else
             {
-                // Left/Right without Shift: Rotate Yaw
-                float keyRotSpeed = 0.03f;
+                // Left/Right without Shift: Rotate Yaw (Smooth dtSeconds scaling)
+                float keyRotSpeed = 1.8f * dtSeconds;
                 if (GetKeyState(VK_LEFT) & 0x8000)
                 {
                     m_yaw -= keyRotSpeed;
@@ -1162,15 +1165,15 @@ namespace Surfels
                     m_yaw += keyRotSpeed;
                 }
 
-                // Up/Down without Shift: Zoom In / Out
-                float keyZoomSpeed = m_distance * 0.04f;
+                // Up/Down / W/S: Smooth Frame-Rate Independent Exponential Zoom
+                float zoomRate = 2.2f; // Exponential zoom rate per second
                 if ((GetKeyState(VK_UP) & 0x8000) || (GetKeyState('W') & 0x8000) || (GetKeyState(VK_PRIOR) & 0x8000) || (GetKeyState(VK_ADD) & 0x8000) || (GetKeyState(VK_OEM_PLUS) & 0x8000))
                 {
-                    m_distance -= keyZoomSpeed; // Zoom In
+                    m_distance *= expf(-zoomRate * dtSeconds); // Smooth fast Zoom In
                 }
                 if ((GetKeyState(VK_DOWN) & 0x8000) || (GetKeyState('S') & 0x8000) || (GetKeyState(VK_NEXT) & 0x8000) || (GetKeyState(VK_SUBTRACT) & 0x8000) || (GetKeyState(VK_OEM_MINUS) & 0x8000))
                 {
-                    m_distance += keyZoomSpeed; // Zoom Out
+                    m_distance *= expf(+zoomRate * dtSeconds); // Smooth fast Zoom Out
                 }
             }
 
@@ -1179,7 +1182,6 @@ namespace Surfels
 
         if (!io.WantCaptureMouse)
         {
-
             if (shiftDown)
             {
                 // SHIFT PRESSED = PAN CAMERA ONLY
@@ -1203,13 +1205,18 @@ namespace Surfels
                 else if (io.MouseDown[1])
                 {
                     // Right Mouse Drag: Zoom In / Out
-                    m_distance += io.MouseDelta.y * (m_distance * 0.005f);
+                    float zoomFactor = 1.0f + io.MouseDelta.y * 0.005f;
+                    m_distance *= std::max(0.5f, std::min(1.5f, zoomFactor));
                     m_distance = std::max(0.1f, std::min(1000.0f, m_distance));
                 }
             }
 
-            m_distance -= io.MouseWheel * (m_distance * 0.1f);
-            m_distance = std::max(0.1f, std::min(1000.0f, m_distance));
+            if (io.MouseWheel != 0.0f)
+            {
+                float wheelZoomFactor = powf(0.85f, io.MouseWheel);
+                m_distance *= wheelZoomFactor;
+                m_distance = std::max(0.1f, std::min(1000.0f, m_distance));
+            }
         }
 
         // Distance-Adaptive Auto LOD Selection:
