@@ -2037,6 +2037,22 @@ namespace Surfels
         float availWidth = ImGui::GetContentRegionAvailWidth();
 
         ImGui::TextColored(ImVec4(0.4f, 0.85f, 1.0f, 1.0f), "Hierarchical LOD Chunk Residency (Base to Fine):");
+        ImGui::SameLine();
+        ImGui::TextDisabled("|");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.95f, 0.25f, 0.25f, 1.0f), "Red (Base)");
+        ImGui::SameLine();
+        ImGui::TextDisabled("->");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.1f, 1.0f), "Orange");
+        ImGui::SameLine();
+        ImGui::TextDisabled("->");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(1.0f, 0.88f, 0.1f, 1.0f), "Yellow");
+        ImGui::SameLine();
+        ImGui::TextDisabled("->");
+        ImGui::SameLine();
+        ImGui::TextColored(ImVec4(0.2f, 0.95f, 0.4f, 1.0f), "Green (Refined)");
         ImGui::Spacing();
 
         // Base segment count on the top row (Coarsest Base LOD)
@@ -2057,6 +2073,11 @@ namespace Surfels
 
             const auto* pLevelChunks = (lodIdx < (int)m_lodStreamChunks.size()) ? &m_lodStreamChunks[lodIdx] : nullptr;
             size_t T = pLevelChunks ? pLevelChunks->size() : 0;
+
+            // Lower level mip for child refinement calculation
+            int childLodIdx = lodIdx - 1;
+            const auto* pChildChunks = (childLodIdx >= 0 && childLodIdx < (int)m_lodStreamChunks.size()) ? &m_lodStreamChunks[childLodIdx] : nullptr;
+            size_t TChild = pChildChunks ? pChildChunks->size() : 0;
 
             // Calculate residency stats
             size_t residentPts = 0;
@@ -2107,49 +2128,92 @@ namespace Surfels
 
                 // Determine if this specific chunk/span is resident
                 bool isLit = false;
+                float childRatio = 1.0f; // 1.0 = fully refined
+
                 if (!m_enableStreamingSimulation)
                 {
                     isLit = true;
-                }
-                else if (pLevelChunks && T > 0)
-                {
-                    size_t idxStart = (size_t)(((float)s / (float)numSegments) * T);
-                    size_t idxEnd = std::min(T, std::max(idxStart + 1, (size_t)(((float)(s + 1) / (float)numSegments) * T)));
-                    for (size_t c = idxStart; c < idxEnd; c++)
-                    {
-                        if ((*pLevelChunks)[c].isResident)
-                        {
-                            isLit = true;
-                            break;
-                        }
-                    }
+                    childRatio = 1.0f;
                 }
                 else
                 {
-                    isLit = (residentPct > 0.001f);
+                    if (pLevelChunks && T > 0)
+                    {
+                        size_t idxStart = (size_t)(((float)s / (float)numSegments) * T);
+                        size_t idxEnd = std::min(T, std::max(idxStart + 1, (size_t)(((float)(s + 1) / (float)numSegments) * T)));
+                        for (size_t c = idxStart; c < idxEnd; c++)
+                        {
+                            if ((*pLevelChunks)[c].isResident)
+                            {
+                                isLit = true;
+                                break;
+                            }
+                        }
+                    }
+                    else
+                    {
+                        isLit = (residentPct > 0.001f);
+                    }
+
+                    // Calculate child loaded ratio from lower level mip
+                    if (isLit)
+                    {
+                        if (pChildChunks && TChild > 0)
+                        {
+                            size_t cStart = (size_t)(((float)s / (float)numSegments) * TChild);
+                            size_t cEnd = std::min(TChild, std::max(cStart + 1, (size_t)(((float)(s + 1) / (float)numSegments) * TChild)));
+                            size_t childResidentCount = 0;
+                            size_t childTotal = cEnd - cStart;
+                            for (size_t c = cStart; c < cEnd; c++)
+                            {
+                                if ((*pChildChunks)[c].isResident) childResidentCount++;
+                            }
+                            childRatio = (childTotal > 0) ? ((float)childResidentCount / (float)childTotal) : 0.0f;
+                        }
+                        else
+                        {
+                            // Terminal finest LOD level (LOD 0) has no lower mip -> 100% refined
+                            childRatio = 1.0f;
+                        }
+                    }
                 }
 
                 if (isLit)
                 {
-                    ImU32 colBase;
-                    ImU32 colHighlight;
-
-                    float segFrac = (float)s / (float)numSegments;
-                    if (segFrac < 0.60f)
+                    // Color code according to how many children in lower mip are loaded:
+                    // 0.0 = Red -> 0.33 = Orange -> 0.66 = Yellow -> 1.0 = Green
+                    float r, g, b;
+                    if (childRatio <= 0.333f)
                     {
-                        colBase = IM_COL32(35, 205, 85, 255);
-                        colHighlight = IM_COL32(95, 255, 140, 255);
+                        // Red to Orange
+                        float t = childRatio / 0.333f;
+                        r = 230.0f + t * (245.0f - 230.0f);
+                        g = 45.0f  + t * (125.0f - 45.0f);
+                        b = 45.0f  + t * (20.0f  - 45.0f);
                     }
-                    else if (segFrac < 0.85f)
+                    else if (childRatio <= 0.666f)
                     {
-                        colBase = IM_COL32(250, 180, 25, 255);
-                        colHighlight = IM_COL32(255, 220, 90, 255);
+                        // Orange to Yellow
+                        float t = (childRatio - 0.333f) / 0.333f;
+                        r = 245.0f + t * (255.0f - 245.0f);
+                        g = 125.0f + t * (215.0f - 125.0f);
+                        b = 20.0f  + t * (25.0f  - 20.0f);
                     }
                     else
                     {
-                        colBase = IM_COL32(30, 200, 250, 255);
-                        colHighlight = IM_COL32(130, 235, 255, 255);
+                        // Yellow to Vivid Green
+                        float t = (childRatio - 0.666f) / 0.334f;
+                        r = 255.0f + t * (35.0f  - 255.0f);
+                        g = 215.0f + t * (225.0f - 215.0f);
+                        b = 25.0f  + t * (85.0f  - 25.0f);
                     }
+
+                    ImU32 colBase = IM_COL32((int)r, (int)g, (int)b, 255);
+                    ImU32 colHighlight = IM_COL32(
+                        std::min(255, (int)r + 40),
+                        std::min(255, (int)g + 30),
+                        std::min(255, (int)b + 40),
+                        255);
 
                     drawList->AddRectFilled(segMin, segMax, colBase, 1.0f);
                     if (segMax.x - segMin.x > 3.0f)
