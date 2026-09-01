@@ -1335,12 +1335,20 @@ namespace Surfels
         // Compression Summary
         if (ImGui::CollapsingHeader("4-Tier Compression Results", ImGuiTreeNodeFlags_DefaultOpen))
         {
-            ImGui::Text("Raw Point Cloud:    %.2f MB (100%%)", m_rawFileSizeMB);
-            ImGui::Text("Tier 2 (8-Byte GPU):%.2f MB (5.0x reduction)", (m_rawSurfels.size() * 8.0f) / (1024.0f * 1024.0f));
-            ImGui::Text("Tier 3 (Byte-Shuff): Contiguous channels");
-            ImGui::Text("Tier 4 (Compressed):%.2f MB", m_compressedSizeMB);
+            ImGui::Text("Raw Point Cloud:      %.2f MB (100%%)", m_rawFileSizeMB);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Uncompressed input point cloud dataset.");
+
+            ImGui::Text("Tier 2 (8-Byte GPU):  %.2f MB (5.0x reduction)", (m_rawSurfels.size() * 8.0f) / (1024.0f * 1024.0f));
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 2 Quantization: 8-byte packed GPU format (10:10:10:2 position, Oct16 normal, RGB565 color).");
+
+            ImGui::Text("Tier 3 (Byte-Shuffle): Contiguous 8-channel planes");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 3 Transposition: Groups identical byte channels contiguously to maximize run-length entropy redundancy.");
+
+            ImGui::Text("Tier 4 (Codec: Byte-RLE / Zstd Entropy): %.2f MB", m_compressedSizeMB);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 4 Bitstream Codec: Byte-plane Run-Length Entropy & Zstandard lossless stream compression on transposed 8-byte channels.");
+
             ImGui::Separator();
-            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "TOTAL COMPRESSION:  %.2fx", m_compressionRatio);
+            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "TOTAL COMPRESSION:    %.2fx (%.2f MB -> %.2f MB)", m_compressionRatio, m_rawFileSizeMB, m_compressedSizeMB);
         }
 
         ImGui::End();
