@@ -1708,11 +1708,11 @@ namespace Surfels
                     ImGui::Checkbox("Show Density Heatmap Cluster Cubes", &m_showClusterHeatmap);
                     if (m_showClusterHeatmap)
                     {
-                        ImGui::SliderFloat("Cube Fill Opacity", &m_heatmapOpacity, 0.05f, 1.0f, "%.2f");
+                        ImGui::SliderFloat("Cube Fill Opacity", &m_heatmapOpacity, 0.0f, 1.0f, "%.2f");
                         ImGui::Checkbox("Draw Cube Outlines", &m_showHeatmapWireframe);
                         if (m_showHeatmapWireframe)
                         {
-                            ImGui::SliderFloat("Outline Opacity", &m_wireframeOpacity, 0.05f, 1.0f, "%.2f");
+                            ImGui::SliderFloat("Outline Opacity", &m_wireframeOpacity, 0.0f, 1.0f, "%.2f");
                         }
                     }
                     else
@@ -2189,6 +2189,11 @@ namespace Surfels
 
         auto DrawFilledCube = [&](const XMFLOAT3& bMin, const XMFLOAT3& bMax, ImU32 fillCol, ImU32 edgeCol, bool drawWireframe)
         {
+            uint8_t fillA = (fillCol >> 24) & 0xFF;
+            uint8_t edgeA = (edgeCol >> 24) & 0xFF;
+            if (fillA == 0 && (!drawWireframe || edgeA == 0))
+                return;
+
             XMFLOAT3 corners[8] = {
                 { bMin.x, bMin.y, bMin.z }, { bMax.x, bMin.y, bMin.z }, { bMax.x, bMax.y, bMin.z }, { bMin.x, bMax.y, bMin.z },
                 { bMin.x, bMin.y, bMax.z }, { bMax.x, bMin.y, bMax.z }, { bMax.x, bMax.y, bMax.z }, { bMin.x, bMax.y, bMax.z }
@@ -2201,25 +2206,28 @@ namespace Surfels
             }
 
             // 6 Faces
-            static const int faces[6][4] = {
-                { 0, 1, 2, 3 }, // Front (-Z)
-                { 5, 4, 7, 6 }, // Back (+Z)
-                { 4, 0, 3, 7 }, // Left (-X)
-                { 1, 5, 6, 2 }, // Right (+X)
-                { 3, 2, 6, 7 }, // Top (+Y)
-                { 4, 5, 1, 0 }  // Bottom (-Y)
-            };
-
-            for (int f = 0; f < 6; f++)
+            if (fillA > 0)
             {
-                int i0 = faces[f][0], i1 = faces[f][1], i2 = faces[f][2], i3 = faces[f][3];
-                if (valid[i0] && valid[i1] && valid[i2] && valid[i3])
+                static const int faces[6][4] = {
+                    { 0, 1, 2, 3 }, // Front (-Z)
+                    { 5, 4, 7, 6 }, // Back (+Z)
+                    { 4, 0, 3, 7 }, // Left (-X)
+                    { 1, 5, 6, 2 }, // Right (+X)
+                    { 3, 2, 6, 7 }, // Top (+Y)
+                    { 4, 5, 1, 0 }  // Bottom (-Y)
+                };
+
+                for (int f = 0; f < 6; f++)
                 {
-                    drawList->AddQuadFilled(screenCorners[i0], screenCorners[i1], screenCorners[i2], screenCorners[i3], fillCol);
+                    int i0 = faces[f][0], i1 = faces[f][1], i2 = faces[f][2], i3 = faces[f][3];
+                    if (valid[i0] && valid[i1] && valid[i2] && valid[i3])
+                    {
+                        drawList->AddQuadFilled(screenCorners[i0], screenCorners[i1], screenCorners[i2], screenCorners[i3], fillCol);
+                    }
                 }
             }
 
-            if (drawWireframe)
+            if (drawWireframe && edgeA > 0)
             {
                 static const int edges[12][2] = {
                     { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 0 },
