@@ -191,6 +191,7 @@ namespace Surfels
         void   UpdateStreamingSimulation(double dtSeconds);
         void   ResetStreamingSimulation();
 
+        void  DrawLODResidencyEqualizer();
         void  RebuildHeatmapClusterCubes();
         void  DrawOctreeVisualizer();
     };

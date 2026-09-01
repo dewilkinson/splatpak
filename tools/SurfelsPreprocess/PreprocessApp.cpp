@@ -1670,8 +1670,15 @@ namespace Surfels
                     }
                 }
 
-                // Section 2: Runtime LOD Settings
-                if (ImGui::CollapsingHeader("2. Runtime LOD & Quality", ImGuiTreeNodeFlags_DefaultOpen))
+                // Section 2: LOD Residency Equalizer (Segmented Blocks Indicator)
+                if (ImGui::CollapsingHeader("2. LOD Residency Equalizer", ImGuiTreeNodeFlags_DefaultOpen))
+                {
+                    DrawLODResidencyEqualizer();
+                    ImGui::Separator();
+                }
+
+                // Section 3: Runtime LOD Settings
+                if (ImGui::CollapsingHeader("3. Runtime LOD & Quality", ImGuiTreeNodeFlags_DefaultOpen))
                 {
                     int maxLODIndex = std::max(0, (int)m_waveletResult.lodLevels.size() - 1);
                     if (maxLODIndex > 0)
@@ -1716,8 +1723,8 @@ namespace Surfels
                     }
                 }
 
-                // Section 3: 3D Viewport & Splat Sizing
-                if (ImGui::CollapsingHeader("3. 3D Viewport & Splat Sizing", ImGuiTreeNodeFlags_DefaultOpen))
+                // Section 4: 3D Viewport & Splat Sizing
+                if (ImGui::CollapsingHeader("4. 3D Viewport & Splat Sizing", ImGuiTreeNodeFlags_DefaultOpen))
                 {
                     ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Active Display: %u points", m_state.surfelCount);
 
@@ -1783,8 +1790,8 @@ namespace Surfels
                     }
                 }
 
-                // Section 4: Hardware Accelerators & Pipeline
-                if (ImGui::CollapsingHeader("4. Accelerators & Meshlet Pipeline", ImGuiTreeNodeFlags_DefaultOpen))
+                // Section 5: Hardware Accelerators & Pipeline
+                if (ImGui::CollapsingHeader("5. Accelerators & Meshlet Pipeline", ImGuiTreeNodeFlags_DefaultOpen))
                 {
                     if (ImGui::Checkbox("GPU Radix Sort", &m_gpuRadixSort))
                     {
@@ -2006,6 +2013,146 @@ namespace Surfels
             }
             ImGui::End();
         }
+    }
+
+    void PreprocessApp::DrawLODResidencyEqualizer()
+    {
+        if (m_residentLODs.empty())
+        {
+            PrecacheResidentLODs();
+        }
+
+        if (m_residentLODs.empty())
+        {
+            ImGui::TextDisabled("No resident LOD levels available.");
+            return;
+        }
+
+        int numLODs = (int)m_residentLODs.size();
+        ImDrawList* drawList = ImGui::GetWindowDrawList();
+        float availWidth = ImGui::GetContentRegionAvailWidth();
+
+        ImGui::TextColored(ImVec4(0.4f, 0.85f, 1.0f, 1.0f), "Resident Block Span by LOD Tier:");
+        ImGui::Spacing();
+
+        for (int lodIdx = 0; lodIdx < numLODs; lodIdx++)
+        {
+            const auto& lodData = m_residentLODs[lodIdx];
+            uint32_t totalBlocks = (uint32_t)lodData.meshletChunks.size();
+            size_t totalPts = lodData.rawSurfels.size();
+            float totalMB = (float)(totalPts * (m_enableQuantization ? sizeof(PackedSurfelGPU) : sizeof(SurfelVertex))) / (1024.0f * 1024.0f);
+
+            float startFraction = 0.0f;
+            float endFraction = 1.0f;
+            uint32_t residentBlocks = totalBlocks;
+
+            if (m_enableStreamingSimulation && !m_fullStreamingSurfels.empty())
+            {
+                // Progressive Network Streaming mode: active window in GPU ring buffer
+                float fullCount = (float)m_fullStreamingSurfels.size();
+                float residentCount = (float)m_state.surfelCount;
+                float evictedCount = (float)m_evictedSurfelCount;
+
+                startFraction = std::max(0.0f, std::min(1.0f, evictedCount / fullCount));
+                float residentRatio = std::max(0.0f, std::min(1.0f, residentCount / fullCount));
+                endFraction = std::min(1.0f, startFraction + residentRatio);
+
+                residentBlocks = (uint32_t)std::round(totalBlocks * residentRatio);
+            }
+            else
+            {
+                // Standard mode: fully resident
+                startFraction = 0.0f;
+                endFraction = 1.0f;
+                residentBlocks = totalBlocks;
+            }
+
+            float residentPct = (endFraction - startFraction) * 100.0f;
+            bool isActiveLOD = (lodIdx == m_selectedPreviewLOD);
+
+            // Row Header with block count and memory footprint
+            if (isActiveLOD)
+            {
+                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.5f, 1.0f), "LOD %d%s [%.1f%% Resident] - %u / %u blocks (%zu pts | %.1f MB) [ACTIVE VIEW]",
+                    lodIdx, (lodIdx == 0 ? " (Fine 100%)" : (lodIdx == numLODs - 1 ? " (Coarse Base)" : "")),
+                    residentPct, residentBlocks, totalBlocks, totalPts, totalMB);
+            }
+            else
+            {
+                ImGui::Text("LOD %d%s [%.1f%% Resident] - %u / %u blocks (%zu pts | %.1f MB)",
+                    lodIdx, (lodIdx == 0 ? " (Fine 100%)" : (lodIdx == numLODs - 1 ? " (Coarse Base)" : "")),
+                    residentPct, residentBlocks, totalBlocks, totalPts, totalMB);
+            }
+
+            // Equalizer Segmented LED Bar
+            const int numSegments = 32;
+            const float gap = 2.0f;
+            const float barHeight = 14.0f;
+            float segWidth = (availWidth - (numSegments - 1) * gap) / (float)numSegments;
+
+            ImVec2 p0 = ImGui::GetCursorScreenPos();
+
+            // Background recessed slot
+            drawList->AddRectFilled(p0, ImVec2(p0.x + availWidth, p0.y + barHeight), IM_COL32(16, 18, 22, 255), 2.0f);
+            drawList->AddRect(p0, ImVec2(p0.x + availWidth, p0.y + barHeight), IM_COL32(32, 35, 42, 255), 2.0f);
+
+            for (int s = 0; s < numSegments; s++)
+            {
+                float segStart = (float)s / (float)numSegments;
+                float segEnd = (float)(s + 1) / (float)numSegments;
+
+                bool isLit = (segEnd > startFraction) && (segStart < endFraction) && (residentPct > 0.001f);
+
+                ImVec2 segMin = ImVec2(p0.x + s * (segWidth + gap) + 1.0f, p0.y + 1.5f);
+                ImVec2 segMax = ImVec2(segMin.x + segWidth - 1.0f, p0.y + barHeight - 1.5f);
+
+                if (isLit)
+                {
+                    // Multi-tier Equalizer coloring based on position along the frequency/LOD band
+                    ImU32 colBase;
+                    ImU32 colHighlight;
+
+                    float segFrac = (float)s / (float)numSegments;
+                    if (segFrac < 0.60f)
+                    {
+                        // Green tier (0 - 60%)
+                        colBase = IM_COL32(35, 205, 85, 255);
+                        colHighlight = IM_COL32(95, 255, 140, 255);
+                    }
+                    else if (segFrac < 0.85f)
+                    {
+                        // Amber / Yellow tier (60 - 85%)
+                        colBase = IM_COL32(250, 180, 25, 255);
+                        colHighlight = IM_COL32(255, 220, 90, 255);
+                    }
+                    else
+                    {
+                        // Cyan / Aqua tier (85 - 100%)
+                        colBase = IM_COL32(30, 200, 250, 255);
+                        colHighlight = IM_COL32(130, 235, 255, 255);
+                    }
+
+                    // Main illuminated LED segment
+                    drawList->AddRectFilled(segMin, segMax, colBase, 1.5f);
+
+                    // Glossy top edge highlight
+                    drawList->AddLine(
+                        ImVec2(segMin.x + 1.0f, segMin.y + 1.0f),
+                        ImVec2(segMax.x - 1.0f, segMin.y + 1.0f),
+                        colHighlight, 1.0f);
+                }
+                else
+                {
+                    // Dark Gray unilluminated segment
+                    drawList->AddRectFilled(segMin, segMax, IM_COL32(30, 32, 38, 255), 1.5f);
+                    drawList->AddRect(segMin, segMax, IM_COL32(20, 22, 26, 255), 1.5f);
+                }
+            }
+
+            ImGui::Dummy(ImVec2(availWidth, barHeight + 4.0f));
+        }
+
+        ImGui::Spacing();
     }
 
     void PreprocessApp::RebuildHeatmapClusterCubes()
