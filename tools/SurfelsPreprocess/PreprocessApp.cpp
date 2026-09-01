@@ -1368,8 +1368,8 @@ namespace Surfels
             ImGui::Text("Tier 2 (8-Byte GPU):  %.2f MB (5.0x reduction)", (m_rawSurfels.size() * 8.0f) / (1024.0f * 1024.0f));
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 2 Quantization: 8-byte packed GPU format (10:10:10:2 position, Oct16 normal, RGB565 color).");
 
-            ImGui::Text("Tier 3 (Morton + Byte-Shuffle): Contiguous 8-channel planes");
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 3 Spatial Morton Ordering & Transposition: Groups spatially coherent bitplanes via 3D Z-order curve and transposes 8-byte structures into 8 contiguous channels to maximize entropy redundancy.");
+            ImGui::Text("Tier 3 (Morton Swizzle):  Contiguous 8-channel planes");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 3 Morton Swizzle & Transposition: Interleaves 3D spatial coordinate bits via Z-order curve and transposes 8-byte structures into 8 contiguous channels to maximize entropy redundancy.");
 
             ImGui::Text("Tier 4 (Codec: Byte-RLE / Zstd Entropy): %.2f MB", m_compressedSizeMB);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 4 Bitstream Codec: Byte-plane Run-Length Entropy & Zstandard lossless stream compression on transposed 8-byte channels.");
