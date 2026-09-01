@@ -854,6 +854,9 @@ namespace Surfels
                 if (m_pChunkGpuBuffer != nullptr && m_pChunkUploadBuffer != nullptr)
                 {
                     pCmdLst->CopyResource(m_pChunkGpuBuffer, m_pChunkUploadBuffer);
+                    D3D12_RESOURCE_BARRIER chunkToSrv = CD3DX12_RESOURCE_BARRIER::Transition(
+                        m_pChunkGpuBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+                    pCmdLst->ResourceBarrier(1, &chunkToSrv);
                 }
                 m_needUploadToGpu = false;
             }
@@ -876,10 +879,9 @@ namespace Surfels
                     {
                         auto gpuSortStart = std::chrono::high_resolution_clock::now();
 
-                        D3D12_RESOURCE_BARRIER preBarriers[2] = {};
-                        preBarriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(m_pChunkGpuBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
-                        preBarriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(m_pSortedChunkIndicesGpuBuffer, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
-                        pCmdLst->ResourceBarrier(2, preBarriers);
+                        D3D12_RESOURCE_BARRIER preBarrier = CD3DX12_RESOURCE_BARRIER::Transition(
+                            m_pSortedChunkIndicesGpuBuffer, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                        pCmdLst->ResourceBarrier(1, &preBarrier);
 
                         pCmdLst->SetComputeRootSignature(m_pComputeRootSignature);
                         pCmdLst->SetComputeRootShaderResourceView(1, m_pSurfelGpuBuffer ? m_pSurfelGpuBuffer->GetGPUVirtualAddress() : 0);
@@ -1003,10 +1005,9 @@ namespace Surfels
                             }
                         }
 
-                        D3D12_RESOURCE_BARRIER postBarriers[2] = {};
-                        postBarriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(m_pSortedChunkIndicesGpuBuffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
-                        postBarriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(m_pChunkGpuBuffer, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
-                        pCmdLst->ResourceBarrier(2, postBarriers);
+                        D3D12_RESOURCE_BARRIER postBarrier = CD3DX12_RESOURCE_BARRIER::Transition(
+                            m_pSortedChunkIndicesGpuBuffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+                        pCmdLst->ResourceBarrier(1, &postBarrier);
 
                         auto gpuSortEnd = std::chrono::high_resolution_clock::now();
                         m_metrics.gpuSortTimeMs = std::chrono::duration<float, std::milli>(gpuSortEnd - gpuSortStart).count();

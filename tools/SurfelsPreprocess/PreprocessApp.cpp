@@ -1309,8 +1309,10 @@ namespace Surfels
         if (m_showMeshletVisualizer && !m_meshletChunks.empty())
         {
             const ImU32 meshletColor = IM_COL32(50, 220, 255, 180);
-            for (const auto& mc : m_meshletChunks)
+            size_t maxClusters = std::min((size_t)256, m_meshletChunks.size());
+            for (size_t i = 0; i < maxClusters; i++)
             {
+                const auto& mc = m_meshletChunks[i];
                 XMFLOAT3 bMax(mc.aabbMin.x + mc.aabbExtents.x, mc.aabbMin.y + mc.aabbExtents.y, mc.aabbMin.z + mc.aabbExtents.z);
                 DrawDottedCube(mc.aabbMin, bMax, meshletColor, 1.0f);
             }
