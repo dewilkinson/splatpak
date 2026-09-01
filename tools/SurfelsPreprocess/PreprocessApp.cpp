@@ -1713,8 +1713,8 @@ namespace Surfels
                 return XMFLOAT3(wp.x * invW, wp.y * invW, wp.z * invW);
             };
 
-            // Calculate NDC depth corresponding to 1.8x camera target distance
-            float targetFarDist = std::min(450.0f, std::max(5.0f, cDist * 1.8f));
+            // Shorten the rendered frustum (45% of distance to target) so it terminates well in front of the model bounds
+            float targetFarDist = std::max(0.8f, cDist * 0.45f);
             XMVECTOR farTargetWorld = XMVectorAdd(cEye, XMVectorScale(cForwardVec, targetFarDist));
             XMVECTOR farTargetClip = XMVector4Transform(XMVectorSetW(farTargetWorld, 1.0f), cViewProj);
             XMFLOAT4 farClip;
@@ -1747,8 +1747,8 @@ namespace Surfels
                 validF[i] = ProjectToScreen(F[i], screenF[i]);
             }
 
-            // 10% Tint Opacity (26/255) and 30% Wireframe Opacity (77/255)
-            const ImU32 frustumFillCol = IM_COL32(180, 185, 195, 26);
+            // 5% Tint Opacity (13/255) and 30% Wireframe Opacity (77/255)
+            const ImU32 frustumFillCol = IM_COL32(180, 185, 195, 13);
             const ImU32 frustumWireCol = IM_COL32(220, 225, 235, 77);
             const ImU32 frustumApexCol = IM_COL32(220, 225, 235, 77);
 
