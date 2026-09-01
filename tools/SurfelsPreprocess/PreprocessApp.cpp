@@ -2035,29 +2035,53 @@ namespace Surfels
         ImDrawList* drawList = ImGui::GetWindowDrawList();
         float availWidth = ImGui::GetContentRegionAvailWidth();
 
-        ImGui::TextColored(ImVec4(0.4f, 0.85f, 1.0f, 1.0f), "Resident Block Span by LOD Tier (Coarse to Fine):");
+        ImGui::TextColored(ImVec4(0.4f, 0.85f, 1.0f, 1.0f), "Hierarchical LOD Chunk Residency (Base to Fine):");
         ImGui::Spacing();
 
-        for (int lodIdx = 0; lodIdx < numLODs; lodIdx++)
+        // Base segment count on the top row (Coarsest Base LOD)
+        int baseSegments = (numLODs <= 2) ? 8 : 4;
+
+        // Group stream chunks by LOD level
+        std::vector<std::vector<const StreamChunk*>> lodChunkMap(numLODs);
+        for (const auto& sc : m_allStreamChunks)
         {
+            if (sc.lodLevel >= 0 && sc.lodLevel < numLODs)
+            {
+                lodChunkMap[sc.lodLevel].push_back(&sc);
+            }
+        }
+
+        // Display rows: Top row = Highest LOD / Coarsest Base (numLODs - 1), moving down to LOD 0 (Fine)
+        for (int rowIdx = 0; rowIdx < numLODs; rowIdx++)
+        {
+            int lodIdx = numLODs - 1 - rowIdx;
             const auto& lodData = m_residentLODs[lodIdx];
             uint32_t totalBlocks = (uint32_t)lodData.meshletChunks.size();
             size_t totalPts = lodData.rawSurfels.size();
             float totalMB = (float)(totalPts * (m_enableQuantization ? sizeof(PackedSurfelGPU) : sizeof(SurfelVertex))) / (1024.0f * 1024.0f);
 
-            float fraction = 1.0f;
-            uint32_t residentBlocks = totalBlocks;
+            // Segments count doubles for each row down (width divides by 2)
+            int numSegments = baseSegments * (1 << rowIdx);
+            const float barHeight = 14.0f;
 
+            const auto& levelChunks = lodChunkMap[lodIdx];
+            size_t T = levelChunks.size();
+
+            // Calculate residency stats
+            size_t residentPts = 0;
             if (m_enableStreamingSimulation)
             {
-                size_t residentPts = (lodIdx < (int)m_lodResidentSurfels.size()) ? m_lodResidentSurfels[lodIdx] : 0;
-                size_t totalLevelPts = (lodIdx < (int)m_lodTotalSurfels.size() && m_lodTotalSurfels[lodIdx] > 0) ? m_lodTotalSurfels[lodIdx] : totalPts;
-
-                fraction = (totalLevelPts > 0) ? std::min(1.0f, (float)residentPts / (float)totalLevelPts) : 0.0f;
-                residentBlocks = (uint32_t)std::round(totalBlocks * fraction);
+                residentPts = (lodIdx < (int)m_lodResidentSurfels.size()) ? m_lodResidentSurfels[lodIdx] : 0;
+            }
+            else
+            {
+                residentPts = totalPts;
             }
 
-            float residentPct = fraction * 100.0f;
+            size_t totalLevelPts = (lodIdx < (int)m_lodTotalSurfels.size() && m_lodTotalSurfels[lodIdx] > 0) ? m_lodTotalSurfels[lodIdx] : totalPts;
+            float residentPct = (totalLevelPts > 0) ? std::min(100.0f, (float)residentPts / (float)totalLevelPts * 100.0f) : 100.0f;
+            uint32_t residentBlocks = (uint32_t)std::round((float)totalBlocks * (residentPct / 100.0f));
+
             bool isActiveLOD = (lodIdx == m_selectedPreviewLOD);
 
             // Row Header
@@ -2074,26 +2098,45 @@ namespace Surfels
                     residentPct, residentBlocks, totalBlocks, totalPts, totalMB);
             }
 
-            // Equalizer Segmented LED Bar
-            const int numSegments = 32;
-            const float gap = 2.0f;
-            const float barHeight = 14.0f;
-            float segWidth = (availWidth - (numSegments - 1) * gap) / (float)numSegments;
-
             ImVec2 p0 = ImGui::GetCursorScreenPos();
 
             // Background recessed slot
             drawList->AddRectFilled(p0, ImVec2(p0.x + availWidth, p0.y + barHeight), IM_COL32(16, 18, 22, 255), 2.0f);
             drawList->AddRect(p0, ImVec2(p0.x + availWidth, p0.y + barHeight), IM_COL32(32, 35, 42, 255), 2.0f);
 
-            int litSegments = (int)std::round(fraction * numSegments);
-
+            // Render segments nested hierarchically
             for (int s = 0; s < numSegments; s++)
             {
-                bool isLit = (s < litSegments) && (residentPct > 0.001f);
+                // Exact subdivision bounds so 2 child segments fit directly under 1 parent segment
+                float x0 = p0.x + ((float)s / (float)numSegments) * availWidth;
+                float x1 = p0.x + ((float)(s + 1) / (float)numSegments) * availWidth;
 
-                ImVec2 segMin = ImVec2(p0.x + s * (segWidth + gap) + 1.0f, p0.y + 1.5f);
-                ImVec2 segMax = ImVec2(segMin.x + segWidth - 1.0f, p0.y + barHeight - 1.5f);
+                ImVec2 segMin = ImVec2(x0 + 0.5f, p0.y + 1.5f);
+                ImVec2 segMax = ImVec2(x1 - 0.5f, p0.y + barHeight - 1.5f);
+
+                // Determine if this specific chunk/span is resident
+                bool isLit = false;
+                if (!m_enableStreamingSimulation)
+                {
+                    isLit = true;
+                }
+                else if (T > 0)
+                {
+                    size_t idxStart = (size_t)(((float)s / (float)numSegments) * T);
+                    size_t idxEnd = std::min(T, std::max(idxStart + 1, (size_t)(((float)(s + 1) / (float)numSegments) * T)));
+                    for (size_t c = idxStart; c < idxEnd; c++)
+                    {
+                        if (levelChunks[c]->isResident)
+                        {
+                            isLit = true;
+                            break;
+                        }
+                    }
+                }
+                else
+                {
+                    isLit = (residentPct > 0.001f);
+                }
 
                 if (isLit)
                 {
@@ -2117,16 +2160,19 @@ namespace Surfels
                         colHighlight = IM_COL32(130, 235, 255, 255);
                     }
 
-                    drawList->AddRectFilled(segMin, segMax, colBase, 1.5f);
-                    drawList->AddLine(
-                        ImVec2(segMin.x + 1.0f, segMin.y + 1.0f),
-                        ImVec2(segMax.x - 1.0f, segMin.y + 1.0f),
-                        colHighlight, 1.0f);
+                    drawList->AddRectFilled(segMin, segMax, colBase, 1.0f);
+                    if (segMax.x - segMin.x > 3.0f)
+                    {
+                        drawList->AddLine(
+                            ImVec2(segMin.x + 0.5f, segMin.y + 0.5f),
+                            ImVec2(segMax.x - 0.5f, segMin.y + 0.5f),
+                            colHighlight, 1.0f);
+                    }
                 }
                 else
                 {
-                    drawList->AddRectFilled(segMin, segMax, IM_COL32(30, 32, 38, 255), 1.5f);
-                    drawList->AddRect(segMin, segMax, IM_COL32(20, 22, 26, 255), 1.5f);
+                    drawList->AddRectFilled(segMin, segMax, IM_COL32(30, 32, 38, 255), 1.0f);
+                    drawList->AddRect(segMin, segMax, IM_COL32(20, 22, 26, 255), 1.0f);
                 }
             }
 
