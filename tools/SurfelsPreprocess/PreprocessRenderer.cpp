@@ -1135,8 +1135,8 @@ namespace Surfels
                         };
 
                         BitonicCB baseCB = {};
-                        baseCB.camPos = cullEyePos;
-                        baseCB.camForward = cullForwardNorm;
+                        baseCB.camPos = eyePos;
+                        baseCB.camForward = forwardNorm;
                         baseCB.totalSurfels = chunkCount;
                         baseCB.numElements = numChunkElements;
                         baseCB.renderMode = pState->renderMode;
@@ -1325,8 +1325,8 @@ namespace Surfels
                     };
 
                     BitonicCB baseCB = {};
-                    baseCB.camPos = cullEyePos;
-                    baseCB.camForward = cullForwardNorm;
+                    baseCB.camPos = eyePos;
+                    baseCB.camForward = forwardNorm;
                     baseCB.totalSurfels = surfelCount;
                     baseCB.numElements = numElements;
                     baseCB.renderMode = pState->renderMode;
