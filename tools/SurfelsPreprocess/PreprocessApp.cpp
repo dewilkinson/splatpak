@@ -1293,18 +1293,25 @@ namespace Surfels
             const auto& vd = pair.second;
             if (vd.count == 0) continue;
 
+            float cMinX = gMin.x + (float)pair.first.x * cellSizeX;
+            float cMinY = gMin.y + (float)pair.first.y * cellSizeY;
+            float cMinZ = gMin.z + (float)pair.first.z * cellSizeZ;
+            float cMaxX = cMinX + cellSizeX;
+            float cMaxY = cMinY + cellSizeY;
+            float cMaxZ = cMinZ + cellSizeZ;
+
             HeatmapClusterCube cube = {};
-            cube.aabbMin = vd.minP;
-            cube.aabbMax = vd.maxP;
+            cube.aabbMin = XMFLOAT3(cMinX, cMinY, cMinZ);
+            cube.aabbMax = XMFLOAT3(cMaxX, cMaxY, cMaxZ);
             cube.center = XMFLOAT3(
-                (vd.minP.x + vd.maxP.x) * 0.5f,
-                (vd.minP.y + vd.maxP.y) * 0.5f,
-                (vd.minP.z + vd.maxP.z) * 0.5f
+                cMinX + cellSizeX * 0.5f,
+                cMinY + cellSizeY * 0.5f,
+                cMinZ + cellSizeZ * 0.5f
             );
-            float dx = vd.maxP.x - cube.center.x;
-            float dy = vd.maxP.y - cube.center.y;
-            float dz = vd.maxP.z - cube.center.z;
-            cube.boundingRadius = std::sqrt(dx * dx + dy * dy + dz * dz) + 0.005f;
+            float hx = cellSizeX * 0.5f;
+            float hy = cellSizeY * 0.5f;
+            float hz = cellSizeZ * 0.5f;
+            cube.boundingRadius = std::sqrt(hx * hx + hy * hy + hz * hz) + 0.002f;
             cube.pointCount = vd.count;
             cube.volume = voxelVolume;
             cube.density = (float)vd.count / voxelVolume;
@@ -1370,7 +1377,7 @@ namespace Surfels
             XMVECTOR clipP = XMVector4Transform(XMVectorSetW(worldP, 1.0f), viewProj);
             XMFLOAT4 c;
             XMStoreFloat4(&c, clipP);
-            if (c.w < 0.3f)
+            if (c.w < 0.25f)
                 return false;
 
             float ndcX = c.x / c.w;
@@ -1512,25 +1519,41 @@ namespace Surfels
             for (int i = 0; i < 8; i++)
             {
                 valid[i] = ProjectToScreen(corners[i], screenCorners[i]);
-                if (!valid[i]) return; // Strictly require all corners to be on screen to prevent near-plane shooting artifacts!
+                if (!valid[i]) return; // Strictly require all 8 corners on screen
             }
 
-            // Draw 6 Quad Faces
-            const int faces[6][4] = {
-                { 0, 1, 2, 3 }, { 4, 5, 6, 7 },
-                { 0, 4, 7, 3 }, { 1, 5, 6, 2 },
-                { 0, 1, 5, 4 }, { 3, 2, 6, 7 }
+            // 6 Faces with outward normal vectors
+            struct CubeFace
+            {
+                int i0, i1, i2, i3;
+                XMFLOAT3 normal;
+                XMFLOAT3 center;
+            };
+
+            float midX = (bMin.x + bMax.x) * 0.5f;
+            float midY = (bMin.y + bMax.y) * 0.5f;
+            float midZ = (bMin.z + bMax.z) * 0.5f;
+
+            const CubeFace faces[6] = {
+                { 0, 1, 2, 3, {  0.0f,  0.0f, -1.0f }, { midX, midY, bMin.z } }, // -Z
+                { 4, 7, 6, 5, {  0.0f,  0.0f,  1.0f }, { midX, midY, bMax.z } }, // +Z
+                { 0, 3, 7, 4, { -1.0f,  0.0f,  0.0f }, { bMin.x, midY, midZ } }, // -X
+                { 1, 5, 6, 2, {  1.0f,  0.0f,  0.0f }, { bMax.x, midY, midZ } }, // +X
+                { 0, 4, 5, 1, {  0.0f, -1.0f,  0.0f }, { midX, bMin.y, midZ } }, // -Y
+                { 3, 2, 6, 7, {  0.0f,  1.0f,  0.0f }, { midX, bMax.y, midZ } }  // +Y
             };
 
             for (int f = 0; f < 6; f++)
             {
-                int i0 = faces[f][0], i1 = faces[f][1], i2 = faces[f][2], i3 = faces[f][3];
-                float dx = fabsf(screenCorners[i0].x - screenCorners[i2].x);
-                float dy = fabsf(screenCorners[i0].y - screenCorners[i2].y);
-                if (dx < screenW * 0.75f && dy < screenH * 0.75f)
-                {
-                    drawList->AddQuadFilled(screenCorners[i0], screenCorners[i1], screenCorners[i2], screenCorners[i3], fillCol);
-                }
+                // Backface culling: only draw faces directed towards the camera!
+                float toCamX = eyePos.x - faces[f].center.x;
+                float toCamY = eyePos.y - faces[f].center.y;
+                float toCamZ = eyePos.z - faces[f].center.z;
+                float dotProd = faces[f].normal.x * toCamX + faces[f].normal.y * toCamY + faces[f].normal.z * toCamZ;
+                if (dotProd <= 0.0f)
+                    continue; // Skip back face
+
+                drawList->AddQuadFilled(screenCorners[faces[f].i0], screenCorners[faces[f].i1], screenCorners[faces[f].i2], screenCorners[faces[f].i3], fillCol);
             }
 
             // Draw 12 Edges
@@ -1544,12 +1567,7 @@ namespace Surfels
                 for (int i = 0; i < 12; i++)
                 {
                     int u = edges[i][0], v = edges[i][1];
-                    float dx = fabsf(screenCorners[u].x - screenCorners[v].x);
-                    float dy = fabsf(screenCorners[u].y - screenCorners[v].y);
-                    if (dx < screenW * 0.75f && dy < screenH * 0.75f)
-                    {
-                        drawList->AddLine(screenCorners[u], screenCorners[v], edgeCol, 1.0f);
-                    }
+                    drawList->AddLine(screenCorners[u], screenCorners[v], edgeCol, 1.2f);
                 }
             }
         };
