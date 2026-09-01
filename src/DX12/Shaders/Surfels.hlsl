@@ -53,10 +53,10 @@ cbuffer SurfelsCB : register(b0)
     float3   g_AABBMin;
     uint     g_UseChunkedPipeline; // 0 = Flat buffer, 1 = Micro-Chunked Hierarchical
     float3   g_AABBExtents;
-    float    g_Pad2;
-    float4x4 g_CullViewProj;
     uint     g_UseDetachedCullCam;
+    float4x4 g_CullViewProj;
     float3   g_CullEyePos;
+    float    g_Pad3;
 };
 
 struct ChunkPayload
@@ -288,9 +288,10 @@ void mainMS(
     if (g_UseDetachedCullCam == 1)
     {
         float4 cullClip = mul(g_CullViewProj, float4(worldPos, 1.0));
-        bool outsideFrustum = (cullClip.x < -cullClip.w || cullClip.x > cullClip.w ||
-                               cullClip.y < -cullClip.w || cullClip.y > cullClip.w ||
-                               cullClip.z < 0.0 || cullClip.z > cullClip.w);
+        bool outsideFrustum = (cullClip.w <= 0.001) ||
+                              (cullClip.x < -cullClip.w) || (cullClip.x > cullClip.w) ||
+                              (cullClip.y < -cullClip.w) || (cullClip.y > cullClip.w) ||
+                              (cullClip.z < 0.0) || (cullClip.z > cullClip.w);
 
         float3 toCullCam = g_CullEyePos - worldPos;
         bool isBackFacing = false;
@@ -301,8 +302,22 @@ void mainMS(
 
         if (outsideFrustum || isBackFacing)
         {
-            tangentX = float3(0.0, 0.0, 0.0);
-            tangentY = float3(0.0, 0.0, 0.0);
+            uint pBase = threadId * 2;
+            tris[pBase + 0] = uint3(0, 0, 0);
+            tris[pBase + 1] = uint3(0, 0, 0);
+
+            uint vBase = threadId * 4;
+            [unroll]
+            for (uint c = 0; c < 4; c++)
+            {
+                VSOut o;
+                o.pos = float4(0.0, 0.0, 0.0, 0.0);
+                o.uv = float2(0.0, 0.0);
+                o.color = float3(0.0, 0.0, 0.0);
+                o.norm = float3(0.0, 0.0, 0.0);
+                verts[vBase + c] = o;
+            }
+            return;
         }
     }
 
