@@ -301,16 +301,25 @@ void mainMS(
         }
     }
 
-    // When Camera is Detached: Cull individual points falling outside the frozen culling frustum
+    // When Camera is Detached: Render the model as a hollow plaster mold shell with dark AO interior
     if (g_UseDetachedCullCam == 1)
     {
+        // 1. Frustum Culling against frozen detached camera
         float4 cullClip = mul(g_CullViewProj, float4(worldPos, 1.0));
         bool outsideFrustum = (cullClip.w <= 0.0001) ||
                               (cullClip.x < -cullClip.w) || (cullClip.x > cullClip.w) ||
                               (cullClip.y < -cullClip.w) || (cullClip.y > cullClip.w) ||
                               (cullClip.z < 0.0) || (cullClip.z > cullClip.w);
 
-        if (outsideFrustum)
+        // 2. Normal Culling wrt Detached Camera:
+        // Only keep the front-facing shell visible to the original detached camera position
+        float3 toCullCam = g_CullEyePos - worldPos;
+        float distCull = length(toCullCam);
+        float3 normCullDir = distCull > 1e-4 ? (toCullCam / distCull) : float3(0, 0, 1);
+        float nDotCull = dot(normal, normCullDir);
+        bool isBackFacingToDetached = (dot(normal, normal) > 0.1) && (nDotCull < -0.05);
+
+        if (outsideFrustum || isBackFacingToDetached)
         {
             uint pBase = threadId * 2;
             tris[pBase + 0] = uint3(0, 0, 0);
@@ -330,14 +339,28 @@ void mainMS(
             return;
         }
 
-        // Backside Shading from Viewer Perspective:
-        // When standing behind the model (>90 deg from detached camera view), any points
-        // whose normals face AWAY from the active viewer are rendered in unshaded neutral flat gray
-        // to prevent the hollow-face / concave flipping optical illusion.
-        float3 toViewer = g_ViewerEyePos - worldPos;
-        if (dot(normal, normal) > 0.1 && dot(normal, toViewer) <= 0.0)
+        // 3. Hollow Mold Interior & Rim Edge Shading from Active Viewer Perspective:
+        if (dot(normal, normal) > 0.1)
         {
-            color = float3(0.40, 0.42, 0.46);
+            float3 toViewer = g_ViewerEyePos - worldPos;
+            float distViewer = length(toViewer);
+            float3 normViewerDir = distViewer > 1e-4 ? (toViewer / distViewer) : float3(0, 0, 1);
+            float nDotViewer = dot(normal, normViewerDir);
+
+            if (nDotViewer < -0.06)
+            {
+                // Interior cavity of the shell: Dark ambient occlusion, no albedo/texture
+                float depthFactor = saturate(-nDotViewer);
+                float cavityAO = 0.08 + 0.12 * (1.0 - depthFactor);
+                color = float3(0.12, 0.13, 0.16) * (cavityAO * 4.5);
+            }
+            else if (abs(nDotViewer) <= 0.06)
+            {
+                // Rim Line: Crisp transition where the front-facing shell turns away into the dark interior
+                float rimStrength = 1.0 - (abs(nDotViewer) / 0.06);
+                float3 rimHighlight = float3(0.85, 0.90, 1.0);
+                color = lerp(color, rimHighlight, rimStrength * 0.92);
+            }
         }
     }
 

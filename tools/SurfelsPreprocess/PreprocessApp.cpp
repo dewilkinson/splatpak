@@ -1745,16 +1745,30 @@ namespace Surfels
                 const auto& cube = m_heatmapClusterCubes[idx];
                 bool inFrustum = IsSphereInFrustum(cube.center, cube.boundingRadius);
 
-                bool isVisible = inFrustum;
-
-                // Backside Check from Active Viewer Perspective:
-                // When standing behind the model, render clusters in flat neutral gray to prevent flipping illusion
+                // In detached camera mode:
+                // 1. Keep only front-facing shell wrt detached camera
+                float toCamX = cullEyePos.x - cube.center.x;
+                float toCamY = cullEyePos.y - cube.center.y;
+                float toCamZ = cullEyePos.z - cube.center.z;
                 float nLenSq = cube.avgNormal.x * cube.avgNormal.x + cube.avgNormal.y * cube.avgNormal.y + cube.avgNormal.z * cube.avgNormal.z;
+                bool isFrontFacingToDetached = true;
+                if (m_detachCamera && nLenSq > 0.05f)
+                {
+                    isFrontFacingToDetached = (toCamX * cube.avgNormal.x + toCamY * cube.avgNormal.y + toCamZ * cube.avgNormal.z > -0.05f);
+                }
+
+                bool isVisible = inFrustum && isFrontFacingToDetached;
+
+                // 2. Active Viewer Cavity & Rim Shading:
                 float toViewerX = eyePos.x - cube.center.x;
                 float toViewerY = eyePos.y - cube.center.y;
                 float toViewerZ = eyePos.z - cube.center.z;
-                bool isBacksideToViewer = (m_detachCamera && nLenSq > 0.05f &&
-                    (toViewerX * cube.avgNormal.x + toViewerY * cube.avgNormal.y + toViewerZ * cube.avgNormal.z <= 0.0f));
+                float distViewer = sqrtf(toViewerX * toViewerX + toViewerY * toViewerY + toViewerZ * toViewerZ);
+                float invDist = distViewer > 1e-4f ? (1.0f / distViewer) : 0.0f;
+                float normDotViewer = (toViewerX * cube.avgNormal.x + toViewerY * cube.avgNormal.y + toViewerZ * cube.avgNormal.z) * invDist;
+
+                bool isCavity = (m_detachCamera && nLenSq > 0.05f && normDotViewer < -0.06f);
+                bool isRim    = (m_detachCamera && nLenSq > 0.05f && fabsf(normDotViewer) <= 0.06f);
 
                 if (isVisible && cube.pointCount > 0)
                 {
@@ -1764,11 +1778,17 @@ namespace Surfels
                     float edgeAlpha = std::min(1.0f, m_wireframeOpacity * (0.40f + heatCurve * (m_hotspotOpacityScale * 0.75f)));
 
                     ImU32 fillCol, edgeCol;
-                    if (isBacksideToViewer)
+                    if (isCavity)
                     {
-                        // Flat unshaded neutral gray for back-facing surfaces to prevent concave/hollow flipping illusion
-                        fillCol = IM_COL32(110, 115, 125, (int)(fillAlpha * 255.0f));
-                        edgeCol = IM_COL32(150, 155, 165, (int)(edgeAlpha * 255.0f));
+                        // Dark AO cavity inside the mold
+                        fillCol = IM_COL32(25, 28, 35, (int)(fillAlpha * 255.0f * 1.5f));
+                        edgeCol = IM_COL32(45, 50, 60, (int)(edgeAlpha * 255.0f));
+                    }
+                    else if (isRim)
+                    {
+                        // Distinct plaster rim transition highlight
+                        fillCol = IM_COL32(210, 225, 255, (int)(fillAlpha * 255.0f * 2.0f));
+                        edgeCol = IM_COL32(230, 240, 255, (int)(edgeAlpha * 255.0f * 2.0f));
                     }
                     else
                     {
