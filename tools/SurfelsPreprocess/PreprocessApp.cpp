@@ -1368,13 +1368,11 @@ namespace Surfels
             XMVECTOR clipP = XMVector4Transform(XMVectorSetW(worldP, 1.0f), viewProj);
             XMFLOAT4 c;
             XMStoreFloat4(&c, clipP);
-            if (c.w < 0.25f)
+            if (c.w < 0.05f)
                 return false;
 
             float ndcX = c.x / c.w;
             float ndcY = c.y / c.w;
-            if (ndcX < -1.15f || ndcX > 1.15f || ndcY < -1.15f || ndcY > 1.15f)
-                return false;
 
             outScreen.x = (ndcX * 0.5f + 0.5f) * screenW;
             outScreen.y = (-ndcY * 0.5f + 0.5f) * screenH;
@@ -1510,7 +1508,6 @@ namespace Surfels
             for (int i = 0; i < 8; i++)
             {
                 valid[i] = ProjectToScreen(corners[i], screenCorners[i]);
-                if (!valid[i]) return; // Strictly require all 8 corners on screen
             }
 
             // 6 Faces with outward normal vectors
@@ -1544,7 +1541,11 @@ namespace Surfels
                 if (dotProd <= 0.0f)
                     continue; // Skip back face
 
-                drawList->AddQuadFilled(screenCorners[faces[f].i0], screenCorners[faces[f].i1], screenCorners[faces[f].i2], screenCorners[faces[f].i3], fillCol);
+                int i0 = faces[f].i0, i1 = faces[f].i1, i2 = faces[f].i2, i3 = faces[f].i3;
+                if (valid[i0] && valid[i1] && valid[i2] && valid[i3])
+                {
+                    drawList->AddQuadFilled(screenCorners[i0], screenCorners[i1], screenCorners[i2], screenCorners[i3], fillCol);
+                }
             }
 
             // Draw 12 Edges
@@ -1558,7 +1559,10 @@ namespace Surfels
                 for (int i = 0; i < 12; i++)
                 {
                     int u = edges[i][0], v = edges[i][1];
-                    drawList->AddLine(screenCorners[u], screenCorners[v], edgeCol, 1.2f);
+                    if (valid[u] && valid[v])
+                    {
+                        drawList->AddLine(screenCorners[u], screenCorners[v], edgeCol, 1.0f);
+                    }
                 }
             }
         };
@@ -1590,7 +1594,7 @@ namespace Surfels
                 float camDistProj = (cube.center.x - eyePos.x) * forward.x + 
                                     (cube.center.y - eyePos.y) * forward.y + 
                                     (cube.center.z - eyePos.z) * forward.z;
-                if (camDistProj < cube.boundingRadius + 0.35f)
+                if (camDistProj < -cube.boundingRadius)
                     continue;
 
                 bool isVisible = IsSphereInFrustum(cube.center, cube.boundingRadius);
