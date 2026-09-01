@@ -5,9 +5,46 @@ using namespace CAULDRON_DX12;
 
 static const uint32_t BACK_BUFFER_COUNT = 2;
 
+// Must match SURFELS_PER_GROUP in Surfels.hlsl -- how many surfels each mesh
+// shader threadgroup builds (4 verts + 2 triangles each: 128 verts / 64 tris
+// per group at 32, safely under D3D12's 256/256 mesh-shader output limits).
+static const uint32_t SURFELS_PER_GROUP = 32;
+
+// Cauldron's vendored d3dx12.h (libs/cauldron/libs/d3d12x/d3dx12.h) predates mesh
+// shaders: it has the generic CD3DX12_PIPELINE_STATE_STREAM_SUBOBJECT template and
+// every other stage's subobject typedef, but not MS/AS. The underlying Windows SDK
+// d3d12.h already defines D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS/_AS and
+// ID3D12Device2/ID3D12GraphicsCommandList6 fine, so just add the two missing
+// typedefs here rather than patching the vendored submodule.
+typedef CD3DX12_PIPELINE_STATE_STREAM_SUBOBJECT<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS> CD3DX12_PIPELINE_STATE_STREAM_MS;
+typedef CD3DX12_PIPELINE_STATE_STREAM_SUBOBJECT<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS> CD3DX12_PIPELINE_STATE_STREAM_AS;
+
+struct MeshShaderPipelineStateStream
+{
+    CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE       RootSignature;
+    CD3DX12_PIPELINE_STATE_STREAM_MS                   MS;
+    CD3DX12_PIPELINE_STATE_STREAM_PS                   PS;
+    CD3DX12_PIPELINE_STATE_STREAM_RASTERIZER           RasterizerState;
+    CD3DX12_PIPELINE_STATE_STREAM_BLEND_DESC           BlendState;
+    CD3DX12_PIPELINE_STATE_STREAM_DEPTH_STENCIL        DepthStencilState;
+    CD3DX12_PIPELINE_STATE_STREAM_RENDER_TARGET_FORMATS RTVFormats;
+    CD3DX12_PIPELINE_STATE_STREAM_SAMPLE_DESC          SampleDesc;
+};
+
 void SurfelsRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
 {
     m_pDevice = pDevice;
+
+    // Mesh shaders require D3D12 Mesh Shader Tier 1 (Shader Model 6.5+ hardware).
+    {
+        D3D12_FEATURE_DATA_D3D12_OPTIONS7 options7 = {};
+        HRESULT hr = pDevice->GetDevice()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &options7, sizeof(options7));
+        if (FAILED(hr) || options7.MeshShaderTier == D3D12_MESH_SHADER_TIER_NOT_SUPPORTED)
+        {
+            MessageBoxA(NULL, "This GPU/driver does not support D3D12 mesh shaders (Mesh Shader Tier 1 / Shader Model 6.5).", "Surfels", MB_ICONERROR);
+            exit(1);
+        }
+    }
 
     // Descriptor heaps, upload ring, per-frame constant buffer ring, command lists.
     m_resourceViewHeaps.OnCreate(pDevice, 10, 10, 10, 0, 10, 10);
@@ -31,35 +68,59 @@ void SurfelsRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
     CD3DX12_ROOT_SIGNATURE_DESC rsDesc = {};
     rsDesc.NumParameters = 1;
     rsDesc.pParameters = rootParams;
-    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_ALLOW_INPUT_ASSEMBLER_INPUT_LAYOUT;
+    rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE; // no input assembler stage with mesh shaders
 
     Microsoft::WRL::ComPtr<ID3DBlob> pOutBlob, pErrorBlob;
     D3D12SerializeRootSignature(&rsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &pOutBlob, &pErrorBlob);
     m_pDevice->GetDevice()->CreateRootSignature(0, pOutBlob->GetBufferPointer(), pOutBlob->GetBufferSize(), IID_PPV_ARGS(&m_pRootSignature));
     SetName(m_pRootSignature, "Surfels::RootSignature");
 
-    // Fully procedural quad-per-instance: no vertex/index buffers, geometry comes
-    // from SV_VertexID (quad corner) and SV_InstanceID (surfel index) alone.
-    D3D12_SHADER_BYTECODE vs = {};
+    // Fully procedural: no vertex/index buffers and no draw-level instancing either.
+    // The mesh shader builds SURFELS_PER_GROUP surfels' worth of geometry per
+    // threadgroup from SV_GroupID/SV_GroupThreadID alone; DispatchMesh() in OnRender
+    // replaces DrawInstanced().
+    D3D12_SHADER_BYTECODE ms = {};
     D3D12_SHADER_BYTECODE ps = {};
-    CompileShaderFromFile("Surfels.hlsl", NULL, "mainVS", "-T vs_6_0", &vs);
-    CompileShaderFromFile("Surfels.hlsl", NULL, "mainPS", "-T ps_6_0", &ps);
+    CompileShaderFromFile("Surfels.hlsl", NULL, "mainMS", "-T ms_6_5", &ms);
+    CompileShaderFromFile("Surfels.hlsl", NULL, "mainPS", "-T ps_6_5", &ps);
 
-    D3D12_GRAPHICS_PIPELINE_STATE_DESC psoDesc = {};
-    psoDesc.pRootSignature = m_pRootSignature;
-    psoDesc.VS = vs;
-    psoDesc.PS = ps;
-    psoDesc.RasterizerState = CD3DX12_RASTERIZER_DESC(D3D12_DEFAULT);
-    psoDesc.RasterizerState.CullMode = D3D12_CULL_MODE_NONE;
-    psoDesc.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
-    psoDesc.DepthStencilState.DepthEnable = FALSE;
-    psoDesc.DepthStencilState.StencilEnable = FALSE;
-    psoDesc.SampleMask = UINT_MAX;
-    psoDesc.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
-    psoDesc.NumRenderTargets = 1;
-    psoDesc.RTVFormats[0] = pSwapChain->GetFormat();
-    psoDesc.SampleDesc.Count = 1;
-    m_pDevice->GetDevice()->CreateGraphicsPipelineState(&psoDesc, IID_PPV_ARGS(&m_pPipelineState));
+    CD3DX12_RASTERIZER_DESC rasterizer(D3D12_DEFAULT);
+    rasterizer.CullMode = D3D12_CULL_MODE_NONE;
+
+    CD3DX12_DEPTH_STENCIL_DESC depthStencil(D3D12_DEFAULT);
+    depthStencil.DepthEnable = FALSE;
+    depthStencil.StencilEnable = FALSE;
+
+    D3D12_RT_FORMAT_ARRAY rtvFormats = {};
+    rtvFormats.NumRenderTargets = 1;
+    rtvFormats.RTFormats[0] = pSwapChain->GetFormat();
+
+    MeshShaderPipelineStateStream stream = {};
+    stream.RootSignature = m_pRootSignature;
+    stream.MS = ms;
+    stream.PS = ps;
+    stream.RasterizerState = rasterizer;
+    stream.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+    stream.DepthStencilState = depthStencil;
+    stream.RTVFormats = rtvFormats;
+    stream.SampleDesc = DXGI_SAMPLE_DESC{ 1, 0 };
+
+    D3D12_PIPELINE_STATE_STREAM_DESC streamDesc = {};
+    streamDesc.SizeInBytes = sizeof(stream);
+    streamDesc.pPipelineStateSubobjectStream = &stream;
+
+    // Mesh-shader PSOs need the pipeline-state-stream API, which requires ID3D12Device2.
+    Microsoft::WRL::ComPtr<ID3D12Device2> device2;
+    if (FAILED(m_pDevice->GetDevice()->QueryInterface(IID_PPV_ARGS(&device2))))
+    {
+        MessageBoxA(NULL, "ID3D12Device2 is unavailable (needed to create a mesh-shader pipeline state).", "Surfels", MB_ICONERROR);
+        exit(1);
+    }
+    if (FAILED(device2->CreatePipelineState(&streamDesc, IID_PPV_ARGS(&m_pPipelineState))))
+    {
+        MessageBoxA(NULL, "Failed to create the mesh-shader pipeline state.", "Surfels", MB_ICONERROR);
+        exit(1);
+    }
     SetName(m_pPipelineState, "Surfels::PSO");
 }
 
@@ -150,8 +211,13 @@ void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
     pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
     pCmdLst->SetPipelineState(m_pPipelineState);
     pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
-    pCmdLst->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLESTRIP);
-    pCmdLst->DrawInstanced(4, pState->surfelCount, 0, 0);
+
+    // DispatchMesh needs the newer command list interface; GetNewCommandList() only
+    // returns ID3D12GraphicsCommandList2.
+    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> cmdList6;
+    pCmdLst->QueryInterface(IID_PPV_ARGS(&cmdList6));
+    uint32_t groupCount = (pState->surfelCount + SURFELS_PER_GROUP - 1) / SURFELS_PER_GROUP;
+    cmdList6->DispatchMesh(groupCount, 1, 1);
 
     // ImGui draws on top of whatever is currently bound (still our backbuffer RTV).
     m_imGui.Draw(pCmdLst);

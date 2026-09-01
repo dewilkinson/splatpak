@@ -1,11 +1,12 @@
 # Surfels
 
-A minimal DirectX 12 sample built on AMD's [Cauldron](https://github.com/GPUOpen-LibrariesAndSDKs/Cauldron)
+A minimal DirectX 12 **mesh shader** sample built on AMD's [Cauldron](https://github.com/GPUOpen-LibrariesAndSDKs/Cauldron)
 framework, vendored as a git submodule under `libs/cauldron`. It's a bare Cauldron
 bootstrap intended as the starting point for a surfel-based GI renderer, not a
-finished one: it draws a procedural, GPU-instanced point-splat cloud (billboard
-quads placed on a Fibonacci sphere) with an ImGui control panel, and nothing else
-yet — no scene geometry, no lighting/GI pass, no depth buffer.
+finished one: it draws a procedural point-splat cloud (billboard quads placed on
+a Fibonacci sphere), generated entirely inside a mesh shader with no vertex/index
+buffers and no `DrawInstanced` at all, plus an ImGui control panel — no scene
+geometry, no lighting/GI pass, no depth buffer yet.
 
 Cauldron itself ships no bundled sample apps (that changed at some point after
 `glTFSample`/`FidelityFX-CAS` were built against it); this project's `src/DX12/`
@@ -19,11 +20,15 @@ sample.
 - `src/DX12/SurfelsSample.{h,cpp}` — the app shell: window/input handling,
   ImGui panel, orbit camera, `WinMain`. Subclasses Cauldron's `FrameworkWindows`.
 - `src/DX12/SurfelsRenderer.{h,cpp}` — the GPU side: descriptor heaps, upload
-  heap, constant buffer ring, command list ring, root signature/PSO, and the
-  per-frame render loop (clear backbuffer → draw instanced splats → ImGui → present).
-- `src/DX12/Shaders/Surfels.hlsl` — vertex/pixel shaders for the splats. No
-  vertex or index buffers: each quad corner comes from `SV_VertexID` and each
-  surfel's position from `SV_InstanceID` via a Fibonacci-sphere formula.
+  heap, constant buffer ring, command list ring, a mesh-shader pipeline state
+  (built via the D3D12 pipeline-state-stream API — Cauldron's vendored
+  `d3dx12.h` predates mesh shaders, see "Known gaps"), and the per-frame
+  render loop (clear backbuffer → `DispatchMesh` → ImGui → present).
+- `src/DX12/Shaders/Surfels.hlsl` — mesh/pixel shaders for the splats.
+  `mainMS` builds `SURFELS_PER_GROUP` (32) surfels per threadgroup —
+  4 vertices + 2 triangles each — entirely from `SV_GroupID`/`SV_GroupThreadID`,
+  placed via a Fibonacci-sphere formula. No amplification shader; `DispatchMesh`
+  just launches `ceil(surfelCount / 32)` groups directly.
 - `libs/cauldron` — the Cauldron framework, as a git submodule.
 
 ## Building
@@ -58,14 +63,25 @@ Win64"`), not the CMake Tools default of `"Ninja"`.
 If you already cloned without `--recurse-submodules`, run
 `git submodule update --init --recursive` first.
 
+`CMakeSettings.json` defines both `x64-Debug` and `x64-Release` configurations
+(pick one from Visual Studio's configuration dropdown); both build to the same
+`bin/` output, with Debug binaries getting a `d` suffix (`Surfels_DX12d.exe`
+vs `Surfels_DX12.exe`).
+
 This has been built and run end-to-end (not just compiled) on Windows with
-Visual Studio, confirming device/swapchain creation, shader compilation, the
-instanced splat draw, and the ImGui panel all work.
+Visual Studio, confirming device/swapchain creation, mesh shader compilation,
+the `DispatchMesh` splat draw, and the ImGui panel all work, in both Debug
+and Release.
 
 ## Known gaps
 
-- No depth buffer / depth test — overlapping splats just draw in instance
-  order, not sorted. Fine for a placeholder, not for real surfel rendering.
+- Requires D3D12 Mesh Shader Tier 1 (Shader Model 6.5+) hardware/driver —
+  checked via `D3D12_FEATURE_D3D12_OPTIONS7` on startup, with a message box
+  and clean exit if unsupported. Any DX12 Ultimate-class GPU (RTX 20-series+,
+  RDNA2+) has this.
+- No depth buffer / depth test — overlapping splats just draw in whatever
+  order their threadgroup happens to complete, not sorted. Fine for a
+  placeholder, not for real surfel rendering.
 - No Agility SDK opt-in (see the comment in `SurfelsSample.cpp`) — uses
   whatever D3D12 runtime Windows provides.
 - `SurfelsSample.cpp` calls `InitDirectXCompiler()` (from

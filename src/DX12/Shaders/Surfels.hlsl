@@ -1,10 +1,14 @@
-// Surfels.hlsl - procedural instanced point-splat renderer.
+// Surfels.hlsl - mesh-shader instanced point-splat renderer.
 //
 // Each "surfel" is a camera-facing quad billboard placed on a Fibonacci sphere.
-// There are no vertex/index buffers: geometry comes entirely from SV_VertexID
-// (which corner of the quad) and SV_InstanceID (which surfel). This is the
-// minimal placeholder primitive a real surfel-GI splat/shading pass would
-// replace or build on top of.
+// The mesh shader (mainMS) builds one small batch of surfels per threadgroup
+// entirely from SV_GroupID/SV_GroupThreadID -- there are no vertex/index buffers,
+// and unlike the earlier DrawInstanced version there's no draw-level instancing
+// either: DispatchMesh() launches one threadgroup per SURFELS_PER_GROUP surfels,
+// and each thread in the group emits its own quad (4 vertices, 2 triangles)
+// directly into the group's shared output arrays.
+
+#define SURFELS_PER_GROUP 32
 
 cbuffer SurfelsCB : register(b0)
 {
@@ -48,23 +52,50 @@ float3 FibonacciSpherePoint(uint i, uint n)
     return float3(cos(theta) * r, y, sin(theta) * r);
 }
 
-VSOut mainVS(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
+[NumThreads(SURFELS_PER_GROUP, 1, 1)]
+[OutputTopology("triangle")]
+void mainMS(
+    uint3 groupId  : SV_GroupID,
+    uint  threadId : SV_GroupThreadID,
+    out indices  uint3 tris[SURFELS_PER_GROUP * 2],
+    out vertices VSOut verts[SURFELS_PER_GROUP * 4])
 {
-    VSOut o;
+    uint groupBase = groupId.x * SURFELS_PER_GROUP;
+    uint remaining = groupBase < g_SurfelCount ? g_SurfelCount - groupBase : 0;
+    uint groupSurfelCount = min((uint)SURFELS_PER_GROUP, remaining);
 
-    float3 dir = FibonacciSpherePoint(instanceId, g_SurfelCount);
-    float pulse = 0.02 * sin(g_Time * 2.0 + (float)instanceId);
+    // Must be called by every thread with the same (group-uniform) value before
+    // any thread writes to verts/tris.
+    SetMeshOutputCounts(groupSurfelCount * 4, groupSurfelCount * 2);
+
+    if (threadId >= groupSurfelCount)
+        return;
+
+    uint surfelIndex = groupBase + threadId;
+    float3 dir = FibonacciSpherePoint(surfelIndex, g_SurfelCount);
+    float pulse = 0.02 * sin(g_Time * 2.0 + (float)surfelIndex);
     float3 worldPos = g_SphereCenter + dir * (g_SphereRadius + pulse);
+    float3 color = HashColor(surfelIndex);
 
-    // Triangle-strip quad corners: 0(-1,-1) 1(1,-1) 2(-1,1) 3(1,1)
-    float2 corner = float2((vertexId == 1 || vertexId == 3) ? 1.0 : -1.0,
-                            (vertexId >= 2) ? 1.0 : -1.0);
-    float3 offset = (g_CamRight * corner.x + g_CamUp * corner.y) * g_Radius;
+    // Triangle-strip-style quad corners: 0(-1,-1) 1(1,-1) 2(-1,1) 3(1,1)
+    float2 corners[4] = { float2(-1.0, -1.0), float2(1.0, -1.0), float2(-1.0, 1.0), float2(1.0, 1.0) };
 
-    o.pos = mul(g_ViewProj, float4(worldPos + offset, 1.0));
-    o.uv = corner * 0.5 + 0.5;
-    o.color = HashColor(instanceId);
-    return o;
+    uint vBase = threadId * 4;
+    [unroll]
+    for (uint c = 0; c < 4; c++)
+    {
+        float3 offset = (g_CamRight * corners[c].x + g_CamUp * corners[c].y) * g_Radius;
+
+        VSOut o;
+        o.pos = mul(g_ViewProj, float4(worldPos + offset, 1.0));
+        o.uv = corners[c] * 0.5 + 0.5;
+        o.color = color;
+        verts[vBase + c] = o;
+    }
+
+    uint pBase = threadId * 2;
+    tris[pBase + 0] = uint3(vBase + 0, vBase + 1, vBase + 2);
+    tris[pBase + 1] = uint3(vBase + 1, vBase + 3, vBase + 2);
 }
 
 float4 mainPS(VSOut i) : SV_Target
