@@ -1157,7 +1157,7 @@ namespace Surfels
 
             if (ImGui::BeginMenu("View"))
             {
-                ImGui::MenuItem("Show Splat Cruncher Pane", nullptr, &m_showPreprocessorPane);
+                ImGui::MenuItem("Show Surfel Generator Pane", nullptr, &m_showPreprocessorPane);
                 ImGui::MenuItem("Auto Rotate Viewport", nullptr, &m_state.autoRotate);
                 if (ImGui::MenuItem("Reset Camera to Center"))
                 {
@@ -1182,7 +1182,7 @@ namespace Surfels
         // 2. Left Control Panel: Decoupled Preprocessor & Renderer Tabs
         ImGui::SetNextWindowPos(ImVec2(10, 30), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(410, (float)m_Height - 40), ImGuiCond_FirstUseEver);
-        ImGui::Begin("Surfel Generator", nullptr, ImGuiWindowFlags_NoCollapse);
+        ImGui::Begin("##LeftPanel", nullptr, ImGuiWindowFlags_NoCollapse);
 
         if (!m_showPreprocessorPane)
         {
@@ -1194,7 +1194,7 @@ namespace Surfels
             float tabWidth = (ImGui::GetContentRegionAvailWidth() - 6.0f) * 0.5f;
             ImGui::PushStyleColor(ImGuiCol_Button, m_activeTab == 0 ? ImVec4(0.18f, 0.45f, 0.75f, 1.0f) : ImVec4(0.22f, 0.22f, 0.25f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_Text, m_activeTab == 0 ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
-            if (ImGui::Button("1. Splat Cruncher", ImVec2(tabWidth, 28))) m_activeTab = 0;
+            if (ImGui::Button("1. Surfel Generator", ImVec2(tabWidth, 28))) m_activeTab = 0;
             ImGui::PopStyleColor(2);
 
             ImGui::SameLine();
@@ -1208,7 +1208,7 @@ namespace Surfels
         }
 
         // =========================================================================
-        // TAB 1: SPLAT CRUNCHER PREPROCESSOR (Raw Model -> Octree -> Wavelet Decimation -> SFLW Export)
+        // TAB 1: SURFEL GENERATOR PREPROCESSOR (Raw Model -> Octree -> Wavelet Decimation -> SFLW Export)
         // =========================================================================
         if (m_activeTab == 0 && m_showPreprocessorPane)
         {
@@ -1363,8 +1363,8 @@ namespace Surfels
                     ImGui::SliderFloat("Splat Radius Scale", &m_state.splatRadius, 0.10f, 10.0f, "%.2fx");
                     m_state.orientMode = 1;
 
-                    ImGui::Checkbox("Show Splat Crunch Pane", &m_showPreprocessorPane);
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggles visibility of the Splat Crunch preprocessor pane to declutter the UI when operating purely in viewer mode.");
+                    ImGui::Checkbox("Show Surfel Generator Pane", &m_showPreprocessorPane);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggles visibility of the Surfel Generator preprocessor pane to declutter the UI when operating purely in viewer mode.");
 
                     ImGui::Checkbox("Auto Rotate Model##Viewport", &m_autoRotate);
                     m_state.autoRotate = m_autoRotate;
