@@ -110,6 +110,8 @@ namespace Surfels
                 m_statusIsSuccess = true;
             }
         }
+
+        m_swapChain.SetVSync(m_vsync);
     }
 
     void PreprocessApp::OnDestroy()
@@ -1245,6 +1247,12 @@ namespace Surfels
                 ImGui::Checkbox("Meshlet Micro-Chunking (64 pts/cluster + AS Culling)", &m_useChunkedPipeline);
                 m_state.useChunkedPipeline = m_useChunkedPipeline;
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hierarchical two-level sorting: coarse chunk sort + Amplification Shader frustum culling.");
+
+                if (ImGui::Checkbox("VSync (Lock Framerate to Display)", &m_vsync))
+                {
+                    m_swapChain.SetVSync(m_vsync);
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("When unchecked, removes the display refresh rate cap to expose true raw pipeline execution performance and GPU vs CPU sorting timings.");
             }
         }
 

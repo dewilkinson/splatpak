@@ -119,6 +119,7 @@ namespace Surfels
         bool  m_gpuRadixSort         = true;  // Checkbox: "GPU Radix Sort" under Accelerators (Enabled by default)
         bool  m_enableMortonOrder    = true;  // Checkbox: "Morton Spatial Curve Ordering" under Accelerators
         bool  m_useChunkedPipeline   = true;  // Micro-chunked meshlet pipeline with AS culling
+        bool  m_vsync                = false; // Uncapped framerate by default to expose true compute/render timings
         struct HeatmapClusterCube
         {
             XMFLOAT3 aabbMin;

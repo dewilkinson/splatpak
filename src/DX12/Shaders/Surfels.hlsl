@@ -62,6 +62,7 @@ cbuffer SurfelsCB : register(b0)
 struct ChunkPayload
 {
     uint chunkIndices[AS_GROUP_SIZE];
+    uint flatGroupIndex;
 };
 
 struct VSOut
@@ -90,34 +91,31 @@ float3 UnpackNormalOct16(uint packedOct)
     return normalize(v);
 }
 
-float3 UnpackColorRGB565(uint packedColor)
+float3 UnpackColorRGB565(uint packedRGB)
 {
-    float r = (float)((packedColor >> 11) & 0x1F) / 31.0;
-    float g = (float)((packedColor >> 5) & 0x3F) / 63.0;
-    float b = (float)(packedColor & 0x1F) / 31.0;
+    float r = ((packedRGB >> 11) & 0x1F) / 31.0;
+    float g = ((packedRGB >> 5) & 0x3F) / 63.0;
+    float b = (packedRGB & 0x1F) / 31.0;
     return float3(r, g, b);
 }
 
 float3 HashColor(uint id)
 {
-    uint n = id * 1664525u + 1013904223u;
-    n = (n ^ (n >> 16)) * 1664525u;
-    n = (n ^ (n >> 16)) * 1664525u;
+    uint n = id * 2654435761u;
     return float3(
-        (float)(n & 0xFF) / 255.0,
-        (float)((n >> 8) & 0xFF) / 255.0,
-        (float)((n >> 16) & 0xFF) / 255.0
+        ((n >> 16) & 0xFF) / 255.0,
+        ((n >> 8) & 0xFF) / 255.0,
+        (n & 0xFF) / 255.0
     );
 }
 
 float3 FibonacciSpherePoint(uint i, uint n)
 {
-    float goldenAngle = 3.14159265359 * (3.0 - sqrt(5.0));
-    float t = (float)i / max((float)n, 1.0);
-    float y = 1.0 - 2.0 * t;
-    float r = sqrt(saturate(1.0 - y * y));
-    float theta = goldenAngle * (float)i;
-    return float3(cos(theta) * r, y, sin(theta) * r);
+    float phi = 2.399963229728653; // Golden angle in radians
+    float y = 1.0 - ((float)i / (float)max(1u, n - 1u)) * 2.0;
+    float r = sqrt(max(0.0, 1.0 - y * y));
+    float theta = phi * (float)i;
+    return float3(r * cos(theta), y, r * sin(theta));
 }
 
 // =========================================================================
@@ -129,6 +127,26 @@ void mainAS(
     uint3 groupId  : SV_GroupID,
     uint  threadId : SV_GroupThreadID)
 {
+    if (g_UseChunkedPipeline == 0)
+    {
+        // Flat Buffer Mode: 1:1 pass-through to Mesh Shader
+        uint groupBase = groupId.x * SURFELS_PER_GROUP;
+        if (threadId == 0)
+        {
+            ChunkPayload payload;
+            payload.flatGroupIndex = groupId.x;
+            if (groupBase < g_SurfelCount)
+            {
+                DispatchMesh(1, 1, 1, payload);
+            }
+            else
+            {
+                DispatchMesh(0, 1, 1, payload);
+            }
+        }
+        return;
+    }
+
     uint globalChunkIdx = groupId.x * AS_GROUP_SIZE + threadId;
     bool isVisible = false;
     uint chunkIdx = 0;
@@ -172,6 +190,7 @@ void mainAS(
     uint totalVisible = WaveActiveCountBits(isVisible);
 
     ChunkPayload payload;
+    payload.flatGroupIndex = 0;
     if (isVisible)
     {
         payload.chunkIndices[visibleOffset] = chunkIdx;
@@ -205,7 +224,7 @@ void mainMS(
     }
     else
     {
-        uint groupBase = groupId.x * SURFELS_PER_GROUP;
+        uint groupBase = payload.flatGroupIndex * SURFELS_PER_GROUP;
         uint remaining = groupBase < g_SurfelCount ? g_SurfelCount - groupBase : 0;
         groupSurfelCount = min((uint)SURFELS_PER_GROUP, remaining);
         surfelIndex = groupBase + threadId;
