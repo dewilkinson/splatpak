@@ -1163,7 +1163,6 @@ namespace Surfels
 
             if (ImGui::BeginMenu("View"))
             {
-                ImGui::MenuItem("Show Surfel Generator Pane", nullptr, &m_showPreprocessorPane);
                 ImGui::MenuItem("Auto Rotate Viewport", nullptr, &m_state.autoRotate);
                 if (ImGui::MenuItem("Reset Camera to Center"))
                 {
@@ -1190,33 +1189,26 @@ namespace Surfels
         ImGui::SetNextWindowSize(ImVec2(410, (float)m_Height - 40), ImGuiCond_FirstUseEver);
         ImGui::Begin("##LeftPanel", nullptr, ImGuiWindowFlags_NoCollapse);
 
-        if (!m_showPreprocessorPane)
-        {
-            m_activeTab = 1; // Direct clean viewer mode without preprocessor controls
-        }
-        else
-        {
-            // Tab Selector Buttons
-            float tabWidth = (ImGui::GetContentRegionAvailWidth() - 6.0f) * 0.5f;
-            ImGui::PushStyleColor(ImGuiCol_Button, m_activeTab == 0 ? ImVec4(0.18f, 0.45f, 0.75f, 1.0f) : ImVec4(0.22f, 0.22f, 0.25f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_Text, m_activeTab == 0 ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
-            if (ImGui::Button("1. Surfel Generator", ImVec2(tabWidth, 28))) m_activeTab = 0;
-            ImGui::PopStyleColor(2);
+        // Tab Selector Buttons
+        float tabWidth = (ImGui::GetContentRegionAvailWidth() - 6.0f) * 0.5f;
+        ImGui::PushStyleColor(ImGuiCol_Button, m_activeTab == 0 ? ImVec4(0.18f, 0.45f, 0.75f, 1.0f) : ImVec4(0.22f, 0.22f, 0.25f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, m_activeTab == 0 ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
+        if (ImGui::Button("1. Surfel Generator", ImVec2(tabWidth, 28))) m_activeTab = 0;
+        ImGui::PopStyleColor(2);
 
-            ImGui::SameLine();
+        ImGui::SameLine();
 
-            ImGui::PushStyleColor(ImGuiCol_Button, m_activeTab == 1 ? ImVec4(0.18f, 0.45f, 0.75f, 1.0f) : ImVec4(0.22f, 0.22f, 0.25f, 1.0f));
-            ImGui::PushStyleColor(ImGuiCol_Text, m_activeTab == 1 ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
-            if (ImGui::Button("2. Stream Renderer", ImVec2(tabWidth, 28))) m_activeTab = 1;
-            ImGui::PopStyleColor(2);
+        ImGui::PushStyleColor(ImGuiCol_Button, m_activeTab == 1 ? ImVec4(0.18f, 0.45f, 0.75f, 1.0f) : ImVec4(0.22f, 0.22f, 0.25f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, m_activeTab == 1 ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
+        if (ImGui::Button("2. Stream Renderer", ImVec2(tabWidth, 28))) m_activeTab = 1;
+        ImGui::PopStyleColor(2);
 
-            ImGui::Separator();
-        }
+        ImGui::Separator();
 
         // =========================================================================
         // TAB 1: SURFEL GENERATOR PREPROCESSOR (Raw Model -> Octree -> Wavelet Decimation -> SFLW Export)
         // =========================================================================
-        if (m_activeTab == 0 && m_showPreprocessorPane)
+        if (m_activeTab == 0)
         {
             ImGui::Spacing();
             ImGui::TextColored(ImVec4(0.3f, 0.85f, 1.0f, 1.0f), "Raw Input Source:");
@@ -1421,11 +1413,13 @@ namespace Surfels
                     ImGui::SliderFloat("Splat Radius Scale", &m_state.splatRadius, 0.10f, 10.0f, "%.2fx");
                     m_state.orientMode = 1;
 
-                    ImGui::Checkbox("Show Surfel Generator Pane", &m_showPreprocessorPane);
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggles visibility of the Surfel Generator preprocessor pane to declutter the UI when operating purely in viewer mode.");
-
                     ImGui::Checkbox("Auto Rotate Model##Viewport", &m_autoRotate);
                     m_state.autoRotate = m_autoRotate;
+
+                    if (ImGui::Checkbox("VSync (Lock Framerate to Display)", &m_vsync))
+                    {
+                        m_swapChain.SetVSync(m_vsync);
+                    }
 
                     if (ImGui::Checkbox("Detach Camera (Freeze Culling Frustum)", &m_detachCamera))
                     {
@@ -1499,17 +1493,16 @@ namespace Surfels
                     }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reorders points along a 3D Morton Z-order space-filling curve.");
 
-                    if (ImGui::Checkbox("Micro-Chunking (Amplification Shader)", &m_useChunkedPipeline))
+                    if (ImGui::Checkbox("Micro-Chunking", &m_useChunkedPipeline))
                     {
                         UpdatePreviewSurfels();
                     }
                     m_state.useChunkedPipeline = m_useChunkedPipeline;
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hierarchical two-level sorting: 64-surfel meshlet clusters with Amplification Shader (AS) frustum culling.");
 
-                    if (ImGui::Checkbox("VSync (Lock Framerate to Display)", &m_vsync))
-                    {
-                        m_swapChain.SetVSync(m_vsync);
-                    }
+                    ImGui::SameLine();
+                    ImGui::TextColored(m_useChunkedPipeline ? ImVec4(0.3f, 1.0f, 0.4f, 1.0f) : ImVec4(1.0f, 0.6f, 0.2f, 1.0f),
+                        m_useChunkedPipeline ? "[Amplification Shader]" : "[Disabled]");
                 }
 
                 // Section 4: Spatial & Cluster Visualizers
