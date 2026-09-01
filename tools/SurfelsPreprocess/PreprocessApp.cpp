@@ -861,102 +861,102 @@ namespace Surfels
         m_compressionRatio = m_rawFileSizeMB > 0.0f ? (m_rawFileSizeMB / m_compressedSizeMB) : 1.0f;
         m_deadbandZeroPercent = 64.5f; // Measured planar surface coefficient sparsification
 
+        PrecacheResidentLODs();
         UpdatePreviewSurfels();
+        RebuildHeatmapClusterCubes();
 
         m_pipelineNeedsUpdate = false;
         m_packageReadyToSave = true;
+    }
+
+    void PreprocessApp::PrecacheResidentLODs()
+    {
+        m_residentLODs.clear();
+        if (m_rawSurfels.empty() && m_rendererRawSurfels.empty()) return;
+
+        if (m_enableWavelet && !m_waveletResult.lodLevels.empty())
+        {
+            int numLODs = (int)m_waveletResult.lodLevels.size();
+            m_residentLODs.resize(numLODs);
+
+            for (int lodIdx = 0; lodIdx < numLODs; lodIdx++)
+            {
+                std::vector<SurfelVertex> lodPoints;
+
+                if (m_cascadeLOD)
+                {
+                    if (lodIdx == 0)
+                    {
+                        lodPoints = m_rawSurfels;
+                    }
+                    else
+                    {
+                        for (int lvl = numLODs - 1; lvl >= lodIdx; lvl--)
+                        {
+                            const auto& levelData = m_waveletResult.lodLevels[lvl];
+                            lodPoints.insert(lodPoints.end(), levelData.surfels.begin(), levelData.surfels.end());
+                        }
+                    }
+                }
+                else
+                {
+                    lodPoints = m_waveletResult.lodLevels[lodIdx].surfels;
+                }
+
+                if (lodPoints.empty() && !m_rawSurfels.empty())
+                {
+                    lodPoints = m_rawSurfels;
+                }
+
+                m_residentLODs[lodIdx].rawSurfels = std::move(lodPoints);
+                SpatialOctree::PartitionIntoMeshletChunks(m_residentLODs[lodIdx].rawSurfels, m_residentLODs[lodIdx].meshletChunks, 64, m_enableMortonOrder);
+                m_residentLODs[lodIdx].packedSurfels = Quantizer::QuantizeSurfels(m_residentLODs[lodIdx].rawSurfels, m_aabbMin, m_aabbMax);
+            }
+        }
+        else
+        {
+            m_residentLODs.resize(1);
+            m_residentLODs[0].rawSurfels = !m_rawSurfels.empty() ? m_rawSurfels : m_rendererRawSurfels;
+            SpatialOctree::PartitionIntoMeshletChunks(m_residentLODs[0].rawSurfels, m_residentLODs[0].meshletChunks, 64, m_enableMortonOrder);
+            m_residentLODs[0].packedSurfels = Quantizer::QuantizeSurfels(m_residentLODs[0].rawSurfels, m_aabbMin, m_aabbMax);
+        }
     }
 
     void PreprocessApp::UpdatePreviewSurfels()
     {
         if (m_rawSurfels.empty() && m_rendererRawSurfels.empty()) return;
 
-        // Flush in-flight GPU execution to guarantee clean pipeline state reset across mode switches
-        if (m_pRenderer)
+        if (m_residentLODs.empty())
         {
-            m_pRenderer->FlushGPU();
+            PrecacheResidentLODs();
         }
 
         m_state.aabbMin = m_aabbMin;
         m_state.aabbExtents = m_extents;
 
-        std::vector<SurfelVertex> previewLODSurfels;
+        int maxLODIndex = std::max(0, (int)m_residentLODs.size() - 1);
+        int selectedLOD = std::max(0, std::min(maxLODIndex, m_selectedPreviewLOD));
 
-        // Step 1: Wavelet Transform Stage
-        if (m_enableWavelet && !m_waveletResult.lodLevels.empty())
-        {
-            // Standard 3D Engine LOD Convention:
-            // LOD 0 = Finest Full Resolution (100% points, left on slider)
-            // LOD N = Coarsest Base Level (highest compression, right on slider)
-            int maxLODIndex = (int)m_waveletResult.lodLevels.size() - 1;
-            int selectedLOD = std::max(0, std::min(maxLODIndex, m_selectedPreviewLOD));
+        const auto& resident = m_residentLODs[selectedLOD];
 
-            if (m_cascadeLOD)
-            {
-                if (selectedLOD == 0)
-                {
-                    // LOD 0 = 100% full dataset
-                    previewLODSurfels = m_rawSurfels;
-                }
-                else
-                {
-                    // Cascade mode: Combine coarse base levels down to selectedLOD
-                    for (int lvl = maxLODIndex; lvl >= selectedLOD; lvl--)
-                    {
-                        const auto& levelData = m_waveletResult.lodLevels[lvl];
-                        for (const auto& s : levelData.surfels)
-                        {
-                            previewLODSurfels.push_back(s);
-                        }
-                    }
-                }
-            }
-            else
-            {
-                // Single LOD level in isolation
-                const auto& currentLOD = m_waveletResult.lodLevels[selectedLOD];
-                previewLODSurfels = currentLOD.surfels;
-            }
-        }
-        else
-        {
-            // Full raw dataset (no wavelet filtering)
-            previewLODSurfels = !m_rawSurfels.empty() ? m_rawSurfels : m_rendererRawSurfels;
-        }
-
-        // Step 2: Spatial Morton Ordering & Meshlet Chunk Partitioning (64 surfels per Meshlet)
-        std::vector<MeshletChunkGPU> meshletChunks;
-        SpatialOctree::PartitionIntoMeshletChunks(previewLODSurfels, meshletChunks, 64, m_enableMortonOrder);
-
-        // Step 3: Quantization Stage
-        std::vector<PackedSurfelGPU> packedSurfels = Quantizer::QuantizeSurfels(previewLODSurfels, m_aabbMin, m_aabbMax);
-
-        // Step 4: Deep Copy into dedicated renderer buffers (decoupled memory)
-        m_rendererSurfels = std::move(packedSurfels);
-        m_rendererRawSurfels = std::move(previewLODSurfels);
-        m_rendererMeshletChunks = std::move(meshletChunks);
-        m_rendererOctreeChunks = m_chunks;
-
-        m_state.pChunks = m_rendererMeshletChunks.data();
-        m_state.chunkCount = (uint32_t)m_rendererMeshletChunks.size();
+        m_state.pChunks = resident.meshletChunks.data();
+        m_state.chunkCount = (uint32_t)resident.meshletChunks.size();
         m_state.useChunkedPipeline = m_useChunkedPipeline;
 
         if (m_enableQuantization)
         {
             m_state.renderMode = 1; // Quantized 8-byte GPU stream
-            m_state.pSurfels = m_rendererSurfels.data();
+            m_state.pSurfels = resident.packedSurfels.data();
             m_state.pRawSurfels = nullptr;
-            m_state.surfelCount = (uint32_t)m_rendererSurfels.size();
+            m_state.surfelCount = (uint32_t)resident.packedSurfels.size();
         }
         else
         {
             m_state.renderMode = 2; // Raw Float32 direct stream
-            m_state.pRawSurfels = m_rendererRawSurfels.data();
+            m_state.pRawSurfels = resident.rawSurfels.data();
             m_state.pSurfels = nullptr;
-            m_state.surfelCount = (uint32_t)m_rendererRawSurfels.size();
+            m_state.surfelCount = (uint32_t)resident.rawSurfels.size();
         }
-
-        RebuildHeatmapClusterCubes();
     }
 
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
@@ -1690,6 +1690,7 @@ namespace Surfels
                         ImGui::SameLine();
                         if (ImGui::Checkbox("Cascade", &m_cascadeLOD))
                         {
+                            PrecacheResidentLODs();
                             UpdatePreviewSurfels();
                         }
 
@@ -1698,6 +1699,7 @@ namespace Surfels
 
                     if (ImGui::Checkbox("Wavelet Transform", &m_enableWavelet))
                     {
+                        PrecacheResidentLODs();
                         UpdatePreviewSurfels();
                     }
 
@@ -1791,6 +1793,7 @@ namespace Surfels
 
                     if (ImGui::Checkbox("Morton Spatial Curve Ordering", &m_enableMortonOrder))
                     {
+                        PrecacheResidentLODs();
                         UpdatePreviewSurfels();
                     }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Reorders points along a 3D Morton Z-order space-filling curve.");

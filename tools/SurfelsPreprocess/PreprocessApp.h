@@ -165,6 +165,16 @@ namespace Surfels
         bool  m_showLODTint          = false;
         std::vector<SurfelVertex> m_previewLODSurfels;
 
+        // Pre-cached resident GPU/CPU LOD buffers for zero-hitch instantaneous transitions
+        struct ResidentLOD
+        {
+            std::vector<SurfelVertex> rawSurfels;
+            std::vector<PackedSurfelGPU> packedSurfels;
+            std::vector<MeshletChunkGPU> meshletChunks;
+        };
+        std::vector<ResidentLOD> m_residentLODs;
+        void PrecacheResidentLODs();
+
         // Progressive Network Streaming & Bandwidth Throttle Simulator
         bool   m_enableStreamingSimulation  = false; // Simulated network connection
         bool   m_unthrottledBandwidth       = false; // Full uncapped bandwidth (removes throttle cap)
