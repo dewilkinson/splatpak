@@ -756,40 +756,71 @@ namespace Surfels
 
     void PreprocessApp::UpdateCamera(const ImGuiIO& io)
     {
-        // Keyboard Zoom Controls (Up Arrow: Zoom In, Down Arrow: Zoom Out)
+        const float cy = cosf(m_pitch), sy = sinf(m_pitch);
+        const float sx = sinf(m_yaw), cx = cosf(m_yaw);
+        XMFLOAT3 rightDir(-cx, 0.0f, sx);
+        XMFLOAT3 upDir(-sy * sx, cy, -sy * cx);
+
+        // Keyboard Controls: Arrow Keys Pan, W/S/PageUp/PageDown Zoom
         if (!io.WantCaptureKeyboard)
         {
-            float keyZoomSpeed = m_distance * 0.04f;
-            if ((GetKeyState(VK_UP) & 0x8000) || (GetKeyState('W') & 0x8000) || (GetKeyState(VK_PRIOR) & 0x8000))
+            // Arrow Keys: Pan Camera along View Plane
+            float keyPanSpeed = m_distance * 0.02f;
+            if (GetKeyState(VK_LEFT) & 0x8000)
             {
-                m_distance -= keyZoomSpeed; // Zoom In (Up Arrow, W, PageUp)
+                m_target.x -= rightDir.x * keyPanSpeed;
+                m_target.y -= rightDir.y * keyPanSpeed;
+                m_target.z -= rightDir.z * keyPanSpeed;
             }
-            if ((GetKeyState(VK_DOWN) & 0x8000) || (GetKeyState('S') & 0x8000) || (GetKeyState(VK_NEXT) & 0x8000))
+            if (GetKeyState(VK_RIGHT) & 0x8000)
             {
-                m_distance += keyZoomSpeed; // Zoom Out (Down Arrow, S, PageDown)
+                m_target.x += rightDir.x * keyPanSpeed;
+                m_target.y += rightDir.y * keyPanSpeed;
+                m_target.z += rightDir.z * keyPanSpeed;
+            }
+            if (GetKeyState(VK_UP) & 0x8000)
+            {
+                m_target.x += upDir.x * keyPanSpeed;
+                m_target.y += upDir.y * keyPanSpeed;
+                m_target.z += upDir.z * keyPanSpeed;
+            }
+            if (GetKeyState(VK_DOWN) & 0x8000)
+            {
+                m_target.x -= upDir.x * keyPanSpeed;
+                m_target.y -= upDir.y * keyPanSpeed;
+                m_target.z -= upDir.z * keyPanSpeed;
+            }
+
+            // Zoom Keys: W/S, PageUp/PageDown, + / -
+            float keyZoomSpeed = m_distance * 0.04f;
+            if ((GetKeyState('W') & 0x8000) || (GetKeyState(VK_PRIOR) & 0x8000) || (GetKeyState(VK_ADD) & 0x8000) || (GetKeyState(VK_OEM_PLUS) & 0x8000))
+            {
+                m_distance -= keyZoomSpeed; // Zoom In
+            }
+            if ((GetKeyState('S') & 0x8000) || (GetKeyState(VK_NEXT) & 0x8000) || (GetKeyState(VK_SUBTRACT) & 0x8000) || (GetKeyState(VK_OEM_MINUS) & 0x8000))
+            {
+                m_distance += keyZoomSpeed; // Zoom Out
             }
             m_distance = std::max(0.1f, std::min(1000.0f, m_distance));
         }
 
         if (!io.WantCaptureMouse)
         {
-            if (io.MouseDown[0])
-            {
-                m_yaw += io.MouseDelta.x * 0.006f;
-                m_pitch = std::max(-1.55f, std::min(1.55f, m_pitch + io.MouseDelta.y * 0.006f));
-            }
+            bool shiftDown = io.KeyShift || ((GetKeyState(VK_SHIFT) & 0x8000) != 0);
 
-            if (io.MouseDown[1] || io.MouseDown[2])
+            // Shift + Left Mouse Drag OR Middle/Right Mouse Drag: Pan Camera
+            if ((shiftDown && io.MouseDown[0]) || io.MouseDown[1] || io.MouseDown[2])
             {
-                const float cy = cosf(m_pitch), sy = sinf(m_pitch);
-                const float sx = sinf(m_yaw), cx = cosf(m_yaw);
-                XMFLOAT3 rightDir(-cx, 0.0f, sx);
-                XMFLOAT3 upDir(-sy * sx, cy, -sy * cx);
-
                 float panSpeed = m_distance * 0.0015f;
                 m_target.x += (rightDir.x * io.MouseDelta.x + upDir.x * io.MouseDelta.y) * panSpeed;
                 m_target.y += (rightDir.y * io.MouseDelta.x + upDir.y * io.MouseDelta.y) * panSpeed;
                 m_target.z += (rightDir.z * io.MouseDelta.x + upDir.z * io.MouseDelta.y) * panSpeed;
+            }
+            else if (io.MouseDown[0])
+            {
+                // Left Mouse Drag without Shift: Orbit Camera (Yaw / Pitch)
+                m_yaw += io.MouseDelta.x * 0.006f;
+                m_pitch = std::max(-1.55f, std::min(1.55f, m_pitch + io.MouseDelta.y * 0.006f));
             }
 
             m_distance -= io.MouseWheel * (m_distance * 0.1f);
