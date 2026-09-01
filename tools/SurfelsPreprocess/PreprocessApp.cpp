@@ -1298,7 +1298,12 @@ namespace Surfels
                 int v = edges[i][1];
                 if (valid[u] && valid[v])
                 {
-                    DrawDottedLine(screenCorners[u], screenCorners[v], col, thickness);
+                    float dx = fabsf(screenCorners[u].x - screenCorners[v].x);
+                    float dy = fabsf(screenCorners[u].y - screenCorners[v].y);
+                    if (dx < screenW * 0.75f && dy < screenH * 0.75f)
+                    {
+                        DrawDottedLine(screenCorners[u], screenCorners[v], col, thickness);
+                    }
                 }
             }
         };
@@ -1358,7 +1363,15 @@ namespace Surfels
             for (int i = 0; i < 12; i++)
             {
                 int u = edges[i][0], v = edges[i][1];
-                if (valid[u] && valid[v]) drawList->AddLine(screenCorners[u], screenCorners[v], col, thickness);
+                if (valid[u] && valid[v])
+                {
+                    float dx = fabsf(screenCorners[u].x - screenCorners[v].x);
+                    float dy = fabsf(screenCorners[u].y - screenCorners[v].y);
+                    if (dx < screenW * 0.75f && dy < screenH * 0.75f)
+                    {
+                        drawList->AddLine(screenCorners[u], screenCorners[v], col, thickness);
+                    }
+                }
             }
         };
 

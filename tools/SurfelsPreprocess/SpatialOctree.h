@@ -20,30 +20,29 @@ namespace Surfels
     class SpatialOctree
     {
     public:
-        // Expands 21-bit integer to 63-bit integer with 2 zero bits inserted between each bit (for 3D Morton code)
-        static uint64_t Part1By2(uint64_t n)
+        // Expands 10-bit integer to 30-bit integer with 2 zero bits inserted between each bit (for 3D Morton code)
+        static inline uint32_t Dilate10Bit(uint32_t x)
         {
-            n &= 0x1fffff; // 21 bits
-            n = (n | (n << 32)) & 0x1f00000000ffff;
-            n = (n | (n << 16)) & 0x1f0000ff0000ff;
-            n = (n | (n << 8))  & 0x100f00f00f00f00f;
-            n = (n | (n << 4))  & 0x10c30c30c30c30c3;
-            n = (n | (n << 2))  & 0x1249249249249249;
-            return n;
+            x &= 0x000003ff;
+            x = (x ^ (x << 16)) & 0xff0000ff;
+            x = (x ^ (x <<  8)) & 0x0300f00f;
+            x = (x ^ (x <<  4)) & 0x030c30c3;
+            x = (x ^ (x <<  2)) & 0x09249249;
+            return x;
         }
 
-        // Computes 64-bit Morton code for a normalized point in [0, 1]^3
-        static uint64_t ComputeMorton64(float x, float y, float z)
+        // Computes 30-bit Morton code for a normalized point in [0, 1]^3 (1024x1024x1024 grid)
+        static inline uint32_t ComputeMorton30(float x, float y, float z)
         {
             x = std::max(0.0f, std::min(1.0f, x));
             y = std::max(0.0f, std::min(1.0f, y));
             z = std::max(0.0f, std::min(1.0f, z));
 
-            uint64_t ix = (uint64_t)(x * 2097151.0f);
-            uint64_t iy = (uint64_t)(y * 2097151.0f);
-            uint64_t iz = (uint64_t)(z * 2097151.0f);
+            uint32_t ix = (uint32_t)(x * 1023.0f);
+            uint32_t iy = (uint32_t)(y * 1023.0f);
+            uint32_t iz = (uint32_t)(z * 1023.0f);
 
-            return (Part1By2(iz) << 2) | (Part1By2(iy) << 1) | Part1By2(ix);
+            return (Dilate10Bit(iz) << 2) | (Dilate10Bit(iy) << 1) | Dilate10Bit(ix);
         }
 
         // Partitions points into spatial chunks of maximum size chunkSizeMeters
@@ -184,10 +183,10 @@ namespace Surfels
                 std::max(1e-4f, gMax.z - gMin.z)
             );
 
-            // 2. Compute 64-bit Morton Code for each point and sort
+            // 2. Compute 30-bit Morton Code for each point and sort
             struct MortonPoint
             {
-                uint64_t code;
+                uint32_t code;
                 uint32_t originalIndex;
             };
 
@@ -202,12 +201,13 @@ namespace Surfels
                 float ny = (p.position.y - gMin.y) / gExtent.y;
                 float nz = (p.position.z - gMin.z) / gExtent.z;
 
-                mortonList[i].code = ComputeMorton64(nx, ny, nz);
+                mortonList[i].code = ComputeMorton30(nx, ny, nz);
                 mortonList[i].originalIndex = (uint32_t)i;
             }
 
             std::sort(mortonList.begin(), mortonList.end(), [](const MortonPoint& a, const MortonPoint& b) {
-                return a.code < b.code;
+                if (a.code != b.code) return a.code < b.code;
+                return a.originalIndex < b.originalIndex;
             });
 
             // 3. Reorder points in Morton order
