@@ -69,16 +69,18 @@ namespace Surfels
             XMFLOAT3 gExtent(gMax.x - gMin.x + 1e-4f, gMax.y - gMin.y + 1e-4f, gMax.z - gMin.z + 1e-4f);
             float maxDim = std::max(gExtent.x, std::max(gExtent.y, gExtent.z));
 
-            // Dynamically tune grid resolution based on total point count to target ~30,000 - 60,000 points per chunk (64 to 256 total chunks)
-            size_t totalPoints = points.size();
-            size_t targetPointsPerChunk = 45000;
-            size_t targetChunkCount = std::max((size_t)8, std::min((size_t)256, (totalPoints + targetPointsPerChunk - 1) / targetPointsPerChunk));
-
-            // Estimate grid resolution per axis (N x N x N)
-            int gridRes = (int)std::ceil(std::cbrt((double)targetChunkCount));
-            gridRes = std::max(2, std::min(16, gridRes));
-
-            float effectiveChunkSize = maxDim / (float)gridRes;
+            // Use the specified chunkSizeMeters directly (or auto-calculate if <= 0)
+            float effectiveChunkSize = chunkSizeMeters;
+            if (effectiveChunkSize <= 0.01f)
+            {
+                size_t totalPoints = points.size();
+                size_t targetPointsPerChunk = 15000;
+                size_t targetChunkCount = std::max((size_t)16, std::min((size_t)512, (totalPoints + targetPointsPerChunk - 1) / targetPointsPerChunk));
+                int gridRes = (int)std::ceil(std::cbrt((double)targetChunkCount));
+                gridRes = std::max(2, std::min(32, gridRes));
+                effectiveChunkSize = maxDim / (float)gridRes;
+            }
+            effectiveChunkSize = std::max(0.1f, effectiveChunkSize);
 
             // 2. Cluster points into discrete spatial grid cells
             struct VoxelKey

@@ -1018,9 +1018,11 @@ namespace Surfels
                 ImGui::Text("Visualizer Settings:");
                 ImGui::Checkbox("Auto Rotate Model##Settings", &m_autoRotate);
                 m_state.autoRotate = m_autoRotate;
-                ImGui::Checkbox("Show Partitioned Octree Chunks", &m_showOctreeVisualizer);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders 3D bounding cubes for all %u active spatial octree chunks.", (uint32_t)m_chunks.size());
-                ImGui::Checkbox("Show Global Model Bounds", &m_showGlobalBounds);
+                ImGui::Checkbox("Show Partitioned Octree Chunks (Amber)", &m_showOctreeVisualizer);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders 3D bounding cubes for all %u active spatial streaming octree chunks.", (uint32_t)m_chunks.size());
+                ImGui::Checkbox("Show Meshlet Micro-Clusters (Cyan)", &m_showMeshletVisualizer);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders 3D bounding cubes for all %u hardware meshlet micro-clusters (64 surfels/cluster).", (uint32_t)m_meshletChunks.size());
+                ImGui::Checkbox("Show Global Model Bounds (Blue)", &m_showGlobalBounds);
             }
 
             // Section 5: Accelerators & Hardware Execution
@@ -1293,20 +1295,31 @@ namespace Surfels
             }
         };
 
-        // Bright cyan/amber lines for partitioned octree spatial chunks (255, 200, 50)
-        const ImU32 octreeColor = IM_COL32(255, 190, 40, 240);
-
+        // 1. Streaming Octree Macro-Chunks (Amber)
         if (m_showOctreeVisualizer)
         {
+            const ImU32 octreeColor = IM_COL32(255, 190, 40, 240);
             for (const auto& chunk : m_chunks)
             {
                 DrawDottedCube(chunk.aabbMin, chunk.aabbMax, octreeColor, 1.5f);
             }
         }
 
+        // 2. Hardware Meshlet Micro-Clusters (64 surfels/cluster) (Bright Cyan)
+        if (m_showMeshletVisualizer && !m_meshletChunks.empty())
+        {
+            const ImU32 meshletColor = IM_COL32(50, 220, 255, 180);
+            for (const auto& mc : m_meshletChunks)
+            {
+                XMFLOAT3 bMax(mc.aabbMin.x + mc.aabbExtents.x, mc.aabbMin.y + mc.aabbExtents.y, mc.aabbMin.z + mc.aabbExtents.z);
+                DrawDottedCube(mc.aabbMin, bMax, meshletColor, 1.0f);
+            }
+        }
+
+        // 3. Global Model Bounding Box (Deep Blue)
         if (m_showGlobalBounds && !m_rawSurfels.empty())
         {
-            const ImU32 globalColor = IM_COL32(80, 200, 255, 255); // Bright Cyan
+            const ImU32 globalColor = IM_COL32(100, 160, 255, 255);
             DrawDottedCube(m_aabbMin, m_aabbMax, globalColor, 2.0f);
         }
     }
