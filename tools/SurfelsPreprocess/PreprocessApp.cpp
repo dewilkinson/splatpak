@@ -1219,7 +1219,7 @@ namespace Surfels
         m_heatmapClusterCubes.clear();
         if (m_rawSurfels.empty()) return;
 
-        // 1. Determine model extents
+        // 1. Determine global model extents
         XMFLOAT3 gMin = m_aabbMin;
         XMFLOAT3 gMax = m_aabbMax;
         XMFLOAT3 gExtent(
@@ -1228,21 +1228,24 @@ namespace Surfels
             std::max(1e-4f, gMax.z - gMin.z)
         );
 
-        // 2. Compute 3D grid resolution matching m_targetClusterCubes (e.g. 512, 1024, 4096, 16384)
-        double targetK = (double)std::max(64, std::min(32768, m_targetClusterCubes));
-        double volume = (double)gExtent.x * (double)gExtent.y * (double)gExtent.z;
-        double scale = std::cbrt(targetK / std::max(1e-6, volume));
+        // 2. Compute isotropic cubic voxel grid spanning the entire global bounding box
+        float maxExtent = std::max(gExtent.x, std::max(gExtent.y, gExtent.z));
+        int targetDiv = 28;
+        if (m_targetClusterCubes <= 512) targetDiv = 12;
+        else if (m_targetClusterCubes <= 1024) targetDiv = 16;
+        else if (m_targetClusterCubes <= 2048) targetDiv = 22;
+        else if (m_targetClusterCubes <= 4096) targetDiv = 28;
+        else if (m_targetClusterCubes <= 8192) targetDiv = 36;
+        else targetDiv = 48;
 
-        int rx = std::max(1, (int)std::round(gExtent.x * scale));
-        int ry = std::max(1, (int)std::round(gExtent.y * scale));
-        int rz = std::max(1, (int)std::round(gExtent.z * scale));
+        float cellSize = std::max(0.001f, maxExtent / (float)targetDiv);
+        float voxelVolume = cellSize * cellSize * cellSize;
 
-        float cellSizeX = gExtent.x / (float)rx;
-        float cellSizeY = gExtent.y / (float)ry;
-        float cellSizeZ = gExtent.z / (float)rz;
-        float voxelVolume = std::max(1e-6f, cellSizeX * cellSizeY * cellSizeZ);
+        int rx = std::max(1, (int)std::ceil(gExtent.x / cellSize));
+        int ry = std::max(1, (int)std::ceil(gExtent.y / cellSize));
+        int rz = std::max(1, (int)std::ceil(gExtent.z / cellSize));
 
-        // 3. Bin points into spatial hash map
+        // 3. Bin all points across the model into spatial hash map
         struct VoxelKey
         {
             int32_t x, y, z;
@@ -1258,27 +1261,18 @@ namespace Surfels
 
         struct VoxelData
         {
-            XMFLOAT3 minP = { 1e9f, 1e9f, 1e9f };
-            XMFLOAT3 maxP = { -1e9f, -1e9f, -1e9f };
             uint32_t count = 0;
         };
 
         std::unordered_map<VoxelKey, VoxelData, VoxelKeyHash> gridMap;
         for (const auto& p : m_rawSurfels)
         {
-            int32_t ix = std::max(0, std::min(rx - 1, (int32_t)((p.position.x - gMin.x) / cellSizeX)));
-            int32_t iy = std::max(0, std::min(ry - 1, (int32_t)((p.position.y - gMin.y) / cellSizeY)));
-            int32_t iz = std::max(0, std::min(rz - 1, (int32_t)((p.position.z - gMin.z) / cellSizeZ)));
+            int32_t ix = std::max(0, std::min(rx - 1, (int32_t)((p.position.x - gMin.x) / cellSize)));
+            int32_t iy = std::max(0, std::min(ry - 1, (int32_t)((p.position.y - gMin.y) / cellSize)));
+            int32_t iz = std::max(0, std::min(rz - 1, (int32_t)((p.position.z - gMin.z) / cellSize)));
 
             VoxelKey k = { ix, iy, iz };
-            auto& vd = gridMap[k];
-            vd.count++;
-            vd.minP.x = std::min(vd.minP.x, p.position.x);
-            vd.minP.y = std::min(vd.minP.y, p.position.y);
-            vd.minP.z = std::min(vd.minP.z, p.position.z);
-            vd.maxP.x = std::max(vd.maxP.x, p.position.x);
-            vd.maxP.y = std::max(vd.maxP.y, p.position.y);
-            vd.maxP.z = std::max(vd.maxP.z, p.position.z);
+            gridMap[k].count++;
         }
 
         if (gridMap.empty()) return;
@@ -1291,27 +1285,24 @@ namespace Surfels
         for (const auto& pair : gridMap)
         {
             const auto& vd = pair.second;
-            if (vd.count < 8) continue; // Filter outlier noise points in air
+            if (vd.count == 0) continue;
 
-            float cMinX = gMin.x + (float)pair.first.x * cellSizeX;
-            float cMinY = gMin.y + (float)pair.first.y * cellSizeY;
-            float cMinZ = gMin.z + (float)pair.first.z * cellSizeZ;
-            float cMaxX = cMinX + cellSizeX;
-            float cMaxY = cMinY + cellSizeY;
-            float cMaxZ = cMinZ + cellSizeZ;
+            float cMinX = gMin.x + (float)pair.first.x * cellSize;
+            float cMinY = gMin.y + (float)pair.first.y * cellSize;
+            float cMinZ = gMin.z + (float)pair.first.z * cellSize;
+            float cMaxX = cMinX + cellSize;
+            float cMaxY = cMinY + cellSize;
+            float cMaxZ = cMinZ + cellSize;
 
             HeatmapClusterCube cube = {};
             cube.aabbMin = XMFLOAT3(cMinX, cMinY, cMinZ);
             cube.aabbMax = XMFLOAT3(cMaxX, cMaxY, cMaxZ);
             cube.center = XMFLOAT3(
-                cMinX + cellSizeX * 0.5f,
-                cMinY + cellSizeY * 0.5f,
-                cMinZ + cellSizeZ * 0.5f
+                cMinX + cellSize * 0.5f,
+                cMinY + cellSize * 0.5f,
+                cMinZ + cellSize * 0.5f
             );
-            float hx = cellSizeX * 0.5f;
-            float hy = cellSizeY * 0.5f;
-            float hz = cellSizeZ * 0.5f;
-            cube.boundingRadius = std::sqrt(hx * hx + hy * hy + hz * hz) + 0.002f;
+            cube.boundingRadius = cellSize * 0.866025f; // sqrt(3)/2 * cellSize
             cube.pointCount = vd.count;
             cube.volume = voxelVolume;
             cube.density = (float)vd.count / voxelVolume;
