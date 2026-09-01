@@ -1661,29 +1661,38 @@ namespace Surfels
         // 4. Detached Culling Camera Frustum Primitive Visualizer (Mid-Transparent Gray)
         if (m_detachCamera)
         {
-            float zn = 0.5f;
-            float zf = std::min(60.0f, std::max(10.0f, cDist * 1.8f));
-
-            float tanHalfFov = 0.41421356f; // tan(pi / 8) for 45 deg FOV
-            float hn = zn * tanHalfFov;
-            float wn = hn * aspect;
-            float hf = zf * tanHalfFov;
-            float wf = hf * aspect;
-
-            // 4 Near Corners
-            XMFLOAT3 N[4] = {
-                { cullEyePos.x + cullForward.x * zn - cullRight.x * wn - cullUp.x * hn, cullEyePos.y + cullForward.y * zn - cullRight.y * wn - cullUp.y * hn, cullEyePos.z + cullForward.z * zn - cullRight.z * wn - cullUp.z * hn },
-                { cullEyePos.x + cullForward.x * zn + cullRight.x * wn - cullUp.x * hn, cullEyePos.y + cullForward.y * zn + cullRight.x * wn - cullUp.y * hn, cullEyePos.z + cullForward.z * zn + cullRight.x * wn - cullUp.z * hn },
-                { cullEyePos.x + cullForward.x * zn + cullRight.x * wn + cullUp.x * hn, cullEyePos.y + cullForward.y * zn + cullRight.x * wn + cullUp.y * hn, cullEyePos.z + cullForward.z * zn + cullRight.x * wn + cullUp.z * hn },
-                { cullEyePos.x + cullForward.x * zn - cullRight.x * wn + cullUp.x * hn, cullEyePos.y + cullForward.y * zn - cullRight.x * wn + cullUp.y * hn, cullEyePos.z + cullForward.z * zn - cullRight.x * wn + cullUp.z * hn }
+            XMMATRIX invCViewProj = XMMatrixInverse(nullptr, cViewProj);
+            auto UnprojectNDC = [&](float ndcX, float ndcY, float ndcZ) -> XMFLOAT3 {
+                XMVECTOR clipPt = XMVectorSet(ndcX, ndcY, ndcZ, 1.0f);
+                XMVECTOR worldPt = XMVector4Transform(clipPt, invCViewProj);
+                XMFLOAT4 wp;
+                XMStoreFloat4(&wp, worldPt);
+                float invW = (std::abs(wp.w) > 1e-6f) ? (1.0f / wp.w) : 1.0f;
+                return XMFLOAT3(wp.x * invW, wp.y * invW, wp.z * invW);
             };
 
-            // 4 Far Corners
+            // Calculate NDC depth corresponding to 1.8x camera target distance
+            float targetFarDist = std::min(450.0f, std::max(5.0f, cDist * 1.8f));
+            XMVECTOR farTargetWorld = XMVectorAdd(cEye, XMVectorScale(cForwardVec, targetFarDist));
+            XMVECTOR farTargetClip = XMVector4Transform(XMVectorSetW(farTargetWorld, 1.0f), cViewProj);
+            XMFLOAT4 farClip;
+            XMStoreFloat4(&farClip, farTargetClip);
+            float farNdcZ = (farClip.w > 1e-4f) ? std::max(0.01f, std::min(1.0f, farClip.z / farClip.w)) : 0.95f;
+
+            // 4 Near Corners in 3D World Space (Z_ndc = 0.005)
+            XMFLOAT3 N[4] = {
+                UnprojectNDC(-1.0f, -1.0f, 0.005f), // 0: Bottom-Left
+                UnprojectNDC(+1.0f, -1.0f, 0.005f), // 1: Bottom-Right
+                UnprojectNDC(+1.0f, +1.0f, 0.005f), // 2: Top-Right
+                UnprojectNDC(-1.0f, +1.0f, 0.005f)  // 3: Top-Left
+            };
+
+            // 4 Far Corners in 3D World Space (Z_ndc = farNdcZ)
             XMFLOAT3 F[4] = {
-                { cullEyePos.x + cullForward.x * zf - cullRight.x * wf - cullUp.x * hf, cullEyePos.y + cullForward.y * zf - cullRight.y * wf - cullUp.y * hf, cullEyePos.z + cullForward.z * zf - cullRight.z * wf - cullUp.z * hf },
-                { cullEyePos.x + cullForward.x * zf + cullRight.x * wf - cullUp.x * hf, cullEyePos.y + cullForward.y * zf + cullRight.x * wf - cullUp.y * hf, cullEyePos.z + cullForward.z * zf + cullRight.x * wf - cullUp.z * hf },
-                { cullEyePos.x + cullForward.x * zf + cullRight.x * wf + cullUp.x * hf, cullEyePos.y + cullForward.y * zf + cullRight.x * wf + cullUp.x * hf, cullEyePos.z + cullForward.z * zf + cullRight.x * wf + cullUp.z * hf },
-                { cullEyePos.x + cullForward.x * zf - cullRight.x * wf + cullUp.x * hf, cullEyePos.y + cullForward.y * zf - cullRight.x * wf + cullUp.y * hf, cullEyePos.z + cullForward.z * zf - cullRight.x * wf + cullUp.z * hf }
+                UnprojectNDC(-1.0f, -1.0f, farNdcZ), // 0: Bottom-Left
+                UnprojectNDC(+1.0f, -1.0f, farNdcZ), // 1: Bottom-Right
+                UnprojectNDC(+1.0f, +1.0f, farNdcZ), // 2: Top-Right
+                UnprojectNDC(-1.0f, +1.0f, farNdcZ)  // 3: Top-Left
             };
 
             ImVec2 screenN[4], screenF[4], screenEye;
