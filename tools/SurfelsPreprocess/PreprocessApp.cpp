@@ -1797,25 +1797,30 @@ namespace Surfels
                 validF[i] = ProjectToScreen(F[i], screenF[i]);
             }
 
-            // 5% Tint Opacity (13/255) and 30% Wireframe Opacity (77/255)
-            const ImU32 frustumFillCol = IM_COL32(180, 185, 195, 13);
-            const ImU32 frustumWireCol = IM_COL32(220, 225, 235, 77);
-            const ImU32 frustumApexCol = IM_COL32(220, 225, 235, 77);
+            // Distinct Shading per Face for Unambiguous 3D Orientation from Any Angle
+            const ImU32 nearCapFillCol   = IM_COL32(70, 120, 200, 65);   // Darker blue-gray solid near cap (Camera Body)
+            const ImU32 nearCapWireCol   = IM_COL32(110, 170, 240, 160); // Crisp near cap wireframe
+            const ImU32 farFaceFillCol   = IM_COL32(160, 185, 220, 15);  // Translucent far aperture
+            const ImU32 farFaceWireCol   = IM_COL32(160, 215, 255, 110); // Bright far aperture wireframe
+            const ImU32 topFaceFillCol   = IM_COL32(210, 230, 255, 30);  // Lighter top face (Up Orientation)
+            const ImU32 sideFaceFillCol  = IM_COL32(170, 180, 195, 13);  // 5% standard side tint
+            const ImU32 frustumWireCol   = IM_COL32(200, 210, 225, 75);  // 30% side wireframe
+            const ImU32 gazeRayCol       = IM_COL32(80, 210, 255, 180);  // Cyan forward gaze direction ray
 
-            // 6 Frustum Quad Faces
-            if (validN[0] && validN[1] && validN[2] && validN[3]) drawList->AddQuadFilled(screenN[0], screenN[1], screenN[2], screenN[3], frustumFillCol);
-            if (validF[0] && validF[1] && validF[2] && validF[3]) drawList->AddQuadFilled(screenF[3], screenF[2], screenF[1], screenF[0], frustumFillCol);
-            if (validN[0] && validN[3] && validF[3] && validF[0]) drawList->AddQuadFilled(screenN[0], screenN[3], screenF[3], screenF[0], frustumFillCol);
-            if (validN[1] && validF[1] && validF[2] && validN[2]) drawList->AddQuadFilled(screenN[1], screenF[1], screenF[2], screenN[2], frustumFillCol);
-            if (validN[3] && validN[2] && validF[2] && validF[3]) drawList->AddQuadFilled(screenN[3], screenN[2], screenF[2], screenF[3], frustumFillCol);
-            if (validN[0] && validF[0] && validF[1] && validN[1]) drawList->AddQuadFilled(screenN[0], screenF[0], screenF[1], screenN[1], frustumFillCol);
+            // 6 Frustum Faces with directional distinction
+            if (validN[0] && validN[1] && validN[2] && validN[3]) drawList->AddQuadFilled(screenN[0], screenN[1], screenN[2], screenN[3], nearCapFillCol); // Near Cap (Back)
+            if (validF[0] && validF[1] && validF[2] && validF[3]) drawList->AddQuadFilled(screenF[3], screenF[2], screenF[1], screenF[0], farFaceFillCol); // Far Face (Front)
+            if (validN[3] && validN[2] && validF[2] && validF[3]) drawList->AddQuadFilled(screenN[3], screenN[2], screenF[2], screenF[3], topFaceFillCol); // Top Face (Up)
+            if (validN[0] && validN[3] && validF[3] && validF[0]) drawList->AddQuadFilled(screenN[0], screenN[3], screenF[3], screenF[0], sideFaceFillCol);
+            if (validN[1] && validF[1] && validF[2] && validN[2]) drawList->AddQuadFilled(screenN[1], screenF[1], screenF[2], screenN[2], sideFaceFillCol);
+            if (validN[0] && validF[0] && validF[1] && validN[1]) drawList->AddQuadFilled(screenN[0], screenF[0], screenF[1], screenN[1], sideFaceFillCol);
 
             // 12 Frustum Outer Edges
             for (int i = 0; i < 4; i++)
             {
                 int next = (i + 1) % 4;
-                if (validN[i] && validN[next]) drawList->AddLine(screenN[i], screenN[next], frustumWireCol, 1.0f);
-                if (validF[i] && validF[next]) drawList->AddLine(screenF[i], screenF[next], frustumWireCol, 1.0f);
+                if (validN[i] && validN[next]) drawList->AddLine(screenN[i], screenN[next], nearCapWireCol, 1.5f);
+                if (validF[i] && validF[next]) drawList->AddLine(screenF[i], screenF[next], farFaceWireCol, 1.2f);
                 if (validN[i] && validF[i])    drawList->AddLine(screenN[i], screenF[i], frustumWireCol, 1.0f);
             }
 
@@ -1824,8 +1829,66 @@ namespace Surfels
             {
                 for (int i = 0; i < 4; i++)
                 {
-                    if (validN[i]) drawList->AddLine(screenEye, screenN[i], frustumApexCol, 1.0f);
+                    if (validN[i]) drawList->AddLine(screenEye, screenN[i], nearCapWireCol, 1.0f);
                 }
+            }
+
+            // Central Forward Gaze Direction Arrow (Pointing from Near Center to Far Center)
+            XMFLOAT3 nearCenter(
+                (N[0].x + N[1].x + N[2].x + N[3].x) * 0.25f,
+                (N[0].y + N[1].y + N[2].y + N[3].y) * 0.25f,
+                (N[0].z + N[1].z + N[2].z + N[3].z) * 0.25f
+            );
+            XMFLOAT3 farCenter(
+                (F[0].x + F[1].x + F[2].x + F[3].x) * 0.25f,
+                (F[0].y + F[1].y + F[2].y + F[3].y) * 0.25f,
+                (F[0].z + F[1].z + F[2].z + F[3].z) * 0.25f
+            );
+            XMFLOAT3 topNearMid(
+                (N[2].x + N[3].x) * 0.5f,
+                (N[2].y + N[3].y) * 0.5f,
+                (N[2].z + N[3].z) * 0.5f
+            );
+            float upMarkerDist = std::max(0.15f, targetFarDist * 0.08f);
+            XMFLOAT3 topMarker(
+                topNearMid.x + cullUp.x * upMarkerDist,
+                topNearMid.y + cullUp.y * upMarkerDist,
+                topNearMid.z + cullUp.z * upMarkerDist
+            );
+
+            ImVec2 sNearC, sFarC, sTopMid, sTopMarker;
+            bool vNC = ProjectToScreen(nearCenter, sNearC);
+            bool vFC = ProjectToScreen(farCenter, sFarC);
+            bool vTM = ProjectToScreen(topNearMid, sTopMid);
+            bool vTR = ProjectToScreen(topMarker, sTopMarker);
+
+            // Forward Gaze Centerline + Arrowhead
+            if (vNC && vFC)
+            {
+                drawList->AddLine(sNearC, sFarC, gazeRayCol, 1.5f);
+
+                // 2D arrow wings at far center
+                float dx = sFarC.x - sNearC.x;
+                float dy = sFarC.y - sNearC.y;
+                float len = sqrtf(dx * dx + dy * dy);
+                if (len > 5.0f)
+                {
+                    float udx = dx / len;
+                    float udy = dy / len;
+                    float perpX = -udy;
+                    float perpY = udx;
+                    float arrowSize = 8.0f;
+                    ImVec2 wing1(sFarC.x - udx * arrowSize + perpX * (arrowSize * 0.55f), sFarC.y - udy * arrowSize + perpY * (arrowSize * 0.55f));
+                    ImVec2 wing2(sFarC.x - udx * arrowSize - perpX * (arrowSize * 0.55f), sFarC.y - udy * arrowSize - perpY * (arrowSize * 0.55f));
+                    drawList->AddTriangleFilled(sFarC, wing1, wing2, gazeRayCol);
+                }
+            }
+
+            // Up-direction orientation notch on top of the camera
+            if (vTM && vTR)
+            {
+                drawList->AddLine(sTopMid, sTopMarker, IM_COL32(255, 215, 60, 200), 1.5f);
+                drawList->AddCircleFilled(sTopMarker, 2.5f, IM_COL32(255, 215, 60, 230));
             }
         }
     }
