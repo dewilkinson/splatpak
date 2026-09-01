@@ -1710,7 +1710,7 @@ namespace Surfels
                     ImGui::Checkbox("Show Density Heatmap Cluster Cubes", &m_showClusterHeatmap);
                     ImGui::Checkbox("Draw Cube Outlines", &m_showHeatmapWireframe);
                     ImGui::Checkbox("Show Culled Chunks (Darker Shade)", &m_showCulledChunks);
-                    ImGui::Checkbox("Show Partitioned Octree Chunks (Amber)", &m_showOctreeVisualizer);
+                    ImGui::Checkbox("Show Macro Clusters (Amber)", &m_showOctreeVisualizer);
                     ImGui::Checkbox("Show Global Model Bounds (Blue)", &m_showGlobalBounds);
                 }
             }
