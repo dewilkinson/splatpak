@@ -72,7 +72,7 @@ namespace Surfels
             float      radius;
             XMFLOAT3   camUp;
             float      time;
-            XMFLOAT3   sphereCenter;
+            XMFLOAT3   viewerEyePos;
             float      sphereRadius;
             uint32_t   surfelCount;
             uint32_t   renderMode;

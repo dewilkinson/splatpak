@@ -1715,14 +1715,34 @@ namespace Surfels
 
                 bool isVisible = inFrustum && isFrontFacing;
 
+                // Backside Check from Active Viewer Perspective:
+                // When standing behind the model, render front-facing clusters in flat neutral gray to prevent flipping illusion
+                float toViewerX = eyePos.x - cube.center.x;
+                float toViewerY = eyePos.y - cube.center.y;
+                float toViewerZ = eyePos.z - cube.center.z;
+                bool isBacksideToViewer = (m_detachCamera && nLenSq > 0.05f &&
+                    (toViewerX * cube.avgNormal.x + toViewerY * cube.avgNormal.y + toViewerZ * cube.avgNormal.z <= 0.0f));
+
                 if (isVisible && cube.pointCount > 0)
                 {
                     float t = cube.normDensity;
                     float heatCurve = std::pow(t, 1.35f);
                     float fillAlpha = std::min(0.95f, m_heatmapOpacity * (0.30f + heatCurve * m_hotspotOpacityScale));
                     float edgeAlpha = std::min(1.0f, m_wireframeOpacity * (0.40f + heatCurve * (m_hotspotOpacityScale * 0.75f)));
-                    ImU32 fillCol = EvaluateHeatmapColor(t, fillAlpha, m_heatmapColorScheme);
-                    ImU32 edgeCol = EvaluateHeatmapColor(t, edgeAlpha, m_heatmapColorScheme);
+
+                    ImU32 fillCol, edgeCol;
+                    if (isBacksideToViewer)
+                    {
+                        // Flat unshaded neutral gray for back-facing surfaces to prevent concave/hollow flipping illusion
+                        fillCol = IM_COL32(110, 115, 125, (int)(fillAlpha * 255.0f));
+                        edgeCol = IM_COL32(150, 155, 165, (int)(edgeAlpha * 255.0f));
+                    }
+                    else
+                    {
+                        fillCol = EvaluateHeatmapColor(t, fillAlpha, m_heatmapColorScheme);
+                        edgeCol = EvaluateHeatmapColor(t, edgeAlpha, m_heatmapColorScheme);
+                    }
+
                     DrawFilledCube(cube.aabbMin, cube.aabbMax, fillCol, edgeCol, m_showHeatmapWireframe);
                 }
                 else if (m_showCulledChunks && cube.pointCount > 0)

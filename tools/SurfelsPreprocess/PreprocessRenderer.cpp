@@ -902,7 +902,7 @@ namespace Surfels
         pCB->radius = pState->splatRadius;
         XMStoreFloat3(&pCB->camUp, camUp);
         pCB->time = pState->time;
-        pCB->sphereCenter = pState->camTarget;
+        pCB->viewerEyePos = eyePos;
         pCB->sphereRadius = 1.0f;
         pCB->surfelCount = surfelCount;
         pCB->renderMode = pState->renderMode;

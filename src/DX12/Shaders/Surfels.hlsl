@@ -44,7 +44,7 @@ cbuffer SurfelsCB : register(b0)
     float    g_Radius;
     float3   g_CamUp;
     float    g_Time;
-    float3   g_SphereCenter;
+    float3   g_ViewerEyePos;
     float    g_SphereRadius;
     uint     g_SurfelCount;
     uint     g_RenderMode; // 0 = Procedural Sphere, 1 = Quantized 8-Byte, 2 = Raw Float32 Points
@@ -318,6 +318,16 @@ void mainMS(
                 verts[vBase + c] = o;
             }
             return;
+        }
+
+        // Backside Shading from Viewer Perspective:
+        // When standing behind the model (>90 deg from detached camera view), any front-facing points
+        // whose normals face AWAY from the active viewer are rendered in unshaded neutral flat gray
+        // to prevent the hollow-face / concave flipping optical illusion.
+        float3 toViewer = g_ViewerEyePos - worldPos;
+        if (dot(normal, normal) > 0.1 && dot(normal, toViewer) <= 0.0)
+        {
+            color = float3(0.40, 0.42, 0.46);
         }
     }
 
