@@ -2176,15 +2176,66 @@ namespace Surfels
             return IM_COL32(ir, ig, ib, ia);
         };
 
-        // Construct Exact BoundingFrustum from cProj and cView in World Space (supports detached camera)
-        DirectX::BoundingFrustum cullFrustum(cProj);
-        XMMATRIX invCView = XMMatrixInverse(nullptr, cView);
-        cullFrustum.Transform(cullFrustum, invCView);
+        // Extract 6 frustum clipping planes directly from cViewProj matrix (Gribb-Hartmann)
+        XMFLOAT4X4 vp;
+        XMStoreFloat4x4(&vp, cViewProj);
+
+        struct Plane4 { float a, b, c, d; };
+        Plane4 planes[6];
+
+        // Left
+        planes[0] = { vp._14 + vp._11, vp._24 + vp._21, vp._34 + vp._31, vp._44 + vp._41 };
+        // Right
+        planes[1] = { vp._14 - vp._11, vp._24 - vp._21, vp._34 - vp._31, vp._44 - vp._41 };
+        // Bottom
+        planes[2] = { vp._14 + vp._12, vp._24 + vp._22, vp._34 + vp._32, vp._44 + vp._42 };
+        // Top
+        planes[3] = { vp._14 - vp._12, vp._24 - vp._22, vp._34 - vp._32, vp._44 - vp._42 };
+        // Near (DirectX: 0 <= z_clip)
+        planes[4] = { vp._13, vp._23, vp._33, vp._43 };
+        // Far (DirectX: z_clip <= w_clip)
+        planes[5] = { vp._14 - vp._13, vp._24 - vp._23, vp._34 - vp._33, vp._44 - vp._43 };
+
+        for (int i = 0; i < 6; i++)
+        {
+            float len = sqrtf(planes[i].a * planes[i].a + planes[i].b * planes[i].b + planes[i].c * planes[i].c);
+            if (len > 1e-6f)
+            {
+                float invL = 1.0f / len;
+                planes[i].a *= invL;
+                planes[i].b *= invL;
+                planes[i].c *= invL;
+                planes[i].d *= invL;
+            }
+        }
+
+        auto IsBoxInFrustum = [&](const XMFLOAT3& bMin, const XMFLOAT3& bMax) -> bool
+        {
+            for (int i = 0; i < 6; i++)
+            {
+                float px = (planes[i].a >= 0.0f) ? bMax.x : bMin.x;
+                float py = (planes[i].b >= 0.0f) ? bMax.y : bMin.y;
+                float pz = (planes[i].c >= 0.0f) ? bMax.z : bMin.z;
+
+                if (planes[i].a * px + planes[i].b * py + planes[i].c * pz + planes[i].d < 0.0f)
+                {
+                    return false;
+                }
+            }
+            return true;
+        };
 
         auto IsSphereInFrustum = [&](const XMFLOAT3& center, float radius) -> bool
         {
-            DirectX::BoundingSphere sphere(center, radius);
-            return cullFrustum.Contains(sphere) != DirectX::DISJOINT;
+            for (int i = 0; i < 6; i++)
+            {
+                float dist = planes[i].a * center.x + planes[i].b * center.y + planes[i].c * center.z + planes[i].d;
+                if (dist < -radius)
+                {
+                    return false;
+                }
+            }
+            return true;
         };
 
         auto DrawFilledCube = [&](const XMFLOAT3& bMin, const XMFLOAT3& bMax, ImU32 fillCol, ImU32 edgeCol, bool drawWireframe)
@@ -2266,7 +2317,7 @@ namespace Surfels
             for (size_t idx : sortedCubes)
             {
                 const auto& cube = m_heatmapClusterCubes[idx];
-                bool inFrustum = !m_detachCamera || IsSphereInFrustum(cube.center, cube.boundingRadius);
+                bool inFrustum = IsBoxInFrustum(cube.aabbMin, cube.aabbMax);
 
                 // In detached camera mode:
                 // 1. Keep only front-facing shell wrt detached camera
@@ -2322,25 +2373,26 @@ namespace Surfels
                 }
                 else if (m_showCulledChunks && cube.pointCount > 0)
                 {
-                    DrawFilledCube(cube.aabbMin, cube.aabbMax, IM_COL32(10, 35, 100, 13), IM_COL32(30, 90, 220, 51), m_showHeatmapWireframe);
+                    // Culled cluster cubes shown in translucent Steel Blue
+                    DrawFilledCube(cube.aabbMin, cube.aabbMax, IM_COL32(20, 60, 140, 25), IM_COL32(60, 140, 240, 90), m_showHeatmapWireframe);
                 }
             }
         }
 
-        // 2. Streaming Octree Macro-Clusters (Amber / Gold)
+        // 2. Streaming Octree Macro-Clusters (Amber / Gold when visible, Steel Blue when culled)
         if (m_showOctreeVisualizer)
         {
             const auto& octreeBoxes = !m_rendererOctreeChunks.empty() ? m_rendererOctreeChunks : m_chunks;
             for (const auto& chunk : octreeBoxes)
             {
-                bool isVisible = !m_detachCamera || IsSphereInFrustum(chunk.center, chunk.boundingRadius);
+                bool isVisible = IsBoxInFrustum(chunk.aabbMin, chunk.aabbMax);
                 if (isVisible)
                 {
                     DrawFilledCube(chunk.aabbMin, chunk.aabbMax, IM_COL32(255, 180, 30, 40), IM_COL32(255, 190, 40, 240), true);
                 }
                 else if (m_showCulledChunks)
                 {
-                    DrawFilledCube(chunk.aabbMin, chunk.aabbMax, IM_COL32(10, 35, 100, 13), IM_COL32(30, 90, 220, 51), true);
+                    DrawFilledCube(chunk.aabbMin, chunk.aabbMax, IM_COL32(20, 60, 140, 30), IM_COL32(60, 140, 240, 120), true);
                 }
             }
         }
