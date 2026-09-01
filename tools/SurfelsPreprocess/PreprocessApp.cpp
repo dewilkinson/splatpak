@@ -589,6 +589,8 @@ namespace Surfels
             m_state.pSurfels = nullptr;
             m_state.surfelCount = (uint32_t)m_previewLODSurfels.size();
         }
+
+        RebuildHeatmapClusterCubes();
     }
 
     void PreprocessApp::ProcessAndExport(const std::string& outputPath)
@@ -1018,18 +1020,35 @@ namespace Surfels
                 ImGui::Text("Visualizer Settings:");
                 ImGui::Checkbox("Auto Rotate Model##Settings", &m_autoRotate);
                 m_state.autoRotate = m_autoRotate;
-                ImGui::Checkbox("Show Partitioned Octree Chunks (Amber)", &m_showOctreeVisualizer);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders 3D bounding cubes for all %u active spatial streaming octree chunks.", (uint32_t)m_chunks.size());
-                ImGui::Checkbox("Show Meshlet Micro-Clusters (Cyan)", &m_showMeshletVisualizer);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders 3D bounding cubes for all %u hardware meshlet micro-clusters (64 surfels/cluster).", (uint32_t)m_meshletChunks.size());
-                if (m_showMeshletVisualizer)
+
+                // Density Heatmap Cluster Cubes
+                ImGui::Checkbox("Show Density Heatmap Cluster Cubes", &m_showClusterHeatmap);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Visualizes uniform spatial blocks of cluster cubes with semi-transparent heatmap face shading based on localized point cloud density.");
+                if (m_showClusterHeatmap)
                 {
                     ImGui::Indent(15.0f);
-                    ImGui::SliderInt("Meshlet Box Samples", &m_meshletVisualizerSampleCount, 32, 2000);
+                    const char* cubePresets[] = { "512 Cubes", "1,024 Cubes", "2,048 Cubes", "4,096 Cubes", "8,192 Cubes", "16,384 Cubes" };
+                    int cubeValues[] = { 512, 1024, 2048, 4096, 8192, 16384 };
+                    int currentPreset = 3; // 4096 default
+                    for (int i = 0; i < 6; i++) { if (m_targetClusterCubes == cubeValues[i]) currentPreset = i; }
+                    if (ImGui::Combo("Cluster Block Resolution", &currentPreset, cubePresets, IM_ARRAYSIZE(cubePresets)))
+                    {
+                        m_targetClusterCubes = cubeValues[currentPreset];
+                        RebuildHeatmapClusterCubes();
+                    }
+                    ImGui::SliderFloat("Heatmap Opacity", &m_heatmapOpacity, 0.05f, 0.75f, "%.2f");
+                    const char* schemes[] = { "Turbo (Classic Rainbow)", "Viridis (Perceptual)", "Plasma (Magma)" };
+                    ImGui::Combo("Heatmap Color Scheme", &m_heatmapColorScheme, schemes, IM_ARRAYSIZE(schemes));
+                    ImGui::Checkbox("Draw Cube Outlines", &m_showHeatmapWireframe);
                     ImGui::Unindent(15.0f);
                 }
+
+                ImGui::Checkbox("Show Partitioned Octree Chunks (Amber)", &m_showOctreeVisualizer);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders 3D bounding cubes for all %u active spatial streaming octree chunks.", (uint32_t)m_chunks.size());
+
                 ImGui::Checkbox("Show Culled Chunks (Darker Shade)", &m_showCulledChunks);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders frustum-culled octree chunks and meshlets in a darker translucent shade to visualize culling efficiency.");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders frustum-culled octree chunks and meshlet blocks in a dark translucent shade.");
+
                 ImGui::Checkbox("Show Global Model Bounds (Blue)", &m_showGlobalBounds);
             }
 
@@ -1194,9 +1213,122 @@ namespace Surfels
         }
     }
 
+    void PreprocessApp::RebuildHeatmapClusterCubes()
+    {
+        m_heatmapClusterCubes.clear();
+        if (m_rawSurfels.empty()) return;
+
+        // 1. Determine model extents
+        XMFLOAT3 gMin = m_aabbMin;
+        XMFLOAT3 gMax = m_aabbMax;
+        XMFLOAT3 gExtent(
+            std::max(1e-4f, gMax.x - gMin.x),
+            std::max(1e-4f, gMax.y - gMin.y),
+            std::max(1e-4f, gMax.z - gMin.z)
+        );
+
+        // 2. Compute 3D grid resolution matching m_targetClusterCubes (e.g. 512, 1024, 4096, 16384)
+        double targetK = (double)std::max(64, std::min(32768, m_targetClusterCubes));
+        double volume = (double)gExtent.x * (double)gExtent.y * (double)gExtent.z;
+        double scale = std::cbrt(targetK / std::max(1e-6, volume));
+
+        int rx = std::max(1, (int)std::round(gExtent.x * scale));
+        int ry = std::max(1, (int)std::round(gExtent.y * scale));
+        int rz = std::max(1, (int)std::round(gExtent.z * scale));
+
+        float cellSizeX = gExtent.x / (float)rx;
+        float cellSizeY = gExtent.y / (float)ry;
+        float cellSizeZ = gExtent.z / (float)rz;
+        float voxelVolume = std::max(1e-6f, cellSizeX * cellSizeY * cellSizeZ);
+
+        // 3. Bin points into spatial hash map
+        struct VoxelKey
+        {
+            int32_t x, y, z;
+            bool operator==(const VoxelKey& o) const { return x == o.x && y == o.y && z == o.z; }
+        };
+        struct VoxelKeyHash
+        {
+            size_t operator()(const VoxelKey& k) const
+            {
+                return ((size_t)k.x * 73856093) ^ ((size_t)k.y * 19349663) ^ ((size_t)k.z * 83492791);
+            }
+        };
+
+        struct VoxelData
+        {
+            XMFLOAT3 minP = { 1e9f, 1e9f, 1e9f };
+            XMFLOAT3 maxP = { -1e9f, -1e9f, -1e9f };
+            uint32_t count = 0;
+        };
+
+        std::unordered_map<VoxelKey, VoxelData, VoxelKeyHash> gridMap;
+        for (const auto& p : m_rawSurfels)
+        {
+            int32_t ix = std::max(0, std::min(rx - 1, (int32_t)((p.position.x - gMin.x) / cellSizeX)));
+            int32_t iy = std::max(0, std::min(ry - 1, (int32_t)((p.position.y - gMin.y) / cellSizeY)));
+            int32_t iz = std::max(0, std::min(rz - 1, (int32_t)((p.position.z - gMin.z) / cellSizeZ)));
+
+            VoxelKey k = { ix, iy, iz };
+            auto& vd = gridMap[k];
+            vd.count++;
+            vd.minP.x = std::min(vd.minP.x, p.position.x);
+            vd.minP.y = std::min(vd.minP.y, p.position.y);
+            vd.minP.z = std::min(vd.minP.z, p.position.z);
+            vd.maxP.x = std::max(vd.maxP.x, p.position.x);
+            vd.maxP.y = std::max(vd.maxP.y, p.position.y);
+            vd.maxP.z = std::max(vd.maxP.z, p.position.z);
+        }
+
+        if (gridMap.empty()) return;
+
+        // 4. Build HeatmapClusterCube list & determine min/max densities
+        float minDensity = 1e9f;
+        float maxDensity = -1e9f;
+
+        m_heatmapClusterCubes.reserve(gridMap.size());
+        for (const auto& pair : gridMap)
+        {
+            const auto& vd = pair.second;
+            if (vd.count == 0) continue;
+
+            HeatmapClusterCube cube = {};
+            cube.aabbMin = vd.minP;
+            cube.aabbMax = vd.maxP;
+            cube.center = XMFLOAT3(
+                (vd.minP.x + vd.maxP.x) * 0.5f,
+                (vd.minP.y + vd.maxP.y) * 0.5f,
+                (vd.minP.z + vd.maxP.z) * 0.5f
+            );
+            float dx = vd.maxP.x - cube.center.x;
+            float dy = vd.maxP.y - cube.center.y;
+            float dz = vd.maxP.z - cube.center.z;
+            cube.boundingRadius = std::sqrt(dx * dx + dy * dy + dz * dz) + 0.005f;
+            cube.pointCount = vd.count;
+            cube.volume = voxelVolume;
+            cube.density = (float)vd.count / voxelVolume;
+
+            if (cube.density < minDensity) minDensity = cube.density;
+            if (cube.density > maxDensity) maxDensity = cube.density;
+
+            m_heatmapClusterCubes.push_back(cube);
+        }
+
+        // 5. Normalize densities using log scale for vibrant contrast across sparse and dense areas
+        float logMin = std::log(std::max(1.0f, minDensity));
+        float logMax = std::log(std::max(2.0f, maxDensity));
+        float logRange = std::max(0.001f, logMax - logMin);
+
+        for (auto& cube : m_heatmapClusterCubes)
+        {
+            float logD = std::log(std::max(1.0f, cube.density));
+            cube.normDensity = std::max(0.0f, std::min(1.0f, (logD - logMin) / logRange));
+        }
+    }
+
     void PreprocessApp::DrawOctreeVisualizer()
     {
-        if (!m_showOctreeVisualizer && !m_showGlobalBounds)
+        if (!m_showClusterHeatmap && !m_showOctreeVisualizer && !m_showGlobalBounds)
             return;
 
         ImDrawList* drawList = ImGui::GetOverlayDrawList();
@@ -1242,70 +1374,85 @@ namespace Surfels
                 return false;
 
             outScreen.x = (ndcX * 0.5f + 0.5f) * screenW;
-            outScreen.y = (-ndcY * 0.5f + 0.5f) * screenH; // Invert Y for screen pixels
+            outScreen.y = (-ndcY * 0.5f + 0.5f) * screenH;
             return true;
         };
 
-        auto DrawDottedLine = [&](const ImVec2& p1, const ImVec2& p2, ImU32 col, float thickness = 1.0f, float dashLen = 6.0f, float gapLen = 5.0f)
+        // Evaluate smooth multi-scheme colormap
+        auto EvaluateHeatmapColor = [](float t, float alpha, int scheme) -> ImU32
         {
-            float dx = p2.x - p1.x;
-            float dy = p2.y - p1.y;
-            float len = sqrtf(dx * dx + dy * dy);
-            if (len < 1.0f) return;
+            t = std::max(0.0f, std::min(1.0f, t));
+            float r = 0.0f, g = 0.0f, b = 0.0f;
 
-            float nx = dx / len;
-            float ny = dy / len;
-            float totalStep = dashLen + gapLen;
-
-            for (float dist = 0.0f; dist < len; dist += totalStep)
+            if (scheme == 0) // Turbo / Rainbow: Blue -> Cyan -> Green -> Yellow -> Red
             {
-                float segEnd = std::min(dist + dashLen, len);
-                ImVec2 start(p1.x + nx * dist, p1.y + ny * dist);
-                ImVec2 end(p1.x + nx * segEnd, p1.y + ny * segEnd);
-                drawList->AddLine(start, end, col, thickness);
-            }
-        };
-
-        auto DrawDottedCube = [&](const XMFLOAT3& bMin, const XMFLOAT3& bMax, ImU32 col, float thickness = 1.0f)
-        {
-            XMFLOAT3 corners[8] = {
-                { bMin.x, bMin.y, bMin.z }, // 0
-                { bMax.x, bMin.y, bMin.z }, // 1
-                { bMax.x, bMax.y, bMin.z }, // 2
-                { bMin.x, bMax.y, bMin.z }, // 3
-                { bMin.x, bMin.y, bMax.z }, // 4
-                { bMax.x, bMin.y, bMax.z }, // 5
-                { bMax.x, bMax.y, bMax.z }, // 6
-                { bMin.x, bMax.y, bMax.z }, // 7
-            };
-
-            ImVec2 screenCorners[8];
-            bool valid[8];
-            for (int i = 0; i < 8; i++)
-            {
-                valid[i] = ProjectToScreen(corners[i], screenCorners[i]);
-            }
-
-            const int edges[12][2] = {
-                { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 0 }, // Bottom face
-                { 4, 5 }, { 5, 6 }, { 6, 7 }, { 7, 4 }, // Top face
-                { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 }  // Vertical edges
-            };
-
-            for (int i = 0; i < 12; i++)
-            {
-                int u = edges[i][0];
-                int v = edges[i][1];
-                if (valid[u] && valid[v])
+                if (t < 0.25f)
                 {
-                    float dx = fabsf(screenCorners[u].x - screenCorners[v].x);
-                    float dy = fabsf(screenCorners[u].y - screenCorners[v].y);
-                    if (dx < screenW * 0.75f && dy < screenH * 0.75f)
-                    {
-                        DrawDottedLine(screenCorners[u], screenCorners[v], col, thickness);
-                    }
+                    float f = t / 0.25f;
+                    r = 0.0f; g = f; b = 1.0f;
+                }
+                else if (t < 0.5f)
+                {
+                    float f = (t - 0.25f) / 0.25f;
+                    r = 0.0f; g = 1.0f; b = 1.0f - f;
+                }
+                else if (t < 0.75f)
+                {
+                    float f = (t - 0.5f) / 0.25f;
+                    r = f; g = 1.0f; b = 0.0f;
+                }
+                else
+                {
+                    float f = (t - 0.75f) / 0.25f;
+                    r = 1.0f; g = 1.0f - f * 0.85f; b = 0.0f;
                 }
             }
+            else if (scheme == 1) // Viridis: Purple -> Blue -> Teal -> Green -> Yellow
+            {
+                if (t < 0.33f)
+                {
+                    float f = t / 0.33f;
+                    r = 0.27f * (1.0f - f) + 0.13f * f;
+                    g = 0.0f * (1.0f - f) + 0.57f * f;
+                }
+                else if (t < 0.66f)
+                {
+                    float f = (t - 0.33f) / 0.33f;
+                    r = 0.13f * (1.0f - f) + 0.21f * f;
+                    g = 0.57f * (1.0f - f) + 0.77f * f;
+                }
+                else
+                {
+                    float f = (t - 0.66f) / 0.34f;
+                    r = 0.21f * (1.0f - f) + 0.99f * f;
+                    g = 0.77f * (1.0f - f) + 0.90f * f;
+                    b = 0.35f * (1.0f - f) + 0.14f * f;
+                }
+            }
+            else // Plasma: Deep Purple -> Magenta -> Orange -> Yellow
+            {
+                if (t < 0.33f)
+                {
+                    float f = t / 0.33f;
+                    r = 0.05f + 0.5f * f; g = 0.03f; b = 0.53f - 0.1f * f;
+                }
+                else if (t < 0.66f)
+                {
+                    float f = (t - 0.33f) / 0.33f;
+                    r = 0.55f + 0.35f * f; g = 0.03f + 0.45f * f; b = 0.43f - 0.3f * f;
+                }
+                else
+                {
+                    float f = (t - 0.66f) / 0.34f;
+                    r = 0.90f + 0.09f * f; g = 0.48f + 0.48f * f; b = 0.13f + 0.2f * f;
+                }
+            }
+
+            uint8_t ir = (uint8_t)(std::max(0.0f, std::min(1.0f, r)) * 255.0f);
+            uint8_t ig = (uint8_t)(std::max(0.0f, std::min(1.0f, g)) * 255.0f);
+            uint8_t ib = (uint8_t)(std::max(0.0f, std::min(1.0f, b)) * 255.0f);
+            uint8_t ia = (uint8_t)(std::max(0.0f, std::min(1.0f, alpha)) * 255.0f);
+            return IM_COL32(ir, ig, ib, ia);
         };
 
         // Extract 6 Frustum Planes from viewProj (Gribb-Hartmann)
@@ -1343,39 +1490,127 @@ namespace Surfels
             return true; // Inside frustum -> Visible!
         };
 
-        auto DrawSolidCube = [&](const XMFLOAT3& bMin, const XMFLOAT3& bMax, ImU32 col, float thickness = 1.0f)
+        auto DrawFilledCube = [&](const XMFLOAT3& bMin, const XMFLOAT3& bMax, ImU32 fillCol, ImU32 edgeCol, bool drawWireframe)
         {
             XMFLOAT3 corners[8] = {
-                { bMin.x, bMin.y, bMin.z }, { bMax.x, bMin.y, bMin.z },
-                { bMax.x, bMax.y, bMin.z }, { bMin.x, bMax.y, bMin.z },
-                { bMin.x, bMin.y, bMax.z }, { bMax.x, bMin.y, bMax.z },
-                { bMax.x, bMax.y, bMax.z }, { bMin.x, bMax.y, bMax.z }
+                { bMin.x, bMin.y, bMin.z }, // 0
+                { bMax.x, bMin.y, bMin.z }, // 1
+                { bMax.x, bMax.y, bMin.z }, // 2
+                { bMin.x, bMax.y, bMin.z }, // 3
+                { bMin.x, bMin.y, bMax.z }, // 4
+                { bMax.x, bMin.y, bMax.z }, // 5
+                { bMax.x, bMax.y, bMax.z }, // 6
+                { bMin.x, bMax.y, bMax.z }  // 7
             };
             ImVec2 screenCorners[8];
             bool valid[8];
             for (int i = 0; i < 8; i++) valid[i] = ProjectToScreen(corners[i], screenCorners[i]);
 
-            const int edges[12][2] = {
-                { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 0 },
-                { 4, 5 }, { 5, 6 }, { 6, 7 }, { 7, 4 },
-                { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 }
+            // Draw 6 Quad Faces
+            const int faces[6][4] = {
+                { 0, 1, 2, 3 }, { 4, 5, 6, 7 },
+                { 0, 4, 7, 3 }, { 1, 5, 6, 2 },
+                { 0, 1, 5, 4 }, { 3, 2, 6, 7 }
             };
-            for (int i = 0; i < 12; i++)
+
+            for (int f = 0; f < 6; f++)
             {
-                int u = edges[i][0], v = edges[i][1];
-                if (valid[u] && valid[v])
+                int i0 = faces[f][0], i1 = faces[f][1], i2 = faces[f][2], i3 = faces[f][3];
+                if (valid[i0] && valid[i1] && valid[i2] && valid[i3])
                 {
-                    float dx = fabsf(screenCorners[u].x - screenCorners[v].x);
-                    float dy = fabsf(screenCorners[u].y - screenCorners[v].y);
-                    if (dx < screenW * 0.75f && dy < screenH * 0.75f)
+                    float dx = fabsf(screenCorners[i0].x - screenCorners[i2].x);
+                    float dy = fabsf(screenCorners[i0].y - screenCorners[i2].y);
+                    if (dx < screenW * 0.85f && dy < screenH * 0.85f)
                     {
-                        drawList->AddLine(screenCorners[u], screenCorners[v], col, thickness);
+                        drawList->AddQuadFilled(screenCorners[i0], screenCorners[i1], screenCorners[i2], screenCorners[i3], fillCol);
+                    }
+                }
+            }
+
+            // Draw 12 Edges
+            if (drawWireframe)
+            {
+                const int edges[12][2] = {
+                    { 0, 1 }, { 1, 2 }, { 2, 3 }, { 3, 0 },
+                    { 4, 5 }, { 5, 6 }, { 6, 7 }, { 7, 4 },
+                    { 0, 4 }, { 1, 5 }, { 2, 6 }, { 3, 7 }
+                };
+                for (int i = 0; i < 12; i++)
+                {
+                    int u = edges[i][0], v = edges[i][1];
+                    if (valid[u] && valid[v])
+                    {
+                        float dx = fabsf(screenCorners[u].x - screenCorners[v].x);
+                        float dy = fabsf(screenCorners[u].y - screenCorners[v].y);
+                        if (dx < screenW * 0.85f && dy < screenH * 0.85f)
+                        {
+                            drawList->AddLine(screenCorners[u], screenCorners[v], edgeCol, 1.0f);
+                        }
                     }
                 }
             }
         };
 
-        // 1. Streaming Octree Macro-Chunks (Bright Amber = Visible, Dark Amber = Culled)
+        // 1. Semi-Transparent Density Heatmap Cluster Cubes
+        if (m_showClusterHeatmap && !m_heatmapClusterCubes.empty())
+        {
+            // Back-to-front sorting for smooth alpha transparency accumulation
+            std::vector<size_t> sortedCubes(m_heatmapClusterCubes.size());
+            for (size_t i = 0; i < sortedCubes.size(); i++) sortedCubes[i] = i;
+
+            std::sort(sortedCubes.begin(), sortedCubes.end(), [&](size_t a, size_t b) {
+                const auto& ca = m_heatmapClusterCubes[a];
+                const auto& cb = m_heatmapClusterCubes[b];
+                float da = (ca.center.x - eyePos.x) * (ca.center.x - eyePos.x) +
+                           (ca.center.y - eyePos.y) * (ca.center.y - eyePos.y) +
+                           (ca.center.z - eyePos.z) * (ca.center.z - eyePos.z);
+                float db = (cb.center.x - eyePos.x) * (cb.center.x - eyePos.x) +
+                           (cb.center.y - eyePos.y) * (cb.center.y - eyePos.y) +
+                           (cb.center.z - eyePos.z) * (cb.center.z - eyePos.z);
+                return da > db; // Descending (far to near)
+            });
+
+            for (size_t idx : sortedCubes)
+            {
+                const auto& cube = m_heatmapClusterCubes[idx];
+                bool isVisible = IsSphereInFrustum(cube.center, cube.boundingRadius);
+
+                if (isVisible)
+                {
+                    ImU32 fillCol = EvaluateHeatmapColor(cube.normDensity, m_heatmapOpacity, m_heatmapColorScheme);
+                    ImU32 edgeCol = EvaluateHeatmapColor(cube.normDensity, std::min(1.0f, m_heatmapOpacity * 2.5f + 0.35f), m_heatmapColorScheme);
+                    DrawFilledCube(cube.aabbMin, cube.aabbMax, fillCol, edgeCol, m_showHeatmapWireframe);
+                }
+                else if (m_showCulledChunks)
+                {
+                    ImU32 fillCol = IM_COL32(15, 30, 45, (uint8_t)(m_heatmapOpacity * 60.0f));
+                    ImU32 edgeCol = IM_COL32(35, 55, 75, 50);
+                    DrawFilledCube(cube.aabbMin, cube.aabbMax, fillCol, edgeCol, m_showHeatmapWireframe);
+                }
+            }
+
+            // Draw Heatmap Legend Bar in the corner
+            float legendX = screenW - 220.0f;
+            float legendY = screenH - 70.0f;
+            float legendW = 190.0f;
+            float legendH = 14.0f;
+
+            drawList->AddRectFilled(ImVec2(legendX - 10, legendY - 24), ImVec2(legendX + legendW + 10, legendY + legendH + 20), IM_COL32(15, 15, 20, 210), 6.0f);
+            drawList->AddText(ImVec2(legendX, legendY - 20), IM_COL32(230, 230, 230, 255), "Point Density Heatmap");
+
+            for (int s = 0; s < (int)legendW; s++)
+            {
+                float t = (float)s / legendW;
+                ImU32 col = EvaluateHeatmapColor(t, 0.9f, m_heatmapColorScheme);
+                drawList->AddLine(ImVec2(legendX + s, legendY), ImVec2(legendX + s, legendY + legendH), col, 1.0f);
+            }
+            drawList->AddRect(ImVec2(legendX, legendY), ImVec2(legendX + legendW, legendY + legendH), IM_COL32(255, 255, 255, 150), 0.0f, 0, 1.0f);
+
+            drawList->AddText(ImVec2(legendX, legendY + legendH + 3), IM_COL32(160, 180, 200, 255), "Sparse");
+            drawList->AddText(ImVec2(legendX + legendW - 35, legendY + legendH + 3), IM_COL32(255, 160, 160, 255), "Dense");
+        }
+
+        // 2. Streaming Octree Macro-Chunks (Amber)
         if (m_showOctreeVisualizer)
         {
             const ImU32 octreeColorVisible = IM_COL32(255, 190, 40, 240);
@@ -1386,38 +1621,11 @@ namespace Surfels
                 bool isVisible = IsSphereInFrustum(chunk.center, chunk.boundingRadius);
                 if (isVisible)
                 {
-                    DrawDottedCube(chunk.aabbMin, chunk.aabbMax, octreeColorVisible, 1.5f);
+                    DrawFilledCube(chunk.aabbMin, chunk.aabbMax, IM_COL32(255, 190, 40, 40), octreeColorVisible, true);
                 }
                 else if (m_showCulledChunks)
                 {
-                    DrawDottedCube(chunk.aabbMin, chunk.aabbMax, octreeColorCulled, 1.0f);
-                }
-            }
-        }
-
-        // 2. Hardware Meshlet Micro-Clusters (Bright Cyan = Visible, Dark Navy/Cyan = Culled)
-        if (m_showMeshletVisualizer && !m_meshletChunks.empty())
-        {
-            const ImU32 meshletColorVisible = IM_COL32(50, 220, 255, 200);
-            const ImU32 meshletColorCulled  = IM_COL32(15, 60, 95, 75);
-
-            size_t sampleTarget = std::max((size_t)1, (size_t)m_meshletVisualizerSampleCount);
-            size_t totalClusters = m_meshletChunks.size();
-            size_t stride = std::max((size_t)1, totalClusters / sampleTarget);
-
-            for (size_t i = 0; i < totalClusters; i += stride)
-            {
-                const auto& mc = m_meshletChunks[i];
-                bool isVisible = IsSphereInFrustum(mc.center, mc.boundingRadius);
-                XMFLOAT3 bMax(mc.aabbMin.x + mc.aabbExtents.x, mc.aabbMin.y + mc.aabbExtents.y, mc.aabbMin.z + mc.aabbExtents.z);
-
-                if (isVisible)
-                {
-                    DrawSolidCube(mc.aabbMin, bMax, meshletColorVisible, 1.0f);
-                }
-                else if (m_showCulledChunks)
-                {
-                    DrawSolidCube(mc.aabbMin, bMax, meshletColorCulled, 1.0f);
+                    DrawFilledCube(chunk.aabbMin, chunk.aabbMax, IM_COL32(110, 60, 15, 20), octreeColorCulled, true);
                 }
             }
         }
@@ -1426,7 +1634,7 @@ namespace Surfels
         if (m_showGlobalBounds && !m_rawSurfels.empty())
         {
             const ImU32 globalColor = IM_COL32(100, 160, 255, 255);
-            DrawDottedCube(m_aabbMin, m_aabbMax, globalColor, 2.0f);
+            DrawFilledCube(m_aabbMin, m_aabbMax, IM_COL32(80, 140, 255, 25), globalColor, true);
         }
     }
 

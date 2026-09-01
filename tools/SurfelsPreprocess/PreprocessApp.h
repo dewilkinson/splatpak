@@ -112,15 +112,31 @@ namespace Surfels
         bool  m_autoRotate           = true;
         bool  m_gpuRadixSort         = true;  // Checkbox: "GPU Radix Sort" under Accelerators (Enabled by default)
         bool  m_useChunkedPipeline   = true;  // Micro-chunked meshlet pipeline with AS culling
-        bool  m_showOctreeVisualizer = true;  // Show streaming octree chunks (amber boxes)
-        bool  m_showMeshletVisualizer= false; // Show GPU meshlet micro-clusters
-        bool  m_showCulledChunks     = true;  // Visualizes frustum-culled chunks in darker shade
-        bool  m_showAllMeshlets      = true;  // Render all visible meshlets with fast lines
-        int   m_meshletVisualizerSampleCount = 500;
+        struct HeatmapClusterCube
+        {
+            XMFLOAT3 aabbMin;
+            XMFLOAT3 aabbMax;
+            XMFLOAT3 center;
+            float    boundingRadius;
+            uint32_t pointCount;
+            float    volume;
+            float    density;     // pointCount / volume
+            float    normDensity; // 0.0 to 1.0 (heatmap parameter t)
+        };
+
+        std::vector<HeatmapClusterCube> m_heatmapClusterCubes;
+        bool  m_showClusterHeatmap   = true;   // Visualizes cluster cubes with heatmap point density fill
+        int   m_targetClusterCubes   = 4096;   // Target cluster cubes (e.g. 512, 1024, 4096, 16384)
+        float m_heatmapOpacity       = 0.25f;  // Alpha transparency of cube faces (0.05 to 0.8)
+        bool  m_showHeatmapWireframe = true;   // Draw wireframe outlines around cluster cubes
+        int   m_heatmapColorScheme   = 0;      // 0 = Turbo, 1 = Viridis, 2 = Plasma
+        bool  m_showOctreeVisualizer = false;  // Show streaming octree chunks (amber boxes)
+        bool  m_showCulledChunks     = true;   // Visualizes frustum-culled chunks in darker shade
         bool  m_showGlobalBounds     = false;
         bool  m_cascadeLOD           = true;
         bool  m_showLODTint          = false;
         std::vector<SurfelVertex> m_previewLODSurfels;
+        void  RebuildHeatmapClusterCubes();
         void  DrawOctreeVisualizer();
     };
 }
