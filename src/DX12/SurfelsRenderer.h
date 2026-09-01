@@ -24,8 +24,11 @@ public:
 
         uint32_t renderMode  = 0; // 0 = Procedural Sphere, 1 = Streamed Wavelet
         uint32_t orientMode  = 0; // 0 = Normal-Oriented Discs, 1 = Camera-Facing Billboards
+        XMFLOAT3 aabbMin     = { -40.0f, -2.0f, -80.0f };
+        XMFLOAT3 aabbExtents = { 80.0f, 30.0f, 160.0f };
         const Surfels::PackedSurfelGPU* pStreamedSurfels = nullptr;
         uint32_t streamedSurfelCount = 0;
+        bool     gpuRadixSort = true;
     };
 
     void OnCreate(CAULDRON_DX12::Device* pDevice, CAULDRON_DX12::SwapChain* pSwapChain);
@@ -72,6 +75,30 @@ private:
 
     ID3D12RootSignature* m_pRootSignature = nullptr;
     ID3D12PipelineState* m_pPipelineState = nullptr;
+
+    ID3D12RootSignature* m_pComputeRootSignature = nullptr;
+    ID3D12PipelineState* m_pProjectKeysPSO = nullptr;
+    ID3D12PipelineState* m_pBitonicLocalSortPSO = nullptr;
+    ID3D12PipelineState* m_pBitonicGlobalSortPSO = nullptr;
+    ID3D12PipelineState* m_pBitonicLocalMergePSO = nullptr;
+    ID3D12PipelineState* m_pGatherSurfelsPSO = nullptr;
+    ID3D12PipelineState* m_pRadixSortPSO = nullptr;
+
+    ID3D12Resource*      m_pSurfelBuffer = nullptr;
+    ID3D12Resource*      m_pSurfelGpuBuffer = nullptr;
+    ID3D12Resource*      m_pSurfelGpuOutBuffer = nullptr;
+    ID3D12Resource*      m_pGPUSortPairBuffer = nullptr;
+    uint32_t             m_sortPairBufferCapacityBytes = 0;
+    uint8_t*             m_pSurfelBufferMapped = nullptr;
+    uint32_t             m_surfelBufferCapacityBytes = 0;
+    D3D12_GPU_VIRTUAL_ADDRESS m_surfelBufferGPUAddress = 0;
+
+    const void*          m_lastSurfelsPtr = nullptr;
+    uint32_t             m_lastSurfelCount = 0;
+    bool                 m_needUploadToGpu = false;
+    bool                 m_gpuSortNeedsRun = true;
+    DirectX::XMFLOAT3    m_lastSortEye = { 0, 0, 0 };
+    DirectX::XMFLOAT3    m_lastSortForward = { 0, 0, 0 };
 
     CAULDRON_DX12::Texture m_depthBuffer;
     CAULDRON_DX12::DSV     m_depthBufferDSV;

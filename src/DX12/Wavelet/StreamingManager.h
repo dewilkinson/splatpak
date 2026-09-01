@@ -111,6 +111,7 @@ namespace Surfels
         }
 
         bool IsLoaded() const { return m_isLoaded; }
+        const SFLWFileHeader& GetHeader() const { return m_header; }
         const std::vector<ChunkManifest>& GetChunks() const { return m_chunks; }
         const StreamingTelemetry& GetTelemetry() const { return m_telemetry; }
 

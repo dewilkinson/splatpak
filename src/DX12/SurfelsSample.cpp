@@ -110,7 +110,7 @@ void SurfelsSample::BuildUI()
     ImGui::Begin("Surfels");
 
     ImGui::Text("GPU: %s", m_systemInfo.mGPUName.c_str());
-    ImGui::Text("Frame: %.2f ms (%.0f FPS)", m_deltaTime, m_deltaTime > 0.0 ? 1000.0 / m_deltaTime : 0.0);
+    ImGui::Text("Frame: %.2f ms (%.1f FPS)", m_profiler.avgCpuMs, m_profiler.avgFps);
     ImGui::Separator();
 
     ImGui::Text("Render Pipeline Mode:");
@@ -124,6 +124,8 @@ void SurfelsSample::BuildUI()
     if (ImGui::RadioButton("Normal-Oriented Discs", &oMode, 0)) m_state.orientMode = 0;
     ImGui::SameLine();
     if (ImGui::RadioButton("Camera-Facing", &oMode, 1)) m_state.orientMode = 1;
+
+    ImGui::Checkbox("GPU Bitonic Depth Sort", &m_state.gpuRadixSort);
 
     ImGui::Separator();
 
@@ -224,9 +226,8 @@ void SurfelsSample::BuildProfilerUI()
     }
 
     // --- Header & Global Metrics ---
-    float currentFps = m_deltaTime > 0.0 ? (float)(1000.0 / m_deltaTime) : 0.0f;
-    ImGui::Text("FPS: %.1f (Avg: %.1f, Min: %.1f, Max: %.1f)",
-        currentFps, m_profiler.avgFps,
+    ImGui::Text("FPS: %.1f (Min: %.1f, Max: %.1f)",
+        m_profiler.avgFps,
         m_profiler.maxCpuMs > 0.0f ? 1000.0f / m_profiler.maxCpuMs : 0.0f,
         m_profiler.minCpuMs > 0.0f ? 1000.0f / m_profiler.minCpuMs : 0.0f);
 
@@ -503,6 +504,14 @@ void SurfelsSample::OnRender()
         m_streamingManager.Update(selections, m_activeSurfels);
         m_state.pStreamedSurfels = m_activeSurfels.data();
         m_state.streamedSurfelCount = (uint32_t)m_activeSurfels.size();
+
+        const auto& hdr = m_streamingManager.GetHeader();
+        m_state.aabbMin = hdr.globalBoundsMin;
+        m_state.aabbExtents = XMFLOAT3(
+            hdr.globalBoundsMax.x - hdr.globalBoundsMin.x,
+            hdr.globalBoundsMax.y - hdr.globalBoundsMin.y,
+            hdr.globalBoundsMax.z - hdr.globalBoundsMin.z
+        );
     }
     else
     {

@@ -27,6 +27,19 @@ namespace Surfels
             const PackedSurfelGPU* pSurfels    = nullptr;
             const SurfelVertex*    pRawSurfels = nullptr;
             uint32_t surfelCount = 0;
+            bool     gpuRadixSort = true;
+        };
+
+        struct FrameTimingMetrics
+        {
+            float frameRate = 0.0f;
+            float totalFrameTimeMs = 0.0f;
+            float cpuSortTimeMs = 0.0f;
+            float gpuSortTimeMs = 0.0f;
+            float gpuDispatchTimeMs = 0.0f;
+            float uiDrawTimeMs = 0.0f;
+            bool  wasSortedThisFrame = false;
+            bool  isGPUSortActive = true;
         };
 
         void OnCreate(CAULDRON_DX12::Device* pDevice, CAULDRON_DX12::SwapChain* pSwapChain);
@@ -37,6 +50,11 @@ namespace Surfels
         void OnUpdateDisplayDependentResources(CAULDRON_DX12::SwapChain* pSwapChain);
 
         void OnRender(State* pState, CAULDRON_DX12::SwapChain* pSwapChain);
+
+        const FrameTimingMetrics& GetTimingMetrics() const { return m_metrics; }
+        float GetSmoothGpuSortMs() const { return m_smoothGpuSortMs; }
+        float GetSmoothDispatchMs() const { return m_smoothDispatchMs; }
+        float GetSmoothUiMs() const { return m_smoothUiMs; }
 
     private:
         struct SurfelsCB
@@ -72,14 +90,16 @@ namespace Surfels
         uint32_t m_width  = 0;
         uint32_t m_height = 0;
 
-        void UpdateSurfelBuffers(const PackedSurfelGPU* pSurfels, const SurfelVertex* pRawSurfels, uint32_t surfelCount, uint32_t renderMode, XMFLOAT3 eyePos, XMFLOAT3 forward);
+        void UpdateSurfelBuffers(const State* pState, XMFLOAT3 eyePos, XMFLOAT3 forward);
 
         ID3D12Resource*            m_pSurfelBuffer = nullptr;
+        ID3D12Resource*            m_pSurfelGpuBuffer = nullptr;
         uint8_t*                   m_pSurfelBufferMapped = nullptr;
         uint32_t                   m_surfelBufferCapacityBytes = 0;
         D3D12_GPU_VIRTUAL_ADDRESS  m_surfelBufferGPUAddress = 0;
 
         ID3D12Resource*            m_pRawSurfelBuffer = nullptr;
+        ID3D12Resource*            m_pRawSurfelGpuBuffer = nullptr;
         uint8_t*                   m_pRawSurfelBufferMapped = nullptr;
         uint32_t                   m_rawSurfelBufferCapacityBytes = 0;
         D3D12_GPU_VIRTUAL_ADDRESS  m_rawSurfelBufferGPUAddress = 0;
@@ -97,6 +117,42 @@ namespace Surfels
         std::vector<uint32_t>      m_sortIndicesB;
         std::vector<uint32_t>      m_sortKeys;
         std::vector<float>         m_sortDists;
+        FrameTimingMetrics         m_metrics;
+
+        float                      m_fpsAccumTimeMs = 0.0f;
+        uint32_t                   m_fpsAccumFrames = 0;
+        float                      m_smoothGpuSortMs = 0.0f;
+        float                      m_smoothDispatchMs = 0.0f;
+        float                      m_smoothUiMs = 0.0f;
+        std::chrono::high_resolution_clock::time_point m_lastWallClockTime;
+
+        ID3D12Resource*            m_pSurfelGpuOutBuffer = nullptr;
+        ID3D12Resource*            m_pRawSurfelGpuOutBuffer = nullptr;
+        ID3D12Resource*            m_pGPUSortPairBuffer = nullptr;
+        uint32_t                   m_sortPairBufferCapacityBytes = 0;
+        bool                       m_needUploadToGpu = false;
+        bool                       m_gpuSortNeedsRun = true;
+
+        // GPU-Driven Pipeline & Bitonic LDS Sorting PSOs
+        ID3D12CommandSignature*    m_pCommandSignature = nullptr;
+        ID3D12RootSignature*       m_pComputeRootSignature = nullptr;
+        ID3D12PipelineState*       m_pProjectKeysPSO = nullptr;
+        ID3D12PipelineState*       m_pBitonicLocalSortPSO = nullptr;
+        ID3D12PipelineState*       m_pBitonicGlobalSortPSO = nullptr;
+        ID3D12PipelineState*       m_pBitonicLocalMergePSO = nullptr;
+        ID3D12PipelineState*       m_pGatherSurfelsPSO = nullptr;
+        ID3D12PipelineState*       m_pCullPSO = nullptr;
+        ID3D12PipelineState*       m_pRadixSortPSO = nullptr;
+        ID3D12PipelineState*       m_pBuildArgsPSO = nullptr;
+
+        ID3D12Resource*            m_pGPUAllSurfelsBuffer = nullptr;
+        ID3D12Resource*            m_pGPUVisibleIndexBuffer = nullptr;
+        ID3D12Resource*            m_pGPUSortedIndexBuffer = nullptr;
+        ID3D12Resource*            m_pGPUSortKeyBuffer = nullptr;
+        ID3D12Resource*            m_pGPUIndirectArgsBuffer = nullptr;
+        ID3D12Resource*            m_pGPUCounterBuffer = nullptr;
+
+        bool                       m_enableGPUPipeline = true;
     };
 }
 

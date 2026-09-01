@@ -451,6 +451,22 @@ namespace Surfels
         m_distance = maxDim * 0.85f;
         m_target = m_center;
 
+        // Auto-adapt Octree Chunk Size and Wavelet LOD levels dynamically based on model extent & point count
+        // Default chunkSize of 16.0m on a ~1-2m model resulted in only 1-2 octree boxes.
+        m_chunkSize = std::max(0.10f, maxDim / 4.0f); // Target 4x4x4 ~ 64 spatial chunks per model
+        
+        size_t totalPoints = m_rawSurfels.size();
+        if (totalPoints > 2000000)
+            m_maxLODLevels = 5;
+        else if (totalPoints > 500000)
+            m_maxLODLevels = 4;
+        else if (totalPoints > 100000)
+            m_maxLODLevels = 3;
+        else
+            m_maxLODLevels = 2;
+
+        m_deadbandThresholdMM = std::max(0.5f, maxDim * 1.5f); // Scale deadband proportionally to model size
+
         bool hasNativeRadii = false;
         for (size_t i = 0; i < std::min((size_t)5000, m_rawSurfels.size()); i++)
         {
@@ -478,7 +494,7 @@ namespace Surfels
         // m_waveletResult.lodLevels[m_selectedPreviewLOD] directly (unclamped) every
         // frame, so a stale index here is an out-of-bounds vector access -- caught by
         // checked iterators in Debug, but silently corrupts memory in Release.
-        m_selectedPreviewLOD = std::max(0, std::min((int)m_waveletResult.lodLevels.size() - 1, m_selectedPreviewLOD));
+        m_selectedPreviewLOD = 0; // Default to LOD 0 (100% full dataset)
 
         // Compression estimates
         size_t totalRawPackedBytes = m_rawSurfels.size() * sizeof(PackedSurfelGPU);
@@ -500,104 +516,72 @@ namespace Surfels
         m_state.aabbMin = m_aabbMin;
         m_state.aabbExtents = m_extents;
 
-        if (m_pipelineViewMode == 0)
+        m_previewLODSurfels.clear();
+
+        // Step 1: Wavelet Transform Stage
+        if (m_enableWavelet && !m_waveletResult.lodLevels.empty())
         {
-            // Mode 0: Raw Direct Ingest (Float32 direct, bypass all processing)
-            m_state.renderMode = 2; // Raw Float32
-            m_state.pRawSurfels = m_rawSurfels.data();
-            m_state.pSurfels = nullptr;
-            m_state.surfelCount = (uint32_t)m_rawSurfels.size();
-        }
-        else if (m_pipelineViewMode == 1 || m_bypassQuantization)
-        {
-            // Mode 1: Wavelet Multi-Resolution Pyramid (Float32 surfels)
-            if (m_waveletResult.lodLevels.empty())
-            {
-                m_state.renderMode = 2;
-                m_state.pRawSurfels = m_rawSurfels.data();
-                m_state.pSurfels = nullptr;
-                m_state.surfelCount = (uint32_t)m_rawSurfels.size();
-                return;
-            }
-
-            uint32_t targetLOD = (uint32_t)std::max(0, std::min((int)m_waveletResult.lodLevels.size() - 1, m_selectedPreviewLOD));
-
-            // Define distinctive palette colors for LOD 0 to 5
-            static const XMFLOAT3 lodColors[] = {
-                XMFLOAT3(0.2f, 0.8f, 1.0f), // LOD 0: Cyan
-                XMFLOAT3(1.0f, 0.3f, 0.3f), // LOD 1: Red/Coral
-                XMFLOAT3(0.3f, 1.0f, 0.4f), // LOD 2: Bright Green
-                XMFLOAT3(1.0f, 0.8f, 0.2f), // LOD 3: Amber/Yellow
-                XMFLOAT3(0.9f, 0.3f, 1.0f), // LOD 4: Magenta
-                XMFLOAT3(1.0f, 0.5f, 0.1f)  // LOD 5: Orange
-            };
-
-            m_previewLODSurfels.clear();
+            // Standard 3D Engine LOD Convention:
+            // LOD 0 = Finest Full Resolution (100% points, left on slider)
+            // LOD N = Coarsest Base Level (highest compression, right on slider)
+            int maxLODIndex = (int)m_waveletResult.lodLevels.size() - 1;
+            int selectedLOD = std::max(0, std::min(maxLODIndex, m_selectedPreviewLOD));
 
             if (m_cascadeLOD)
             {
-                // Cascade mode: Combine coarse base level + refinement details up to targetLOD
-                // Note: lodLevels[0] is finest (100%), lodLevels[max] is coarsest.
-                // In cascade mode at targetLOD, we show points from lodLevels[targetLOD]
-                // If tinting is enabled, tint each point according to its specific LOD level.
-                for (int lvl = (int)m_waveletResult.lodLevels.size() - 1; lvl >= (int)targetLOD; lvl--)
+                if (selectedLOD == 0)
                 {
-                    const auto& levelData = m_waveletResult.lodLevels[lvl];
-                    XMFLOAT3 tint = lodColors[lvl % 6];
-
-                    for (const auto& s : levelData.surfels)
+                    // LOD 0 = 100% full dataset
+                    m_previewLODSurfels = m_rawSurfels;
+                }
+                else
+                {
+                    // Cascade mode: Combine coarse base levels down to selectedLOD
+                    for (int lvl = maxLODIndex; lvl >= selectedLOD; lvl--)
                     {
-                        SurfelVertex v = s;
-                        if (m_showLODTint)
+                        const auto& levelData = m_waveletResult.lodLevels[lvl];
+                        for (const auto& s : levelData.surfels)
                         {
-                            // Tint specific LOD layer in unique color
-                            v.color = tint;
+                            m_previewLODSurfels.push_back(s);
                         }
-                        m_previewLODSurfels.push_back(v);
                     }
                 }
             }
             else
             {
-                // Single LOD in isolation
-                const auto& currentLOD = m_waveletResult.lodLevels[targetLOD];
-                XMFLOAT3 tint = lodColors[targetLOD % 6];
-
+                // Single LOD level in isolation
+                const auto& currentLOD = m_waveletResult.lodLevels[selectedLOD];
                 m_previewLODSurfels.reserve(currentLOD.surfels.size());
                 for (const auto& s : currentLOD.surfels)
                 {
-                    SurfelVertex v = s;
-                    if (m_showLODTint)
-                    {
-                        v.color = tint;
-                    }
-                    m_previewLODSurfels.push_back(v);
+                    m_previewLODSurfels.push_back(s);
                 }
             }
-
-            m_state.renderMode = 2; // Raw Float32
-            m_state.pRawSurfels = m_previewLODSurfels.data();
-            m_state.pSurfels = nullptr;
-            m_state.surfelCount = (uint32_t)m_previewLODSurfels.size();
         }
         else
         {
-            // Mode 2: Full Quantized Pipeline (8-byte GPU Stream)
-            if (m_waveletResult.lodLevels.empty())
-            {
-                m_previewSurfels = Quantizer::QuantizeSurfels(m_rawSurfels, m_aabbMin, m_aabbMax);
-            }
-            else
-            {
-                uint32_t lodIdx = (uint32_t)std::max(0, std::min((int)m_waveletResult.lodLevels.size() - 1, m_selectedPreviewLOD));
-                const auto& currentLOD = m_waveletResult.lodLevels[lodIdx];
-                m_previewSurfels = Quantizer::QuantizeSurfels(currentLOD.surfels, m_aabbMin, m_aabbMax);
-            }
+            // Full raw dataset (no wavelet filtering)
+            m_previewLODSurfels = m_rawSurfels;
+        }
 
-            m_state.renderMode = 1; // Quantized 8-byte
+        // Step 2: Quantization Stage
+        if (m_enableQuantization)
+        {
+            // Quantize to packed 8-byte GPU structs
+            m_previewSurfels = Quantizer::QuantizeSurfels(m_previewLODSurfels, m_aabbMin, m_aabbMax);
+
+            m_state.renderMode = 1; // Quantized 8-byte GPU stream
             m_state.pSurfels = m_previewSurfels.data();
             m_state.pRawSurfels = nullptr;
             m_state.surfelCount = (uint32_t)m_previewSurfels.size();
+        }
+        else
+        {
+            // Render uncompressed 32-bit Float32 points
+            m_state.renderMode = 2; // Raw Float32 direct stream
+            m_state.pRawSurfels = m_previewLODSurfels.data();
+            m_state.pSurfels = nullptr;
+            m_state.surfelCount = (uint32_t)m_previewLODSurfels.size();
         }
     }
 
@@ -765,8 +749,48 @@ namespace Surfels
             m_distance = std::max(0.1f, std::min(1000.0f, m_distance));
         }
 
-        if (m_state.autoRotate)
-            m_yaw += (float)(m_deltaTime * 0.0003);
+        // Distance-Adaptive Auto LOD Selection:
+        // Automatically selects appropriate LOD level based on camera distance relative to model extents
+        if (m_autoLOD && !m_waveletResult.lodLevels.empty())
+        {
+            float maxDim = std::max(m_extents.x, std::max(m_extents.y, m_extents.z));
+            float normalizedDist = m_distance / std::max(0.1f, maxDim);
+
+            int maxLODIndex = (int)m_waveletResult.lodLevels.size() - 1;
+
+            // Map camera distance to LOD level:
+            // Close-up (normalizedDist <= 1.0) -> LOD 0 (100% fine full resolution)
+            // Far distance (normalizedDist >= 4.0) -> LOD max (Coarsest base level)
+            int calcLOD = 0;
+            if (normalizedDist > 4.0f)
+            {
+                calcLOD = maxLODIndex;
+            }
+            else if (normalizedDist > 1.0f)
+            {
+                float factor = (normalizedDist - 1.0f) / 3.0f; // [0..1]
+                calcLOD = (int)std::round(factor * maxLODIndex);
+            }
+            calcLOD = std::max(0, std::min(maxLODIndex, calcLOD));
+
+            if (calcLOD != m_selectedPreviewLOD)
+            {
+                m_selectedPreviewLOD = calcLOD;
+                UpdatePreviewSurfels();
+            }
+        }
+
+        // Rotate around local Y axis at exactly 1 revolution every 20 seconds (2*PI / 20.0s = ~0.314159 rad/sec)
+        // m_deltaTime is in milliseconds (e.g. ~16.6ms at 60 FPS), so convert to seconds (m_deltaTime / 1000.0f)
+        bool isUserDragging = io.MouseDown[0] || io.MouseDown[1] || io.MouseDown[2];
+        if (m_autoRotate && !isUserDragging)
+        {
+            float dtSeconds = (float)(m_deltaTime / 1000.0f);
+            float radPerSec = (2.0f * 3.14159265f) / 20.0f; // Exactly 1 revolution per 20 seconds
+            m_yaw += dtSeconds * radPerSec;
+        }
+
+        m_state.autoRotate = m_autoRotate;
 
         m_state.camYaw = m_yaw;
         m_state.camPitch = m_pitch;
@@ -868,37 +892,32 @@ namespace Surfels
         }
         else
         {
-            // Section 1: Pipeline Stage Bypass & Diagnostic Switches
-            if (ImGui::CollapsingHeader("1. Pipeline Stage Bypass & Inspection", ImGuiTreeNodeFlags_DefaultOpen))
+            // Section 1: Pipeline Configuration & Stages
+            if (ImGui::CollapsingHeader("1. Pipeline Stage Configuration", ImGuiTreeNodeFlags_DefaultOpen))
             {
-                ImGui::Text("Pipeline Ingest Stage:");
-                bool modeChanged = false;
-                if (ImGui::RadioButton("Raw Import (Float32 Direct)", &m_pipelineViewMode, 0)) modeChanged = true;
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bypasses all processing. Renders exact floating-point coordinates & colors directly from the imported file.");
+                ImGui::Text("Active Processing Stages:");
 
-                if (ImGui::RadioButton("Wavelet Multi-Res (Float32)", &m_pipelineViewMode, 1)) modeChanged = true;
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tests Lifting Wavelet LOD decimation with 32-bit floating-point precision (bypasses quantization).");
-
-                if (ImGui::RadioButton("Quantized Stream (8-Byte GPU)", &m_pipelineViewMode, 2)) modeChanged = true;
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Full production pipeline: 10:10:10:2 pos, oct16 norm, rgb565 color.");
-
-                if (modeChanged)
+                if (ImGui::Checkbox("Wavelet Transform (Multi-Res LODs)", &m_enableWavelet))
                 {
-                    m_bypassQuantization = (m_pipelineViewMode != 2);
                     UpdatePreviewSurfels();
                 }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Enables 2nd-generation Lifting Wavelet multi-resolution pyramid decimation.");
 
-                ImGui::Spacing();
-                ImGui::Text("Granular Switches:");
-                if (ImGui::Checkbox("Bypass Quantization (Float32)", &m_bypassQuantization))
+                if (ImGui::Checkbox("Apply Quantization (8-Byte GPU Packing)", &m_enableQuantization))
                 {
-                    m_pipelineViewMode = m_bypassQuantization ? 0 : 2;
                     UpdatePreviewSurfels();
                 }
-                if (ImGui::Checkbox("Bypass Wavelet (LOD 0 Full)", &m_bypassWavelet))
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Packs points into 8-byte GPU structures (10:10:10:2 pos, Oct16 normal, RGB565 color).");
+
+                if (!m_enableWavelet && !m_enableQuantization)
                 {
-                    m_selectedPreviewLOD = 0;
-                    UpdatePreviewSurfels();
+                    ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "Status: Rendering Full Raw Dataset (Float32 Direct)");
+                }
+                else
+                {
+                    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Status: %s + %s",
+                        m_enableWavelet ? "Wavelet LODs" : "No Wavelet",
+                        m_enableQuantization ? "8-Byte Quantized" : "Float32 Direct");
                 }
             }
 
@@ -912,6 +931,9 @@ namespace Surfels
                 ImGui::SliderFloat("Splat Radius Scale", &m_state.splatRadius, 0.10f, 10.0f, "%.2fx");
                 m_state.orientMode = 1; // Force camera-facing billboards (3DGS standard)
 
+                ImGui::Checkbox("Auto Rotate Model##Viewport", &m_autoRotate);
+                m_state.autoRotate = m_autoRotate;
+
                 if (ImGui::Button("Center Camera on Model", ImVec2(-1, 24)))
                 {
                     m_target = m_center;
@@ -919,22 +941,32 @@ namespace Surfels
                 }
             }
 
-            // Section 3: LOD Multi-Resolution Explorer
-            if (ImGui::CollapsingHeader("3. LOD Multi-Resolution Explorer", ImGuiTreeNodeFlags_DefaultOpen))
+            // Section 3: LOD Settings
+            if (ImGui::CollapsingHeader("3. LOD Settings", ImGuiTreeNodeFlags_DefaultOpen))
             {
-                int maxLOD = std::max(0, (int)m_waveletResult.lodLevels.size() - 1);
-                if (maxLOD == 0 && !m_rawSurfels.empty())
+                int maxLODIndex = std::max(0, (int)m_waveletResult.lodLevels.size() - 1);
+                if (maxLODIndex == 0 && !m_rawSurfels.empty())
                 {
                     ImGui::TextDisabled("Load or recompute wavelet hierarchy to explore LODs.");
                 }
-                else if (maxLOD > 0)
+                else if (maxLODIndex > 0)
                 {
-                    // Responsive LOD Slider with Cascade Checkbox on the right
-                    ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x - 95.0f);
-                    if (ImGui::SliderInt("##LODSlider", &m_selectedPreviewLOD, 0, maxLOD, "LOD %d"))
+                    // Clamp m_selectedPreviewLOD within [0, maxLODIndex]
+                    m_selectedPreviewLOD = std::max(0, std::min(maxLODIndex, m_selectedPreviewLOD));
+
+                    if (ImGui::Checkbox("Auto Distance LOD", &m_autoLOD))
                     {
-                        m_pipelineViewMode = 1;
-                        m_bypassWavelet = false;
+                        UpdatePreviewSurfels();
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Automatically adapts active LOD level dynamically based on distance from camera.");
+
+                    // Responsive LOD Slider: Left = LOD 0 (100% Full Dataset), Right = LOD N (Coarsest)
+                    ImGui::PushItemWidth(ImGui::GetContentRegionAvail().x - 95.0f);
+                    if (ImGui::SliderInt("##LODSlider", &m_selectedPreviewLOD, 0, maxLODIndex, "LOD %d"))
+                    {
+                        m_selectedPreviewLOD = std::max(0, std::min(maxLODIndex, m_selectedPreviewLOD));
+                        m_autoLOD = false; // Disable auto when user manually drags slider
+                        m_enableWavelet = true;
                         UpdatePreviewSurfels();
                     }
                     ImGui::PopItemWidth();
@@ -942,34 +974,17 @@ namespace Surfels
                     ImGui::SameLine();
                     if (ImGui::Checkbox("Cascade", &m_cascadeLOD))
                     {
-                        m_pipelineViewMode = 1;
-                        m_bypassWavelet = false;
                         UpdatePreviewSurfels();
                     }
 
-                    if (ImGui::Checkbox("Show LOD", &m_showLODTint))
+                    ImGui::Separator();
+                    if (ImGui::Checkbox("Wavelet Transform", &m_enableWavelet))
                     {
-                        m_pipelineViewMode = 1;
-                        m_bypassWavelet = false;
                         UpdatePreviewSurfels();
                     }
 
-                    if (ImGui::Checkbox("Lossy Compression", &m_lossyCompression))
+                    if (ImGui::Checkbox("Apply Quantization", &m_enableQuantization))
                     {
-                        if (m_lossyCompression)
-                        {
-                            // Checked: Enable Tier 1 Wavelets & Tier 2 Quantization
-                            m_bypassWavelet = false;
-                            m_bypassQuantization = false;
-                            m_pipelineViewMode = 1; // Wavelet Multi-Res
-                        }
-                        else
-                        {
-                            // Unchecked: Bypass Tier 1 & Tier 2, render raw Float32
-                            m_bypassWavelet = true;
-                            m_bypassQuantization = true;
-                            m_pipelineViewMode = 0; // Raw Direct Ingest
-                        }
                         UpdatePreviewSurfels();
                     }
                 }
@@ -979,9 +994,10 @@ namespace Surfels
             if (ImGui::CollapsingHeader("4. Wavelet & Octree Settings", ImGuiTreeNodeFlags_DefaultOpen))
             {
                 bool recompute = false;
-                if (ImGui::SliderFloat("Octree Chunk (m)", &m_chunkSize, 4.0f, 64.0f, "%.0f meters")) recompute = true;
+                float maxChunkSize = std::max(1.0f, std::max(m_extents.x, std::max(m_extents.y, m_extents.z)));
+                if (ImGui::SliderFloat("Octree Chunk (m)", &m_chunkSize, 0.05f, maxChunkSize, "%.2f meters")) recompute = true;
                 if (ImGui::SliderInt("Max Wavelet LODs", &m_maxLODLevels, 1, 6)) recompute = true;
-                if (ImGui::SliderFloat("Deadband Zero (mm)", &m_deadbandThresholdMM, 0.0f, 20.0f, "%.1f mm")) recompute = true;
+                if (ImGui::SliderFloat("Deadband Zero (mm)", &m_deadbandThresholdMM, 0.0f, 50.0f, "%.1f mm")) recompute = true;
 
                 if (recompute)
                 {
@@ -989,9 +1005,24 @@ namespace Surfels
                 }
 
                 ImGui::Separator();
-                ImGui::Text("Octree Visualizer:");
-                ImGui::Checkbox("Show Octree Bounding Cubes (Dotted Gray)", &m_showOctreeVisualizer);
+                ImGui::Text("Visualizer Settings:");
+                ImGui::Checkbox("Auto Rotate Model##Settings", &m_autoRotate);
+                m_state.autoRotate = m_autoRotate;
+                ImGui::Checkbox("Show Partitioned Octree Chunks", &m_showOctreeVisualizer);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders 3D bounding cubes for all %u active spatial octree chunks.", (uint32_t)m_chunks.size());
                 ImGui::Checkbox("Show Global Model Bounds", &m_showGlobalBounds);
+            }
+
+            // Section 5: Accelerators & Hardware Execution
+            if (ImGui::CollapsingHeader("5. Accelerators", ImGuiTreeNodeFlags_DefaultOpen))
+            {
+                ImGui::Checkbox("GPU Radix Sort", &m_gpuRadixSort);
+                m_state.gpuRadixSort = m_gpuRadixSort;
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Executes parallel 32-bit depth key sorting directly on GPU compute shader threads (NVIDIA Ada SM 6.7).");
+
+                ImGui::SameLine();
+                ImGui::TextColored(m_gpuRadixSort ? ImVec4(0.3f, 1.0f, 0.4f, 1.0f) : ImVec4(1.0f, 0.6f, 0.2f, 1.0f),
+                    m_gpuRadixSort ? "[Active: Compute Shader]" : "[CPU Multi-Threaded]");
             }
         }
 
@@ -1001,6 +1032,30 @@ namespace Surfels
         ImGui::SetNextWindowPos(ImVec2((float)m_Width - 410, 30), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(400, (float)m_Height - 40), ImGuiCond_FirstUseEver);
         ImGui::Begin("Statistics & Compression Analytics", nullptr, ImGuiWindowFlags_NoCollapse);
+
+        // Real-Time Performance & Stage Timings
+        if (ImGui::CollapsingHeader("Real-Time Performance & Stage Timings", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            const auto& metrics = m_pRenderer->GetTimingMetrics();
+
+            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "Framerate:       %.1f FPS", metrics.frameRate);
+            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Total Frame Time:%.2f ms", metrics.totalFrameTimeMs);
+            ImGui::Separator();
+            ImGui::Text("Per-Stage Breakdown (ms):");
+
+            if (m_gpuRadixSort)
+            {
+                float sortDisplay = (metrics.gpuSortTimeMs > 0.0001f) ? metrics.gpuSortTimeMs : m_pRenderer->GetSmoothGpuSortMs();
+                ImGui::TextColored(ImVec4(0.3f, 0.9f, 1.0f, 1.0f), "  • GPU Radix Depth Sort (32-Bit): %.2f ms", sortDisplay);
+            }
+            else
+            {
+                ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "  • CPU Radix Depth Sort (16-Bit): %.2f ms", metrics.cpuSortTimeMs);
+            }
+
+            ImGui::Text("  • GPU Mesh Shader Dispatch: %.2f ms", m_pRenderer->GetSmoothDispatchMs());
+            ImGui::Text("  • ImGui Overlay UI Render:  %.2f ms", m_pRenderer->GetSmoothUiMs());
+        }
 
         // Model Metrics
         if (ImGui::CollapsingHeader("Input Model Metrics", ImGuiTreeNodeFlags_DefaultOpen))
@@ -1038,18 +1093,17 @@ namespace Surfels
                 const auto& lod = m_waveletResult.lodLevels[i];
                 float percent = (lod.surfels.size() * 100.0f) / std::max(1ULL, (unsigned long long)m_rawSurfels.size());
 
-                // In cascade mode, rows 0..n are active and highlighted. In non-cascade, only row n is highlighted.
-                bool isVisible = m_cascadeLOD ? ((int)i <= m_selectedPreviewLOD) : ((int)i == m_selectedPreviewLOD);
+                // Highlight the active visible LOD level in green/asterisk
+                bool isVisible = ((int)i == m_selectedPreviewLOD);
 
                 char label[64];
-                sprintf_s(label, "LOD %d%s", lod.level, isVisible ? "*" : "");
+                sprintf_s(label, "LOD %d%s", lod.level, isVisible ? " (ACTIVE)" : "");
 
                 if (ImGui::Selectable(label, isVisible, ImGuiSelectableFlags_SpanAllColumns))
                 {
                     m_selectedPreviewLOD = (int)i;
-                    m_pipelineViewMode = 1; // Wavelet Multi-Res preview
-                    m_bypassWavelet = false;
-                    m_bypassQuantization = false;
+                    m_autoLOD = false; // Disable auto when user clicks manual table row
+                    m_enableWavelet = true;
                     UpdatePreviewSurfels();
                 }
                 ImGui::NextColumn();
@@ -1225,21 +1279,21 @@ namespace Surfels
             }
         };
 
-        // Mid-gray dotted lines for octree chunks (140, 140, 140)
-        const ImU32 octreeColor = IM_COL32(140, 140, 140, 210);
+        // Bright cyan/amber lines for partitioned octree spatial chunks (255, 200, 50)
+        const ImU32 octreeColor = IM_COL32(255, 190, 40, 240);
 
         if (m_showOctreeVisualizer)
         {
             for (const auto& chunk : m_chunks)
             {
-                DrawDottedCube(chunk.aabbMin, chunk.aabbMax, octreeColor, 1.2f);
+                DrawDottedCube(chunk.aabbMin, chunk.aabbMax, octreeColor, 1.5f);
             }
         }
 
         if (m_showGlobalBounds && !m_rawSurfels.empty())
         {
-            const ImU32 globalColor = IM_COL32(100, 180, 255, 230); // Soft cyan
-            DrawDottedCube(m_aabbMin, m_aabbMax, globalColor, 1.5f);
+            const ImU32 globalColor = IM_COL32(80, 200, 255, 255); // Bright Cyan
+            DrawDottedCube(m_aabbMin, m_aabbMax, globalColor, 2.0f);
         }
     }
 

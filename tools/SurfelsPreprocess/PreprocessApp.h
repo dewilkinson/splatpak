@@ -88,10 +88,8 @@ namespace Surfels
         float    m_deadbandZeroPercent = 0.0f;
 
         // GUI Options & Parameters
-        int   m_pipelineViewMode    = 0; // 0 = Raw Point Cloud (Float32 direct), 1 = Wavelet Multi-Res (Float32), 2 = Full Quantized Pipeline (8-byte GPU Stream)
-        bool  m_bypassOctree        = false;
-        bool  m_bypassWavelet       = false;
-        bool  m_bypassQuantization  = true;
+        bool  m_enableWavelet      = true; // Checkbox: "Wavelet Transform" (Enabled by default)
+        bool  m_enableQuantization = true; // Checkbox: "Apply Quantization" (Enabled by default)
 
         int   m_selectedPreviewLOD  = 0;
         int   m_maxPreviewLODs      = 4;
@@ -109,11 +107,13 @@ namespace Surfels
         float m_distance = 25.0f;
         XMFLOAT3 m_target = { 0.0f, 0.0f, 0.0f };
 
+        bool  m_autoLOD              = true;  // Distance-adaptive dynamic LOD selection
+        bool  m_autoRotate           = true;
+        bool  m_gpuRadixSort         = true;  // Checkbox: "GPU Radix Sort" under Accelerators (Enabled by default)
         bool  m_showOctreeVisualizer = true;
         bool  m_showGlobalBounds     = false;
         bool  m_cascadeLOD           = true;
         bool  m_showLODTint          = false;
-        bool  m_lossyCompression     = true; // True = Tier 1 & 2 enabled (default)
         std::vector<SurfelVertex> m_previewLODSurfels;
         void  DrawOctreeVisualizer();
     };

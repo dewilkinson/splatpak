@@ -30,6 +30,7 @@ set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /DEB
 add_subdirectory(libs/cauldron)
 add_subdirectory(src/DX12)
 add_subdirectory(tools/SurfelsPreprocess)
+add_subdirectory(tests)
 
 # Cauldron's own CMakeLists.txt files don't set FOLDER, so its targets
 # (Cauldron_DX12, Cauldron_Common, ImGUI, amd_ags, ...) land ungrouped at the

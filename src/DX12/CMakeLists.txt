@@ -31,6 +31,9 @@ set(sources
 
 set(shaders
     ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Surfels.hlsl
+    ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/GPURadixSortCS.hlsl
+    ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/CullSurfelsCS.hlsl
+    ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/BuildIndirectArgsCS.hlsl
 )
 
 source_group("Sources" FILES ${sources})
@@ -53,6 +56,16 @@ set_target_properties(Surfels_DX12 PROPERTIES
 )
 
 addManifest(Surfels_DX12)
+
+add_custom_command(
+    TARGET Surfels_DX12
+    POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/Shaders"
+        "${CMAKE_HOME_DIRECTORY}/bin/ShaderLibDX"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "$ENV{LOCALAPPDATA}/AMD/Cauldron/ShaderCacheDX"
+    COMMENT "Refreshing shaders and clearing Cauldron shader cache..."
+)
 
 # Cauldron vendors an old DXC build (libs/cauldron/libs/DXC, dxcompiler.dll v1.6.2106.3
 # from 2021) that silently fails to compile even trivial shaders on newer Windows --

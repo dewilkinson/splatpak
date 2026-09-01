@@ -154,12 +154,12 @@ void mainMS(
         normal = UnpackNormalOct16(s.packedNormalColor & 0xFFFF);
         color = UnpackColorRGB565((s.packedNormalColor >> 16) & 0xFFFF);
 
-        static const float s_radScales[4] = { 1.0f, 1.4f, 2.2f, 3.5f };
-        float splatRadius = g_Radius * s_radScales[re];
+        static const float s_radScales[4] = { 0.2f, 0.4f, 0.8f, 1.5f };
+        float splatRadius = g_Radius * s_radScales[re] * 0.15f;
 
         float4 clipCenter = mul(g_ViewProj, float4(worldPos, 1.0));
         float distToCam = max(0.1f, clipCenter.w);
-        float minCoverageRadius = distToCam * 0.0012f;
+        float minCoverageRadius = distToCam * 0.0003f;
         splatRadius = max(splatRadius, minCoverageRadius);
 
         if (g_OrientMode == 0 && abs(normal.x) + abs(normal.y) + abs(normal.z) > 0.1f)
@@ -189,9 +189,8 @@ void mainMS(
 
         float4 clipCenter = mul(g_ViewProj, float4(worldPos, 1.0));
         float distToCam = max(0.1f, clipCenter.w);
-        float minCoverageRadius = distToCam * 0.0012f;
+        float minCoverageRadius = distToCam * 0.0003f;
         splatRadius = max(splatRadius, minCoverageRadius);
-        splatRadius = min(splatRadius, 0.045f * g_Radius);
 
         if (g_OrientMode == 0 && abs(normal.x) + abs(normal.y) + abs(normal.z) > 0.1f)
         {

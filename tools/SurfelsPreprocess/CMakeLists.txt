@@ -34,6 +34,9 @@ set(sources
 
 set(shaders
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/DX12/Shaders/Surfels.hlsl
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/DX12/Shaders/GPURadixSortCS.hlsl
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/DX12/Shaders/CullSurfelsCS.hlsl
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/DX12/Shaders/BuildIndirectArgsCS.hlsl
 )
 
 set_source_files_properties(${shaders} PROPERTIES HEADER_FILE_ONLY TRUE)
@@ -41,8 +44,11 @@ set_source_files_properties(${shaders} PROPERTIES HEADER_FILE_ONLY TRUE)
 source_group("Sources" FILES ${sources})
 source_group("Shaders" FILES ${shaders})
 
+copyTargetCommand("${shaders}" ${CMAKE_HOME_DIRECTORY}/bin/ShaderLibDX copied_preprocess_shaders)
+
 add_executable(SurfelsPreprocess WIN32 ${sources} ${shaders})
 target_link_libraries(SurfelsPreprocess LINK_PUBLIC Cauldron_DX12 ImGUI amd_ags d3d12 dxgi)
+add_dependencies(SurfelsPreprocess copied_preprocess_shaders)
 
 set_target_properties(SurfelsPreprocess PROPERTIES
     CXX_STANDARD 17
@@ -53,6 +59,16 @@ set_target_properties(SurfelsPreprocess PROPERTIES
 )
 
 addManifest(SurfelsPreprocess)
+
+add_custom_command(
+    TARGET SurfelsPreprocess
+    POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_directory
+        "${CMAKE_CURRENT_SOURCE_DIR}/../../src/DX12/Shaders"
+        "${CMAKE_HOME_DIRECTORY}/bin/ShaderLibDX"
+    COMMAND ${CMAKE_COMMAND} -E rm -rf "$ENV{LOCALAPPDATA}/AMD/Cauldron/ShaderCacheDX"
+    COMMENT "Refreshing shaders and clearing Cauldron shader cache..."
+)
 
 if(EXISTS "C:/Program Files (x86)/Windows Kits/10/Redist/D3D/x64/dxcompiler.dll")
     add_custom_command(

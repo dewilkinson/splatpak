@@ -86,8 +86,9 @@ namespace Surfels
 
                 for (const auto& lod : waveletResult.lodLevels)
                 {
-                    // 2. Quantize to 8-byte PackedSurfelGPU
-                    auto packedSurfels = Quantizer::QuantizeSurfels(lod.surfels, chunk.aabbMin, chunk.aabbMax);
+                    // 2. Quantize to 8-byte PackedSurfelGPU using dataset Global Bounding Box
+                    // This guarantees that all streamed chunks unpack with the exact same global AABB in Mesh Shaders & GPU Sorting!
+                    auto packedSurfels = Quantizer::QuantizeSurfels(lod.surfels, gMin, gMax);
 
                     // 3. Byte-Shuffle
                     size_t uncompressedBytes = packedSurfels.size() * sizeof(PackedSurfelGPU);

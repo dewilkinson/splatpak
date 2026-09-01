@@ -1,5 +1,6 @@
 #include "stdafx.h"
 #include "SurfelsRenderer.h"
+#include "Misc/Error.h"
 
 using namespace CAULDRON_DX12;
 
@@ -77,6 +78,47 @@ void SurfelsRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
     m_pDevice->GetDevice()->CreateRootSignature(0, pOutBlob->GetBufferPointer(), pOutBlob->GetBufferSize(), IID_PPV_ARGS(&m_pRootSignature));
     SetName(m_pRootSignature, "Surfels::RootSignature");
 
+    // Create Compute Root Signature & Compute Pipeline States (GPU LDS Key-Index Sorting)
+    CD3DX12_ROOT_PARAMETER computeRootParams[6];
+    computeRootParams[0].InitAsConstantBufferView(0, 0); // b0 - BitonicSortCB
+    computeRootParams[1].InitAsShaderResourceView(0, 0); // t0 - InPackedSurfels
+    computeRootParams[2].InitAsShaderResourceView(1, 0); // t1 - InRawSurfels
+    computeRootParams[3].InitAsUnorderedAccessView(0, 0); // u0 - SortPairs
+    computeRootParams[4].InitAsUnorderedAccessView(1, 0); // u1 - OutPackedSurfels
+    computeRootParams[5].InitAsUnorderedAccessView(2, 0); // u2 - OutRawSurfels
+
+    CD3DX12_ROOT_SIGNATURE_DESC computeRsDesc = {};
+    computeRsDesc.NumParameters = 6;
+    computeRsDesc.pParameters = computeRootParams;
+    computeRsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
+
+    Microsoft::WRL::ComPtr<ID3DBlob> pCompOutBlob, pCompErrBlob;
+    D3D12SerializeRootSignature(&computeRsDesc, D3D_ROOT_SIGNATURE_VERSION_1, &pCompOutBlob, &pCompErrBlob);
+    m_pDevice->GetDevice()->CreateRootSignature(0, pCompOutBlob->GetBufferPointer(), pCompOutBlob->GetBufferSize(), IID_PPV_ARGS(&m_pComputeRootSignature));
+    SetName(m_pComputeRootSignature, "Surfels::ComputeRootSignature");
+
+    auto CreateComputePSO = [&](const char* entryPoint, ID3D12PipelineState** ppPSO)
+    {
+        D3D12_SHADER_BYTECODE cs = {};
+        if (CompileShaderFromFile("GPURadixSortCS.hlsl", NULL, entryPoint, "-T cs_6_0", &cs) && cs.pShaderBytecode != nullptr)
+        {
+            D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
+            psoDesc.pRootSignature = m_pComputeRootSignature;
+            psoDesc.CS = cs;
+            m_pDevice->GetDevice()->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(ppPSO));
+        }
+        else
+        {
+            Trace("ERROR: Failed to compile GPURadixSortCS.hlsl (%s)!\n", entryPoint);
+        }
+    };
+
+    CreateComputePSO("ProjectKeysCS", &m_pProjectKeysPSO);
+    CreateComputePSO("BitonicLocalSortCS", &m_pBitonicLocalSortPSO);
+    CreateComputePSO("BitonicGlobalSortCS", &m_pBitonicGlobalSortPSO);
+    CreateComputePSO("BitonicLocalMergeCS", &m_pBitonicLocalMergePSO);
+    CreateComputePSO("GatherSurfelsCS", &m_pGatherSurfelsPSO);
+
     D3D12_SHADER_BYTECODE ms = {};
     D3D12_SHADER_BYTECODE ps = {};
     CompileShaderFromFile("Surfels.hlsl", NULL, "mainMS", "-T ms_6_5", &ms);
@@ -85,19 +127,21 @@ void SurfelsRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
     CD3DX12_RASTERIZER_DESC rasterizer(D3D12_DEFAULT);
     rasterizer.CullMode = D3D12_CULL_MODE_NONE;
 
+    // Back-to-front order-dependent blending handles depth accumulation naturally
     CD3DX12_DEPTH_STENCIL_DESC depthStencil(D3D12_DEFAULT);
-    depthStencil.DepthEnable = TRUE;
-    depthStencil.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
-    depthStencil.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+    depthStencil.DepthEnable = FALSE;
+    depthStencil.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+    depthStencil.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
     depthStencil.StencilEnable = FALSE;
 
     D3D12_RT_FORMAT_ARRAY rtvFormats = {};
     rtvFormats.NumRenderTargets = 1;
     rtvFormats.RTFormats[0] = pSwapChain->GetFormat();
 
+    // Premultiplied alpha blending: Output = SrcColor + DestColor * (1 - SrcAlpha)
     CD3DX12_BLEND_DESC blendDesc(D3D12_DEFAULT);
     blendDesc.RenderTarget[0].BlendEnable = TRUE;
-    blendDesc.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+    blendDesc.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
     blendDesc.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
     blendDesc.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
     blendDesc.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
@@ -137,6 +181,22 @@ void SurfelsRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
 
 void SurfelsRenderer::OnDestroy()
 {
+    if (m_pSurfelBuffer) { m_pSurfelBuffer->Unmap(0, nullptr); m_pSurfelBuffer->Release(); m_pSurfelBuffer = nullptr; }
+    if (m_pSurfelGpuBuffer) { m_pSurfelGpuBuffer->Release(); m_pSurfelGpuBuffer = nullptr; }
+    if (m_pSurfelGpuOutBuffer) { m_pSurfelGpuOutBuffer->Release(); m_pSurfelGpuOutBuffer = nullptr; }
+    if (m_pGPUSortPairBuffer) { m_pGPUSortPairBuffer->Release(); m_pGPUSortPairBuffer = nullptr; }
+    m_sortPairBufferCapacityBytes = 0;
+    m_pSurfelBufferMapped = nullptr;
+    m_surfelBufferCapacityBytes = 0;
+    m_surfelBufferGPUAddress = 0;
+
+    if (m_pProjectKeysPSO) { m_pProjectKeysPSO->Release(); m_pProjectKeysPSO = nullptr; }
+    if (m_pBitonicLocalSortPSO) { m_pBitonicLocalSortPSO->Release(); m_pBitonicLocalSortPSO = nullptr; }
+    if (m_pBitonicGlobalSortPSO) { m_pBitonicGlobalSortPSO->Release(); m_pBitonicGlobalSortPSO = nullptr; }
+    if (m_pBitonicLocalMergePSO) { m_pBitonicLocalMergePSO->Release(); m_pBitonicLocalMergePSO = nullptr; }
+    if (m_pGatherSurfelsPSO) { m_pGatherSurfelsPSO->Release(); m_pGatherSurfelsPSO = nullptr; }
+    if (m_pRadixSortPSO) { m_pRadixSortPSO->Release(); m_pRadixSortPSO = nullptr; }
+    if (m_pComputeRootSignature) { m_pComputeRootSignature->Release(); m_pComputeRootSignature = nullptr; }
     if (m_pPipelineState) { m_pPipelineState->Release(); m_pPipelineState = nullptr; }
     if (m_pRootSignature) { m_pRootSignature->Release(); m_pRootSignature = nullptr; }
 
@@ -222,23 +282,277 @@ void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
     XMMATRIX viewProj = XMMatrixMultiply(view, proj);
 
     uint32_t surfelCount = pState->surfelCount;
-    D3D12_GPU_VIRTUAL_ADDRESS surfelBufferGPUAddress = 0;
 
     if (pState->renderMode == 1 && pState->pStreamedSurfels != nullptr && pState->streamedSurfelCount > 0)
     {
         surfelCount = pState->streamedSurfelCount;
-        uint32_t surfelBytes = surfelCount * sizeof(Surfels::PackedSurfelGPU);
-        void* pDest = nullptr;
-        m_constantBufferRing.AllocConstantBuffer(surfelBytes, &pDest, &surfelBufferGPUAddress);
-        if (pDest)
+
+        // Calculate power of 2 size for GPU Bitonic sorting network
+        uint32_t numElements = 1;
+        while (numElements < surfelCount) numElements <<= 1;
+        uint32_t requiredBytes = numElements * sizeof(Surfels::PackedSurfelGPU);
+
+        if (requiredBytes > m_surfelBufferCapacityBytes)
         {
-            memcpy(pDest, pState->pStreamedSurfels, surfelBytes);
+            m_pDevice->GPUFlush(D3D12_COMMAND_LIST_TYPE_DIRECT);
+
+            if (m_pSurfelBuffer) { m_pSurfelBuffer->Unmap(0, nullptr); m_pSurfelBuffer->Release(); m_pSurfelBuffer = nullptr; }
+            if (m_pSurfelGpuBuffer) { m_pSurfelGpuBuffer->Release(); m_pSurfelGpuBuffer = nullptr; }
+            if (m_pSurfelGpuOutBuffer) { m_pSurfelGpuOutBuffer->Release(); m_pSurfelGpuOutBuffer = nullptr; }
+            m_pSurfelBufferMapped = nullptr;
+
+            ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
+                &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+                D3D12_HEAP_FLAG_NONE,
+                &CD3DX12_RESOURCE_DESC::Buffer(requiredBytes),
+                D3D12_RESOURCE_STATE_GENERIC_READ,
+                nullptr,
+                IID_PPV_ARGS(&m_pSurfelBuffer)));
+            SetName(m_pSurfelBuffer, "SurfelsRenderer::m_pSurfelBuffer");
+
+            CD3DX12_RESOURCE_DESC gpuBufDesc = CD3DX12_RESOURCE_DESC::Buffer(requiredBytes);
+            gpuBufDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+            ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
+                &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+                D3D12_HEAP_FLAG_NONE,
+                &gpuBufDesc,
+                D3D12_RESOURCE_STATE_COPY_DEST,
+                nullptr,
+                IID_PPV_ARGS(&m_pSurfelGpuBuffer)));
+            SetName(m_pSurfelGpuBuffer, "SurfelsRenderer::m_pSurfelGpuBuffer");
+
+            ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
+                &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+                D3D12_HEAP_FLAG_NONE,
+                &gpuBufDesc,
+                D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE,
+                nullptr,
+                IID_PPV_ARGS(&m_pSurfelGpuOutBuffer)));
+            SetName(m_pSurfelGpuOutBuffer, "SurfelsRenderer::m_pSurfelGpuOutBuffer");
+
+            uint32_t pairBytes = numElements * sizeof(uint32_t) * 2;
+            if (pairBytes > m_sortPairBufferCapacityBytes)
+            {
+                if (m_pGPUSortPairBuffer) { m_pGPUSortPairBuffer->Release(); m_pGPUSortPairBuffer = nullptr; }
+                CD3DX12_RESOURCE_DESC pairBufDesc = CD3DX12_RESOURCE_DESC::Buffer(pairBytes);
+                pairBufDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+                ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
+                    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+                    D3D12_HEAP_FLAG_NONE,
+                    &pairBufDesc,
+                    D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
+                    nullptr,
+                    IID_PPV_ARGS(&m_pGPUSortPairBuffer)));
+                SetName(m_pGPUSortPairBuffer, "SurfelsRenderer::m_pGPUSortPairBuffer");
+                m_sortPairBufferCapacityBytes = pairBytes;
+            }
+
+            m_pSurfelBuffer->Map(0, nullptr, reinterpret_cast<void**>(&m_pSurfelBufferMapped));
+            m_surfelBufferCapacityBytes = requiredBytes;
+            m_lastSurfelsPtr = nullptr;
+        }
+
+        bool modelChanged = (m_lastSurfelsPtr != pState->pStreamedSurfels) || (m_lastSurfelCount != surfelCount);
+        if (modelChanged && m_pSurfelBufferMapped != nullptr)
+        {
+            m_lastSurfelsPtr = pState->pStreamedSurfels;
+            m_lastSurfelCount = surfelCount;
+
+            memcpy(m_pSurfelBufferMapped, pState->pStreamedSurfels, surfelCount * sizeof(Surfels::PackedSurfelGPU));
+            for (uint32_t i = surfelCount; i < numElements; i++)
+            {
+                Surfels::PackedSurfelGPU* pDst = (Surfels::PackedSurfelGPU*)m_pSurfelBufferMapped;
+                pDst[i].packedPosRadius = 0xFFFFFFFF;
+                pDst[i].packedNormal = 0xFFFF;
+                pDst[i].packedColor = 0xFFFF;
+            }
+            m_needUploadToGpu = true;
+            m_gpuSortNeedsRun = true;
         }
     }
     else
     {
         void* pDummy = nullptr;
-        m_constantBufferRing.AllocConstantBuffer(256, &pDummy, &surfelBufferGPUAddress);
+        m_constantBufferRing.AllocConstantBuffer(256, &pDummy, &m_surfelBufferGPUAddress);
+    }
+
+    XMFLOAT3 eyePos;
+    XMStoreFloat3(&eyePos, eye);
+    XMFLOAT3 forwardNorm;
+    XMStoreFloat3(&forwardNorm, forward);
+
+    float camMoved = std::abs(eyePos.x - m_lastSortEye.x) + std::abs(eyePos.y - m_lastSortEye.y) + std::abs(eyePos.z - m_lastSortEye.z);
+    float forwardMoved = std::abs(forwardNorm.x - m_lastSortForward.x) + std::abs(forwardNorm.y - m_lastSortForward.y) + std::abs(forwardNorm.z - m_lastSortForward.z);
+    if (camMoved > 0.05f || forwardMoved > 0.02f)
+    {
+        m_gpuSortNeedsRun = true;
+        m_lastSortEye = eyePos;
+        m_lastSortForward = forwardNorm;
+    }
+
+    // Copy from Upload to Default VRAM and execute Multi-Pass GPU Bitonic Depth Sort
+    if (surfelCount > 0 && m_pSurfelGpuBuffer != nullptr && m_pSurfelBuffer != nullptr)
+    {
+        if (m_needUploadToGpu)
+        {
+            pCmdLst->CopyResource(m_pSurfelGpuBuffer, m_pSurfelBuffer);
+            m_needUploadToGpu = false;
+        }
+
+        if (pState->gpuRadixSort && m_pProjectKeysPSO && m_pBitonicLocalSortPSO && m_pBitonicGlobalSortPSO && m_pBitonicLocalMergePSO && m_pGatherSurfelsPSO && m_pComputeRootSignature && m_pSurfelGpuOutBuffer != nullptr && m_pGPUSortPairBuffer != nullptr)
+        {
+            if (m_gpuSortNeedsRun)
+            {
+                // Transition input buffer to SRV, and output buffer to UAV
+                D3D12_RESOURCE_BARRIER preBarriers[2] = {};
+                preBarriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(m_pSurfelGpuBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                preBarriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(m_pSurfelGpuOutBuffer, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                pCmdLst->ResourceBarrier(2, preBarriers);
+
+            uint32_t numElements = 1;
+            while (numElements < surfelCount) numElements <<= 1;
+
+            struct BitonicCB
+            {
+                XMFLOAT3 camPos;
+                float    pad0;
+                XMFLOAT3 camForward;
+                uint32_t totalSurfels;
+                uint32_t level;
+                uint32_t levelMask;
+                uint32_t numElements;
+                uint32_t renderMode;
+                XMFLOAT3 aabbMin;
+                float    pad1;
+                XMFLOAT3 aabbExtents;
+                float    pad2;
+            };
+
+            BitonicCB baseCB = {};
+            baseCB.camPos = eyePos;
+            baseCB.camForward = forwardNorm;
+            baseCB.totalSurfels = surfelCount;
+            baseCB.numElements = numElements;
+            baseCB.renderMode = pState->renderMode;
+            baseCB.aabbMin = pState->aabbMin;
+            baseCB.aabbExtents = pState->aabbExtents;
+
+            pCmdLst->SetComputeRootSignature(m_pComputeRootSignature);
+            pCmdLst->SetComputeRootShaderResourceView(1, m_pSurfelGpuBuffer->GetGPUVirtualAddress());
+            pCmdLst->SetComputeRootShaderResourceView(2, m_pSurfelGpuBuffer->GetGPUVirtualAddress());
+            pCmdLst->SetComputeRootUnorderedAccessView(3, m_pGPUSortPairBuffer->GetGPUVirtualAddress());
+            pCmdLst->SetComputeRootUnorderedAccessView(4, m_pSurfelGpuOutBuffer->GetGPUVirtualAddress());
+            pCmdLst->SetComputeRootUnorderedAccessView(5, m_pSurfelGpuOutBuffer->GetGPUVirtualAddress());
+
+            uint32_t localGroups = (numElements + 1023) / 1024;
+            uint32_t globalGroups = (numElements + 255) / 256;
+
+            D3D12_RESOURCE_BARRIER uavPairBarrier = CD3DX12_RESOURCE_BARRIER::UAV(m_pGPUSortPairBuffer);
+            D3D12_RESOURCE_BARRIER uavOutBarrier = CD3DX12_RESOURCE_BARRIER::UAV(m_pSurfelGpuOutBuffer);
+
+            // Stage 1: Project depth keys ONCE into key-index pairs
+            {
+                BitonicCB* pSortCB = nullptr;
+                D3D12_GPU_VIRTUAL_ADDRESS sortCbAddr = 0;
+                if (m_constantBufferRing.AllocConstantBuffer(sizeof(BitonicCB), (void**)&pSortCB, &sortCbAddr))
+                {
+                    *pSortCB = baseCB;
+                    pCmdLst->SetPipelineState(m_pProjectKeysPSO);
+                    pCmdLst->SetComputeRootConstantBufferView(0, sortCbAddr);
+                    pCmdLst->Dispatch(globalGroups, 1, 1);
+                    pCmdLst->ResourceBarrier(1, &uavPairBarrier);
+                }
+            }
+
+            // Stage 2: Local Block Sort in LDS (all stages level 2 to 1024 in 1 single dispatch!)
+            {
+                BitonicCB* pSortCB = nullptr;
+                D3D12_GPU_VIRTUAL_ADDRESS sortCbAddr = 0;
+                if (m_constantBufferRing.AllocConstantBuffer(sizeof(BitonicCB), (void**)&pSortCB, &sortCbAddr))
+                {
+                    *pSortCB = baseCB;
+                    pSortCB->level = std::min(numElements, 1024u);
+                    pSortCB->levelMask = pSortCB->level >> 1;
+
+                    pCmdLst->SetPipelineState(m_pBitonicLocalSortPSO);
+                    pCmdLst->SetComputeRootConstantBufferView(0, sortCbAddr);
+                    pCmdLst->Dispatch(localGroups, 1, 1);
+                    pCmdLst->ResourceBarrier(1, &uavPairBarrier);
+                }
+            }
+
+            // Stage 3: Outer Levels (level = 2048 up to numElements)
+            for (uint32_t level = 2048; level <= numElements; level <<= 1)
+            {
+                // Global passes for levelMask >= 1024
+                for (uint32_t levelMask = level >> 1; levelMask >= 1024; levelMask >>= 1)
+                {
+                    BitonicCB* pSortCB = nullptr;
+                    D3D12_GPU_VIRTUAL_ADDRESS sortCbAddr = 0;
+                    if (m_constantBufferRing.AllocConstantBuffer(sizeof(BitonicCB), (void**)&pSortCB, &sortCbAddr))
+                    {
+                        *pSortCB = baseCB;
+                        pSortCB->level = level;
+                        pSortCB->levelMask = levelMask;
+
+                        pCmdLst->SetPipelineState(m_pBitonicGlobalSortPSO);
+                        pCmdLst->SetComputeRootConstantBufferView(0, sortCbAddr);
+                        pCmdLst->Dispatch(globalGroups, 1, 1);
+                        pCmdLst->ResourceBarrier(1, &uavPairBarrier);
+                    }
+                }
+
+                // Local LDS Merge pass for all remaining levels (512 down to 1 in 1 single dispatch!)
+                {
+                    BitonicCB* pSortCB = nullptr;
+                    D3D12_GPU_VIRTUAL_ADDRESS sortCbAddr = 0;
+                    if (m_constantBufferRing.AllocConstantBuffer(sizeof(BitonicCB), (void**)&pSortCB, &sortCbAddr))
+                    {
+                        *pSortCB = baseCB;
+                        pSortCB->level = level;
+                        pSortCB->levelMask = 512;
+
+                        pCmdLst->SetPipelineState(m_pBitonicLocalMergePSO);
+                        pCmdLst->SetComputeRootConstantBufferView(0, sortCbAddr);
+                        pCmdLst->Dispatch(localGroups, 1, 1);
+                        pCmdLst->ResourceBarrier(1, &uavPairBarrier);
+                    }
+                }
+            }
+
+            // Stage 4: 1-Pass Gather sorted elements into output buffer
+            {
+                BitonicCB* pSortCB = nullptr;
+                D3D12_GPU_VIRTUAL_ADDRESS sortCbAddr = 0;
+                if (m_constantBufferRing.AllocConstantBuffer(sizeof(BitonicCB), (void**)&pSortCB, &sortCbAddr))
+                {
+                    *pSortCB = baseCB;
+                    pCmdLst->SetPipelineState(m_pGatherSurfelsPSO);
+                    pCmdLst->SetComputeRootConstantBufferView(0, sortCbAddr);
+                    pCmdLst->Dispatch(globalGroups, 1, 1);
+                    pCmdLst->ResourceBarrier(1, &uavOutBarrier);
+                }
+            }
+
+            // Transition output buffer to SRV for Mesh Shader rendering
+            D3D12_RESOURCE_BARRIER postBarriers[2] = {};
+            postBarriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(m_pSurfelGpuOutBuffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+            postBarriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(m_pSurfelGpuBuffer, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+            pCmdLst->ResourceBarrier(2, postBarriers);
+
+            m_gpuSortNeedsRun = false;
+            }
+
+            m_surfelBufferGPUAddress = m_pSurfelGpuOutBuffer->GetGPUVirtualAddress();
+        }
+        else
+        {
+            // Transition COPY_DEST -> ALL_SHADER_RESOURCE
+            D3D12_RESOURCE_BARRIER toSrv = CD3DX12_RESOURCE_BARRIER::Transition(
+                m_pSurfelGpuBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+            pCmdLst->ResourceBarrier(1, &toSrv);
+            m_surfelBufferGPUAddress = m_pSurfelGpuBuffer->GetGPUVirtualAddress();
+        }
     }
 
     SurfelsCB* pCB = nullptr;
@@ -247,10 +561,7 @@ void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
 
     // DirectXMath matrices are row-major, meant to be used as v * M. HLSL's default
     // float4x4 packing is column-major, which for an UNtransposed upload already
-    // reinterprets the bytes correctly for mul(M, v) in the shader (the two
-    // transposes -- one explicit here, one implicit in HLSL's packing -- must not
-    // both happen, or you get M * v instead of v * M: a different, wrong transform,
-    // not a broken one -- it still looks like *something*, just badly degenerate.
+    // reinterprets the bytes correctly for mul(M, v) in the shader.
     XMStoreFloat4x4(&pCB->viewProj, viewProj);
     XMStoreFloat3(&pCB->camRight, right);
     pCB->radius = pState->splatRadius;
@@ -262,16 +573,16 @@ void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
     pCB->renderMode = pState->renderMode;
     pCB->orientMode = pState->orientMode;
     pCB->pad0 = 0.0f;
-    pCB->aabbMin = XMFLOAT3(-40.0f, -2.0f, -80.0f);
+    pCB->aabbMin = pState->aabbMin;
     pCB->pad1 = 0.0f;
-    pCB->aabbExtents = XMFLOAT3(80.0f, 30.0f, 160.0f);
+    pCB->aabbExtents = pState->aabbExtents;
     pCB->pad2 = 0.0f;
 
     pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
     pCmdLst->SetPipelineState(m_pPipelineState);
     pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
-    pCmdLst->SetGraphicsRootShaderResourceView(1, surfelBufferGPUAddress);
-    pCmdLst->SetGraphicsRootShaderResourceView(2, surfelBufferGPUAddress);
+    pCmdLst->SetGraphicsRootShaderResourceView(1, m_surfelBufferGPUAddress);
+    pCmdLst->SetGraphicsRootShaderResourceView(2, m_surfelBufferGPUAddress);
 
     // DispatchMesh needs the newer command list interface; GetNewCommandList() only
     // returns ID3D12GraphicsCommandList2.
@@ -281,6 +592,13 @@ void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
     if (groupCount > 0)
     {
         cmdList6->DispatchMesh(groupCount, 1, 1);
+    }
+
+    if (m_pSurfelGpuBuffer != nullptr)
+    {
+        D3D12_RESOURCE_BARRIER toCopyDest = CD3DX12_RESOURCE_BARRIER::Transition(
+            m_pSurfelGpuBuffer, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+        pCmdLst->ResourceBarrier(1, &toCopyDest);
     }
 
     m_gpuTimer.GetTimeStamp(pCmdLst, "Surfels Mesh Shader");

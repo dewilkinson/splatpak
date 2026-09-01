@@ -47,6 +47,7 @@ namespace Surfels
         }
 
         // Partitions points into spatial chunks of maximum size chunkSizeMeters
+        // Dynamic Spatial Partitioning targeting optimal 30,000 to 60,000 surfels per chunk for GPU/CPU culling efficiency
         static std::vector<ChunkData> PartitionIntoChunks(std::vector<SurfelVertex>& points, float chunkSizeMeters = 16.0f)
         {
             if (points.empty()) return {};
@@ -66,30 +67,20 @@ namespace Surfels
             }
 
             XMFLOAT3 gExtent(gMax.x - gMin.x + 1e-4f, gMax.y - gMin.y + 1e-4f, gMax.z - gMin.z + 1e-4f);
+            float maxDim = std::max(gExtent.x, std::max(gExtent.y, gExtent.z));
 
-            // 2. Sort all points along global Morton curve
-            struct MortonPoint
-            {
-                uint64_t code;
-                SurfelVertex surfel;
-            };
+            // Dynamically tune grid resolution based on total point count to target ~30,000 - 60,000 points per chunk (64 to 256 total chunks)
+            size_t totalPoints = points.size();
+            size_t targetPointsPerChunk = 45000;
+            size_t targetChunkCount = std::max((size_t)8, std::min((size_t)256, (totalPoints + targetPointsPerChunk - 1) / targetPointsPerChunk));
 
-            std::vector<MortonPoint> mortonPoints(points.size());
-            for (size_t i = 0; i < points.size(); i++)
-            {
-                float nx = (points[i].position.x - gMin.x) / gExtent.x;
-                float ny = (points[i].position.y - gMin.y) / gExtent.y;
-                float nz = (points[i].position.z - gMin.z) / gExtent.z;
+            // Estimate grid resolution per axis (N x N x N)
+            int gridRes = (int)std::ceil(std::cbrt((double)targetChunkCount));
+            gridRes = std::max(2, std::min(16, gridRes));
 
-                mortonPoints[i].code = ComputeMorton64(nx, ny, nz);
-                mortonPoints[i].surfel = points[i];
-            }
+            float effectiveChunkSize = maxDim / (float)gridRes;
 
-            std::sort(mortonPoints.begin(), mortonPoints.end(), [](const MortonPoint& a, const MortonPoint& b) {
-                return a.code < b.code;
-            });
-
-            // 3. Cluster points into discrete spatial grid cells
+            // 2. Cluster points into discrete spatial grid cells
             struct VoxelKey
             {
                 int32_t x, y, z;
@@ -105,16 +96,16 @@ namespace Surfels
             };
 
             std::unordered_map<VoxelKey, std::vector<SurfelVertex>, VoxelKeyHash> voxelMap;
-            for (const auto& mp : mortonPoints)
+            for (const auto& p : points)
             {
                 VoxelKey k;
-                k.x = (int32_t)std::floor((mp.surfel.position.x - gMin.x) / chunkSizeMeters);
-                k.y = (int32_t)std::floor((mp.surfel.position.y - gMin.y) / chunkSizeMeters);
-                k.z = (int32_t)std::floor((mp.surfel.position.z - gMin.z) / chunkSizeMeters);
-                voxelMap[k].push_back(mp.surfel);
+                k.x = (int32_t)std::floor((p.position.x - gMin.x) / effectiveChunkSize);
+                k.y = (int32_t)std::floor((p.position.y - gMin.y) / effectiveChunkSize);
+                k.z = (int32_t)std::floor((p.position.z - gMin.z) / effectiveChunkSize);
+                voxelMap[k].push_back(p);
             }
 
-            // 4. Assemble ChunkData objects
+            // 3. Assemble ChunkData objects with strict bounding box recalculation
             std::vector<ChunkData> chunks;
             chunks.reserve(voxelMap.size());
 
