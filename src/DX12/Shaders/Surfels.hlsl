@@ -138,17 +138,34 @@ void mainAS(
         chunkIdx = g_SortedChunkIndices[globalChunkIdx];
         MeshletChunk chunk = g_ChunkBuffer[chunkIdx];
 
-        // Frustum culling against bounding sphere (supports detached debug camera)
+        // Conservative AABB Frustum Culling (supports detached debug camera)
         float4x4 cullMatrix = (g_UseDetachedCullCam == 1) ? g_CullViewProj : g_ViewProj;
-        float4 clipCenter = mul(cullMatrix, float4(chunk.center, 1.0));
-        float r = chunk.boundingRadius;
+        float3 bMin = chunk.aabbMin;
+        float3 bMax = chunk.aabbMin + chunk.aabbExtents;
+        float3 corners[8] = {
+            float3(bMin.x, bMin.y, bMin.z), float3(bMax.x, bMin.y, bMin.z),
+            float3(bMin.x, bMax.y, bMin.z), float3(bMax.x, bMax.y, bMin.z),
+            float3(bMin.x, bMin.y, bMax.z), float3(bMax.x, bMin.y, bMax.z),
+            float3(bMin.x, bMax.y, bMax.z), float3(bMax.x, bMax.y, bMax.z)
+        };
 
-        isVisible = (clipCenter.x + r >= -clipCenter.w) &&
-                    (clipCenter.x - r <=  clipCenter.w) &&
-                    (clipCenter.y + r >= -clipCenter.w) &&
-                    (clipCenter.y - r <=  clipCenter.w) &&
-                    (clipCenter.z + r >=  0.0) &&
-                    (clipCenter.z - r <=  clipCenter.w);
+        bool allOutLeft = true, allOutRight = true;
+        bool allOutBottom = true, allOutTop = true;
+        bool allOutNear = true, allOutFar = true;
+
+        [unroll]
+        for (int i = 0; i < 8; i++)
+        {
+            float4 c = mul(cullMatrix, float4(corners[i], 1.0));
+            if (c.x >= -c.w) allOutLeft = false;
+            if (c.x <=  c.w) allOutRight = false;
+            if (c.y >= -c.w) allOutBottom = false;
+            if (c.y <=  c.w) allOutTop = false;
+            if (c.z >=  0.0) allOutNear = false;
+            if (c.z <=  c.w) allOutFar = false;
+        }
+
+        isVisible = !(allOutLeft || allOutRight || allOutBottom || allOutTop || allOutNear || allOutFar);
     }
 
     uint visibleOffset = WavePrefixCountBits(isVisible);
@@ -284,23 +301,16 @@ void mainMS(
         }
     }
 
-    // When Camera is Detached: Cull individual points falling outside the frozen culling frustum or facing away
+    // When Camera is Detached: Cull individual points falling outside the frozen culling frustum
     if (g_UseDetachedCullCam == 1)
     {
         float4 cullClip = mul(g_CullViewProj, float4(worldPos, 1.0));
-        bool outsideFrustum = (cullClip.w <= 0.001) ||
+        bool outsideFrustum = (cullClip.w <= 0.0001) ||
                               (cullClip.x < -cullClip.w) || (cullClip.x > cullClip.w) ||
                               (cullClip.y < -cullClip.w) || (cullClip.y > cullClip.w) ||
                               (cullClip.z < 0.0) || (cullClip.z > cullClip.w);
 
-        float3 toCullCam = g_CullEyePos - worldPos;
-        bool isBackFacing = false;
-        if (dot(normal, normal) > 0.1)
-        {
-            isBackFacing = (dot(normal, toCullCam) <= 0.0);
-        }
-
-        if (outsideFrustum || isBackFacing)
+        if (outsideFrustum)
         {
             uint pBase = threadId * 2;
             tris[pBase + 0] = uint3(0, 0, 0);
@@ -321,7 +331,7 @@ void mainMS(
         }
 
         // Backside Shading from Viewer Perspective:
-        // When standing behind the model (>90 deg from detached camera view), any front-facing points
+        // When standing behind the model (>90 deg from detached camera view), any points
         // whose normals face AWAY from the active viewer are rendered in unshaded neutral flat gray
         // to prevent the hollow-face / concave flipping optical illusion.
         float3 toViewer = g_ViewerEyePos - worldPos;

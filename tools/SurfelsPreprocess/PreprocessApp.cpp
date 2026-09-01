@@ -1701,22 +1701,11 @@ namespace Surfels
                 const auto& cube = m_heatmapClusterCubes[idx];
                 bool inFrustum = IsSphereInFrustum(cube.center, cube.boundingRadius);
 
-                // Normal / Backface Culling against detached camera:
-                // Test if the cluster's average surface normal faces the detached camera
-                float nLenSq = cube.avgNormal.x * cube.avgNormal.x + cube.avgNormal.y * cube.avgNormal.y + cube.avgNormal.z * cube.avgNormal.z;
-                bool isFrontFacing = true;
-                if (nLenSq > 0.05f)
-                {
-                    float toCamX = cullEyePos.x - cube.center.x;
-                    float toCamY = cullEyePos.y - cube.center.y;
-                    float toCamZ = cullEyePos.z - cube.center.z;
-                    isFrontFacing = (toCamX * cube.avgNormal.x + toCamY * cube.avgNormal.y + toCamZ * cube.avgNormal.z > 0.0f);
-                }
-
-                bool isVisible = inFrustum && isFrontFacing;
+                bool isVisible = inFrustum;
 
                 // Backside Check from Active Viewer Perspective:
-                // When standing behind the model, render front-facing clusters in flat neutral gray to prevent flipping illusion
+                // When standing behind the model, render clusters in flat neutral gray to prevent flipping illusion
+                float nLenSq = cube.avgNormal.x * cube.avgNormal.x + cube.avgNormal.y * cube.avgNormal.y + cube.avgNormal.z * cube.avgNormal.z;
                 float toViewerX = eyePos.x - cube.center.x;
                 float toViewerY = eyePos.y - cube.center.y;
                 float toViewerZ = eyePos.z - cube.center.z;
