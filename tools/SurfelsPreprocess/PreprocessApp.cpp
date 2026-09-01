@@ -1128,7 +1128,7 @@ namespace Surfels
 
             if (ImGui::BeginMenu("View"))
             {
-                ImGui::MenuItem("Show Preprocessor Pane", nullptr, &m_showPreprocessorPane);
+                ImGui::MenuItem("Show Splat Crunch Pane", nullptr, &m_showPreprocessorPane);
                 ImGui::MenuItem("Auto Rotate Viewport", nullptr, &m_state.autoRotate);
                 if (ImGui::MenuItem("Reset Camera to Center"))
                 {
@@ -1140,7 +1140,7 @@ namespace Surfels
 
             if (ImGui::BeginMenu("Help"))
             {
-                if (ImGui::MenuItem("About Surfels Wavelet Studio..."))
+                if (ImGui::MenuItem("About Splat Crunch..."))
                 {
                     m_showAboutDialog = true;
                 }
@@ -1153,7 +1153,7 @@ namespace Surfels
         // 2. Left Control Panel: Decoupled Preprocessor & Renderer Tabs
         ImGui::SetNextWindowPos(ImVec2(10, 30), ImGuiCond_FirstUseEver);
         ImGui::SetNextWindowSize(ImVec2(410, (float)m_Height - 40), ImGuiCond_FirstUseEver);
-        ImGui::Begin("Surfels Wavelet Studio", nullptr, ImGuiWindowFlags_NoCollapse);
+        ImGui::Begin("Splat Crunch", nullptr, ImGuiWindowFlags_NoCollapse);
 
         if (!m_showPreprocessorPane)
         {
@@ -1165,7 +1165,7 @@ namespace Surfels
             float tabWidth = (ImGui::GetContentRegionAvailWidth() - 6.0f) * 0.5f;
             ImGui::PushStyleColor(ImGuiCol_Button, m_activeTab == 0 ? ImVec4(0.18f, 0.45f, 0.75f, 1.0f) : ImVec4(0.22f, 0.22f, 0.25f, 1.0f));
             ImGui::PushStyleColor(ImGuiCol_Text, m_activeTab == 0 ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
-            if (ImGui::Button("1. Preprocessor Studio", ImVec2(tabWidth, 28))) m_activeTab = 0;
+            if (ImGui::Button("1. Splat Crunch", ImVec2(tabWidth, 28))) m_activeTab = 0;
             ImGui::PopStyleColor(2);
 
             ImGui::SameLine();
@@ -1179,7 +1179,7 @@ namespace Surfels
         }
 
         // =========================================================================
-        // TAB 1: PREPROCESSOR STUDIO (Raw Model -> Octree -> Wavelet Decimation -> SFLW Export)
+        // TAB 1: SPLAT CRUNCH PREPROCESSOR (Raw Model -> Octree -> Wavelet Decimation -> SFLW Export)
         // =========================================================================
         if (m_activeTab == 0 && m_showPreprocessorPane)
         {
@@ -1334,8 +1334,8 @@ namespace Surfels
                     ImGui::SliderFloat("Splat Radius Scale", &m_state.splatRadius, 0.10f, 10.0f, "%.2fx");
                     m_state.orientMode = 1;
 
-                    ImGui::Checkbox("Show Preprocessor Pane", &m_showPreprocessorPane);
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggles visibility of the Preprocessor Studio tab/pane to declutter the UI when operating purely in viewer mode.");
+                    ImGui::Checkbox("Show Splat Crunch Pane", &m_showPreprocessorPane);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Toggles visibility of the Splat Crunch preprocessor pane to declutter the UI when operating purely in viewer mode.");
 
                     ImGui::Checkbox("Auto Rotate Model##Viewport", &m_autoRotate);
                     m_state.autoRotate = m_autoRotate;
@@ -1578,9 +1578,9 @@ namespace Surfels
         {
             ImGui::SetNextWindowSize(ImVec2(480, 280), ImGuiCond_FirstUseEver);
             ImGui::SetNextWindowPos(ImVec2(((float)m_Width - 480) * 0.5f, ((float)m_Height - 280) * 0.5f), ImGuiCond_FirstUseEver);
-            if (ImGui::Begin("About Surfels Wavelet Studio", &m_showAboutDialog, ImGuiWindowFlags_NoCollapse))
+            if (ImGui::Begin("About Splat Crunch", &m_showAboutDialog, ImGuiWindowFlags_NoCollapse))
             {
-                ImGui::TextColored(ImVec4(0.3f, 0.85f, 1.0f, 1.0f), "Surfels Wavelet Studio & Progressive Streaming");
+                ImGui::TextColored(ImVec4(0.3f, 0.85f, 1.0f, 1.0f), "Splat Crunch - Point Cloud Preprocessor & Wavelet Streaming");
                 ImGui::Separator();
                 ImGui::Spacing();
 
