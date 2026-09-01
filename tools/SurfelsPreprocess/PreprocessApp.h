@@ -164,6 +164,21 @@ namespace Surfels
         bool  m_cascadeLOD           = true;
         bool  m_showLODTint          = false;
         std::vector<SurfelVertex> m_previewLODSurfels;
+
+        // Progressive Network Streaming & Bandwidth Throttle Simulator
+        bool   m_enableStreamingSimulation  = false; // Simulated network connection
+        float  m_bandwidthThrottleMBps      = 10.0f;  // Simulated bandwidth in MB/s
+        float  m_ringBufferCapacityMB       = 64.0f;  // GPU Ring Buffer capacity limit in MB
+        bool   m_isStreamingPaused          = false;  // Pause/Resume packet streaming
+        float  m_simulatedBytesDelivered    = 0.0f;   // Transferred bytes accumulator
+        float  m_totalStreamBytes           = 0.0f;   // Total model transfer size
+        float  m_streamRefinementProgress   = 1.0f;   // 0.0f to 1.0f
+        std::vector<SurfelVertex> m_fullStreamingSurfels; // Complete ordered surfels array for progressive feed
+
+        void   InitStreamingSimulation();
+        void   UpdateStreamingSimulation(double dtSeconds);
+        void   ResetStreamingSimulation();
+
         void  RebuildHeatmapClusterCubes();
         void  DrawOctreeVisualizer();
     };

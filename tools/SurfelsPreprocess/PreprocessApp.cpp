@@ -959,6 +959,12 @@ namespace Surfels
         RebuildHeatmapClusterCubes();
     }
 
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
+
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
+
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
+
     void PreprocessApp::ProcessAndExport(const std::string& outputPath)
     {
         if (m_rawSurfels.empty()) return;
@@ -1270,9 +1276,13 @@ namespace Surfels
         m_state.gpuRadixSort = m_gpuRadixSort;
         m_state.useChunkedPipeline = m_useChunkedPipeline;
         m_state.pChunks = m_rendererMeshletChunks.data();
-        m_state.chunkCount = (uint32_t)m_rendererMeshletChunks.size();
         m_state.aabbMin = m_aabbMin;
         m_state.aabbExtents = m_extents;
+
+        if (m_enableStreamingSimulation)
+        {
+            UpdateStreamingSimulation(m_deltaTime / 1000.0);
+        }
 
         if (m_enableQuantization && !m_rendererSurfels.empty())
         {
@@ -1547,8 +1557,70 @@ namespace Surfels
 
             if (!m_rawSurfels.empty() || m_isLoadedFromSFLW)
             {
-                // Section 1: Runtime LOD Settings
-                if (ImGui::CollapsingHeader("1. Runtime LOD & Quality", ImGuiTreeNodeFlags_DefaultOpen))
+                // Section 1: Progressive Streaming & Network Throttle
+                if (ImGui::CollapsingHeader("1. Progressive Streaming & Network Throttle", ImGuiTreeNodeFlags_DefaultOpen))
+                {
+                    if (ImGui::Checkbox("Simulate Network Streaming", &m_enableStreamingSimulation))
+                    {
+                        if (m_enableStreamingSimulation)
+                        {
+                            InitStreamingSimulation();
+                        }
+                        else
+                        {
+                            UpdatePreviewSurfels();
+                        }
+                    }
+
+                    if (m_enableStreamingSimulation)
+                    {
+                        ImGui::SameLine();
+                        ImGui::TextColored(m_isStreamingPaused ? ImVec4(1.0f, 0.6f, 0.2f, 1.0f) : ImVec4(0.3f, 1.0f, 0.4f, 1.0f),
+                            m_isStreamingPaused ? "[PAUSED]" : "[STREAMING]");
+
+                        // Bandwidth Preset Buttons
+                        ImGui::Text("Network Profiles:");
+                        if (ImGui::Button("3G (1.5 MB/s)", ImVec2(95, 22))) m_bandwidthThrottleMBps = 1.5f;
+                        ImGui::SameLine();
+                        if (ImGui::Button("4G LTE (15 MB/s)", ImVec2(110, 22))) m_bandwidthThrottleMBps = 15.0f;
+                        ImGui::SameLine();
+                        if (ImGui::Button("5G (60 MB/s)", ImVec2(95, 22))) m_bandwidthThrottleMBps = 60.0f;
+
+                        ImGui::SliderFloat("Bandwidth Throttle", &m_bandwidthThrottleMBps, 0.2f, 100.0f, "%.1f MB/s");
+                        ImGui::SliderFloat("GPU Ring Buffer Size", &m_ringBufferCapacityMB, 4.0f, 256.0f, "%.0f MB");
+
+                        // Streaming Progress Bar
+                        float deliveredMB = m_simulatedBytesDelivered / (1024.0f * 1024.0f);
+                        float totalMB = m_totalStreamBytes / (1024.0f * 1024.0f);
+                        char progressOverlay[128];
+                        snprintf(progressOverlay, sizeof(progressOverlay), "%.1f / %.1f MB (%.0f%%) | %u pts",
+                            deliveredMB, totalMB, m_streamRefinementProgress * 100.0f, m_state.surfelCount);
+                        ImGui::ProgressBar(m_streamRefinementProgress, ImVec2(-1, 20), progressOverlay);
+
+                        // Playback Controls
+                        if (ImGui::Button("Re-Stream (Reset)", ImVec2(125, 24)))
+                        {
+                            ResetStreamingSimulation();
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Button(m_isStreamingPaused ? "Resume" : "Pause", ImVec2(75, 24)))
+                        {
+                            m_isStreamingPaused = !m_isStreamingPaused;
+                        }
+                        ImGui::SameLine();
+                        if (ImGui::Button("Instant Full Load", ImVec2(110, 24)))
+                        {
+                            m_simulatedBytesDelivered = m_totalStreamBytes;
+                            m_streamRefinementProgress = 1.0f;
+                            UpdateStreamingSimulation(1.0);
+                        }
+
+                        ImGui::Separator();
+                    }
+                }
+
+                // Section 2: Runtime LOD Settings
+                if (ImGui::CollapsingHeader("2. Runtime LOD & Quality", ImGuiTreeNodeFlags_DefaultOpen))
                 {
                     int maxLODIndex = std::max(0, (int)m_waveletResult.lodLevels.size() - 1);
                     if (maxLODIndex > 0)
@@ -1591,8 +1663,8 @@ namespace Surfels
                     }
                 }
 
-                // Section 2: 3D Viewport & Splat Sizing
-                if (ImGui::CollapsingHeader("2. 3D Viewport & Splat Sizing", ImGuiTreeNodeFlags_DefaultOpen))
+                // Section 3: 3D Viewport & Splat Sizing
+                if (ImGui::CollapsingHeader("3. 3D Viewport & Splat Sizing", ImGuiTreeNodeFlags_DefaultOpen))
                 {
                     ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Active Display: %u points", m_state.surfelCount);
 
@@ -1658,8 +1730,8 @@ namespace Surfels
                     }
                 }
 
-                // Section 3: Hardware Accelerators & Pipeline
-                if (ImGui::CollapsingHeader("3. Accelerators & Meshlet Pipeline", ImGuiTreeNodeFlags_DefaultOpen))
+                // Section 4: Hardware Accelerators & Pipeline
+                if (ImGui::CollapsingHeader("4. Accelerators & Meshlet Pipeline", ImGuiTreeNodeFlags_DefaultOpen))
                 {
                     if (ImGui::Checkbox("GPU Radix Sort", &m_gpuRadixSort))
                     {
@@ -1691,8 +1763,8 @@ namespace Surfels
                         m_useChunkedPipeline ? "[Amplification Shader]" : "[Disabled]");
                 }
 
-                // Section 4: Spatial & Cluster Visualizers
-                if (ImGui::CollapsingHeader("4. Spatial & Cluster Visualizers", ImGuiTreeNodeFlags_DefaultOpen))
+                // Section 5: Spatial & Cluster Visualizers
+                if (ImGui::CollapsingHeader("5. Spatial & Cluster Visualizers", ImGuiTreeNodeFlags_DefaultOpen))
                 {
                     const char* cubePresets[] = { "512 Cubes", "1,024 Cubes", "2,048 Cubes", "4,096 Cubes", "8,192 Cubes", "16,384 Cubes" };
                     int cubeValues[] = { 512, 1024, 2048, 4096, 8192, 16384 };
