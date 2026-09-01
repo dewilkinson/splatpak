@@ -36,6 +36,18 @@ namespace Surfels
 
     static_assert(sizeof(PackedSurfelGPU) == 8, "PackedSurfelGPU must be exactly 8 bytes");
 
+    // Meshlet / Micro-Chunk descriptor for 128-surfel spatial clusters
+    struct MeshletChunkGPU
+    {
+        XMFLOAT3 center;
+        float    boundingRadius;
+        XMFLOAT3 aabbMin;
+        uint32_t surfelOffset;
+        XMFLOAT3 aabbExtents;
+        uint32_t surfelCount;
+    };
+    static_assert(sizeof(MeshletChunkGPU) == 48, "MeshletChunkGPU must be exactly 48 bytes");
+
     // Uncompressed intermediate surfel representation for CPU / preprocessor
     struct SurfelVertex
     {

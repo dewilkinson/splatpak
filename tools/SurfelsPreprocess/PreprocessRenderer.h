@@ -26,8 +26,11 @@ namespace Surfels
 
             const PackedSurfelGPU* pSurfels    = nullptr;
             const SurfelVertex*    pRawSurfels = nullptr;
+            const MeshletChunkGPU* pChunks     = nullptr;
             uint32_t surfelCount = 0;
+            uint32_t chunkCount  = 0;
             bool     gpuRadixSort = true;
+            bool     useChunkedPipeline = true;
         };
 
         struct FrameTimingMetrics
@@ -69,9 +72,9 @@ namespace Surfels
             uint32_t   surfelCount;
             uint32_t   renderMode;
             uint32_t   orientMode;
-            float      pad0;
+            uint32_t   totalChunks;
             XMFLOAT3   aabbMin;
-            float      pad1;
+            uint32_t   useChunkedPipeline;
             XMFLOAT3   aabbExtents;
             float      pad2;
         };
@@ -133,14 +136,24 @@ namespace Surfels
         bool                       m_needUploadToGpu = false;
         bool                       m_gpuSortNeedsRun = true;
 
+        std::vector<MeshletChunkGPU> m_meshletChunks;
+        ID3D12Resource*            m_pChunkUploadBuffer = nullptr;
+        uint8_t*                   m_pChunkUploadBufferMapped = nullptr;
+        ID3D12Resource*            m_pChunkGpuBuffer = nullptr;
+        ID3D12Resource*            m_pSortedChunkIndicesGpuBuffer = nullptr;
+        uint32_t                   m_chunkBufferCapacityBytes = 0;
+        uint32_t                   m_sortedChunkIndicesCapacityBytes = 0;
+
         // GPU-Driven Pipeline & Bitonic LDS Sorting PSOs
         ID3D12CommandSignature*    m_pCommandSignature = nullptr;
         ID3D12RootSignature*       m_pComputeRootSignature = nullptr;
         ID3D12PipelineState*       m_pProjectKeysPSO = nullptr;
+        ID3D12PipelineState*       m_pProjectChunkKeysPSO = nullptr;
         ID3D12PipelineState*       m_pBitonicLocalSortPSO = nullptr;
         ID3D12PipelineState*       m_pBitonicGlobalSortPSO = nullptr;
         ID3D12PipelineState*       m_pBitonicLocalMergePSO = nullptr;
         ID3D12PipelineState*       m_pGatherSurfelsPSO = nullptr;
+        ID3D12PipelineState*       m_pGatherChunkIndicesPSO = nullptr;
         ID3D12PipelineState*       m_pCullPSO = nullptr;
         ID3D12PipelineState*       m_pRadixSortPSO = nullptr;
         ID3D12PipelineState*       m_pBuildArgsPSO = nullptr;

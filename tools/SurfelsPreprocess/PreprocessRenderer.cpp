@@ -7,7 +7,8 @@ namespace Surfels
     using namespace CAULDRON_DX12;
 
     static const uint32_t BACK_BUFFER_COUNT = 2;
-    static const uint32_t SURFELS_PER_GROUP = 32;
+    static const uint32_t SURFELS_PER_GROUP = 64;
+    static const uint32_t AS_GROUP_SIZE = 32;
 
     typedef CD3DX12_PIPELINE_STATE_STREAM_SUBOBJECT<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_MS> CD3DX12_PIPELINE_STATE_STREAM_MS;
     typedef CD3DX12_PIPELINE_STATE_STREAM_SUBOBJECT<D3D12_SHADER_BYTECODE, D3D12_PIPELINE_STATE_SUBOBJECT_TYPE_AS> CD3DX12_PIPELINE_STATE_STREAM_AS;
@@ -15,6 +16,7 @@ namespace Surfels
     struct MeshShaderPipelineStateStream
     {
         CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE        RootSignature;
+        CD3DX12_PIPELINE_STATE_STREAM_AS                    AS;
         CD3DX12_PIPELINE_STATE_STREAM_MS                    MS;
         CD3DX12_PIPELINE_STATE_STREAM_PS                    PS;
         CD3DX12_PIPELINE_STATE_STREAM_RASTERIZER            RasterizerState;
@@ -50,13 +52,15 @@ namespace Surfels
 
         m_imGui.OnCreate(pDevice, &m_uploadHeap, &m_resourceViewHeaps, &m_constantBufferRing, pSwapChain->GetFormat());
 
-        CD3DX12_ROOT_PARAMETER rootParams[3];
-        rootParams[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL); // b0
+        CD3DX12_ROOT_PARAMETER rootParams[5];
+        rootParams[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL); // b0 - SurfelsCB
         rootParams[1].InitAsShaderResourceView(0, 0, D3D12_SHADER_VISIBILITY_ALL); // t0 - g_SurfelBuffer
         rootParams[2].InitAsShaderResourceView(1, 0, D3D12_SHADER_VISIBILITY_ALL); // t1 - g_RawSurfelBuffer
+        rootParams[3].InitAsShaderResourceView(2, 0, D3D12_SHADER_VISIBILITY_ALL); // t2 - g_ChunkBuffer
+        rootParams[4].InitAsShaderResourceView(3, 0, D3D12_SHADER_VISIBILITY_ALL); // t3 - g_SortedChunkIndices
 
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = 3;
+        rsDesc.NumParameters = 5;
         rsDesc.pParameters = rootParams;
         rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
 
@@ -65,16 +69,18 @@ namespace Surfels
         m_pDevice->GetDevice()->CreateRootSignature(0, pOutBlob->GetBufferPointer(), pOutBlob->GetBufferSize(), IID_PPV_ARGS(&m_pRootSignature));
 
         // Create Compute Root Signature & Compute Pipeline States (GPU LDS Key-Index Sorting)
-        CD3DX12_ROOT_PARAMETER computeRootParams[6];
+        CD3DX12_ROOT_PARAMETER computeRootParams[8];
         computeRootParams[0].InitAsConstantBufferView(0, 0); // b0 - BitonicSortCB
         computeRootParams[1].InitAsShaderResourceView(0, 0); // t0 - InPackedSurfels
         computeRootParams[2].InitAsShaderResourceView(1, 0); // t1 - InRawSurfels
-        computeRootParams[3].InitAsUnorderedAccessView(0, 0); // u0 - SortPairs
-        computeRootParams[4].InitAsUnorderedAccessView(1, 0); // u1 - OutPackedSurfels
-        computeRootParams[5].InitAsUnorderedAccessView(2, 0); // u2 - OutRawSurfels
+        computeRootParams[3].InitAsShaderResourceView(2, 0); // t2 - InChunks
+        computeRootParams[4].InitAsUnorderedAccessView(0, 0); // u0 - SortPairs
+        computeRootParams[5].InitAsUnorderedAccessView(1, 0); // u1 - OutPackedSurfels
+        computeRootParams[6].InitAsUnorderedAccessView(2, 0); // u2 - OutRawSurfels
+        computeRootParams[7].InitAsUnorderedAccessView(3, 0); // u3 - OutSortedChunkIndices
 
         CD3DX12_ROOT_SIGNATURE_DESC computeRsDesc = {};
-        computeRsDesc.NumParameters = 6;
+        computeRsDesc.NumParameters = 8;
         computeRsDesc.pParameters = computeRootParams;
         computeRsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
 
@@ -99,13 +105,17 @@ namespace Surfels
         };
 
         CreateComputePSO("ProjectKeysCS", &m_pProjectKeysPSO);
+        CreateComputePSO("ProjectChunkKeysCS", &m_pProjectChunkKeysPSO);
         CreateComputePSO("BitonicLocalSortCS", &m_pBitonicLocalSortPSO);
         CreateComputePSO("BitonicGlobalSortCS", &m_pBitonicGlobalSortPSO);
         CreateComputePSO("BitonicLocalMergeCS", &m_pBitonicLocalMergePSO);
         CreateComputePSO("GatherSurfelsCS", &m_pGatherSurfelsPSO);
+        CreateComputePSO("GatherChunkIndicesCS", &m_pGatherChunkIndicesPSO);
 
+        D3D12_SHADER_BYTECODE as = {};
         D3D12_SHADER_BYTECODE ms = {};
         D3D12_SHADER_BYTECODE ps = {};
+        CompileShaderFromFile("Surfels.hlsl", NULL, "mainAS", "-T as_6_5", &as);
         CompileShaderFromFile("Surfels.hlsl", NULL, "mainMS", "-T ms_6_5", &ms);
         CompileShaderFromFile("Surfels.hlsl", NULL, "mainPS", "-T ps_6_5", &ps);
 
@@ -136,6 +146,7 @@ namespace Surfels
 
         MeshShaderPipelineStateStream stream = {};
         stream.RootSignature = m_pRootSignature;
+        stream.AS = as;
         stream.MS = ms;
         stream.PS = ps;
         stream.RasterizerState = rasterizer;
@@ -184,16 +195,25 @@ namespace Surfels
         if (m_pGPUSortPairBuffer) { m_pGPUSortPairBuffer->Release(); m_pGPUSortPairBuffer = nullptr; }
         m_sortPairBufferCapacityBytes = 0;
 
+        if (m_pChunkUploadBuffer) { m_pChunkUploadBuffer->Unmap(0, nullptr); m_pChunkUploadBuffer->Release(); m_pChunkUploadBuffer = nullptr; }
+        m_pChunkUploadBufferMapped = nullptr;
+        if (m_pChunkGpuBuffer) { m_pChunkGpuBuffer->Release(); m_pChunkGpuBuffer = nullptr; }
+        m_chunkBufferCapacityBytes = 0;
+        if (m_pSortedChunkIndicesGpuBuffer) { m_pSortedChunkIndicesGpuBuffer->Release(); m_pSortedChunkIndicesGpuBuffer = nullptr; }
+        m_sortedChunkIndicesCapacityBytes = 0;
+
         m_lastSurfelsPtr = nullptr;
         m_lastSurfelCount = 0;
         m_lastRenderMode = 0;
 
         if (m_pCommandSignature) { m_pCommandSignature->Release(); m_pCommandSignature = nullptr; }
         if (m_pProjectKeysPSO) { m_pProjectKeysPSO->Release(); m_pProjectKeysPSO = nullptr; }
+        if (m_pProjectChunkKeysPSO) { m_pProjectChunkKeysPSO->Release(); m_pProjectChunkKeysPSO = nullptr; }
         if (m_pBitonicLocalSortPSO) { m_pBitonicLocalSortPSO->Release(); m_pBitonicLocalSortPSO = nullptr; }
         if (m_pBitonicGlobalSortPSO) { m_pBitonicGlobalSortPSO->Release(); m_pBitonicGlobalSortPSO = nullptr; }
         if (m_pBitonicLocalMergePSO) { m_pBitonicLocalMergePSO->Release(); m_pBitonicLocalMergePSO = nullptr; }
         if (m_pGatherSurfelsPSO) { m_pGatherSurfelsPSO->Release(); m_pGatherSurfelsPSO = nullptr; }
+        if (m_pGatherChunkIndicesPSO) { m_pGatherChunkIndicesPSO->Release(); m_pGatherChunkIndicesPSO = nullptr; }
         if (m_pRadixSortPSO) { m_pRadixSortPSO->Release(); m_pRadixSortPSO = nullptr; }
         if (m_pCullPSO) { m_pCullPSO->Release(); m_pCullPSO = nullptr; }
         if (m_pComputeRootSignature) { m_pComputeRootSignature->Release(); m_pComputeRootSignature = nullptr; }
@@ -642,6 +662,75 @@ namespace Surfels
 
             m_surfelBufferGPUAddress = m_pSurfelBuffer->GetGPUVirtualAddress();
         }
+
+        // Manage Meshlet Chunk buffers
+        if (pState->chunkCount > 0 && pState->pChunks != nullptr)
+        {
+            uint32_t chunkCount = pState->chunkCount;
+            uint32_t numChunkElements = 1;
+            while (numChunkElements < chunkCount) numChunkElements <<= 1;
+            if (numChunkElements < 1024) numChunkElements = 1024;
+
+            uint32_t chunkBytes = numChunkElements * sizeof(MeshletChunkGPU);
+            if (chunkBytes > m_chunkBufferCapacityBytes)
+            {
+                m_pDevice->GPUFlush(D3D12_COMMAND_LIST_TYPE_DIRECT);
+
+                if (m_pChunkUploadBuffer) { m_pChunkUploadBuffer->Unmap(0, nullptr); m_pChunkUploadBuffer->Release(); m_pChunkUploadBuffer = nullptr; }
+                if (m_pChunkGpuBuffer) { m_pChunkGpuBuffer->Release(); m_pChunkGpuBuffer = nullptr; }
+                m_pChunkUploadBufferMapped = nullptr;
+
+                ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
+                    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+                    D3D12_HEAP_FLAG_NONE,
+                    &CD3DX12_RESOURCE_DESC::Buffer(chunkBytes),
+                    D3D12_RESOURCE_STATE_GENERIC_READ,
+                    nullptr,
+                    IID_PPV_ARGS(&m_pChunkUploadBuffer)));
+                SetName(m_pChunkUploadBuffer, "PreprocessRenderer::m_pChunkUploadBuffer");
+
+                CD3DX12_RESOURCE_DESC chunkGpuDesc = CD3DX12_RESOURCE_DESC::Buffer(chunkBytes);
+                ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
+                    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+                    D3D12_HEAP_FLAG_NONE,
+                    &chunkGpuDesc,
+                    D3D12_RESOURCE_STATE_COPY_DEST,
+                    nullptr,
+                    IID_PPV_ARGS(&m_pChunkGpuBuffer)));
+                SetName(m_pChunkGpuBuffer, "PreprocessRenderer::m_pChunkGpuBuffer");
+
+                uint32_t idxBytes = numChunkElements * sizeof(uint32_t);
+                if (m_pSortedChunkIndicesGpuBuffer) { m_pSortedChunkIndicesGpuBuffer->Release(); m_pSortedChunkIndicesGpuBuffer = nullptr; }
+                CD3DX12_RESOURCE_DESC idxBufDesc = CD3DX12_RESOURCE_DESC::Buffer(idxBytes);
+                idxBufDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+                ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
+                    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
+                    D3D12_HEAP_FLAG_NONE,
+                    &idxBufDesc,
+                    D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE,
+                    nullptr,
+                    IID_PPV_ARGS(&m_pSortedChunkIndicesGpuBuffer)));
+                SetName(m_pSortedChunkIndicesGpuBuffer, "PreprocessRenderer::m_pSortedChunkIndicesGpuBuffer");
+
+                m_pChunkUploadBuffer->Map(0, nullptr, reinterpret_cast<void**>(&m_pChunkUploadBufferMapped));
+                m_chunkBufferCapacityBytes = chunkBytes;
+                m_sortedChunkIndicesCapacityBytes = idxBytes;
+                modelChanged = true;
+            }
+
+            if (modelChanged && m_pChunkUploadBufferMapped != nullptr)
+            {
+                MeshletChunkGPU* pDstChunks = reinterpret_cast<MeshletChunkGPU*>(m_pChunkUploadBufferMapped);
+                for (uint32_t i = 0; i < chunkCount; i++)
+                {
+                    pDstChunks[i] = pState->pChunks[i];
+                }
+                for (uint32_t i = chunkCount; i < numChunkElements; i++)
+                {
+                    pDstChunks[i] = {};
+                }
+            }
+        }
     }
 
     void PreprocessRenderer::OnCreateWindowSizeDependentResources(SwapChain* /*pSwapChain*/, uint32_t width, uint32_t height)
@@ -745,9 +834,9 @@ namespace Surfels
         pCB->surfelCount = surfelCount;
         pCB->renderMode = pState->renderMode;
         pCB->orientMode = pState->orientMode;
-        pCB->pad0 = 0.0f;
+        pCB->totalChunks = pState->chunkCount;
         pCB->aabbMin = pState->aabbMin;
-        pCB->pad1 = 0.0f;
+        pCB->useChunkedPipeline = (pState->useChunkedPipeline && pState->chunkCount > 0 && m_pChunkGpuBuffer != nullptr) ? 1 : 0;
         pCB->aabbExtents = pState->aabbExtents;
         pCB->pad2 = 0.0f;
 
@@ -762,11 +851,197 @@ namespace Surfels
             {
                 // Copy canonical unsorted data to GPU input buffer only when modified/loaded!
                 pCmdLst->CopyResource(pGpuRes, pUploadRes);
+                if (m_pChunkGpuBuffer != nullptr && m_pChunkUploadBuffer != nullptr)
+                {
+                    pCmdLst->CopyResource(m_pChunkGpuBuffer, m_pChunkUploadBuffer);
+                }
                 m_needUploadToGpu = false;
             }
 
-            // Execute Ultra-Fast GPU LDS Key-Index Sorting Pipeline
-            if (pState->gpuRadixSort && m_pProjectKeysPSO && m_pBitonicLocalSortPSO && m_pBitonicGlobalSortPSO && m_pBitonicLocalMergePSO && m_pGatherSurfelsPSO && m_pComputeRootSignature && pGpuOutRes != nullptr && m_pGPUSortPairBuffer != nullptr)
+            bool useChunked = (pState->useChunkedPipeline && pState->chunkCount > 0 && m_pChunkGpuBuffer != nullptr && m_pSortedChunkIndicesGpuBuffer != nullptr);
+
+            if (useChunked)
+            {
+                // =========================================================================
+                // Two-Level Hierarchical Micro-Chunk Pipeline (Coarse GPU Sort + AS Culling)
+                // =========================================================================
+                uint32_t chunkCount = pState->chunkCount;
+                uint32_t numChunkElements = 1;
+                while (numChunkElements < chunkCount) numChunkElements <<= 1;
+                if (numChunkElements < 1024) numChunkElements = 1024;
+
+                if (pState->gpuRadixSort && m_pProjectChunkKeysPSO && m_pBitonicLocalSortPSO && m_pBitonicGlobalSortPSO && m_pBitonicLocalMergePSO && m_pGatherChunkIndicesPSO && m_pComputeRootSignature && m_pGPUSortPairBuffer != nullptr)
+                {
+                    if (m_gpuSortNeedsRun)
+                    {
+                        auto gpuSortStart = std::chrono::high_resolution_clock::now();
+
+                        D3D12_RESOURCE_BARRIER preBarriers[2] = {};
+                        preBarriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(m_pChunkGpuBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+                        preBarriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(m_pSortedChunkIndicesGpuBuffer, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+                        pCmdLst->ResourceBarrier(2, preBarriers);
+
+                        pCmdLst->SetComputeRootSignature(m_pComputeRootSignature);
+                        pCmdLst->SetComputeRootShaderResourceView(1, m_pSurfelGpuBuffer ? m_pSurfelGpuBuffer->GetGPUVirtualAddress() : 0);
+                        pCmdLst->SetComputeRootShaderResourceView(2, m_pRawSurfelGpuBuffer ? m_pRawSurfelGpuBuffer->GetGPUVirtualAddress() : 0);
+                        pCmdLst->SetComputeRootShaderResourceView(3, m_pChunkGpuBuffer->GetGPUVirtualAddress());
+                        pCmdLst->SetComputeRootUnorderedAccessView(4, m_pGPUSortPairBuffer->GetGPUVirtualAddress());
+                        pCmdLst->SetComputeRootUnorderedAccessView(5, m_pSurfelGpuOutBuffer ? m_pSurfelGpuOutBuffer->GetGPUVirtualAddress() : 0);
+                        pCmdLst->SetComputeRootUnorderedAccessView(6, m_pRawSurfelGpuOutBuffer ? m_pRawSurfelGpuOutBuffer->GetGPUVirtualAddress() : 0);
+                        pCmdLst->SetComputeRootUnorderedAccessView(7, m_pSortedChunkIndicesGpuBuffer->GetGPUVirtualAddress());
+
+                        struct BitonicCB
+                        {
+                            XMFLOAT3 camPos;
+                            float    pad0;
+                            XMFLOAT3 camForward;
+                            uint32_t totalSurfels;
+                            uint32_t level;
+                            uint32_t levelMask;
+                            uint32_t numElements;
+                            uint32_t renderMode;
+                            XMFLOAT3 aabbMin;
+                            float    pad1;
+                            XMFLOAT3 aabbExtents;
+                            float    pad2;
+                        };
+
+                        BitonicCB baseCB = {};
+                        baseCB.camPos = eyePos;
+                        baseCB.camForward = forwardNorm;
+                        baseCB.totalSurfels = chunkCount;
+                        baseCB.numElements = numChunkElements;
+                        baseCB.renderMode = pState->renderMode;
+                        baseCB.aabbMin = pState->aabbMin;
+                        baseCB.aabbExtents = pState->aabbExtents;
+
+                        uint32_t localGroups = (numChunkElements + 1023) / 1024;
+                        uint32_t globalGroups = (numChunkElements + 255) / 256;
+
+                        D3D12_RESOURCE_BARRIER uavPairBarrier = CD3DX12_RESOURCE_BARRIER::UAV(m_pGPUSortPairBuffer);
+                        D3D12_RESOURCE_BARRIER uavIdxBarrier = CD3DX12_RESOURCE_BARRIER::UAV(m_pSortedChunkIndicesGpuBuffer);
+
+                        // 1. Project Chunk Centers
+                        {
+                            BitonicCB* pSortCB = nullptr;
+                            D3D12_GPU_VIRTUAL_ADDRESS sortCbAddr = 0;
+                            if (m_constantBufferRing.AllocConstantBuffer(sizeof(BitonicCB), (void**)&pSortCB, &sortCbAddr))
+                            {
+                                *pSortCB = baseCB;
+                                pCmdLst->SetPipelineState(m_pProjectChunkKeysPSO);
+                                pCmdLst->SetComputeRootConstantBufferView(0, sortCbAddr);
+                                pCmdLst->Dispatch(globalGroups, 1, 1);
+                                pCmdLst->ResourceBarrier(1, &uavPairBarrier);
+                            }
+                        }
+
+                        // 2. Local LDS Block Sort
+                        {
+                            BitonicCB* pSortCB = nullptr;
+                            D3D12_GPU_VIRTUAL_ADDRESS sortCbAddr = 0;
+                            if (m_constantBufferRing.AllocConstantBuffer(sizeof(BitonicCB), (void**)&pSortCB, &sortCbAddr))
+                            {
+                                *pSortCB = baseCB;
+                                pSortCB->level = std::min(numChunkElements, 1024u);
+                                pSortCB->levelMask = pSortCB->level >> 1;
+
+                                pCmdLst->SetPipelineState(m_pBitonicLocalSortPSO);
+                                pCmdLst->SetComputeRootConstantBufferView(0, sortCbAddr);
+                                pCmdLst->Dispatch(localGroups, 1, 1);
+                                pCmdLst->ResourceBarrier(1, &uavPairBarrier);
+                            }
+                        }
+
+                        // 3. Outer Levels (if numChunkElements >= 2048)
+                        for (uint32_t level = 2048; level <= numChunkElements; level <<= 1)
+                        {
+                            for (uint32_t levelMask = level >> 1; levelMask >= 1024; levelMask >>= 1)
+                            {
+                                BitonicCB* pSortCB = nullptr;
+                                D3D12_GPU_VIRTUAL_ADDRESS sortCbAddr = 0;
+                                if (m_constantBufferRing.AllocConstantBuffer(sizeof(BitonicCB), (void**)&pSortCB, &sortCbAddr))
+                                {
+                                    *pSortCB = baseCB;
+                                    pSortCB->level = level;
+                                    pSortCB->levelMask = levelMask;
+
+                                    pCmdLst->SetPipelineState(m_pBitonicGlobalSortPSO);
+                                    pCmdLst->SetComputeRootConstantBufferView(0, sortCbAddr);
+                                    pCmdLst->Dispatch(globalGroups, 1, 1);
+                                    pCmdLst->ResourceBarrier(1, &uavPairBarrier);
+                                }
+                            }
+
+                            {
+                                BitonicCB* pSortCB = nullptr;
+                                D3D12_GPU_VIRTUAL_ADDRESS sortCbAddr = 0;
+                                if (m_constantBufferRing.AllocConstantBuffer(sizeof(BitonicCB), (void**)&pSortCB, &sortCbAddr))
+                                {
+                                    *pSortCB = baseCB;
+                                    pSortCB->level = level;
+                                    pSortCB->levelMask = 512;
+
+                                    pCmdLst->SetPipelineState(m_pBitonicLocalMergePSO);
+                                    pCmdLst->SetComputeRootConstantBufferView(0, sortCbAddr);
+                                    pCmdLst->Dispatch(localGroups, 1, 1);
+                                    pCmdLst->ResourceBarrier(1, &uavPairBarrier);
+                                }
+                            }
+                        }
+
+                        // 4. Gather Sorted Chunk Indices
+                        {
+                            BitonicCB* pSortCB = nullptr;
+                            D3D12_GPU_VIRTUAL_ADDRESS sortCbAddr = 0;
+                            if (m_constantBufferRing.AllocConstantBuffer(sizeof(BitonicCB), (void**)&pSortCB, &sortCbAddr))
+                            {
+                                *pSortCB = baseCB;
+                                pCmdLst->SetPipelineState(m_pGatherChunkIndicesPSO);
+                                pCmdLst->SetComputeRootConstantBufferView(0, sortCbAddr);
+                                pCmdLst->Dispatch(globalGroups, 1, 1);
+                                pCmdLst->ResourceBarrier(1, &uavIdxBarrier);
+                            }
+                        }
+
+                        D3D12_RESOURCE_BARRIER postBarriers[2] = {};
+                        postBarriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(m_pSortedChunkIndicesGpuBuffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+                        postBarriers[1] = CD3DX12_RESOURCE_BARRIER::Transition(m_pChunkGpuBuffer, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+                        pCmdLst->ResourceBarrier(2, postBarriers);
+
+                        auto gpuSortEnd = std::chrono::high_resolution_clock::now();
+                        m_metrics.gpuSortTimeMs = std::chrono::duration<float, std::milli>(gpuSortEnd - gpuSortStart).count();
+                        m_metrics.isGPUSortActive = true;
+                        m_metrics.wasSortedThisFrame = true;
+                        m_gpuSortNeedsRun = false;
+                    }
+                }
+
+                // Transition surfel buffer to ALL_SHADER_RESOURCE for rendering
+                D3D12_RESOURCE_BARRIER toSrv = CD3DX12_RESOURCE_BARRIER::Transition(
+                    pGpuRes, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+                pCmdLst->ResourceBarrier(1, &toSrv);
+
+                D3D12_GPU_VIRTUAL_ADDRESS surfelAddr = pGpuRes->GetGPUVirtualAddress();
+                pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
+                pCmdLst->SetPipelineState(m_pPipelineState);
+                pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
+                pCmdLst->SetGraphicsRootShaderResourceView(1, surfelAddr);
+                pCmdLst->SetGraphicsRootShaderResourceView(2, surfelAddr);
+                pCmdLst->SetGraphicsRootShaderResourceView(3, m_pChunkGpuBuffer->GetGPUVirtualAddress());
+                pCmdLst->SetGraphicsRootShaderResourceView(4, m_pSortedChunkIndicesGpuBuffer->GetGPUVirtualAddress());
+
+                Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> cmdList6;
+                pCmdLst->QueryInterface(IID_PPV_ARGS(&cmdList6));
+                uint32_t asGroupCount = (chunkCount + AS_GROUP_SIZE - 1) / AS_GROUP_SIZE;
+                cmdList6->DispatchMesh(asGroupCount, 1, 1);
+
+                // Transition back to COPY_DEST for next frame
+                D3D12_RESOURCE_BARRIER toCopyDest = CD3DX12_RESOURCE_BARRIER::Transition(
+                    pGpuRes, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+                pCmdLst->ResourceBarrier(1, &toCopyDest);
+            }
+            // Execute Flat GPU LDS Key-Index Sorting Pipeline
+            else if (pState->gpuRadixSort && m_pProjectKeysPSO && m_pBitonicLocalSortPSO && m_pBitonicGlobalSortPSO && m_pBitonicLocalMergePSO && m_pGatherSurfelsPSO && m_pComputeRootSignature && pGpuOutRes != nullptr && m_pGPUSortPairBuffer != nullptr)
             {
                 if (m_gpuSortNeedsRun)
                 {
@@ -781,9 +1056,11 @@ namespace Surfels
                     pCmdLst->SetComputeRootSignature(m_pComputeRootSignature);
                     pCmdLst->SetComputeRootShaderResourceView(1, m_pSurfelGpuBuffer ? m_pSurfelGpuBuffer->GetGPUVirtualAddress() : 0);
                     pCmdLst->SetComputeRootShaderResourceView(2, m_pRawSurfelGpuBuffer ? m_pRawSurfelGpuBuffer->GetGPUVirtualAddress() : 0);
-                    pCmdLst->SetComputeRootUnorderedAccessView(3, m_pGPUSortPairBuffer->GetGPUVirtualAddress());
-                    pCmdLst->SetComputeRootUnorderedAccessView(4, m_pSurfelGpuOutBuffer ? m_pSurfelGpuOutBuffer->GetGPUVirtualAddress() : 0);
-                    pCmdLst->SetComputeRootUnorderedAccessView(5, m_pRawSurfelGpuOutBuffer ? m_pRawSurfelGpuOutBuffer->GetGPUVirtualAddress() : 0);
+                    pCmdLst->SetComputeRootShaderResourceView(3, m_pChunkGpuBuffer ? m_pChunkGpuBuffer->GetGPUVirtualAddress() : 0);
+                    pCmdLst->SetComputeRootUnorderedAccessView(4, m_pGPUSortPairBuffer->GetGPUVirtualAddress());
+                    pCmdLst->SetComputeRootUnorderedAccessView(5, m_pSurfelGpuOutBuffer ? m_pSurfelGpuOutBuffer->GetGPUVirtualAddress() : 0);
+                    pCmdLst->SetComputeRootUnorderedAccessView(6, m_pRawSurfelGpuOutBuffer ? m_pRawSurfelGpuOutBuffer->GetGPUVirtualAddress() : 0);
+                    pCmdLst->SetComputeRootUnorderedAccessView(7, m_pSortedChunkIndicesGpuBuffer ? m_pSortedChunkIndicesGpuBuffer->GetGPUVirtualAddress() : 0);
 
                     uint32_t numElements = 1;
                     while (numElements < surfelCount) numElements <<= 1;
@@ -929,6 +1206,8 @@ namespace Surfels
                 pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
                 pCmdLst->SetGraphicsRootShaderResourceView(1, outAddr);
                 pCmdLst->SetGraphicsRootShaderResourceView(2, outAddr);
+                pCmdLst->SetGraphicsRootShaderResourceView(3, m_pChunkGpuBuffer ? m_pChunkGpuBuffer->GetGPUVirtualAddress() : 0);
+                pCmdLst->SetGraphicsRootShaderResourceView(4, m_pSortedChunkIndicesGpuBuffer ? m_pSortedChunkIndicesGpuBuffer->GetGPUVirtualAddress() : 0);
 
                 Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> cmdList6;
                 pCmdLst->QueryInterface(IID_PPV_ARGS(&cmdList6));
@@ -948,6 +1227,8 @@ namespace Surfels
                 pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
                 pCmdLst->SetGraphicsRootShaderResourceView(1, gpuAddr);
                 pCmdLst->SetGraphicsRootShaderResourceView(2, gpuAddr);
+                pCmdLst->SetGraphicsRootShaderResourceView(3, m_pChunkGpuBuffer ? m_pChunkGpuBuffer->GetGPUVirtualAddress() : 0);
+                pCmdLst->SetGraphicsRootShaderResourceView(4, m_pSortedChunkIndicesGpuBuffer ? m_pSortedChunkIndicesGpuBuffer->GetGPUVirtualAddress() : 0);
 
                 Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> cmdList6;
                 pCmdLst->QueryInterface(IID_PPV_ARGS(&cmdList6));

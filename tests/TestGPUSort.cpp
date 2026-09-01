@@ -345,22 +345,26 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    D3D12_ROOT_PARAMETER rootParams[6] = {};
+    D3D12_ROOT_PARAMETER rootParams[8] = {};
     rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rootParams[0].Descriptor.ShaderRegister = 0; // b0
     rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     rootParams[1].Descriptor.ShaderRegister = 0; // t0 (InPackedSurfels)
     rootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     rootParams[2].Descriptor.ShaderRegister = 1; // t1 (InRawSurfels)
-    rootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    rootParams[3].Descriptor.ShaderRegister = 0; // u0 (SortPairs)
+    rootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
+    rootParams[3].Descriptor.ShaderRegister = 2; // t2 (InChunks)
     rootParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    rootParams[4].Descriptor.ShaderRegister = 1; // u1 (OutPackedSurfels)
+    rootParams[4].Descriptor.ShaderRegister = 0; // u0 (SortPairs)
     rootParams[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    rootParams[5].Descriptor.ShaderRegister = 2; // u2 (OutRawSurfels)
+    rootParams[5].Descriptor.ShaderRegister = 1; // u1 (OutPackedSurfels)
+    rootParams[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    rootParams[6].Descriptor.ShaderRegister = 2; // u2 (OutRawSurfels)
+    rootParams[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
+    rootParams[7].Descriptor.ShaderRegister = 3; // u3 (OutSortedChunkIndices)
 
     D3D12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = 6;
+    rsDesc.NumParameters = 8;
     rsDesc.pParameters = rootParams;
 
     ComPtr<ID3DBlob> rsBlob;
@@ -441,9 +445,11 @@ int main(int argc, char** argv)
     commandList->SetComputeRootSignature(rootSignature.Get());
     commandList->SetComputeRootShaderResourceView(1, gpuInputBuffer->GetGPUVirtualAddress());
     commandList->SetComputeRootShaderResourceView(2, gpuInputBuffer->GetGPUVirtualAddress());
-    commandList->SetComputeRootUnorderedAccessView(3, gpuPairBuffer->GetGPUVirtualAddress());
-    commandList->SetComputeRootUnorderedAccessView(4, gpuOutputBuffer->GetGPUVirtualAddress());
+    commandList->SetComputeRootShaderResourceView(3, gpuInputBuffer->GetGPUVirtualAddress());
+    commandList->SetComputeRootUnorderedAccessView(4, gpuPairBuffer->GetGPUVirtualAddress());
     commandList->SetComputeRootUnorderedAccessView(5, gpuOutputBuffer->GetGPUVirtualAddress());
+    commandList->SetComputeRootUnorderedAccessView(6, gpuOutputBuffer->GetGPUVirtualAddress());
+    commandList->SetComputeRootUnorderedAccessView(7, gpuPairBuffer->GetGPUVirtualAddress());
 
     uint32_t passIdx = 0;
     uint32_t localGroups = (numElements + 1023) / 1024;

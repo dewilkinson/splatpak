@@ -5,7 +5,8 @@
 //  2. High-performance progressive streaming from a StructuredBuffer of 8-byte PackedSurfel structs.
 //  3. Normal-oriented tangent-plane discs or camera-facing billboard quads.
 
-#define SURFELS_PER_GROUP 32
+#define SURFELS_PER_GROUP 64
+#define AS_GROUP_SIZE 32
 
 struct PackedSurfel
 {
@@ -21,8 +22,20 @@ struct RawSurfel
     float  radius;
 };
 
-StructuredBuffer<PackedSurfel> g_SurfelBuffer    : register(t0);
-StructuredBuffer<RawSurfel>    g_RawSurfelBuffer : register(t1);
+struct MeshletChunk
+{
+    float3 center;
+    float  boundingRadius;
+    float3 aabbMin;
+    uint   surfelOffset;
+    float3 aabbExtents;
+    uint   surfelCount;
+};
+
+StructuredBuffer<PackedSurfel>  g_SurfelBuffer       : register(t0);
+StructuredBuffer<RawSurfel>     g_RawSurfelBuffer    : register(t1);
+StructuredBuffer<MeshletChunk>  g_ChunkBuffer        : register(t2);
+StructuredBuffer<uint>          g_SortedChunkIndices : register(t3);
 
 cbuffer SurfelsCB : register(b0)
 {
@@ -36,11 +49,16 @@ cbuffer SurfelsCB : register(b0)
     uint     g_SurfelCount;
     uint     g_RenderMode; // 0 = Procedural Sphere, 1 = Quantized 8-Byte, 2 = Raw Float32 Points
     uint     g_OrientMode; // 0 = Normal-Oriented Discs, 1 = Camera-Facing Billboards
-    float    g_Pad0;
+    uint     g_TotalChunks;
     float3   g_AABBMin;
-    float    g_Pad1;
+    uint     g_UseChunkedPipeline; // 0 = Flat buffer, 1 = Micro-Chunked Hierarchical
     float3   g_AABBExtents;
     float    g_Pad2;
+};
+
+struct ChunkPayload
+{
+    uint chunkIndices[AS_GROUP_SIZE];
 };
 
 struct VSOut
@@ -100,6 +118,48 @@ float3 FibonacciSpherePoint(uint i, uint n)
 }
 
 // =========================================================================
+// Amplification / Task Shader Stage (mainAS)
+// =========================================================================
+
+[NumThreads(AS_GROUP_SIZE, 1, 1)]
+void mainAS(
+    uint3 groupId  : SV_GroupID,
+    uint  threadId : SV_GroupThreadID)
+{
+    uint globalChunkIdx = groupId.x * AS_GROUP_SIZE + threadId;
+    bool isVisible = false;
+    uint chunkIdx = 0;
+
+    if (globalChunkIdx < g_TotalChunks)
+    {
+        chunkIdx = g_SortedChunkIndices[globalChunkIdx];
+        MeshletChunk chunk = g_ChunkBuffer[chunkIdx];
+
+        // Frustum culling against bounding sphere
+        float4 clipCenter = mul(g_ViewProj, float4(chunk.center, 1.0));
+        float r = chunk.boundingRadius;
+
+        isVisible = (clipCenter.x + r >= -clipCenter.w) &&
+                    (clipCenter.x - r <=  clipCenter.w) &&
+                    (clipCenter.y + r >= -clipCenter.w) &&
+                    (clipCenter.y - r <=  clipCenter.w) &&
+                    (clipCenter.z + r >=  0.0) &&
+                    (clipCenter.z - r <=  clipCenter.w);
+    }
+
+    uint visibleOffset = WavePrefixCountBits(isVisible);
+    uint totalVisible = WaveActiveCountBits(isVisible);
+
+    ChunkPayload payload;
+    if (isVisible)
+    {
+        payload.chunkIndices[visibleOffset] = chunkIdx;
+    }
+
+    DispatchMesh(totalVisible, 1, 1, payload);
+}
+
+// =========================================================================
 // Mesh Shader Stage (mainMS)
 // =========================================================================
 
@@ -108,19 +168,32 @@ float3 FibonacciSpherePoint(uint i, uint n)
 void mainMS(
     uint3 groupId  : SV_GroupID,
     uint  threadId : SV_GroupThreadID,
+    in payload   ChunkPayload payload,
     out indices  uint3 tris[SURFELS_PER_GROUP * 2],
     out vertices VSOut verts[SURFELS_PER_GROUP * 4])
 {
-    uint groupBase = groupId.x * SURFELS_PER_GROUP;
-    uint remaining = groupBase < g_SurfelCount ? g_SurfelCount - groupBase : 0;
-    uint groupSurfelCount = min((uint)SURFELS_PER_GROUP, remaining);
+    uint surfelIndex = 0;
+    uint groupSurfelCount = 0;
+
+    if (g_UseChunkedPipeline == 1)
+    {
+        uint chunkIdx = payload.chunkIndices[groupId.x];
+        MeshletChunk chunk = g_ChunkBuffer[chunkIdx];
+        groupSurfelCount = min((uint)SURFELS_PER_GROUP, chunk.surfelCount);
+        surfelIndex = chunk.surfelOffset + threadId;
+    }
+    else
+    {
+        uint groupBase = groupId.x * SURFELS_PER_GROUP;
+        uint remaining = groupBase < g_SurfelCount ? g_SurfelCount - groupBase : 0;
+        groupSurfelCount = min((uint)SURFELS_PER_GROUP, remaining);
+        surfelIndex = groupBase + threadId;
+    }
 
     SetMeshOutputCounts(groupSurfelCount * 4, groupSurfelCount * 2);
 
     if (threadId >= groupSurfelCount)
         return;
-
-    uint surfelIndex = groupBase + threadId;
     float3 worldPos;
     float3 normal;
     float3 color;

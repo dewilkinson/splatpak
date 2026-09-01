@@ -23,6 +23,7 @@ typedef CD3DX12_PIPELINE_STATE_STREAM_SUBOBJECT<D3D12_SHADER_BYTECODE, D3D12_PIP
 struct MeshShaderPipelineStateStream
 {
     CD3DX12_PIPELINE_STATE_STREAM_ROOT_SIGNATURE        RootSignature;
+    CD3DX12_PIPELINE_STATE_STREAM_AS                    AS;
     CD3DX12_PIPELINE_STATE_STREAM_MS                    MS;
     CD3DX12_PIPELINE_STATE_STREAM_PS                    PS;
     CD3DX12_PIPELINE_STATE_STREAM_RASTERIZER            RasterizerState;
@@ -62,14 +63,16 @@ void SurfelsRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
 
     m_imGui.OnCreate(pDevice, &m_uploadHeap, &m_resourceViewHeaps, &m_constantBufferRing, pSwapChain->GetFormat());
 
-    // Root signature: CBV at b0, StructuredBuffer SRV at t0, Raw StructuredBuffer SRV at t1
-    CD3DX12_ROOT_PARAMETER rootParams[3];
+    // Root signature: CBV at b0, StructuredBuffer SRV at t0, Raw StructuredBuffer SRV at t1, ChunkBuffer at t2, SortedIndices at t3
+    CD3DX12_ROOT_PARAMETER rootParams[5];
     rootParams[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL); // b0
     rootParams[1].InitAsShaderResourceView(0, 0, D3D12_SHADER_VISIBILITY_ALL); // t0
     rootParams[2].InitAsShaderResourceView(1, 0, D3D12_SHADER_VISIBILITY_ALL); // t1
+    rootParams[3].InitAsShaderResourceView(2, 0, D3D12_SHADER_VISIBILITY_ALL); // t2
+    rootParams[4].InitAsShaderResourceView(3, 0, D3D12_SHADER_VISIBILITY_ALL); // t3
 
     CD3DX12_ROOT_SIGNATURE_DESC rsDesc = {};
-    rsDesc.NumParameters = 3;
+    rsDesc.NumParameters = 5;
     rsDesc.pParameters = rootParams;
     rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE; // no input assembler stage with mesh shaders
 
@@ -79,16 +82,18 @@ void SurfelsRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
     SetName(m_pRootSignature, "Surfels::RootSignature");
 
     // Create Compute Root Signature & Compute Pipeline States (GPU LDS Key-Index Sorting)
-    CD3DX12_ROOT_PARAMETER computeRootParams[6];
+    CD3DX12_ROOT_PARAMETER computeRootParams[8];
     computeRootParams[0].InitAsConstantBufferView(0, 0); // b0 - BitonicSortCB
     computeRootParams[1].InitAsShaderResourceView(0, 0); // t0 - InPackedSurfels
     computeRootParams[2].InitAsShaderResourceView(1, 0); // t1 - InRawSurfels
-    computeRootParams[3].InitAsUnorderedAccessView(0, 0); // u0 - SortPairs
-    computeRootParams[4].InitAsUnorderedAccessView(1, 0); // u1 - OutPackedSurfels
-    computeRootParams[5].InitAsUnorderedAccessView(2, 0); // u2 - OutRawSurfels
+    computeRootParams[3].InitAsShaderResourceView(2, 0); // t2 - InChunks
+    computeRootParams[4].InitAsUnorderedAccessView(0, 0); // u0 - SortPairs
+    computeRootParams[5].InitAsUnorderedAccessView(1, 0); // u1 - OutPackedSurfels
+    computeRootParams[6].InitAsUnorderedAccessView(2, 0); // u2 - OutRawSurfels
+    computeRootParams[7].InitAsUnorderedAccessView(3, 0); // u3 - OutSortedChunkIndices
 
     CD3DX12_ROOT_SIGNATURE_DESC computeRsDesc = {};
-    computeRsDesc.NumParameters = 6;
+    computeRsDesc.NumParameters = 8;
     computeRsDesc.pParameters = computeRootParams;
     computeRsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
 
@@ -119,8 +124,10 @@ void SurfelsRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
     CreateComputePSO("BitonicLocalMergeCS", &m_pBitonicLocalMergePSO);
     CreateComputePSO("GatherSurfelsCS", &m_pGatherSurfelsPSO);
 
+    D3D12_SHADER_BYTECODE as = {};
     D3D12_SHADER_BYTECODE ms = {};
     D3D12_SHADER_BYTECODE ps = {};
+    CompileShaderFromFile("Surfels.hlsl", NULL, "mainAS", "-T as_6_5", &as);
     CompileShaderFromFile("Surfels.hlsl", NULL, "mainMS", "-T ms_6_5", &ms);
     CompileShaderFromFile("Surfels.hlsl", NULL, "mainPS", "-T ps_6_5", &ps);
 
@@ -151,6 +158,7 @@ void SurfelsRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
 
     MeshShaderPipelineStateStream stream = {};
     stream.RootSignature = m_pRootSignature;
+    stream.AS = as;
     stream.MS = ms;
     stream.PS = ps;
     stream.RasterizerState = rasterizer;
@@ -572,9 +580,9 @@ void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
     pCB->surfelCount = surfelCount;
     pCB->renderMode = pState->renderMode;
     pCB->orientMode = pState->orientMode;
-    pCB->pad0 = 0.0f;
+    pCB->totalChunks = 0;
     pCB->aabbMin = pState->aabbMin;
-    pCB->pad1 = 0.0f;
+    pCB->useChunkedPipeline = 0;
     pCB->aabbExtents = pState->aabbExtents;
     pCB->pad2 = 0.0f;
 
@@ -583,6 +591,8 @@ void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
     pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
     pCmdLst->SetGraphicsRootShaderResourceView(1, m_surfelBufferGPUAddress);
     pCmdLst->SetGraphicsRootShaderResourceView(2, m_surfelBufferGPUAddress);
+    pCmdLst->SetGraphicsRootShaderResourceView(3, m_surfelBufferGPUAddress);
+    pCmdLst->SetGraphicsRootShaderResourceView(4, m_surfelBufferGPUAddress);
 
     // DispatchMesh needs the newer command list interface; GetNewCommandList() only
     // returns ID3D12GraphicsCommandList2.

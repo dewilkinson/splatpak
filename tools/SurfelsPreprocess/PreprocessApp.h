@@ -72,6 +72,7 @@ namespace Surfels
         std::string               m_loadedFilePath = "No dataset loaded";
         std::vector<SurfelVertex> m_rawSurfels;
         std::vector<ChunkData>    m_chunks;
+        std::vector<MeshletChunkGPU> m_meshletChunks;
         WaveletDecompositionResult m_waveletResult;
 
         // Packed preview surfels for currently selected preview LOD
@@ -110,6 +111,7 @@ namespace Surfels
         bool  m_autoLOD              = true;  // Distance-adaptive dynamic LOD selection
         bool  m_autoRotate           = true;
         bool  m_gpuRadixSort         = true;  // Checkbox: "GPU Radix Sort" under Accelerators (Enabled by default)
+        bool  m_useChunkedPipeline   = true;  // Micro-chunked meshlet pipeline with AS culling
         bool  m_showOctreeVisualizer = true;
         bool  m_showGlobalBounds     = false;
         bool  m_cascadeLOD           = true;

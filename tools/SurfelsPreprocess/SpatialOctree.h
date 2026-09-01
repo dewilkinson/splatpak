@@ -151,6 +151,121 @@ namespace Surfels
 
             return chunks;
         }
+
+        // Partitions points into high-occupancy Meshlet-sized clusters (typically 128 surfels per chunk)
+        // using 64-bit Morton Z-Order spatial curve sorting for maximum GPU L2 cache locality.
+        static void PartitionIntoMeshletChunks(
+            std::vector<SurfelVertex>& inOutPoints,
+            std::vector<MeshletChunkGPU>& outMeshletChunks,
+            uint32_t surfelsPerMeshlet = 128)
+        {
+            outMeshletChunks.clear();
+            if (inOutPoints.empty()) return;
+
+            // 1. Compute Global AABB
+            XMFLOAT3 gMin(1e9f, 1e9f, 1e9f);
+            XMFLOAT3 gMax(-1e9f, -1e9f, -1e9f);
+            for (const auto& p : inOutPoints)
+            {
+                gMin.x = std::min(gMin.x, p.position.x);
+                gMin.y = std::min(gMin.y, p.position.y);
+                gMin.z = std::min(gMin.z, p.position.z);
+
+                gMax.x = std::max(gMax.x, p.position.x);
+                gMax.y = std::max(gMax.y, p.position.y);
+                gMax.z = std::max(gMax.z, p.position.z);
+            }
+
+            XMFLOAT3 gExtent(
+                std::max(1e-4f, gMax.x - gMin.x),
+                std::max(1e-4f, gMax.y - gMin.y),
+                std::max(1e-4f, gMax.z - gMin.z)
+            );
+
+            // 2. Compute 64-bit Morton Code for each point and sort
+            struct MortonPoint
+            {
+                uint64_t code;
+                uint32_t originalIndex;
+            };
+
+            size_t numPoints = inOutPoints.size();
+            std::vector<MortonPoint> mortonList(numPoints);
+
+            #pragma omp parallel for
+            for (int i = 0; i < (int)numPoints; i++)
+            {
+                const auto& p = inOutPoints[i];
+                float nx = (p.position.x - gMin.x) / gExtent.x;
+                float ny = (p.position.y - gMin.y) / gExtent.y;
+                float nz = (p.position.z - gMin.z) / gExtent.z;
+
+                mortonList[i].code = ComputeMorton64(nx, ny, nz);
+                mortonList[i].originalIndex = (uint32_t)i;
+            }
+
+            std::sort(mortonList.begin(), mortonList.end(), [](const MortonPoint& a, const MortonPoint& b) {
+                return a.code < b.code;
+            });
+
+            // 3. Reorder points in Morton order
+            std::vector<SurfelVertex> reorderedPoints(numPoints);
+            #pragma omp parallel for
+            for (int i = 0; i < (int)numPoints; i++)
+            {
+                reorderedPoints[i] = inOutPoints[mortonList[i].originalIndex];
+            }
+            inOutPoints = std::move(reorderedPoints);
+
+            // 4. Build 128-surfel Meshlet chunks
+            uint32_t numChunks = (uint32_t)((numPoints + surfelsPerMeshlet - 1) / surfelsPerMeshlet);
+            outMeshletChunks.resize(numChunks);
+
+            for (uint32_t c = 0; c < numChunks; c++)
+            {
+                uint32_t startIdx = c * surfelsPerMeshlet;
+                uint32_t count = std::min(surfelsPerMeshlet, (uint32_t)(numPoints - startIdx));
+
+                XMFLOAT3 cMin(1e9f, 1e9f, 1e9f);
+                XMFLOAT3 cMax(-1e9f, -1e9f, -1e9f);
+
+                for (uint32_t i = 0; i < count; i++)
+                {
+                    const auto& p = inOutPoints[startIdx + i];
+                    float r = std::max(0.001f, p.radius);
+                    cMin.x = std::min(cMin.x, p.position.x - r);
+                    cMin.y = std::min(cMin.y, p.position.y - r);
+                    cMin.z = std::min(cMin.z, p.position.z - r);
+
+                    cMax.x = std::max(cMax.x, p.position.x + r);
+                    cMax.y = std::max(cMax.y, p.position.y + r);
+                    cMax.z = std::max(cMax.z, p.position.z + r);
+                }
+
+                MeshletChunkGPU& chunk = outMeshletChunks[c];
+                chunk.center = XMFLOAT3(
+                    (cMin.x + cMax.x) * 0.5f,
+                    (cMin.y + cMax.y) * 0.5f,
+                    (cMin.z + cMax.z) * 0.5f
+                );
+                chunk.aabbMin = cMin;
+                chunk.aabbExtents = XMFLOAT3(cMax.x - cMin.x, cMax.y - cMin.y, cMax.z - cMin.z);
+                chunk.surfelOffset = startIdx;
+                chunk.surfelCount = count;
+
+                float maxR2 = 0.0f;
+                for (uint32_t i = 0; i < count; i++)
+                {
+                    const auto& p = inOutPoints[startIdx + i];
+                    float dx = p.position.x - chunk.center.x;
+                    float dy = p.position.y - chunk.center.y;
+                    float dz = p.position.z - chunk.center.z;
+                    float dist2 = dx * dx + dy * dy + dz * dz;
+                    if (dist2 > maxR2) maxR2 = dist2;
+                }
+                chunk.boundingRadius = std::sqrt(maxR2) + 0.01f;
+            }
+        }
     };
 }
 

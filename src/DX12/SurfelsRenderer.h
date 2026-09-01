@@ -55,9 +55,9 @@ private:
         uint32_t   surfelCount;
         uint32_t   renderMode;
         uint32_t   orientMode;
-        float      pad0;
+        uint32_t   totalChunks;
         XMFLOAT3   aabbMin;
-        float      pad1;
+        uint32_t   useChunkedPipeline;
         XMFLOAT3   aabbExtents;
         float      pad2;
     };

@@ -564,7 +564,13 @@ namespace Surfels
             m_previewLODSurfels = m_rawSurfels;
         }
 
-        // Step 2: Quantization Stage
+        // Step 2: Spatial Morton Ordering & Meshlet Chunk Partitioning (64 surfels per Meshlet)
+        SpatialOctree::PartitionIntoMeshletChunks(m_previewLODSurfels, m_meshletChunks, 64);
+        m_state.pChunks = m_meshletChunks.data();
+        m_state.chunkCount = (uint32_t)m_meshletChunks.size();
+        m_state.useChunkedPipeline = m_useChunkedPipeline;
+
+        // Step 3: Quantization Stage
         if (m_enableQuantization)
         {
             // Quantize to packed 8-byte GPU structs
@@ -797,6 +803,10 @@ namespace Surfels
         m_state.camDistance = m_distance;
         m_state.camTarget = m_target;
         m_state.aspectRatio = m_Height > 0 ? (float)m_Width / (float)m_Height : 1.0f;
+        m_state.gpuRadixSort = m_gpuRadixSort;
+        m_state.useChunkedPipeline = m_useChunkedPipeline;
+        m_state.pChunks = m_meshletChunks.data();
+        m_state.chunkCount = (uint32_t)m_meshletChunks.size();
     }
 
     void PreprocessApp::BuildUI()
@@ -1014,7 +1024,7 @@ namespace Surfels
             }
 
             // Section 5: Accelerators & Hardware Execution
-            if (ImGui::CollapsingHeader("5. Accelerators", ImGuiTreeNodeFlags_DefaultOpen))
+            if (ImGui::CollapsingHeader("5. Accelerators & Meshlet Pipeline", ImGuiTreeNodeFlags_DefaultOpen))
             {
                 ImGui::Checkbox("GPU Radix Sort", &m_gpuRadixSort);
                 m_state.gpuRadixSort = m_gpuRadixSort;
@@ -1023,6 +1033,10 @@ namespace Surfels
                 ImGui::SameLine();
                 ImGui::TextColored(m_gpuRadixSort ? ImVec4(0.3f, 1.0f, 0.4f, 1.0f) : ImVec4(1.0f, 0.6f, 0.2f, 1.0f),
                     m_gpuRadixSort ? "[Active: Compute Shader]" : "[CPU Multi-Threaded]");
+
+                ImGui::Checkbox("Meshlet Micro-Chunking (64 pts/cluster + AS Culling)", &m_useChunkedPipeline);
+                m_state.useChunkedPipeline = m_useChunkedPipeline;
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hierarchical two-level sorting: coarse chunk sort + Amplification Shader frustum culling.");
             }
         }
 

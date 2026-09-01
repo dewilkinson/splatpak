@@ -35,15 +35,27 @@ struct RawSurfel
 struct SortPair
 {
     uint key;   // 32-bit orderable depth key
-    uint index; // 32-bit surfel index
+    uint index; // 32-bit surfel or chunk index
+};
+
+struct MeshletChunk
+{
+    float3 center;
+    float  boundingRadius;
+    float3 aabbMin;
+    uint   surfelOffset;
+    float3 aabbExtents;
+    uint   surfelCount;
 };
 
 StructuredBuffer<PackedSurfel>   g_InPackedSurfels : register(t0);
 StructuredBuffer<RawSurfel>      g_InRawSurfels    : register(t1);
+StructuredBuffer<MeshletChunk>   g_InChunks        : register(t2);
 
 RWStructuredBuffer<SortPair>     g_SortPairs       : register(u0);
 RWStructuredBuffer<PackedSurfel> g_OutPackedSurfels: register(u1);
 RWStructuredBuffer<RawSurfel>    g_OutRawSurfels   : register(u2);
+RWStructuredBuffer<uint>         g_OutSortedChunkIndices : register(u3);
 
 uint FloatToOrderableUint(float f)
 {
@@ -265,5 +277,45 @@ void GatherSurfelsCS(uint3 dispatchThreadId : SV_DispatchThreadID)
     {
         g_OutPackedSurfels[outIdx] = g_InPackedSurfels[origIdx];
     }
+}
+
+// =========================================================================
+// Chunk Pass 1: Project Chunk Centers into Key-Index Pairs for Coarse Sorting
+// =========================================================================
+[numthreads(256, 1, 1)]
+void ProjectChunkKeysCS(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    uint idx = dispatchThreadId.x;
+    if (idx >= g_NumElements)
+        return;
+
+    SortPair pair;
+    pair.index = idx;
+
+    if (idx >= g_TotalSurfels) // Here g_TotalSurfels stores total chunk count
+    {
+        pair.key = 0; // Padding chunks sort to the end
+    }
+    else
+    {
+        MeshletChunk chunk = g_InChunks[idx];
+        float d = dot(chunk.center - g_CamPos, g_CamForward);
+        pair.key = FloatToOrderableUint(d);
+    }
+
+    g_SortPairs[idx] = pair;
+}
+
+// =========================================================================
+// Chunk Pass 2: Gather Sorted Chunk Indices
+// =========================================================================
+[numthreads(256, 1, 1)]
+void GatherChunkIndicesCS(uint3 dispatchThreadId : SV_DispatchThreadID)
+{
+    uint outIdx = dispatchThreadId.x;
+    if (outIdx >= g_NumElements)
+        return;
+
+    g_OutSortedChunkIndices[outIdx] = g_SortPairs[outIdx].index;
 }
 
