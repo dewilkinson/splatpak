@@ -45,8 +45,12 @@ namespace Surfels
         uint32_t surfelOffset;
         XMFLOAT3 aabbExtents;
         uint32_t surfelCount;
+        float    blendWeight;
+        uint32_t lodLevel;
+        float    dilationMorph; // Morph dilation factor for silhouette reconstruction
+        float    isSilhouette;  // 1.0f if silhouette chunk, 0.0f otherwise
     };
-    static_assert(sizeof(MeshletChunkGPU) == 48, "MeshletChunkGPU must be exactly 48 bytes");
+    static_assert(sizeof(MeshletChunkGPU) == 64, "MeshletChunkGPU must be exactly 64 bytes");
 
     // Uncompressed intermediate surfel representation for CPU / preprocessor
     struct SurfelVertex

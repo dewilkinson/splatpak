@@ -46,6 +46,10 @@ struct MeshletChunk
     uint   surfelOffset;
     float3 aabbExtents;
     uint   surfelCount;
+    float  blendWeight;
+    uint   lodLevel;
+    float  pad0;
+    float  pad1;
 };
 
 StructuredBuffer<PackedSurfel>   g_InPackedSurfels : register(t0);

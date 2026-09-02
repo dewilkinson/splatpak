@@ -36,6 +36,8 @@ namespace Surfels
             float    cullPitch        = 0.35f;
             float    cullDistance     = 15.0f;
             XMFLOAT3 cullTarget       = { 0.0f, 0.0f, 0.0f };
+            bool     enableDithering  = true; // Stochastic screen-space Bayer dithering for smooth LOD transitions
+            bool     highlightSilhouette = false; // Highlight silhouette chunks in lavender semi-transparent effect
         };
 
         struct FrameTimingMetrics
@@ -86,7 +88,9 @@ namespace Surfels
             uint32_t   useDetachedCullCam;
             XMFLOAT4X4 cullViewProj;
             XMFLOAT3   cullEyePos;
-            float      pad3;
+            uint32_t   enableDithering;
+            uint32_t   highlightSilhouette;
+            XMFLOAT2   padCB;
         };
 
         CAULDRON_DX12::Device* m_pDevice = nullptr;

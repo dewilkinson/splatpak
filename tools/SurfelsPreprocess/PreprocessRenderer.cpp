@@ -350,19 +350,16 @@ namespace Surfels
                         m_metrics.cpuSortTimeMs = 0.0f;
                         m_gpuSortNeedsRun = true;
 
-                        if (modelChanged)
+                        #pragma omp parallel for
+                        for (int i = 0; i < (int)surfelCount; i++)
                         {
-                            #pragma omp parallel for
-                            for (int i = 0; i < (int)surfelCount; i++)
-                            {
-                                pDst[i] = pRawSurfels[i];
-                            }
-                            for (uint32_t i = surfelCount; i < numElements; i++)
-                            {
-                                pDst[i] = {};
-                            }
-                            m_needUploadToGpu = true;
+                            pDst[i] = pRawSurfels[i];
                         }
+                        for (uint32_t i = surfelCount; i < numElements; i++)
+                        {
+                            pDst[i] = {};
+                        }
+                        m_needUploadToGpu = true;
                     }
                     else
                     {
@@ -612,21 +609,18 @@ namespace Surfels
                         m_metrics.cpuSortTimeMs = 0.0f;
                         m_gpuSortNeedsRun = true;
 
-                        if (modelChanged)
+                        #pragma omp parallel for
+                        for (int i = 0; i < (int)surfelCount; i++)
                         {
-                            #pragma omp parallel for
-                            for (int i = 0; i < (int)surfelCount; i++)
-                            {
-                                pDst[i] = pSurfels[i];
-                            }
-                            for (uint32_t i = surfelCount; i < numElements; i++)
-                            {
-                                pDst[i].packedPosRadius = 0xFFFFFFFF;
-                                pDst[i].packedNormal = 0xFFFF;
-                                pDst[i].packedColor = 0xFFFF;
-                            }
-                            m_needUploadToGpu = true;
+                            pDst[i] = pSurfels[i];
                         }
+                        for (uint32_t i = surfelCount; i < numElements; i++)
+                        {
+                            pDst[i].packedPosRadius = 0xFFFFFFFF;
+                            pDst[i].packedNormal = 0xFFFF;
+                            pDst[i].packedColor = 0xFFFF;
+                        }
+                        m_needUploadToGpu = true;
                     }
                     else
                     {
@@ -858,6 +852,7 @@ namespace Surfels
                     nullptr,
                     IID_PPV_ARGS(&m_pChunkGpuBuffer)));
                 SetName(m_pChunkGpuBuffer, "PreprocessRenderer::m_pChunkGpuBuffer");
+                m_chunkGpuBufferState = D3D12_RESOURCE_STATE_COPY_DEST;
 
                 uint32_t idxBytes = numChunkElements * sizeof(uint32_t);
                 if (m_pSortedChunkIndicesGpuBuffer) { m_pSortedChunkIndicesGpuBuffer->Release(); m_pSortedChunkIndicesGpuBuffer = nullptr; }
@@ -888,9 +883,13 @@ namespace Surfels
                 m_chunkBufferCapacityBytes = chunkBytes;
                 m_sortedChunkIndicesCapacityBytes = idxBytes;
                 modelChanged = true;
+                needsSort = true;
+                m_needUploadToGpu = true;
+                m_needUploadChunkIndicesToGpu = true;
+                m_gpuSortNeedsRun = true;
             }
 
-            if (modelChanged && m_pChunkUploadBufferMapped != nullptr)
+            if (m_pChunkUploadBufferMapped != nullptr)
             {
                 MeshletChunkGPU* pDstChunks = reinterpret_cast<MeshletChunkGPU*>(m_pChunkUploadBufferMapped);
                 for (uint32_t i = 0; i < chunkCount; i++)
@@ -901,6 +900,7 @@ namespace Surfels
                 {
                     pDstChunks[i] = {};
                 }
+                m_needUploadToGpu = true;
             }
 
             // If CPU sort is active in Chunked Pipeline, compute chunk sorting on CPU and prepare upload
@@ -916,9 +916,14 @@ namespace Surfels
                     chunkDists[i] = { d, (uint32_t)i };
                 }
 
-                // Descending sort (far to near)
-                std::sort(chunkDists.begin(), chunkDists.end(), [](const auto& a, const auto& b) {
-                    return a.first > b.first;
+                // Descending sort (far to near) with stable tie-breaking:
+                // If two chunks have equal distance, draw coarser LOD (higher lodLevel) first in back!
+                std::sort(chunkDists.begin(), chunkDists.end(), [&](const auto& a, const auto& b) {
+                    if (fabsf(a.first - b.first) > 1e-4f) return a.first > b.first;
+                    const auto& ca = pState->pChunks[a.second];
+                    const auto& cb = pState->pChunks[b.second];
+                    if (ca.lodLevel != cb.lodLevel) return ca.lodLevel > cb.lodLevel;
+                    return a.second < b.second;
                 });
 
                 for (uint32_t i = 0; i < chunkCount; i++)
@@ -1070,7 +1075,9 @@ namespace Surfels
         pCB->useDetachedCullCam = pState->detachCullCamera ? 1 : 0;
         XMStoreFloat4x4(&pCB->cullViewProj, cViewProj);
         pCB->cullEyePos = cullEyePos;
-        pCB->pad3 = 0.0f;
+        pCB->enableDithering = pState->enableDithering ? 1 : 0;
+        pCB->highlightSilhouette = pState->highlightSilhouette ? 1 : 0;
+        pCB->padCB = XMFLOAT2(0.0f, 0.0f);
 
         ID3D12Resource* pGpuRes = (pState->renderMode == 2) ? m_pRawSurfelGpuBuffer : m_pSurfelGpuBuffer;
         ID3D12Resource* pGpuOutRes = (pState->renderMode == 2) ? m_pRawSurfelGpuOutBuffer : m_pSurfelGpuOutBuffer;

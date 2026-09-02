@@ -225,6 +225,10 @@ namespace Surfels
     {
         if (m_pRenderer)
             m_pRenderer->OnCreateWindowSizeDependentResources(&m_swapChain, m_Width, m_Height);
+
+        ImGuiIO& io = ImGui::GetIO();
+        io.DisplaySize = ImVec2((float)m_Width, (float)m_Height);
+        m_streamStateDirty = true;
     }
 
     void PreprocessApp::OnUpdateDisplay()
@@ -926,6 +930,12 @@ namespace Surfels
     {
         if (m_rawSurfels.empty() && m_rendererRawSurfels.empty()) return;
 
+        if (m_enableStreamingSimulation)
+        {
+            m_streamStateDirty = true;
+            return;
+        }
+
         if (m_residentLODs.empty())
         {
             PrecacheResidentLODs();
@@ -961,6 +971,12 @@ namespace Surfels
             m_state.surfelCount = (uint32_t)resident.rawSurfels.size();
         }
     }
+
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
+
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
+
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
@@ -1231,25 +1247,33 @@ namespace Surfels
 
             int maxLODIndex = (int)m_waveletResult.lodLevels.size() - 1;
 
-            // Map camera distance to LOD level:
-            // Close-up (normalizedDist <= 1.0) -> LOD 0 (100% fine full resolution)
-            // Far distance (normalizedDist >= 4.0) -> LOD max (Coarsest base level)
-            int calcLOD = 0;
-            if (normalizedDist > 4.0f)
-            {
-                calcLOD = maxLODIndex;
-            }
-            else if (normalizedDist > 1.0f)
-            {
-                float factor = (normalizedDist - 1.0f) / 3.0f; // [0..1]
-                calcLOD = (int)std::round(factor * maxLODIndex);
-            }
-            calcLOD = std::max(0, std::min(maxLODIndex, calcLOD));
+            // Map camera distance to continuous LOD factor with hysteresis deadband:
+            float factor = std::max(0.0f, std::min(1.0f, (normalizedDist - 1.0f) / 3.0f));
+            float targetFloatLOD = factor * (float)maxLODIndex;
 
-            if (calcLOD != m_selectedPreviewLOD)
+            // Schmitt-trigger hysteresis (+/- 0.35 LOD units) to prevent border oscillation when zooming
+            int curLOD = m_selectedPreviewLOD;
+            int newLOD = curLOD;
+            if (targetFloatLOD > (float)curLOD + 0.65f)
             {
-                m_selectedPreviewLOD = calcLOD;
-                UpdatePreviewSurfels();
+                newLOD = std::min(maxLODIndex, curLOD + 1);
+            }
+            else if (targetFloatLOD < (float)curLOD - 0.65f)
+            {
+                newLOD = std::max(0, curLOD - 1);
+            }
+
+            if (newLOD != m_selectedPreviewLOD)
+            {
+                m_selectedPreviewLOD = newLOD;
+                if (!m_enableStreamingSimulation)
+                {
+                    UpdatePreviewSurfels();
+                }
+                else
+                {
+                    m_streamStateDirty = true;
+                }
             }
         }
 
@@ -1287,6 +1311,7 @@ namespace Surfels
         m_state.useChunkedPipeline = m_useChunkedPipeline;
         m_state.aabbMin = m_aabbMin;
         m_state.aabbExtents = m_extents;
+        m_state.enableDithering = m_enableDitheredTransitions;
 
         if (m_enableStreamingSimulation)
         {
@@ -1390,9 +1415,16 @@ namespace Surfels
             ImGui::EndMainMenuBar();
         }
 
+        ImGuiIO& io = ImGui::GetIO();
+        io.FontGlobalScale = m_uiScale;
+
+        float leftPanelWidth = std::min((float)m_Width * 0.45f, std::max(300.0f, 420.0f * m_uiScale));
+        float rightPanelWidth = std::min((float)m_Width * 0.45f, std::max(300.0f, 420.0f * m_uiScale));
+        float panelHeight = std::max(200.0f, (float)m_Height - 40.0f);
+
         // 2. Left Control Panel: Decoupled Preprocessor & Renderer Tabs
-        ImGui::SetNextWindowPos(ImVec2(10, 30), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(410, (float)m_Height - 40), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowPos(ImVec2(10.0f, 30.0f), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(leftPanelWidth, panelHeight), ImGuiCond_Always);
         ImGui::Begin("##LeftPanel", nullptr, ImGuiWindowFlags_NoCollapse);
 
         // Tab Selector Buttons
@@ -1721,6 +1753,63 @@ namespace Surfels
                     {
                         UpdatePreviewSurfels();
                     }
+
+                    if (ImGui::Checkbox("Dithered LOD Transitions", &m_enableDitheredTransitions))
+                    {
+                        m_streamStateDirty = true;
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Stochastic screen-space Bayer dithering to smoothly blend LOD transitions and eliminate popping.");
+
+                    if (m_enableDitheredTransitions)
+                    {
+                        ImGui::SameLine();
+                        ImGui::PushItemWidth(100.0f);
+                        if (ImGui::SliderFloat("##DitherDurationTab", &m_ditherTransitionDurationSec, 0.05f, 0.50f, "%.2f s"))
+                        {
+                            m_streamStateDirty = true;
+                        }
+                        ImGui::PopItemWidth();
+                    }
+
+                    ImGui::Separator();
+                    if (ImGui::Checkbox("Silhouette Edge Refinement", &m_enableSilhouetteLOD0))
+                    {
+                        m_streamStateDirty = true;
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Refines 2D silhouette edge chunks with an LOD bias relative to the active target level.");
+
+                    if (m_enableSilhouetteLOD0)
+                    {
+                        if (ImGui::SliderInt("Silhouette LOD Bias", &m_silhouetteLODBias, 0, 4, "Level N - %d"))
+                        {
+                            m_streamStateDirty = true;
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("LOD level bias for silhouette edges: renders fine edges using Level N - Bias (minimum Level 0).");
+
+                        if (ImGui::SliderFloat("Silhouette Angle", &m_silhouetteThreshold, 0.10f, 0.70f, "%.2f"))
+                        {
+                            m_streamStateDirty = true;
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Grazing angle dot product threshold |N . V| to classify boundary chunks as silhouette.");
+
+                        if (ImGui::SliderFloat("Dilation Morph", &m_dilationMorphAmount, 0.0f, 1.0f, "%.2fx"))
+                        {
+                            m_streamStateDirty = true;
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Normal dilation morph factor to create a smooth organic expansion/dilation as sharp edges form.");
+
+                        if (ImGui::Button("Test Silhouette Edge Morph", ImVec2(-1, 26)))
+                        {
+                            TriggerSilhouetteEdgeMorphTest();
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Unloads active silhouette edge chunks and returns them to Level N, then automatically reloads them to demonstrate the dilation morph.");
+
+                        if (ImGui::Checkbox("Highlight Silhouette Segments (Lavender)", &m_highlightSilhouetteChunks))
+                        {
+                            m_streamStateDirty = true;
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Highlights active silhouette edge chunks in lavender.");
+                    }
                 }
 
                 // Section 3: 3D Viewport & Splat Sizing
@@ -1788,6 +1877,14 @@ namespace Surfels
                         m_target = m_center;
                         m_distance = std::max(m_extents.x, std::max(m_extents.y, m_extents.z)) * 0.85f;
                     }
+
+                    ImGui::Separator();
+                    if (ImGui::SliderFloat("UI & Font Scale", &m_uiScale, 0.70f, 2.00f, "%.2fx"))
+                    {
+                        m_uiScale = std::max(0.50f, std::min(2.50f, m_uiScale));
+                        io.FontGlobalScale = m_uiScale;
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Scales all UI panels, controls, and font sizes dynamically.");
                 }
 
                 // Section 4: Hardware Accelerators & Pipeline
@@ -1862,8 +1959,8 @@ namespace Surfels
         ImGui::End();
 
         // 3. Right Statistics & Telemetry Panel
-        ImGui::SetNextWindowPos(ImVec2((float)m_Width - 410, 30), ImGuiCond_FirstUseEver);
-        ImGui::SetNextWindowSize(ImVec2(400, (float)m_Height - 40), ImGuiCond_FirstUseEver);
+        ImGui::SetNextWindowPos(ImVec2((float)m_Width - rightPanelWidth - 10.0f, 30.0f), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(rightPanelWidth, panelHeight), ImGuiCond_Always);
         ImGui::Begin("Statistics & Compression Analytics", nullptr, ImGuiWindowFlags_NoCollapse);
 
         // LOD Residency Equalizer
@@ -2038,24 +2135,26 @@ namespace Surfels
         ImDrawList* drawList = ImGui::GetWindowDrawList();
         float availWidth = ImGui::GetContentRegionAvailWidth();
 
-        ImGui::TextColored(ImVec4(0.4f, 0.85f, 1.0f, 1.0f), "Hierarchical LOD Chunk Residency (Base to Fine):");
-        ImGui::SameLine();
-        ImGui::TextDisabled("|");
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4(0.95f, 0.25f, 0.25f, 1.0f), "Red (Base)");
-        ImGui::SameLine();
-        ImGui::TextDisabled("->");
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4(1.0f, 0.55f, 0.1f, 1.0f), "Orange");
-        ImGui::SameLine();
-        ImGui::TextDisabled("->");
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4(1.0f, 0.88f, 0.1f, 1.0f), "Yellow");
-        ImGui::SameLine();
-        ImGui::TextDisabled("->");
-        ImGui::SameLine();
-        ImGui::TextColored(ImVec4(0.2f, 0.95f, 0.4f, 1.0f), "Green (Refined)");
-        ImGui::Spacing();
+        const float cy = cosf(m_pitch), sy = sinf(m_pitch);
+        const float sx = sinf(m_yaw), cx = cosf(m_yaw);
+        XMFLOAT3 eyePos(
+            m_target.x + m_distance * cy * sx,
+            m_target.y + m_distance * sy,
+            m_target.z + m_distance * cy * cx
+        );
+
+        if (m_smoothedLodResidentPct.size() != (size_t)numLODs)
+        {
+            m_smoothedLodResidentPct.assign(numLODs, 0.0f);
+            m_smoothedLodResidentBlocks.assign(numLODs, 0);
+        }
+
+        m_equalizerUpdateTimer += (float)(m_deltaTime / 1000.0f);
+        bool updateTextMetrics = (m_equalizerUpdateTimer >= 0.15f);
+        if (updateTextMetrics)
+        {
+            m_equalizerUpdateTimer = 0.0f;
+        }
 
         // Base segment count on the top row (Coarsest Base LOD)
         int baseSegments = (numLODs <= 2) ? 8 : 4;
@@ -2083,31 +2182,48 @@ namespace Surfels
 
             // Calculate residency stats
             size_t residentPts = 0;
+            uint32_t exactResidentBlocks = 0;
             if (m_enableStreamingSimulation)
             {
                 residentPts = (lodIdx < (int)m_lodResidentSurfels.size()) ? m_lodResidentSurfels[lodIdx] : 0;
+                if (pLevelChunks)
+                {
+                    for (const auto& c : *pLevelChunks)
+                    {
+                        if (c.isResident) exactResidentBlocks++;
+                    }
+                }
             }
             else
             {
                 residentPts = totalPts;
+                exactResidentBlocks = totalBlocks;
             }
 
             size_t totalLevelPts = (lodIdx < (int)m_lodTotalSurfels.size() && m_lodTotalSurfels[lodIdx] > 0) ? m_lodTotalSurfels[lodIdx] : totalPts;
-            float residentPct = (totalLevelPts > 0) ? std::min(100.0f, (float)residentPts / (float)totalLevelPts * 100.0f) : 100.0f;
-            uint32_t residentBlocks = (uint32_t)std::round((float)totalBlocks * (residentPct / 100.0f));
+            float rawResidentPct = (totalLevelPts > 0) ? std::min(100.0f, (float)residentPts / (float)totalLevelPts * 100.0f) : 100.0f;
+
+            if (updateTextMetrics || m_smoothedLodResidentBlocks[lodIdx] == 0)
+            {
+                m_smoothedLodResidentPct[lodIdx] = rawResidentPct;
+                m_smoothedLodResidentBlocks[lodIdx] = exactResidentBlocks;
+            }
+
+            float residentPct = m_smoothedLodResidentPct[lodIdx];
+            uint32_t residentBlocks = m_smoothedLodResidentBlocks[lodIdx];
 
             bool isActiveLOD = (lodIdx == m_selectedPreviewLOD);
 
             // Row Header
             if (isActiveLOD)
             {
-                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.5f, 1.0f), "LOD %d%s [%.1f%% Resident] - %u / %u blocks (%zu pts | %.1f MB) [ACTIVE VIEW]",
+                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.5f, 1.0f), "LOD %d%s [%.0f%% Resident] - %u / %u blocks (%zu pts | %.1f MB) [ACTIVE VIEW]",
                     lodIdx, (lodIdx == 0 ? " (Fine 100%)" : (lodIdx == numLODs - 1 ? " (Coarse Base)" : "")),
                     residentPct, residentBlocks, totalBlocks, totalPts, totalMB);
             }
             else
             {
-                ImGui::Text("LOD %d%s [%.1f%% Resident] - %u / %u blocks (%zu pts | %.1f MB)",
+                ImGui::Text("LOD %d%s [%.0f%% Resident] - %u / %u blocks (%zu pts | %.1f MB)",
                     lodIdx, (lodIdx == 0 ? " (Fine 100%)" : (lodIdx == numLODs - 1 ? " (Coarse Base)" : "")),
                     residentPct, residentBlocks, totalBlocks, totalPts, totalMB);
             }
@@ -2128,13 +2244,15 @@ namespace Surfels
                 ImVec2 segMin = ImVec2(x0 + 0.5f, p0.y + 1.5f);
                 ImVec2 segMax = ImVec2(x1 - 0.5f, p0.y + barHeight - 1.5f);
 
-                // Determine if this specific chunk/span is resident
+                // Determine if this specific chunk/span is resident and if it is locked
                 bool isLit = false;
+                bool isLocked = false;
                 float childRatio = 1.0f; // 1.0 = fully refined
 
                 if (!m_enableStreamingSimulation)
                 {
                     isLit = true;
+                    isLocked = false;
                     childRatio = 1.0f;
                 }
                 else
@@ -2143,18 +2261,85 @@ namespace Surfels
                     {
                         size_t idxStart = (size_t)(((float)s / (float)numSegments) * T);
                         size_t idxEnd = std::min(T, std::max(idxStart + 1, (size_t)(((float)(s + 1) / (float)numSegments) * T)));
+                        size_t resCount = 0;
+                        size_t transCount = 0;
+                        size_t silCount = 0;
+
                         for (size_t c = idxStart; c < idxEnd; c++)
                         {
-                            if ((*pLevelChunks)[c].isResident)
+                            const auto& chunk = (*pLevelChunks)[c];
+                            if (chunk.isResident)
                             {
-                                isLit = true;
-                                break;
+                                resCount++;
+                                if (chunk.isLockedInTransition)
+                                {
+                                    transCount++;
+                                }
+                                if (m_enableSilhouetteLOD0 && chunk.isSilhouette)
+                                {
+                                    silCount++;
+                                }
                             }
+                        }
+
+                        isLit = (resCount > 0);
+                        // Silhouette segments: only highlighted in lavender when silhouette refinement is active and refined finer than the base target LOD
+                        int silTargetLOD = std::max(0, m_selectedPreviewLOD - m_silhouetteLODBias);
+                        bool isSil = (m_enableSilhouetteLOD0 && m_selectedPreviewLOD > silTargetLOD && lodIdx <= silTargetLOD && isLit && silCount > 0);
+                        bool isTrans = (isLit && transCount > 0);
+
+                        if (isLit)
+                        {
+                            ImU32 colBase = IM_COL32(35, 215, 80, 255);
+                            ImU32 colHighlight = IM_COL32(75, 245, 120, 255);
+
+                            if (isSil)
+                            {
+                                // Silhouette segments shaded in lavender
+                                colBase = IM_COL32(185, 145, 245, 255);
+                                colHighlight = IM_COL32(220, 190, 255, 255);
+                            }
+                            else if (isTrans)
+                            {
+                                // Orange shading for locked transition chunks
+                                colBase = IM_COL32(255, 140, 20, 255);
+                                colHighlight = IM_COL32(255, 195, 70, 255);
+                            }
+
+                            drawList->AddRectFilled(segMin, segMax, colBase, 1.0f);
+                            if (segMax.x - segMin.x > 3.0f)
+                            {
+                                drawList->AddLine(
+                                    ImVec2(segMin.x + 0.5f, segMin.y + 0.5f),
+                                    ImVec2(segMax.x - 0.5f, segMin.y + 0.5f),
+                                    colHighlight, 1.0f);
+                            }
+                        }
+                        else
+                        {
+                            drawList->AddRectFilled(segMin, segMax, IM_COL32(30, 32, 38, 255), 1.0f);
+                            drawList->AddRect(segMin, segMax, IM_COL32(20, 22, 26, 255), 1.0f);
                         }
                     }
                     else
                     {
                         isLit = (residentPct > 0.001f);
+                        if (isLit)
+                        {
+                            drawList->AddRectFilled(segMin, segMax, IM_COL32(35, 215, 80, 255), 1.0f);
+                            if (segMax.x - segMin.x > 3.0f)
+                            {
+                                drawList->AddLine(
+                                    ImVec2(segMin.x + 0.5f, segMin.y + 0.5f),
+                                    ImVec2(segMax.x - 0.5f, segMin.y + 0.5f),
+                                    IM_COL32(75, 245, 120, 255), 1.0f);
+                            }
+                        }
+                        else
+                        {
+                            drawList->AddRectFilled(segMin, segMax, IM_COL32(30, 32, 38, 255), 1.0f);
+                            drawList->AddRect(segMin, segMax, IM_COL32(20, 22, 26, 255), 1.0f);
+                        }
                     }
 
                     // Calculate child loaded ratio from lower level mip
@@ -2179,61 +2364,105 @@ namespace Surfels
                         }
                     }
                 }
-
-                if (isLit)
-                {
-                    // Color code according to how many children in lower mip are loaded:
-                    // 0.0 = Red -> 0.33 = Orange -> 0.66 = Yellow -> 1.0 = Green
-                    float r, g, b;
-                    if (childRatio <= 0.333f)
-                    {
-                        // Red to Orange
-                        float t = childRatio / 0.333f;
-                        r = 230.0f + t * (245.0f - 230.0f);
-                        g = 45.0f  + t * (125.0f - 45.0f);
-                        b = 45.0f  + t * (20.0f  - 45.0f);
-                    }
-                    else if (childRatio <= 0.666f)
-                    {
-                        // Orange to Yellow
-                        float t = (childRatio - 0.333f) / 0.333f;
-                        r = 245.0f + t * (255.0f - 245.0f);
-                        g = 125.0f + t * (215.0f - 125.0f);
-                        b = 20.0f  + t * (25.0f  - 20.0f);
-                    }
-                    else
-                    {
-                        // Yellow to Vivid Green
-                        float t = (childRatio - 0.666f) / 0.334f;
-                        r = 255.0f + t * (35.0f  - 255.0f);
-                        g = 215.0f + t * (225.0f - 215.0f);
-                        b = 25.0f  + t * (85.0f  - 25.0f);
-                    }
-
-                    ImU32 colBase = IM_COL32((int)r, (int)g, (int)b, 255);
-                    ImU32 colHighlight = IM_COL32(
-                        std::min(255, (int)r + 40),
-                        std::min(255, (int)g + 30),
-                        std::min(255, (int)b + 40),
-                        255);
-
-                    drawList->AddRectFilled(segMin, segMax, colBase, 1.0f);
-                    if (segMax.x - segMin.x > 3.0f)
-                    {
-                        drawList->AddLine(
-                            ImVec2(segMin.x + 0.5f, segMin.y + 0.5f),
-                            ImVec2(segMax.x - 0.5f, segMin.y + 0.5f),
-                            colHighlight, 1.0f);
-                    }
-                }
-                else
-                {
-                    drawList->AddRectFilled(segMin, segMax, IM_COL32(30, 32, 38, 255), 1.0f);
-                    drawList->AddRect(segMin, segMax, IM_COL32(20, 22, 26, 255), 1.0f);
-                }
             }
 
             ImGui::Dummy(ImVec2(availWidth, barHeight + 4.0f));
+        }
+
+        ImGui::Spacing();
+
+        // Legend with colored squares and white text below the equalizer bars
+        float sqSize = 9.0f;
+        ImVec2 legP = ImGui::GetCursorScreenPos();
+
+        // 1. Resident (Green square + "Resident")
+        drawList->AddRectFilled(ImVec2(legP.x, legP.y + 3.5f), ImVec2(legP.x + sqSize, legP.y + 3.5f + sqSize), IM_COL32(35, 215, 80, 255), 1.0f);
+        drawList->AddRect(ImVec2(legP.x, legP.y + 3.5f), ImVec2(legP.x + sqSize, legP.y + 3.5f + sqSize), IM_COL32(75, 245, 120, 255), 1.0f);
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + sqSize + 4.0f);
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "Resident");
+        ImGui::SameLine();
+        ImGui::Dummy(ImVec2(8.0f, 0.0f));
+        ImGui::SameLine();
+
+        // 2. Transition Lock (Orange square + "Transition Lock")
+        legP = ImGui::GetCursorScreenPos();
+        drawList->AddRectFilled(ImVec2(legP.x, legP.y + 3.5f), ImVec2(legP.x + sqSize, legP.y + 3.5f + sqSize), IM_COL32(255, 140, 20, 255), 1.0f);
+        drawList->AddRect(ImVec2(legP.x, legP.y + 3.5f), ImVec2(legP.x + sqSize, legP.y + 3.5f + sqSize), IM_COL32(255, 195, 70, 255), 1.0f);
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + sqSize + 4.0f);
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "Transition Lock");
+        ImGui::SameLine();
+        ImGui::Dummy(ImVec2(8.0f, 0.0f));
+        ImGui::SameLine();
+
+        // 3. Silhouette Lock (Lavender square + "Silhouette Lock") - Always shown
+        legP = ImGui::GetCursorScreenPos();
+        drawList->AddRectFilled(ImVec2(legP.x, legP.y + 3.5f), ImVec2(legP.x + sqSize, legP.y + 3.5f + sqSize), IM_COL32(185, 145, 245, 255), 1.0f);
+        drawList->AddRect(ImVec2(legP.x, legP.y + 3.5f), ImVec2(legP.x + sqSize, legP.y + 3.5f + sqSize), IM_COL32(220, 190, 255, 255), 1.0f);
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + sqSize + 4.0f);
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "Silhouette Lock");
+        ImGui::SameLine();
+        ImGui::Dummy(ImVec2(8.0f, 0.0f));
+        ImGui::SameLine();
+
+        // 4. Unloaded (Dark square + "Unloaded")
+        legP = ImGui::GetCursorScreenPos();
+        drawList->AddRectFilled(ImVec2(legP.x, legP.y + 3.5f), ImVec2(legP.x + sqSize, legP.y + 3.5f + sqSize), IM_COL32(30, 32, 38, 255), 1.0f);
+        drawList->AddRect(ImVec2(legP.x, legP.y + 3.5f), ImVec2(legP.x + sqSize, legP.y + 3.5f + sqSize), IM_COL32(50, 55, 65, 255), 1.0f);
+        ImGui::SetCursorPosX(ImGui::GetCursorPosX() + sqSize + 4.0f);
+        ImGui::TextColored(ImVec4(1.0f, 1.0f, 1.0f, 1.0f), "Unloaded");
+
+        ImGui::Spacing();
+        ImGui::Separator();
+
+        // Control buttons directly under the residency indicators
+        if (ImGui::Button("Clear", ImVec2(70.0f, 0.0f)))
+        {
+            ClearResidentStream();
+        }
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("Immediately evicts all resident stream chunks and resets streaming delivery.");
+        }
+
+        ImGui::SameLine();
+        ImGui::PushItemWidth(availWidth - 165.0f);
+        if (ImGui::SliderFloat("##DecaySlider", &m_streamDecayRate, 0.0f, 1.0f, "Decay Rate: %.2f"))
+        {
+            m_streamStateDirty = true;
+        }
+        ImGui::PopItemWidth();
+        ImGui::SameLine();
+        if (ImGui::Checkbox("Decay", &m_enableStreamDecay))
+        {
+            m_streamStateDirty = true;
+        }
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("Toggle LRU chunk memory reclamation over time.\nHigher decay rates reclaim larger memory chunks from lowest priority/least needed LODs.");
+        }
+
+        ImGui::Spacing();
+        ImGui::Text("Policy:");
+        ImGui::SameLine();
+        int policyRadio2 = (m_streamingPolicy == StreamingPolicy::Conservative) ? 0 : 1;
+        if (ImGui::RadioButton("Conservative##Eq", &policyRadio2, 0))
+        {
+            m_streamingPolicy = StreamingPolicy::Conservative;
+            m_streamStateDirty = true;
+        }
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("Conservative Mode: Streams only visible chunks + local neighbor buffer.\nStreaming pauses once the active view is satisfied until camera moves.");
+        }
+        ImGui::SameLine();
+        if (ImGui::RadioButton("Greedy##Eq", &policyRadio2, 1))
+        {
+            m_streamingPolicy = StreamingPolicy::Greedy;
+            m_streamStateDirty = true;
+        }
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("Greedy Mode: Satisfies visible view first, then continuously streams all remaining background chunks until entire model is loaded.");
         }
 
         ImGui::Spacing();
@@ -2384,7 +2613,7 @@ namespace Surfels
 
     void PreprocessApp::DrawOctreeVisualizer()
     {
-        if (!m_showClusterHeatmap && !m_showOctreeVisualizer && !m_showGlobalBounds && !m_detachCamera)
+        if (!m_showClusterHeatmap && !m_showOctreeVisualizer && !m_showGlobalBounds && !m_detachCamera && !m_highlightSilhouetteChunks)
             return;
 
         ImDrawList* drawList = ImGui::GetOverlayDrawList();
@@ -2448,13 +2677,25 @@ namespace Surfels
 
         auto ProjectToScreen = [&](const XMFLOAT3& p, ImVec2& outScreen) -> bool
         {
+            if (std::isnan(p.x) || std::isnan(p.y) || std::isnan(p.z) ||
+                std::isinf(p.x) || std::isinf(p.y) || std::isinf(p.z))
+                return false;
+
             XMVECTOR worldP = XMLoadFloat3(&p);
             XMVECTOR clipP = XMVector4Transform(XMVectorSetW(worldP, 1.0f), viewProj);
             XMFLOAT4 c;
             XMStoreFloat4(&c, clipP);
-            if (c.w < 0.05f) return false;
-            float ndcX = c.x / c.w;
-            float ndcY = c.y / c.w;
+
+            if (c.w < 0.10f || std::isnan(c.w) || std::isinf(c.w)) return false;
+
+            float invW = 1.0f / c.w;
+            float ndcX = c.x * invW;
+            float ndcY = c.y * invW;
+            float ndcZ = c.z * invW;
+
+            if (ndcZ < 0.0f || ndcZ > 1.0f || ndcX < -1.15f || ndcX > 1.15f || ndcY < -1.15f || ndcY > 1.15f)
+                return false;
+
             outScreen.x = (ndcX * 0.5f + 0.5f) * screenW;
             outScreen.y = (-ndcY * 0.5f + 0.5f) * screenH;
             return true;
@@ -2914,9 +3155,11 @@ namespace Surfels
         ImGUI_UpdateIO(m_Width, m_Height);
         ImGui::NewFrame();
 
-        BuildUI();
         UpdateCamera(ImGui::GetIO());
+        BuildUI();
         m_state.time += (float)(m_deltaTime / 1000.0);
+        m_state.enableDithering = m_enableDitheredTransitions;
+        m_state.highlightSilhouette = m_highlightSilhouetteChunks;
 
         if (m_deviceLost)
         {

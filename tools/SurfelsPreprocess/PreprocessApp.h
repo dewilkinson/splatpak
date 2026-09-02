@@ -136,6 +136,7 @@ namespace Surfels
         bool  m_enableMortonOrder    = true;  // Checkbox: "Morton Spatial Curve Ordering" under Accelerators
         bool  m_useChunkedPipeline   = true;  // Micro-chunked meshlet pipeline with AS culling
         bool  m_vsync                = false; // Uncapped framerate by default to expose true compute/render timings
+        float m_uiScale              = 1.0f;  // Dynamic UI and font scaling factor (0.70x to 2.00x)
         struct HeatmapClusterCube
         {
             XMFLOAT3 aabbMin;
@@ -179,41 +180,85 @@ namespace Surfels
         struct StreamChunk
         {
             int      lodLevel = 0;
+            size_t   chunkIndex = 0;
             XMFLOAT3 center = { 0, 0, 0 };
             float    radius = 0.0f;
+            XMFLOAT3 avgNormal = { 0, 1, 0 };      // Representative surface normal for silhouette edge testing
+            float    normalSpread = 0.0f;          // Normal angular variation
             std::vector<SurfelVertex>   rawSurfels;
             std::vector<PackedSurfelGPU> packedSurfels;
             size_t   byteSize = 0;
             float    currentPriority = 0.0f;
+            bool     isRequested = false;
+            bool     isDelivered = false;
             bool     isResident = false;
+            bool     isEvictionPending = false;    // Marked for eviction: waiting for parent demotion transition to complete
+            bool     isLockedInTransition = false; // Locked against eviction while transition is running in either direction
+            bool     isSilhouette = false;         // Active in-view silhouette edge chunk (locked against eviction)
+            float    transitionProgress = 0.0f;   // 0.0 (Parent Level N Solid) <-> 1.0 (Children Level N-1 Solid)
         };
 
+        struct ChunkRequest
+        {
+            int    lodLevel = 0;
+            size_t chunkIndex = 0;
+            float  priority = 0.0f;
+        };
+
+        std::vector<ChunkRequest> m_demandRequestQueue;
+        size_t                    m_demandRequestHead = 0; // O(1) queue consumption without array shifts
+        void RequestChunk(int lodLevel, size_t chunkIndex, float priority);
+
+        enum class StreamingPolicy
+        {
+            Conservative = 0, // Pulls only visible chunks + local neighbor buffer; stops when view is satisfied
+            Greedy       = 1  // Refines visible chunks first, then continues pre-fetching remaining background chunks
+        };
+
+        StreamingPolicy m_streamingPolicy           = StreamingPolicy::Greedy; // Greedy (default) or Conservative
+        float  m_conservativeNeighborBufferMargin   = 1.35f;  // Frustum margin for pre-fetching local neighbors in conservative mode
+        bool   m_enableDitheredTransitions  = true;   // Stochastic screen-space Bayer dithering for smooth LOD transitions
+        float  m_ditherTransitionDurationSec= 0.20f;  // Transition dissolve duration in seconds
         bool   m_enableStreamingSimulation  = false; // Simulated network connection
         bool   m_unthrottledBandwidth       = false; // Full uncapped bandwidth (removes throttle cap)
         bool   m_prioritizeFrustumAndProximity = true; // Stream view frustum & close proximity chunks first
         float  m_bandwidthThrottleMBps      = 10.0f;  // Simulated bandwidth in MB/s
         float  m_ringBufferCapacityMB       = 64.0f;  // GPU Ring Buffer capacity limit in MB
+        bool   m_enableStreamDecay          = false;  // Toggle cache decay on/off
+        float  m_streamDecayRate            = 0.50f;  // Decay rate (0.0 to 1.0) for memory reclamation
         bool   m_isStreamingPaused          = false;  // Pause/Resume packet streaming
         float  m_simulatedBytesDelivered    = 0.0f;   // Transferred bytes accumulator
         float  m_totalStreamBytes           = 0.0f;   // Total model transfer size
         float  m_streamRefinementProgress   = 1.0f;   // 0.0f to 1.0f
         size_t m_evictedSurfelCount         = 0;      // Count of earlier slots evicted from GPU Ring Buffer
 
+        // Silhouette Edge Focused Reconstruction & Dilation Morphing
+        bool   m_enableSilhouetteLOD0       = true;   // Refine silhouette edges using biased LOD levels
+        int    m_silhouetteLODBias          = 2;      // Silhouette edge LOD bias (renders fine edges using Level N - 2, min value 0)
+        float  m_silhouetteThreshold        = 0.25f;  // 2D screen-space grazing rim angle threshold (|N . V| <= threshold)
+        float  m_dilationMorphAmount        = 0.40f;  // Geometric dilation morph factor during edge transitions
+        bool   m_highlightSilhouetteChunks  = false;  // Highlight silhouette chunks in lavender semi-transparent effect
+
         std::vector<std::vector<StreamChunk>> m_lodStreamChunks; // Chunks grouped by LOD level for O(1) equalizer
         std::vector<StreamChunk*>             m_allStreamChunkPtrs; // Flat list of pointers for priority sorting
         std::vector<size_t>                   m_lodTotalSurfels;   // Total surfels per LOD level
         std::vector<size_t>                   m_lodResidentSurfels;// Resident surfels per LOD level
 
-        // Throttling for frustum priority re-sorting
+        // Throttling for frustum priority re-sorting & UI indicator stabilization
         XMFLOAT3 m_lastStreamCamPos = { 1e9f, 1e9f, 1e9f };
         float    m_lastStreamYaw = 1e9f;
         float    m_lastStreamPitch = 1e9f;
         float    m_priorityUpdateTimer = 0.0f;
+        float    m_equalizerUpdateTimer = 0.0f;
+        std::vector<float>    m_smoothedLodResidentPct;
+        std::vector<uint32_t> m_smoothedLodResidentBlocks;
         bool     m_streamStateDirty = true;
 
         void   InitStreamingSimulation();
         void   UpdateStreamingSimulation(double dtSeconds);
         void   ResetStreamingSimulation();
+        void   ClearResidentStream();
+        void   TriggerSilhouetteEdgeMorphTest();
 
         void  DrawLODResidencyEqualizer();
         void  RebuildHeatmapClusterCubes();

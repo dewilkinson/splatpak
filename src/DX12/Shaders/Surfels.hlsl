@@ -30,6 +30,10 @@ struct MeshletChunk
     uint   surfelOffset;
     float3 aabbExtents;
     uint   surfelCount;
+    float  blendWeight;
+    uint   lodLevel;
+    float  dilationMorph; // Morph dilation factor for silhouette reconstruction
+    float  isSilhouette;  // 1.0 if silhouette chunk, 0.0 otherwise
 };
 
 StructuredBuffer<PackedSurfel>  g_SurfelBuffer       : register(t0);
@@ -56,7 +60,9 @@ cbuffer SurfelsCB : register(b0)
     uint     g_UseDetachedCullCam;
     float4x4 g_CullViewProj;
     float3   g_CullEyePos;
-    float    g_Pad3;
+    uint     g_EnableDithering;
+    uint     g_HighlightSilhouette;
+    float2   g_PadCB;
 };
 
 struct ChunkPayload
@@ -67,10 +73,12 @@ struct ChunkPayload
 
 struct VSOut
 {
-    float4 pos   : SV_POSITION;
-    float2 uv    : TEXCOORD0;
-    float3 color : COLOR0;
-    float3 norm  : NORMAL0;
+    float4 pos         : SV_POSITION;
+    float2 uv          : TEXCOORD0;
+    float3 color       : COLOR0;
+    float3 norm        : NORMAL0;
+    float  blendWeight : BLENDWEIGHT0;
+    float  isSil       : TEXCOORD1;
 };
 
 // =========================================================================
@@ -122,6 +130,8 @@ float3 FibonacciSpherePoint(uint i, uint n)
 // Amplification / Task Shader Stage (mainAS)
 // =========================================================================
 
+groupshared ChunkPayload s_Payload;
+
 [NumThreads(AS_GROUP_SIZE, 1, 1)]
 void mainAS(
     uint3 groupId  : SV_GroupID,
@@ -133,15 +143,14 @@ void mainAS(
         uint groupBase = groupId.x * SURFELS_PER_GROUP;
         if (threadId == 0)
         {
-            ChunkPayload payload;
-            payload.flatGroupIndex = groupId.x;
+            s_Payload.flatGroupIndex = groupId.x;
             if (groupBase < g_SurfelCount)
             {
-                DispatchMesh(1, 1, 1, payload);
+                DispatchMesh(1, 1, 1, s_Payload);
             }
             else
             {
-                DispatchMesh(0, 1, 1, payload);
+                DispatchMesh(0, 1, 1, s_Payload);
             }
         }
         return;
@@ -189,14 +198,18 @@ void mainAS(
     uint visibleOffset = WavePrefixCountBits(isVisible);
     uint totalVisible = WaveActiveCountBits(isVisible);
 
-    ChunkPayload payload;
-    payload.flatGroupIndex = 0;
     if (isVisible)
     {
-        payload.chunkIndices[visibleOffset] = chunkIdx;
+        s_Payload.chunkIndices[visibleOffset] = chunkIdx;
     }
 
-    DispatchMesh(totalVisible, 1, 1, payload);
+    GroupMemoryBarrierWithGroupSync();
+
+    if (threadId == 0)
+    {
+        s_Payload.flatGroupIndex = 0;
+        DispatchMesh(totalVisible, 1, 1, s_Payload);
+    }
 }
 
 // =========================================================================
@@ -215,12 +228,18 @@ void mainMS(
     uint surfelIndex = 0;
     uint groupSurfelCount = 0;
 
+    float chunkBlendWeight = 1.0;
+    float chunkDilationMorph = 0.0;
+    float chunkIsSilhouette = 0.0;
     if (g_UseChunkedPipeline == 1)
     {
         uint chunkIdx = payload.chunkIndices[groupId.x];
         MeshletChunk chunk = g_ChunkBuffer[chunkIdx];
         groupSurfelCount = min((uint)SURFELS_PER_GROUP, chunk.surfelCount);
         surfelIndex = chunk.surfelOffset + threadId;
+        chunkBlendWeight = chunk.blendWeight;
+        chunkDilationMorph = chunk.dilationMorph;
+        chunkIsSilhouette = chunk.isSilhouette;
     }
     else
     {
@@ -248,12 +267,12 @@ void mainMS(
         normal = dir;
         color = HashColor(surfelIndex);
 
-        tangentX = g_CamRight * g_Radius;
-        tangentY = g_CamUp * g_Radius;
+        tangentX = g_CamRight * (g_Radius * 0.05);
+        tangentY = g_CamUp * (g_Radius * 0.05);
     }
     else if (g_RenderMode == 1)
     {
-        // 2. Streamed Wavelet Surfel from StructuredBuffer (Quantized 8-byte)
+        // 2. Quantized 8-Byte Surfels (PackedSurfel)
         PackedSurfel s = g_SurfelBuffer[surfelIndex];
 
         // Unpack 10:10:10:2 position
@@ -353,6 +372,7 @@ void mainMS(
                 o.uv = float2(0.0, 0.0);
                 o.color = float3(0.0, 0.0, 0.0);
                 o.norm = float3(0.0, 0.0, 0.0);
+                o.blendWeight = 0.0;
                 verts[vBase + c] = o;
             }
             return;
@@ -368,20 +388,31 @@ void mainMS(
 
             if (nDotViewer < -0.06)
             {
-                // Interior cavity of the shell: Dark ambient occlusion, no albedo/texture
-                float depthFactor = saturate(-nDotViewer);
-                float cavityAO = 0.08 + 0.12 * (1.0 - depthFactor);
-                color = float3(0.12, 0.13, 0.16) * (cavityAO * 4.5);
+                float innerFade = saturate((-nDotViewer - 0.06) / 0.5);
+                float3 darkInterior = float3(0.08, 0.07, 0.09);
+                color = lerp(color * 0.45, darkInterior, innerFade * 0.85);
             }
-            else if (abs(nDotViewer) <= 0.06)
+            else
             {
-                // Rim Line: Crisp transition where the front-facing shell turns away into the dark interior
-                float rimStrength = 1.0 - (abs(nDotViewer) / 0.06);
+                float rimStrength = 1.0 - saturate(abs(nDotViewer));
+                rimStrength = pow(rimStrength, 2.5);
                 float3 rimHighlight = float3(0.85, 0.90, 1.0);
                 color = lerp(color, rimHighlight, rimStrength * 0.92);
             }
         }
     }
+
+    // Smooth Geometric Dilation Morph along silhouette normals
+    if (chunkDilationMorph > 0.0001 && abs(chunkBlendWeight) < 0.999)
+    {
+        float w = (chunkBlendWeight >= 0.0) ? (1.0 - chunkBlendWeight) * chunkDilationMorph : (-chunkBlendWeight) * chunkDilationMorph;
+        float splatRad = length(tangentX);
+        if (splatRad < 1e-6) splatRad = 0.02;
+        worldPos += normal * (splatRad * w * 1.5);
+        tangentX *= (1.0 + w * 0.4);
+        tangentY *= (1.0 + w * 0.4);
+    }
+
 
     // Quad corners in local 2D tangent space: 0(-1,-1) 1(1,-1) 2(-1,1) 3(1,1)
     float2 corners[4] = { float2(-1.0, -1.0), float2(1.0, -1.0), float2(-1.0, 1.0), float2(1.0, 1.0) };
@@ -397,12 +428,33 @@ void mainMS(
         o.uv = corners[c] * 0.5 + 0.5;
         o.color = color;
         o.norm = normal;
+        o.blendWeight = chunkBlendWeight;
+        o.isSil = (g_HighlightSilhouette == 1) ? chunkIsSilhouette : 0.0;
         verts[vBase + c] = o;
     }
 
     uint pBase = threadId * 2;
     tris[pBase + 0] = uint3(vBase + 0, vBase + 1, vBase + 2);
     tris[pBase + 1] = uint3(vBase + 1, vBase + 3, vBase + 2);
+}
+
+// =========================================================================
+// Screen-Space Bayer Matrix Stochastic Dithering
+// =========================================================================
+
+float GetBayer8x8(uint2 pixelPos)
+{
+    static const float bayer8x8[8][8] = {
+        {  1.0/64.0, 49.0/64.0, 13.0/64.0, 61.0/64.0,  4.0/64.0, 52.0/64.0, 16.0/64.0, 64.0/64.0 },
+        { 33.0/64.0, 17.0/64.0, 45.0/64.0, 29.0/64.0, 36.0/64.0, 20.0/64.0, 48.0/64.0, 32.0/64.0 },
+        {  9.0/64.0, 57.0/64.0,  5.0/64.0, 53.0/64.0, 12.0/64.0, 60.0/64.0,  8.0/64.0, 56.0/64.0 },
+        { 41.0/64.0, 25.0/64.0, 37.0/64.0, 21.0/64.0, 44.0/64.0, 28.0/64.0, 40.0/64.0, 24.0/64.0 },
+        {  3.0/64.0, 51.0/64.0, 15.0/64.0, 63.0/64.0,  2.0/64.0, 50.0/64.0, 14.0/64.0, 62.0/64.0 },
+        { 35.0/64.0, 19.0/64.0, 47.0/64.0, 31.0/64.0, 34.0/64.0, 18.0/64.0, 46.0/64.0, 30.0/64.0 },
+        { 11.0/64.0, 59.0/64.0,  7.0/64.0, 55.0/64.0, 10.0/64.0, 58.0/64.0,  6.0/64.0, 54.0/64.0 },
+        { 43.0/64.0, 27.0/64.0, 39.0/64.0, 23.0/64.0, 42.0/64.0, 26.0/64.0, 38.0/64.0, 22.0/64.0 }
+    };
+    return bayer8x8[pixelPos.y & 7][pixelPos.x & 7];
 }
 
 // =========================================================================
@@ -416,9 +468,43 @@ float4 mainPS(VSOut i) : SV_Target
     if (d > 1.0)
         discard;
 
+    // True Screen-Space Bayer Matrix Stochastic Dithering:
+    // Performs an exact complementary stochastic cross-dissolve between parent and child chunks in screen space.
+    if (g_EnableDithering == 1 && abs(i.blendWeight) < 0.999)
+    {
+        uint2 screenPixel = (uint2)i.pos.xy;
+        float bayerThreshold = GetBayer8x8(screenPixel);
+
+        if (i.blendWeight >= 0.0)
+        {
+            // Children fading IN (+t): visible on [0, t) -> discard if bayerThreshold >= t
+            if (bayerThreshold >= i.blendWeight)
+            {
+                discard;
+            }
+        }
+        else
+        {
+            // Parent fading OUT (-t): complementary on [t, 1) -> discard if bayerThreshold < t
+            float t = -i.blendWeight;
+            if (bayerThreshold < t)
+            {
+                discard;
+            }
+        }
+    }
+
     // Continuous 3D Gaussian falloff:
     // With back-to-front depth sorting, overlapping splats melt together into continuous, silky-smooth marble.
     float alpha = saturate(exp(-2.5 * d) * 0.90);
 
-    return float4(i.color * alpha, alpha);
+    float3 finalColor = i.color;
+    if (i.isSil > 0.5)
+    {
+        // Lavender highlight on silhouette edge chunks:
+        float3 lavender = float3(0.88, 0.65, 0.98);
+        finalColor = lerp(finalColor, lavender, 0.75);
+    }
+
+    return float4(finalColor * alpha, alpha);
 }
