@@ -2496,7 +2496,7 @@ namespace Surfels
                             if (chunk.isResident)
                             {
                                 resCount++;
-                                if (chunk.isLockedInTransition)
+                                if (chunk.isLockedInTransition && chunk.transitionProgress > 0.001f && chunk.transitionProgress < 0.999f)
                                 {
                                     transCount++;
                                 }
