@@ -198,6 +198,9 @@ namespace Surfels
             bool     isLockedInTransition = false; // Locked against eviction while transition is running in either direction
             bool     isSilhouette = false;         // Active in-view silhouette edge chunk (locked against eviction)
             float    transitionProgress = 0.0f;   // 0.0 (Parent Level N Solid) <-> 1.0 (Children Level N-1 Solid)
+            float    loadingHighlightTimer = 0.0f; // Countdown timer to highlight actively streaming/loading cluster in lavender
+            XMFLOAT3 aabbMin = { 0, 0, 0 };
+            XMFLOAT3 aabbMax = { 0, 0, 0 };
         };
 
         struct ChunkRequest
@@ -240,6 +243,7 @@ namespace Surfels
         float  m_silhouetteThreshold        = 0.25f;  // 2D screen-space grazing rim angle threshold (|N . V| <= threshold)
         float  m_dilationMorphAmount        = 0.40f;  // Geometric dilation morph factor during edge transitions
         bool   m_highlightSilhouetteChunks  = false;  // Highlight silhouette chunks in lavender semi-transparent effect
+        bool   m_highlightLoadingClusters   = true;   // Highlight cluster groups currently being loaded in lavender
 
         std::vector<std::vector<StreamChunk>> m_lodStreamChunks; // Chunks grouped by LOD level for O(1) equalizer
         std::vector<StreamChunk*>             m_allStreamChunkPtrs; // Flat list of pointers for priority sorting

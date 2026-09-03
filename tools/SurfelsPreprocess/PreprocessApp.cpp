@@ -1878,6 +1878,12 @@ namespace Surfels
                             m_streamStateDirty = true;
                         }
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Highlights active silhouette edge chunks in lavender.");
+
+                        if (ImGui::Checkbox("Highlight Loading Cluster Groups (Lavender)", &m_highlightLoadingClusters))
+                        {
+                            m_streamStateDirty = true;
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Highlights macro cluster groups actively streaming / loading into resident memory with a glowing lavender bounding volume and surfel tint.");
                     }
                 }
 
@@ -2033,6 +2039,11 @@ namespace Surfels
                     ImGui::Checkbox("Show Culled Chunks (Darker Shade)", &m_showCulledChunks);
                     ImGui::Checkbox("Show Macro Clusters (Amber)", &m_showOctreeVisualizer);
                     ImGui::Checkbox("Show Global Model Bounds (Blue)", &m_showGlobalBounds);
+                    if (ImGui::Checkbox("Highlight Loading Cluster Groups (Lavender)", &m_highlightLoadingClusters))
+                    {
+                        m_streamStateDirty = true;
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Highlights macro cluster groups actively streaming / loading into resident memory with a glowing lavender bounding volume and surfel tint.");
                 }
             }
         }
@@ -2824,7 +2835,7 @@ namespace Surfels
 
     void PreprocessApp::DrawOctreeVisualizer()
     {
-        if (!m_showClusterHeatmap && !m_showOctreeVisualizer && !m_showGlobalBounds && !m_detachCamera && !m_highlightSilhouetteChunks)
+        if (!m_showClusterHeatmap && !m_showOctreeVisualizer && !m_showGlobalBounds && !m_detachCamera && !m_highlightSilhouetteChunks && !m_highlightLoadingClusters)
             return;
 
         ImDrawList* drawList = ImGui::GetOverlayDrawList();
@@ -3213,7 +3224,140 @@ namespace Surfels
             DrawFilledCube(m_aabbMin, m_aabbMax, IM_COL32(80, 140, 255, 25), globalColor, true);
         }
 
-        // 4. Detached Culling Camera Frustum Primitive Visualizer (Mid-Transparent Gray)
+        // 4. Actively Streaming / Loading Cluster Groups (Lavender Highlight)
+        if (m_highlightLoadingClusters && !m_lodStreamChunks.empty())
+        {
+            struct LoadingClusterGroup
+            {
+                XMFLOAT3 aabbMin = { 1e9f, 1e9f, 1e9f };
+                XMFLOAT3 aabbMax = { -1e9f, -1e9f, -1e9f };
+                XMFLOAT3 center = { 0, 0, 0 };
+                uint32_t chunkCount = 0;
+                uint32_t pointCount = 0;
+                float    maxTimer = 0.0f;
+                int      lodLevel = 0;
+            };
+
+            std::vector<LoadingClusterGroup> loadingGroups;
+            const auto& macroOctree = !m_rendererOctreeChunks.empty() ? m_rendererOctreeChunks : m_chunks;
+
+            if (!macroOctree.empty())
+            {
+                loadingGroups.resize(macroOctree.size());
+                for (size_t i = 0; i < macroOctree.size(); i++)
+                {
+                    loadingGroups[i].aabbMin = macroOctree[i].aabbMin;
+                    loadingGroups[i].aabbMax = macroOctree[i].aabbMax;
+                    loadingGroups[i].center = XMFLOAT3(
+                        (macroOctree[i].aabbMin.x + macroOctree[i].aabbMax.x) * 0.5f,
+                        (macroOctree[i].aabbMin.y + macroOctree[i].aabbMax.y) * 0.5f,
+                        (macroOctree[i].aabbMin.z + macroOctree[i].aabbMax.z) * 0.5f
+                    );
+                }
+
+                for (const auto& lvl : m_lodStreamChunks)
+                {
+                    for (const auto& sc : lvl)
+                    {
+                        if (sc.loadingHighlightTimer > 0.0f)
+                        {
+                            for (size_t i = 0; i < macroOctree.size(); i++)
+                            {
+                                if (sc.center.x >= macroOctree[i].aabbMin.x - 0.5f && sc.center.x <= macroOctree[i].aabbMax.x + 0.5f &&
+                                    sc.center.y >= macroOctree[i].aabbMin.y - 0.5f && sc.center.y <= macroOctree[i].aabbMax.y + 0.5f &&
+                                    sc.center.z >= macroOctree[i].aabbMin.z - 0.5f && sc.center.z <= macroOctree[i].aabbMax.z + 0.5f)
+                                {
+                                    loadingGroups[i].chunkCount++;
+                                    loadingGroups[i].pointCount += (uint32_t)sc.rawSurfels.size();
+                                    loadingGroups[i].maxTimer = std::max(loadingGroups[i].maxTimer, sc.loadingHighlightTimer);
+                                    loadingGroups[i].lodLevel = sc.lodLevel;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            else
+            {
+                // Dynamic spatial clustering by cell size ~16.0
+                std::unordered_map<uint64_t, LoadingClusterGroup> spatialBins;
+                const float cellSize = 16.0f;
+                for (const auto& lvl : m_lodStreamChunks)
+                {
+                    for (const auto& sc : lvl)
+                    {
+                        if (sc.loadingHighlightTimer > 0.0f)
+                        {
+                            int gx = (int)std::floor(sc.center.x / cellSize);
+                            int gy = (int)std::floor(sc.center.y / cellSize);
+                            int gz = (int)std::floor(sc.center.z / cellSize);
+                            uint64_t hash = ((uint64_t)(gx & 0x1FFFFF)) | (((uint64_t)(gy & 0x1FFFFF)) << 21) | (((uint64_t)(gz & 0x1FFFFF)) << 42);
+
+                            auto& grp = spatialBins[hash];
+                            grp.aabbMin.x = std::min(grp.aabbMin.x, sc.aabbMin.x);
+                            grp.aabbMin.y = std::min(grp.aabbMin.y, sc.aabbMin.y);
+                            grp.aabbMin.z = std::min(grp.aabbMin.z, sc.aabbMin.z);
+                            grp.aabbMax.x = std::max(grp.aabbMax.x, sc.aabbMax.x);
+                            grp.aabbMax.y = std::max(grp.aabbMax.y, sc.aabbMax.y);
+                            grp.aabbMax.z = std::max(grp.aabbMax.z, sc.aabbMax.z);
+                            grp.chunkCount++;
+                            grp.pointCount += (uint32_t)sc.rawSurfels.size();
+                            grp.maxTimer = std::max(grp.maxTimer, sc.loadingHighlightTimer);
+                            grp.lodLevel = sc.lodLevel;
+                        }
+                    }
+                }
+                for (auto& pair : spatialBins)
+                {
+                    pair.second.center = XMFLOAT3(
+                        (pair.second.aabbMin.x + pair.second.aabbMax.x) * 0.5f,
+                        (pair.second.aabbMin.y + pair.second.aabbMax.y) * 0.5f,
+                        (pair.second.aabbMin.z + pair.second.aabbMax.z) * 0.5f
+                    );
+                    loadingGroups.push_back(pair.second);
+                }
+            }
+
+            float timeSec = (float)m_state.time;
+            float pulse = 0.65f + 0.35f * sinf(timeSec * 8.0f);
+
+            for (const auto& grp : loadingGroups)
+            {
+                if (grp.chunkCount == 0 || grp.maxTimer <= 0.0f)
+                    continue;
+
+                float timerFade = std::min(1.0f, grp.maxTimer / 0.5f);
+                float alphaFactor = pulse * timerFade;
+
+                // Translucent Lavender Fill: RGB(195, 145, 255)
+                ImU32 fillCol = IM_COL32(195, 145, 255, (int)(55.0f * alphaFactor));
+                // Bright Solid Lavender Wireframe: RGB(230, 195, 255)
+                ImU32 edgeCol = IM_COL32(230, 195, 255, (int)(235.0f * alphaFactor));
+
+                XMFLOAT3 expMin = { grp.aabbMin.x - 0.20f, grp.aabbMin.y - 0.20f, grp.aabbMin.z - 0.20f };
+                XMFLOAT3 expMax = { grp.aabbMax.x + 0.20f, grp.aabbMax.y + 0.20f, grp.aabbMax.z + 0.20f };
+
+                DrawFilledCube(expMin, expMax, fillCol, edgeCol, true);
+
+                ImVec2 sCenter;
+                if (ProjectToScreen(grp.center, sCenter))
+                {
+                    char badgeBuf[64];
+                    snprintf(badgeBuf, sizeof(badgeBuf), "Loading Cluster (LOD %d | %u pts)", grp.lodLevel, grp.pointCount);
+                    ImVec2 txtSz = ImGui::CalcTextSize(badgeBuf);
+                    ImVec2 pMin(sCenter.x - txtSz.x * 0.5f - 6.0f, sCenter.y - txtSz.y * 0.5f - 3.0f);
+                    ImVec2 pMax(sCenter.x + txtSz.x * 0.5f + 6.0f, sCenter.y + txtSz.y * 0.5f + 3.0f);
+
+                    drawList->AddRectFilled(pMin, pMax, IM_COL32(40, 20, 60, (int)(200.0f * timerFade)), 4.0f);
+                    drawList->AddRect(pMin, pMax, IM_COL32(220, 180, 255, (int)(240.0f * timerFade)), 4.0f, 0, 1.2f);
+                    drawList->AddText(ImVec2(sCenter.x - txtSz.x * 0.5f, sCenter.y - txtSz.y * 0.5f),
+                        IM_COL32(240, 215, 255, (int)(255.0f * timerFade)), badgeBuf);
+                }
+            }
+        }
+
+        // 5. Detached Culling Camera Frustum Primitive Visualizer (Mid-Transparent Gray)
         if (m_detachCamera)
         {
             XMMATRIX invCViewProj = XMMatrixInverse(nullptr, cViewProj);
