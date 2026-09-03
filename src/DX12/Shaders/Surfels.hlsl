@@ -212,12 +212,22 @@ void mainAS(
                     (outsideNear < 8) && (outsideFar < 8);
 
         // Conservative Normal Cone Backface Culling in Task Shader
+        // This test approximates every point in the chunk as viewed from one direction (eye -> chunk
+        // center), which only holds when the chunk is small relative to its distance from the camera.
+        // Once the viewer is close enough that the chunk subtends a large solid angle -- zoomed in close,
+        // near-clip range -- a chunk that is genuinely only partially front-facing (e.g. a curved surface
+        // near a silhouette) can get misclassified as fully backfacing by this single-sample test and
+        // dropped entirely, producing a visible hole with nothing else covering it. This is especially
+        // visible during LOD transitions when pulling the camera back: coarser parent chunks have larger
+        // boundingRadius and wider (less precise) normal cones, so they are exactly the chunks most prone
+        // to this misclassification right as they're being pulled in to replace finer detail. Skip the
+        // cone test at close range and fall back to the (already conservative) AABB frustum result.
         if (isVisible && g_EnableConeCulling == 1 && chunk.coneCutoff > -0.99)
         {
             float3 eyePos = (g_UseDetachedCullCam == 1) ? g_CullEyePos : g_ViewerEyePos;
             float3 toChunk = chunk.center - eyePos;
             float dist = length(toChunk);
-            if (dist > 1e-4)
+            if (dist > max(1e-4, chunk.boundingRadius * 3.0))
             {
                 float3 viewDir = toChunk / dist; // Ray from camera towards chunk center
                 float sinCone = sqrt(max(0.0, 1.0 - chunk.coneCutoff * chunk.coneCutoff));
@@ -622,11 +632,14 @@ void itemMS(
         MeshletChunk c = g_ChunkBuffer[chunkIndex];
 
         // Fast Normal Cone Backface Culling in itemMS
+        // See the matching guard in mainAS: this single-sample test misclassifies partially front-facing
+        // chunks as fully backfacing once the viewer is close enough for the chunk to subtend a large
+        // solid angle, so it is skipped at close range.
         if (g_EnableConeCulling == 1 && c.coneCutoff > -0.99)
         {
             float3 toChunk = c.center - g_ViewerEyePos;
             float dist = length(toChunk);
-            if (dist > 1e-4)
+            if (dist > max(1e-4, c.boundingRadius * 3.0))
             {
                 float3 viewDir = toChunk / dist;
                 float sinCone = sqrt(max(0.0, 1.0 - c.coneCutoff * c.coneCutoff));
