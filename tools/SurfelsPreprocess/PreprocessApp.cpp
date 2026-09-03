@@ -3372,7 +3372,7 @@ namespace Surfels
             }
         }
 
-        // 5. Billboarded 9-Pixel Lavender Squares over Silhouette Chunk Clusters (Poisson 16px Radius, 2.0x -> 0.25x Depth Range)
+        // 5. Billboarded 9-Pixel Lavender Squares over Silhouette Chunk Clusters (Poisson 16px Radius, 32px Outward White Line)
         if (m_showSilhouetteDots && (m_enableSilhouetteLOD0 || m_highlightSilhouetteChunks))
         {
             const float minRadius = 16.0f;
@@ -3380,6 +3380,7 @@ namespace Surfels
             struct PlacedDot
             {
                 ImVec2 pos;
+                ImVec2 outwardDir;
                 float depth;
             };
             std::vector<PlacedDot> placedDots;
@@ -3446,7 +3447,38 @@ namespace Surfels
 
                         if (!tooClose)
                         {
-                            placedDots.push_back({ sp, toCamDist });
+                            // Calculate outward screen normal direction perpendicular to silhouette edge
+                            XMFLOAT3 normalPt(
+                                chunkGpu.center.x + chunkGpu.coneAxis.x * std::max(0.05f, chunkGpu.boundingRadius),
+                                chunkGpu.center.y + chunkGpu.coneAxis.y * std::max(0.05f, chunkGpu.boundingRadius),
+                                chunkGpu.center.z + chunkGpu.coneAxis.z * std::max(0.05f, chunkGpu.boundingRadius)
+                            );
+
+                            ImVec2 sNorm;
+                            ImVec2 outwardDir(0.0f, -1.0f);
+                            if (ProjectToScreen(normalPt, sNorm))
+                            {
+                                float dx = sNorm.x - sp.x;
+                                float dy = sNorm.y - sp.y;
+                                float len = sqrtf(dx * dx + dy * dy);
+                                if (len > 0.05f)
+                                {
+                                    outwardDir = ImVec2(dx / len, dy / len);
+                                }
+                                else
+                                {
+                                    ImVec2 sTarget;
+                                    if (ProjectToScreen(m_target, sTarget))
+                                    {
+                                        float tdx = sp.x - sTarget.x;
+                                        float tdy = sp.y - sTarget.y;
+                                        float tlen = sqrtf(tdx * tdx + tdy * tdy);
+                                        if (tlen > 0.05f) outwardDir = ImVec2(tdx / tlen, tdy / tlen);
+                                    }
+                                }
+                            }
+
+                            placedDots.push_back({ sp, outwardDir, toCamDist });
                             if (toCamDist < minDepth) minDepth = toCamDist;
                             if (toCamDist > maxDepth) maxDepth = toCamDist;
                         }
@@ -3454,7 +3486,7 @@ namespace Surfels
                 }
             }
 
-            // Render 9-pixel billboarded lavender squares with depth-attenuated brightness (2.0x closest -> 0.25x farthest)
+            // Render 9-pixel billboarded lavender squares with 32px outward white lines
             const float halfSize = 4.5f; // Exactly 9.0px width and height
             float depthRange = std::max(0.001f, maxDepth - minDepth);
 
@@ -3474,6 +3506,18 @@ namespace Surfels
                 int b = std::max(0, std::min(255, (int)(baseB * factor)));
                 int a = std::max(0, std::min(255, (int)(255.0f * std::min(1.0f, 0.40f + 0.30f * factor))));
 
+                // 1. Draw 32-pixel outward white normal vector line pointing away from the model
+                ImVec2 lineStart = dot.pos;
+                ImVec2 lineEnd(dot.pos.x + dot.outwardDir.x * 32.0f, dot.pos.y + dot.outwardDir.y * 32.0f);
+
+                int lineAlpha = std::max(50, std::min(255, (int)(255.0f * (0.35f + 0.65f * (factor / 2.0f)))));
+                ImU32 whiteLineCol = IM_COL32(255, 255, 255, lineAlpha);
+                ImU32 whiteLineShadow = IM_COL32(20, 10, 30, (int)(lineAlpha * 0.6f));
+
+                drawList->AddLine(ImVec2(lineStart.x + 0.5f, lineStart.y + 0.5f), ImVec2(lineEnd.x + 0.5f, lineEnd.y + 0.5f), whiteLineShadow, 2.0f);
+                drawList->AddLine(lineStart, lineEnd, whiteLineCol, 1.5f);
+
+                // 2. Render billboarded 9-pixel lavender square on anchor dot
                 ImU32 fillCol   = IM_COL32(r, g, b, a);
                 ImU32 borderCol = IM_COL32(std::min(255, (int)(25.0f * factor)), std::min(255, (int)(12.0f * factor)), std::min(255, (int)(40.0f * factor)), a);
                 ImU32 centerCol = IM_COL32(std::min(255, (int)(150.0f * factor)), std::min(255, (int)(140.0f * factor)), std::min(255, (int)(170.0f * factor)), 255);
