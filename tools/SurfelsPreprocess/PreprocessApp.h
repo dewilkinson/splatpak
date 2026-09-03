@@ -15,6 +15,9 @@
 
 namespace Surfels
 {
+    void LogTransitionTrace(const char* fmt, ...);
+    void LogD3D12Messages();
+
     class PreprocessApp : public CAULDRON_DX12::FrameworkWindows
     {
     public:
@@ -58,6 +61,7 @@ namespace Surfels
         void UpdateCamera(const ImGuiIO& io);
         void RecomputeWaveletHierarchy();
         void UpdatePreviewSurfels();
+        void ReportDeviceLostAndExit(const std::string& message);
 
         std::string OpenFileDialog(const char* filter, const char* title = "Open File", const char* defaultExt = nullptr);
         std::string SaveFileDialog(const char* filter, const char* defaultExt = "sflw", const char* title = "Save File");
@@ -131,12 +135,13 @@ namespace Surfels
         XMFLOAT3 m_detachedTarget   = { 0.0f, 0.0f, 0.0f };
 
         bool  m_autoLOD              = true;  // Distance-adaptive dynamic LOD selection
+        float m_autoLODCooldownTimer = 0.0f;  // Blocks auto-LOD from advancing another level until the in-flight dither transition has had time to settle
         bool  m_autoRotate           = false; // Disabled by default
         bool  m_gpuRadixSort         = true;  // Checkbox: "GPU Radix Sort" under Accelerators (Enabled by default)
         bool  m_enableMortonOrder    = true;  // Checkbox: "Morton Spatial Curve Ordering" under Accelerators
         bool  m_enableConeCulling    = true;  // Checkbox: "Meshlet Backface Cone Culling" in Task Shader (mainAS)
         bool  m_useChunkedPipeline   = true;  // Micro-chunked meshlet pipeline with AS culling
-        bool  m_useCopyQueue         = true;  // Dedicated DX12 Hardware DMA Copy Queue for asynchronous PCIe transfers
+        bool  m_useCopyQueue         = false; // Direct queue PCIe uploads to prevent cross-queue sync hazards
         bool  m_vsync                = false; // Uncapped framerate by default to expose true compute/render timings
         float m_uiScale              = 1.0f;  // Dynamic UI and font scaling factor (0.70x to 2.00x)
         struct HeatmapClusterCube
@@ -164,7 +169,7 @@ namespace Surfels
         bool  m_showOctreeVisualizer = false;  // Unchecked by default
         bool  m_showCulledChunks     = false;  // Unchecked by default
         bool  m_showGlobalBounds     = false;  // Unchecked by default
-        bool  m_cascadeLOD           = true;
+        bool  m_cascadeLOD           = false;
         bool  m_showLODTint          = false;
         std::vector<SurfelVertex> m_previewLODSurfels;
 
@@ -199,6 +204,8 @@ namespace Surfels
             bool     isSilhouette = false;         // Active in-view silhouette edge chunk (locked against eviction)
             float    transitionProgress = 0.0f;   // 0.0 (Parent Level N Solid) <-> 1.0 (Children Level N-1 Solid)
             float    streamWaveTimer = 0.0f;      // Active chunk streaming lavender wavefront timer (3.0s -> 0.0s)
+            float    silhouetteHysteresisTimer = 0.0f; // Hysteresis hold time (seconds) to eliminate refinement/demotion thrashing
+            uint32_t globalSurfelOffset = 0;      // Zero-copy offset into m_unifiedPackedSurfels / m_unifiedRawSurfels
             XMFLOAT3 aabbMin = { 0, 0, 0 };
             XMFLOAT3 aabbMax = { 0, 0, 0 };
         };
@@ -224,7 +231,7 @@ namespace Surfels
         float  m_conservativeNeighborBufferMargin   = 1.35f;  // Frustum margin for pre-fetching local neighbors in conservative mode
         bool   m_enableDitheredTransitions  = true;   // Stochastic screen-space Bayer dithering for smooth LOD transitions
         float  m_ditherTransitionDurationSec= 0.20f;  // Transition dissolve duration in seconds
-        bool   m_enableStreamingSimulation  = false; // Simulated network connection
+        bool   m_enableStreamingSimulation  = true;  // Hierarchical streaming simulation & LOD refinement
         bool   m_unthrottledBandwidth       = false; // Full uncapped bandwidth (removes throttle cap)
         bool   m_prioritizeFrustumAndProximity = true; // Stream view frustum & close proximity chunks first
         float  m_bandwidthThrottleMBps      = 10.0f;  // Simulated bandwidth in MB/s
@@ -242,16 +249,27 @@ namespace Surfels
         float  m_chunkStreamDuration        = 3.0f;   // Duration in seconds of advancing wave crest & trailing alpha dissipation
 
         // Silhouette Edge Focused Reconstruction & Dilation Morphing
-        bool   m_enableSilhouetteLOD0       = true;   // Refine silhouette edges using biased LOD levels
+        bool   m_enableSilhouetteLOD0       = true;   // Refine silhouette edges using biased LOD levels (Option 2 GPU Inversion)
         int    m_silhouetteLODBias          = 2;      // Silhouette edge LOD bias (renders fine edges using Level N - 2, min value 0)
-        float  m_silhouetteThreshold        = 0.40f;  // 2D screen-space grazing rim angle threshold (|N . V| <= threshold)
-        float  m_dilationMorphAmount        = 0.40f;  // Geometric dilation morph factor during edge transitions
-        bool   m_highlightSilhouetteChunks  = false;  // Highlight silhouette chunks in lavender semi-transparent effect
-        bool   m_showSilhouetteDots         = true;   // Render 9-pixel billboarded lavender squares over silhouette clusters with 16px Poisson spacing
+        float  m_silhouetteThreshold        = 0.40f;  // Grazing rim angle threshold
+        float  m_silhouetteDepthThreshold   = 0.05f;  // GPU depth step threshold for interior occlusion edges
+        bool   m_silhouetteExteriorOnly     = true;   // 1 = only outer perimeter against background, 0 = include interior occlusion
+        float  m_dilationMorphAmount        = 0.0f;   // Geometric dilation morph factor during edge transitions
+        bool   m_highlightSilhouetteChunks  = false;  // Visualizer toggle for edge chunks (lavender)
+        bool   m_showOnlyLockedChunks       = false;  // Isolate dynamic workload: show ONLY locked chunks (transition or edge)
+        bool   m_freezeRenderingAndMemory   = false;  // Freeze streaming simulation, memory management, and edge updates to remove flickering when paused
+
+        // Temporal Anti-Aliasing (TAA) & Dither Transition Resolver
+        bool   m_enableTemporalFiltering    = false;  // Enable Temporal Accumulation & Dither Resolver (Disabled by default)
+        float  m_temporalBlendWeight        = 0.15f;  // History blend weight (0.05 = maximum smoothness, 0.50 = responsive)
+        bool   m_enableSubpixelJitter       = true;   // 8-phase Halton(2,3) sub-pixel camera jitter
+        bool   m_enableVarianceClamping     = true;   // 3x3 YCoCg neighborhood variance color box clamping (anti-ghosting)
 
         std::vector<std::vector<StreamChunk>> m_lodStreamChunks; // Chunks grouped by LOD level for O(1) equalizer
         std::vector<StreamChunk*>             m_allStreamChunkPtrs; // Flat list of pointers for priority sorting
         std::vector<StreamChunk*>             m_rendererSourceChunks; // Source chunk pointers corresponding to m_rendererMeshletChunks
+        std::vector<PackedSurfelGPU>          m_unifiedPackedSurfels; // Global zero-copy packed surfel buffer
+        std::vector<SurfelVertex>            m_unifiedRawSurfels;    // Global zero-copy raw surfel buffer
         std::vector<size_t>                   m_lodTotalSurfels;   // Total surfels per LOD level
         std::vector<size_t>                   m_lodResidentSurfels;// Resident surfels per LOD level
 
@@ -264,6 +282,11 @@ namespace Surfels
         std::vector<float>    m_smoothedLodResidentPct;
         std::vector<uint32_t> m_smoothedLodResidentBlocks;
         bool     m_streamStateDirty = true;
+        uint32_t m_lastActiveTransitions = 0; // Simultaneously mid-transition chunk count from the previous frame; forces instant transition completion under overload (see UpdateStreamingSimulation)
+
+        std::string m_integrityReport;
+        void   RunMemoryAndLODIntegrityTest();
+        float  m_morphTestDebounceTimer = 0.0f;
 
         void   InitStreamingSimulation();
         void   UpdateStreamingSimulation(double dtSeconds);

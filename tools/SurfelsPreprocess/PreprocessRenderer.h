@@ -3,8 +3,12 @@
 #include "base/Texture.h"
 #include "../../src/DX12/Wavelet/WaveletTypes.h"
 
+#include "PostProc/PostProcCS.h"
+
 namespace Surfels
 {
+    void LogTransitionTrace(const char* fmt, ...);
+
     class PreprocessRenderer
     {
     public:
@@ -40,8 +44,17 @@ namespace Surfels
             XMFLOAT3 cullTarget       = { 0.0f, 0.0f, 0.0f };
             bool     enableDithering  = true; // Stochastic screen-space Bayer dithering for smooth LOD transitions
             bool     highlightSilhouette = false; // Highlight silhouette chunks in lavender semi-transparent effect
+            bool     showChunkStream  = true;  // Render orange wave sweep for newly streamed chunks
             bool     enableConeCulling = true; // Task Shader (mainAS) backface normal cone culling
             bool     useCopyQueue = true; // Dedicated DX12 Hardware DMA Copy Queue for asynchronous PCIe transfers
+            bool     enableGpuSilhouetteInversion = true; // GPU Chunk-ID & Depth Discontinuity Edge Inversion
+            float    silhouetteDepthThreshold = 0.05f; // Depth step threshold for interior occlusion edges
+            bool     silhouetteExteriorOnly   = true;  // 1 = only outer perimeter against background, 0 = include interior occlusion
+            bool     showOnlyLockedChunks = false; // Isolate and show ONLY locked chunks (transition or edge)
+            bool     enableTemporalFiltering = true; // High-performance Temporal Accumulation & Dither Resolver (TAA)
+            float    temporalBlendWeight      = 0.15f; // History blend weight (0.05 = maximum smoothness, 0.50 = responsive)
+            bool     enableSubpixelJitter     = true;  // 8-phase Halton(2,3) sub-pixel camera jitter
+            bool     enableVarianceClamping   = true;  // 3x3 YCoCg neighborhood variance color box clamping (anti-ghosting)
         };
 
         struct FrameTimingMetrics
@@ -72,9 +85,20 @@ namespace Surfels
         float GetSmoothGpuSortMs() const { return m_smoothGpuSortMs; }
         float GetSmoothDispatchMs() const { return m_smoothDispatchMs; }
         float GetSmoothUiMs() const { return m_smoothUiMs; }
+        const std::vector<uint32_t>& GetSilhouetteBitmask() const { return m_silhouetteBitmaskCPU; }
+        uint32_t GetSilhouetteBitmaskChunkCount() const { return m_lastEdgeChunkCount; }
 
 
     private:
+        // Blocks until any in-flight m_pCopyQueue work has completed. m_pCopyQueue is a raw D3D12 queue
+        // created directly by this class -- it is NOT one of Cauldron's own tracked queues, so
+        // Device::GPUFlush() (direct/compute only) never waits on it. Buffer-resize code paths that
+        // Unmap()/Release() an upload buffer the copy queue reads from (via CopyResource) must call this
+        // first, or a copy queued on a prior frame can still be reading from that memory the moment it is
+        // freed -- a GPU-side use-after-free that can corrupt state or hang the device (DXGI_ERROR_DEVICE_HUNG)
+        // with no CPU-visible symptom.
+        void FlushCopyQueue();
+
         struct SurfelsCB
         {
             XMFLOAT4X4 viewProj;
@@ -97,7 +121,7 @@ namespace Surfels
             uint32_t   enableDithering;
             uint32_t   highlightSilhouette;
             uint32_t   enableConeCulling;
-            float      padCB;
+            uint32_t   showOnlyLocked;
         };
 
         CAULDRON_DX12::Device* m_pDevice = nullptr;
@@ -173,6 +197,7 @@ namespace Surfels
         bool                       m_lastGpuRadixSort = false;
         bool                       m_lastUseChunkedPipeline = false;
         bool                       m_needUploadChunkIndicesToGpu = false;
+        std::vector<std::pair<float, uint32_t>> m_chunkDists;
 
         // GPU-Driven Pipeline & Bitonic LDS Sorting PSOs
         ID3D12CommandSignature*    m_pCommandSignature = nullptr;
@@ -203,6 +228,54 @@ namespace Surfels
         ID3D12Fence*               m_pCopyFence = nullptr;
         uint64_t                   m_copyFenceValue = 0;
         HANDLE                     m_copyFenceEvent = nullptr;
+
+        // GPU Chunk-ID & Depth Discontinuity Edge Inversion
+        CAULDRON_DX12::Texture     m_itemBuffer;
+        CAULDRON_DX12::Texture     m_itemDepthBuffer;
+        CAULDRON_DX12::RTV         m_itemRTV;
+        CAULDRON_DX12::DSV         m_itemDepthDSV;
+        CAULDRON_DX12::CBV_SRV_UAV m_itemSRV;
+        CAULDRON_DX12::CBV_SRV_UAV m_itemDepthSRV;
+        CAULDRON_DX12::CBV_SRV_UAV m_itemTableSRVs;
+        CAULDRON_DX12::CBV_SRV_UAV m_silhouetteBitmaskUAV;
+        CAULDRON_DX12::PostProcCS  m_clearBitmaskCS;
+        CAULDRON_DX12::PostProcCS  m_silhouetteEdgeExtractCS;
+        ID3D12Resource*            m_pSilhouetteBitmaskGpuBuffer = nullptr;
+        ID3D12Resource*            m_pSilhouetteReadbackBuffer = nullptr;
+        ID3D12PipelineState*       m_pItemPrepassPSO = nullptr;
+        std::vector<uint32_t>      m_silhouetteBitmaskCPU;
+        uint32_t                   m_itemWidth = 0;
+        uint32_t                   m_itemHeight = 0;
+        uint32_t                   m_bitmaskCapacityBytes = 0;
+        XMFLOAT4X4                 m_lastEdgeViewProj = {};
+        uint32_t                   m_lastEdgeChunkCount = 0;
+        float                      m_lastEdgeDepthThreshold = -1.0f;
+        bool                       m_lastEdgeExteriorOnly = true;
+        bool                       m_edgeBitmaskValid = false;
+
+        // Temporal Anti-Aliasing & Dither Transition Resolver
+        CAULDRON_DX12::Texture     m_sceneColorBuffer;
+        CAULDRON_DX12::RTV         m_sceneColorRTV;
+        CAULDRON_DX12::CBV_SRV_UAV m_sceneColorSRV;
+
+        CAULDRON_DX12::Texture     m_historyColorBuffer;
+        CAULDRON_DX12::CBV_SRV_UAV m_historyColorSRV;
+        CAULDRON_DX12::CBV_SRV_UAV m_historyColorUAV;
+
+        CAULDRON_DX12::Texture     m_resolvedColorBuffer;
+        CAULDRON_DX12::CBV_SRV_UAV m_resolvedColorSRV;
+        CAULDRON_DX12::CBV_SRV_UAV m_resolvedColorUAV;
+
+        CAULDRON_DX12::CBV_SRV_UAV m_depthBufferSRV;
+        CAULDRON_DX12::CBV_SRV_UAV m_temporalTableSRVs;
+        CAULDRON_DX12::CBV_SRV_UAV m_temporalTableUAVs;
+
+        ID3D12RootSignature*       m_pTemporalRootSig = nullptr;
+        ID3D12PipelineState*       m_pTemporalPSO = nullptr;
+
+        XMFLOAT4X4                 m_prevViewProj = {};
+        bool                       m_temporalFirstFrame = true;
+        uint32_t                   m_jitterPhase = 0;
     };
 }
 

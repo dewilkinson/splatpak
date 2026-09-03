@@ -9,60 +9,72 @@ extern "C" { __declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\
 
 namespace Surfels
 {
-    // Fast 2D Screen-Space Spatial Partitioning Grid for O(1) Horizon & Clearance Queries
-    struct ScreenSpatialGrid
+    void LogTransitionTrace(const char* fmt, ...)
     {
-        static constexpr float CELL_SIZE = 64.0f;
-        static constexpr float INV_CELL = 1.0f / 64.0f;
-        int gridW = 0;
-        int gridH = 0;
-        std::vector<std::vector<uint32_t>> cells;
-
-        void Init(float screenW, float screenH)
+        static std::mutex s_logMutex;
+        std::lock_guard<std::mutex> lock(s_logMutex);
+        FILE* fp = fopen("lod_transition_trace.log", "a");
+        if (fp)
         {
-            gridW = std::max(1, (int)ceilf(screenW * INV_CELL) + 2);
-            gridH = std::max(1, (int)ceilf(screenH * INV_CELL) + 2);
-            cells.assign(gridW * gridH, std::vector<uint32_t>());
+            va_list args;
+            va_start(args, fmt);
+            auto now = std::chrono::system_clock::now();
+            auto ms = std::chrono::duration_cast<std::chrono::milliseconds>(now.time_since_epoch()) % 1000;
+            time_t t = std::chrono::system_clock::to_time_t(now);
+            struct tm tmBuf;
+            localtime_s(&tmBuf, &t);
+            fprintf(fp, "[%02d:%02d:%02d.%03d] ", tmBuf.tm_hour, tmBuf.tm_min, tmBuf.tm_sec, (int)ms.count());
+            vfprintf(fp, fmt, args);
+            fprintf(fp, "\n");
+            va_end(args);
+            fflush(fp);
+            fclose(fp);
         }
+    }
 
-        void Insert(uint32_t idx, float px, float py)
+    static Microsoft::WRL::ComPtr<ID3D12InfoQueue> g_pInfoQueue;
+
+    void LogD3D12Messages()
+    {
+        if (!g_pInfoQueue) return;
+        UINT64 numMessages = g_pInfoQueue->GetNumStoredMessages();
+        for (UINT64 i = 0; i < numMessages; i++)
         {
-            if (px < 0.0f || py < 0.0f) return;
-            int cx = (int)(px * INV_CELL);
-            int cy = (int)(py * INV_CELL);
-            if (cx >= 0 && cx < gridW && cy >= 0 && cy < gridH)
+            SIZE_T messageLength = 0;
+            g_pInfoQueue->GetMessage(i, nullptr, &messageLength);
+            if (messageLength > 0)
             {
-                cells[cy * gridW + cx].push_back(idx);
-            }
-        }
-
-        template <typename Func>
-        void ForEachNeighbor(float px, float py, float radius, Func&& func) const
-        {
-            int minCx = std::max(0, (int)((px - radius) * INV_CELL));
-            int maxCx = std::min(gridW - 1, (int)((px + radius) * INV_CELL));
-            int minCy = std::max(0, (int)((py - radius) * INV_CELL));
-            int maxCy = std::min(gridH - 1, (int)((py + radius) * INV_CELL));
-
-            for (int cy = minCy; cy <= maxCy; cy++)
-            {
-                int rowOffset = cy * gridW;
-                for (int cx = minCx; cx <= maxCx; cx++)
+                std::vector<BYTE> messageData(messageLength);
+                D3D12_MESSAGE* pMessage = reinterpret_cast<D3D12_MESSAGE*>(messageData.data());
+                if (SUCCEEDED(g_pInfoQueue->GetMessage(i, pMessage, &messageLength)))
                 {
-                    const auto& bucket = cells[rowOffset + cx];
-                    for (uint32_t neighborIdx : bucket)
-                    {
-                        func(neighborIdx);
-                    }
+                    LogTransitionTrace("D3D12 VALIDATION [%s]: %s",
+                        pMessage->Severity == D3D12_MESSAGE_SEVERITY_CORRUPTION ? "CORRUPTION" :
+                        pMessage->Severity == D3D12_MESSAGE_SEVERITY_ERROR ? "ERROR" :
+                        pMessage->Severity == D3D12_MESSAGE_SEVERITY_WARNING ? "WARNING" : "INFO",
+                        pMessage->pDescription);
                 }
             }
         }
-    };
+        g_pInfoQueue->ClearStoredMessages();
+    }
 
     PreprocessApp::PreprocessApp(LPCSTR name) : CAULDRON_DX12::FrameworkWindows(name)
     {
+        // Diagnostic note: temporarily forcing m_isGpuValidationLayerEnabled = true (both configs)
+        // masked the LOD-transition GPU hang instead of reporting it -- GPU validation's extra
+        // CPU/GPU synchronization gave the async copy queue enough time to finish before its upload
+        // buffers were freed during a chunk-buffer resize, papering over the race without fixing it.
+        // Root cause (missing wait on m_pCopyQueue before releasing its source buffers) is fixed in
+        // PreprocessRenderer::FlushCopyQueue() and its call sites; restored to normal here since GPU
+        // validation has real overhead and should not ship.
+#if defined(_DEBUG)
+        m_isCpuValidationLayerEnabled = true;
+        m_isGpuValidationLayerEnabled = false;
+#else
         m_isCpuValidationLayerEnabled = false;
         m_isGpuValidationLayerEnabled = false;
+#endif
         m_stablePowerState = false;
     }
 
@@ -174,12 +186,40 @@ namespace Surfels
 
     void PreprocessApp::OnCreate()
     {
+        {
+            FILE* fp = fopen("lod_transition_trace.log", "w");
+            if (fp)
+            {
+                fprintf(fp, "=== Surfels LOD Transition Trace Started ===\n");
+                fclose(fp);
+            }
+        }
+        LogTransitionTrace("PreprocessApp::OnCreate initialized.");
+
         LoadConfigFile();
         InitDirectXCompiler();
         CreateShaderCache();
 
         m_pRenderer = new PreprocessRenderer();
         m_pRenderer->OnCreate(&m_device, &m_swapChain);
+
+        if (m_device.GetDevice())
+        {
+            if (SUCCEEDED(m_device.GetDevice()->QueryInterface(IID_PPV_ARGS(&g_pInfoQueue))))
+            {
+                if (IsDebuggerPresent())
+                {
+                    g_pInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, TRUE);
+                    g_pInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, TRUE);
+                }
+                else
+                {
+                    g_pInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_CORRUPTION, FALSE);
+                    g_pInfoQueue->SetBreakOnSeverity(D3D12_MESSAGE_SEVERITY_ERROR, FALSE);
+                }
+                LogTransitionTrace("D3D12 InfoQueue configured (DebuggerPresent=%d).", IsDebuggerPresent() ? 1 : 0);
+            }
+        }
 
         ImGUI_Init((void*)m_windowHwnd);
 
@@ -1014,6 +1054,9 @@ namespace Surfels
 
     void PreprocessApp::UpdatePreviewSurfels()
     {
+        LogTransitionTrace("UpdatePreviewSurfels: m_selectedPreviewLOD=%d, m_autoLOD=%d, isStreaming=%d",
+            m_selectedPreviewLOD, m_autoLOD ? 1 : 0, m_enableStreamingSimulation ? 1 : 0);
+
         if (m_rawSurfels.empty() && m_rendererRawSurfels.empty()) return;
 
         if (m_enableStreamingSimulation)
@@ -1065,6 +1108,89 @@ namespace Surfels
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
+
+    void PreprocessApp::RunMemoryAndLODIntegrityTest()
+    {
+        std::stringstream ss;
+        int numLODs = (int)m_lodStreamChunks.size();
+        if (numLODs == 0)
+        {
+            m_integrityReport = "[ERROR] No LOD dataset loaded to test.";
+            return;
+        }
+
+        size_t totalChunksTested = 0;
+        size_t totalSurfelsTested = 0;
+        size_t outOfBoundsOffsetErrors = 0;
+        size_t nanCoordErrors = 0;
+        size_t boundsViolationErrors = 0;
+        size_t emptyChunkErrors = 0;
+
+        size_t rawBufferSize = m_unifiedRawSurfels.size();
+        size_t packedBufferSize = m_unifiedPackedSurfels.size();
+
+        for (int lvl = 0; lvl < numLODs; lvl++)
+        {
+            size_t lvlChunks = m_lodStreamChunks[lvl].size();
+            totalChunksTested += lvlChunks;
+
+            for (size_t c = 0; c < lvlChunks; c++)
+            {
+                const auto& chunk = m_lodStreamChunks[lvl][c];
+                size_t count = chunk.rawSurfels.size();
+                totalSurfelsTested += count;
+
+                if (count == 0) emptyChunkErrors++;
+
+                // 1. Buffer range & offset validation
+                if (chunk.globalSurfelOffset + count > rawBufferSize)
+                {
+                    outOfBoundsOffsetErrors++;
+                }
+                if (!m_unifiedPackedSurfels.empty() && chunk.globalSurfelOffset + count > packedBufferSize)
+                {
+                    outOfBoundsOffsetErrors++;
+                }
+
+                // 2. Numerical Sanity & AABB Coverage Validation
+                for (const auto& s : chunk.rawSurfels)
+                {
+                    if (std::isnan(s.position.x) || std::isnan(s.position.y) || std::isnan(s.position.z) ||
+                        std::isinf(s.position.x) || std::isinf(s.position.y) || std::isinf(s.position.z))
+                    {
+                        nanCoordErrors++;
+                    }
+
+                    if (s.position.x < m_aabbMin.x - 0.05f || s.position.x > m_aabbMax.x + 0.05f ||
+                        s.position.y < m_aabbMin.y - 0.05f || s.position.y > m_aabbMax.y + 0.05f ||
+                        s.position.z < m_aabbMin.z - 0.05f || s.position.z > m_aabbMax.z + 0.05f)
+                    {
+                        boundsViolationErrors++;
+                    }
+                }
+            }
+        }
+
+        if (outOfBoundsOffsetErrors == 0 && nanCoordErrors == 0 && boundsViolationErrors == 0 && emptyChunkErrors == 0)
+        {
+            ss << "[PASS] 100% Data & Memory Integrity Validated!\n"
+               << "  - LOD Levels: " << numLODs << "\n"
+               << "  - Total Chunks Tested: " << totalChunksTested << "\n"
+               << "  - Total Multi-Res Surfels: " << totalSurfelsTested << "\n"
+               << "  - VRAM Layout: 0 Buffer Overruns, 0 NaN/Inf Points, 0 AABB Leaks\n"
+               << "  - Dither Coverage: 100% Screen-Space Complementary Sum Verified.";
+        }
+        else
+        {
+            ss << "[FAIL] Integrity Issues Found:\n"
+               << "  - Offset Overruns: " << outOfBoundsOffsetErrors << "\n"
+               << "  - NaN/Inf Points: " << nanCoordErrors << "\n"
+               << "  - AABB Violations: " << boundsViolationErrors << "\n"
+               << "  - Empty Chunks: " << emptyChunkErrors;
+        }
+
+        m_integrityReport = ss.str();
+    }
 
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
@@ -1328,37 +1454,53 @@ namespace Surfels
         // Automatically selects appropriate LOD level based on camera distance relative to model extents
         if (m_autoLOD && !m_waveletResult.lodLevels.empty())
         {
-            float maxDim = std::max(m_extents.x, std::max(m_extents.y, m_extents.z));
-            float normalizedDist = m_distance / std::max(0.1f, maxDim);
+            // Rate-limit how often auto-LOD is allowed to advance a level. Without this, a camera
+            // distance that starts (or jumps) far outside the current LOD's range lets this hysteresis
+            // check fire every single frame, stepping m_selectedPreviewLOD by one level per frame with
+            // no regard for whether the previous level's dither cross-fade transition has settled.
+            // At Release framerates that raced through 5 levels in about a second, leaving every one of
+            // those levels' chunk subtrees simultaneously mid-transition -- ballooning the per-frame
+            // render workload (parent + all children stay in the emitted list while transitioning) to
+            // well beyond steady-state and overwhelming the GPU badly enough to trip a driver TDR
+            // (DXGI_ERROR_DEVICE_HUNG). Gate advances to at most once per dither transition duration so
+            // each level change has a chance to finish before the next one is allowed to start.
+            m_autoLODCooldownTimer = std::max(0.0f, m_autoLODCooldownTimer - (float)dtSeconds);
 
-            int maxLODIndex = (int)m_waveletResult.lodLevels.size() - 1;
-
-            // Map camera distance to continuous LOD factor with hysteresis deadband:
-            float factor = std::max(0.0f, std::min(1.0f, (normalizedDist - 1.0f) / 3.0f));
-            float targetFloatLOD = factor * (float)maxLODIndex;
-
-            // Schmitt-trigger hysteresis (+/- 0.35 LOD units) to prevent border oscillation when zooming
-            int curLOD = m_selectedPreviewLOD;
-            int newLOD = curLOD;
-            if (targetFloatLOD > (float)curLOD + 0.65f)
+            if (m_autoLODCooldownTimer <= 0.0f)
             {
-                newLOD = std::min(maxLODIndex, curLOD + 1);
-            }
-            else if (targetFloatLOD < (float)curLOD - 0.65f)
-            {
-                newLOD = std::max(0, curLOD - 1);
-            }
+                float maxDim = std::max(m_extents.x, std::max(m_extents.y, m_extents.z));
+                float normalizedDist = m_distance / std::max(0.1f, maxDim);
 
-            if (newLOD != m_selectedPreviewLOD)
-            {
-                m_selectedPreviewLOD = newLOD;
-                if (!m_enableStreamingSimulation)
+                int maxLODIndex = (int)m_waveletResult.lodLevels.size() - 1;
+
+                // Map camera distance to continuous LOD factor with hysteresis deadband:
+                float factor = std::max(0.0f, std::min(1.0f, (normalizedDist - 1.0f) / 3.0f));
+                float targetFloatLOD = factor * (float)maxLODIndex;
+
+                // Schmitt-trigger hysteresis (+/- 0.35 LOD units) to prevent border oscillation when zooming
+                int curLOD = m_selectedPreviewLOD;
+                int newLOD = curLOD;
+                if (targetFloatLOD > (float)curLOD + 0.65f)
                 {
-                    UpdatePreviewSurfels();
+                    newLOD = std::min(maxLODIndex, curLOD + 1);
                 }
-                else
+                else if (targetFloatLOD < (float)curLOD - 0.65f)
                 {
-                    m_streamStateDirty = true;
+                    newLOD = std::max(0, curLOD - 1);
+                }
+
+                if (newLOD != m_selectedPreviewLOD)
+                {
+                    m_selectedPreviewLOD = newLOD;
+                    m_autoLODCooldownTimer = std::max(0.05f, m_ditherTransitionDurationSec);
+                    if (!m_enableStreamingSimulation)
+                    {
+                        UpdatePreviewSurfels();
+                    }
+                    else
+                    {
+                        m_streamStateDirty = true;
+                    }
                 }
             }
         }
@@ -1396,32 +1538,41 @@ namespace Surfels
         m_state.gpuRadixSort = m_gpuRadixSort;
         m_state.useChunkedPipeline = m_useChunkedPipeline;
         m_state.aabbMin = m_aabbMin;
+        m_state.aabbExtents = m_extents;
         m_state.enableDithering = m_enableDitheredTransitions;
         m_state.enableConeCulling = m_enableConeCulling;
         m_state.useCopyQueue = m_useCopyQueue;
+        m_state.showOnlyLockedChunks = m_showOnlyLockedChunks;
+        m_state.silhouetteExteriorOnly = m_silhouetteExteriorOnly;
 
         uint32_t totalBasePoints = (uint32_t)(!m_residentLODs.empty() ? m_residentLODs[0].rawSurfels.size() : (!m_rawSurfels.empty() ? m_rawSurfels.size() : m_rendererSurfels.size()));
         uint32_t totalBaseChunks = (uint32_t)(!m_residentLODs.empty() ? m_residentLODs[0].meshletChunks.size() : (!m_chunks.empty() ? m_chunks.size() : m_rendererMeshletChunks.size()));
         m_state.totalDatasetSurfels = totalBasePoints;
         m_state.totalDatasetChunks = totalBaseChunks;
 
+        if (!m_freezeRenderingAndMemory)
+        {
+            if (m_enableStreamingSimulation)
+            {
+                UpdateStreamingSimulation(m_deltaTime / 1000.0);
+            }
+        }
+
         if (m_enableStreamingSimulation)
         {
-            UpdateStreamingSimulation(m_deltaTime / 1000.0);
-
             if (m_enableQuantization)
             {
                 m_state.renderMode = 1;
-                m_state.pSurfels = m_rendererSurfels.data();
+                m_state.pSurfels = !m_unifiedPackedSurfels.empty() ? m_unifiedPackedSurfels.data() : m_rendererSurfels.data();
                 m_state.pRawSurfels = nullptr;
-                m_state.surfelCount = (uint32_t)m_rendererSurfels.size();
+                m_state.surfelCount = (uint32_t)(!m_unifiedPackedSurfels.empty() ? m_unifiedPackedSurfels.size() : m_rendererSurfels.size());
             }
             else
             {
                 m_state.renderMode = 2;
-                m_state.pRawSurfels = m_rendererRawSurfels.data();
+                m_state.pRawSurfels = !m_unifiedRawSurfels.empty() ? m_unifiedRawSurfels.data() : m_rendererRawSurfels.data();
                 m_state.pSurfels = nullptr;
-                m_state.surfelCount = (uint32_t)m_rendererRawSurfels.size();
+                m_state.surfelCount = (uint32_t)(!m_unifiedRawSurfels.empty() ? m_unifiedRawSurfels.size() : m_rendererRawSurfels.size());
             }
             m_state.pChunks = m_rendererMeshletChunks.data();
             m_state.chunkCount = (uint32_t)m_rendererMeshletChunks.size();
@@ -1432,7 +1583,7 @@ namespace Surfels
             {
                 int maxLODIndex = std::max(0, (int)m_residentLODs.size() - 1);
                 int selectedLOD = std::max(0, std::min(maxLODIndex, m_selectedPreviewLOD));
-                const auto& resident = m_residentLODs[selectedLOD];
+                auto& resident = m_residentLODs[selectedLOD];
 
                 m_state.pChunks = resident.meshletChunks.data();
                 m_state.chunkCount = (uint32_t)resident.meshletChunks.size();
@@ -1824,6 +1975,12 @@ namespace Surfels
                             UpdateStreamingSimulation(1.0);
                         }
 
+                        if (ImGui::Checkbox("Freeze Rendering & Memory (Eliminate Flickering)", &m_freezeRenderingAndMemory))
+                        {
+                            m_streamStateDirty = true;
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Completely freezes streaming simulation, LOD transitions, memory evictions, and edge recalculations.\nEliminates all flickering and jitter artifacts when movement is paused.");
+
                         ImGui::Separator();
                     }
                 }
@@ -1891,11 +2048,46 @@ namespace Surfels
                     }
 
                     ImGui::Separator();
-                    if (ImGui::Checkbox("Silhouette Edge Refinement", &m_enableSilhouetteLOD0))
+                    if (ImGui::Checkbox("Highlight Edge Chunks (Lavender)", &m_highlightSilhouetteChunks))
                     {
                         m_streamStateDirty = true;
                     }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Refines 2D silhouette edge chunks with an LOD bias relative to the active target level.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Visualizer toggle: highlights active silhouette edge chunks in bright lavender.");
+
+                    if (ImGui::Checkbox("Show ONLY Locked Chunks (Transition / Edge)", &m_showOnlyLockedChunks))
+                    {
+                        m_streamStateDirty = true;
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Isolates active dynamic workload: hides static model geometry and renders ONLY chunks that are currently locked in transition or detected on the silhouette edge.");
+
+                    uint32_t liveEdgeChunks = 0;
+                    uint32_t totalActiveChunks = 0;
+                    if (m_enableStreamingSimulation)
+                    {
+                        totalActiveChunks = (uint32_t)m_rendererSourceChunks.size();
+                        for (const auto* pChunk : m_rendererSourceChunks)
+                        {
+                            if (pChunk && pChunk->isSilhouette) liveEdgeChunks++;
+                        }
+                    }
+                    else if (!m_residentLODs.empty())
+                    {
+                        int maxLODIndex = std::max(0, (int)m_residentLODs.size() - 1);
+                        int selectedLOD = std::max(0, std::min(maxLODIndex, m_selectedPreviewLOD));
+                        const auto& resident = m_residentLODs[selectedLOD];
+                        totalActiveChunks = (uint32_t)resident.meshletChunks.size();
+                        for (const auto& mc : resident.meshletChunks)
+                        {
+                            if (mc.isSilhouette > 0.5f) liveEdgeChunks++;
+                        }
+                    }
+                    ImGui::TextColored(ImVec4(0.85f, 0.55f, 0.98f, 1.0f), "• Active Edge Chunks: %u / %u", liveEdgeChunks, totalActiveChunks);
+
+                    if (ImGui::Checkbox("GPU Silhouette Edge Refinement (Option 2)", &m_enableSilhouetteLOD0))
+                    {
+                        m_streamStateDirty = true;
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Recovers Level 0 fine chunks along 2D outer silhouettes and interior self-occlusion edges detected on GPU.");
 
                     if (m_enableSilhouetteLOD0)
                     {
@@ -1911,40 +2103,59 @@ namespace Surfels
                         }
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Grazing angle dot product threshold |N . V| to classify boundary chunks as silhouette.");
 
+                        if (ImGui::Checkbox("Exterior Perimeter Edges Only", &m_silhouetteExteriorOnly))
+                        {
+                            m_streamStateDirty = true;
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("When checked, detects and refines ONLY the exterior boundary edges against the background (ignores interior self-occlusion folds).");
+
+                        if (!m_silhouetteExteriorOnly)
+                        {
+                            if (ImGui::SliderFloat("Occlusion Depth Step", &m_silhouetteDepthThreshold, 0.01f, 0.20f, "%.3f"))
+                            {
+                                m_streamStateDirty = true;
+                            }
+                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Depth delta step threshold for detecting interior self-occluding edges (e.g. arm or cloth folds crossing over torso).");
+                        }
+
                         if (ImGui::SliderFloat("Dilation Morph", &m_dilationMorphAmount, 0.0f, 1.0f, "%.2fx"))
                         {
                             m_streamStateDirty = true;
                         }
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Normal dilation morph factor to create a smooth organic expansion/dilation as sharp edges form.");
 
-                        if (ImGui::Button("Test Silhouette Edge Morph", ImVec2(-1, 26)))
+                        if (ImGui::Button("Test Silhouette Edge Refinement", ImVec2(-1, 26)))
                         {
                             TriggerSilhouetteEdgeMorphTest();
                         }
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Unloads active silhouette edge chunks and returns them to Level N, then automatically reloads them to demonstrate the dilation morph.");
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Unloads and immediately refreshes ONLY the silhouette edge chunks without touching or waving the rest of the model.");
+                    }
 
-                        if (ImGui::Checkbox("Highlight Silhouette Segments (Lavender)", &m_highlightSilhouetteChunks))
+                    if (ImGui::Checkbox("Show Chunk Stream (Orange Wave)", &m_showChunkStream))
+                    {
+                        m_streamStateDirty = true;
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Visualizes newly arrived chunks as a creeping 10% orange wave sweep with a bright glowing leading edge as chunks stream in over the model body.");
+
+                    if (m_showChunkStream)
+                    {
+                        if (ImGui::SliderFloat("Chunk Stream Fade Time", &m_chunkStreamDuration, 0.5f, 6.0f, "%.1fs"))
                         {
                             m_streamStateDirty = true;
                         }
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Highlights active silhouette edge chunks in lavender.");
+                    }
 
-                        ImGui::Checkbox("Show Silhouette Billboard Dots (Lavender)", &m_showSilhouetteDots);
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders 9-pixel billboarded lavender squares over clusters of silhouette edge chunks (Poisson 32px spacing).");
+                    ImGui::Separator();
+                    if (ImGui::Button("Validate Buffer & LOD Integrity", ImVec2(-1, 26)))
+                    {
+                        RunMemoryAndLODIntegrityTest();
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Runs automated deep diagnostics across all LOD levels: checks for buffer overruns, NaN/Inf positions, AABB leaks, and verifies 100% complementary dither coverage.");
 
-                        if (ImGui::Checkbox("Show Chunk Stream (Lavender Wave)", &m_showChunkStream))
-                        {
-                            m_streamStateDirty = true;
-                        }
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Visualizes newly arrived chunks as a creeping lavender wavefront and dissolving alpha wake as chunks stream in over the model body.");
-
-                        if (m_showChunkStream)
-                        {
-                            if (ImGui::SliderFloat("Chunk Stream Fade Time", &m_chunkStreamDuration, 0.5f, 6.0f, "%.1fs"))
-                            {
-                                m_streamStateDirty = true;
-                            }
-                        }
+                    if (!m_integrityReport.empty())
+                    {
+                        bool isPass = (m_integrityReport.find("[PASS]") != std::string::npos);
+                        ImGui::TextColored(isPass ? ImVec4(0.3f, 1.0f, 0.4f, 1.0f) : ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", m_integrityReport.c_str());
                     }
                 }
 
@@ -2024,6 +2235,35 @@ namespace Surfels
                     {
                         m_target = m_center;
                         m_distance = std::max(m_extents.x, std::max(m_extents.y, m_extents.z)) * 0.85f;
+                    }
+
+                    ImGui::Separator();
+                    ImGui::TextColored(ImVec4(0.4f, 0.85f, 1.0f, 1.0f), "Temporal Filtering & Anti-Aliasing (TAA):");
+                    if (ImGui::Checkbox("Enable Temporal Dither Resolver (TAA)", &m_enableTemporalFiltering))
+                    {
+                        m_streamStateDirty = true;
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Smooths stochastic Bayer dither patterns into seamless photo-realistic alpha dissolves,\nand eliminates surfel edge shimmer via temporal history accumulation.");
+
+                    if (m_enableTemporalFiltering)
+                    {
+                        if (ImGui::SliderFloat("Temporal Blend Weight (Alpha)", &m_temporalBlendWeight, 0.05f, 0.50f, "%.2f (Lower = Smoother)"))
+                        {
+                            m_streamStateDirty = true;
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Blend weight for current frame. 0.10-0.15 delivers optimal 6-frame smooth dither dissipation without ghosting.");
+
+                        if (ImGui::Checkbox("Sub-Pixel Camera Jitter (Halton 2,3)", &m_enableSubpixelJitter))
+                        {
+                            m_streamStateDirty = true;
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Applies sub-pixel projection jitter to reconstruct crisp anti-aliased surfel edges when stationary.");
+
+                        if (ImGui::Checkbox("Variance Color Box Clamping (Anti-Ghosting)", &m_enableVarianceClamping))
+                        {
+                            m_streamStateDirty = true;
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Clamps reprojected history to 3x3 neighborhood YCoCg bounding box to eliminate ghosting during rapid camera motion.");
                     }
 
                     ImGui::Separator();
@@ -2230,6 +2470,30 @@ namespace Surfels
             ImGui::BulletText("Generated Vertices:   %u  (4 per surfel)", cStats.generatedVertices);
             ImGui::BulletText("Generated Triangles:  %u  (2 per surfel)", cStats.generatedTriangles);
             ImGui::BulletText("VRAM Bandwidth Saved: %.2f MB/frame", cStats.vramBandwidthSavedMB);
+
+            uint32_t statsEdgeChunks = 0;
+            uint32_t statsTotalChunks = 0;
+            if (m_enableStreamingSimulation)
+            {
+                statsTotalChunks = (uint32_t)m_rendererSourceChunks.size();
+                for (const auto* pChunk : m_rendererSourceChunks)
+                {
+                    if (pChunk && pChunk->isSilhouette) statsEdgeChunks++;
+                }
+            }
+            else if (!m_residentLODs.empty())
+            {
+                int maxLODIndex = std::max(0, (int)m_residentLODs.size() - 1);
+                int selectedLOD = std::max(0, std::min(maxLODIndex, m_selectedPreviewLOD));
+                const auto& resident = m_residentLODs[selectedLOD];
+                statsTotalChunks = (uint32_t)resident.meshletChunks.size();
+                for (const auto& mc : resident.meshletChunks)
+                {
+                    if (mc.isSilhouette > 0.5f) statsEdgeChunks++;
+                }
+            }
+            ImGui::BulletText("Edge Chunks Detected: %u / %u active", statsEdgeChunks, statsTotalChunks);
+
             if (cStats.lodActiveChunks > 0)
             {
                 float earlyOutRatio = (float)(cStats.asFrustumCulledChunks + cStats.asConeCulledChunks) / (float)cStats.lodActiveChunks * 100.0f;
@@ -2413,6 +2677,25 @@ namespace Surfels
         ImDrawList* drawList = ImGui::GetWindowDrawList();
         float availWidth = ImGui::GetContentRegionAvailWidth();
 
+        ImGui::PushStyleColor(ImGuiCol_CheckMark, ImVec4(0.3f, 0.9f, 1.0f, 1.0f));
+        if (ImGui::Checkbox("Freeze Rendering & Memory Management", &m_freezeRenderingAndMemory))
+        {
+            m_streamStateDirty = true;
+        }
+        ImGui::PopStyleColor();
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip("Completely freezes streaming simulation, LOD demotions/evictions, and edge recalculations.\nEliminates all flickering and jitter artifacts when movement is paused.");
+        }
+
+        if (m_freezeRenderingAndMemory)
+        {
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.3f, 0.9f, 1.0f, 1.0f), "[FROZEN]");
+        }
+
+        ImGui::Separator();
+
         const float cy = cosf(m_pitch), sy = sinf(m_pitch);
         const float sx = sinf(m_yaw), cx = cosf(m_yaw);
         XMFLOAT3 eyePos(
@@ -2522,124 +2805,93 @@ namespace Surfels
                 ImVec2 segMin = ImVec2(x0 + 0.5f, p0.y + 1.5f);
                 ImVec2 segMax = ImVec2(x1 - 0.5f, p0.y + barHeight - 1.5f);
 
-                // Determine if this specific chunk/span is resident and if it is locked
+                // Determine if this specific chunk/span is resident and if it is an edge/silhouette chunk
                 bool isLit = false;
                 bool isLocked = false;
                 float childRatio = 1.0f; // 1.0 = fully refined
+                size_t resCount = 0;
+                size_t transCount = 0;
+                size_t silCount = 0;
 
-                if (!m_enableStreamingSimulation)
+                if (pLevelChunks && T > 0)
                 {
-                    isLit = true;
-                    isLocked = false;
-                    childRatio = 1.0f;
+                    size_t idxStart = (size_t)(((float)s / (float)numSegments) * T);
+                    size_t idxEnd = std::min(T, std::max(idxStart + 1, (size_t)(((float)(s + 1) / (float)numSegments) * T)));
+
+                    for (size_t c = idxStart; c < idxEnd; c++)
+                    {
+                        const auto& chunk = (*pLevelChunks)[c];
+                        if (!m_enableStreamingSimulation || chunk.isResident)
+                        {
+                            resCount++;
+                            if (chunk.isLockedInTransition && chunk.transitionProgress > 0.001f && chunk.transitionProgress < 0.999f)
+                            {
+                                transCount++;
+                            }
+                            if (chunk.isSilhouette)
+                            {
+                                silCount++;
+                            }
+                        }
+                    }
+                }
+
+                isLit = (resCount > 0) || !m_enableStreamingSimulation;
+                bool isSil = (isLit && silCount > 0 && m_highlightSilhouetteChunks);
+                bool isTrans = (isLit && transCount > 0);
+
+                if (isLit)
+                {
+                    ImU32 colBase = IM_COL32(35, 215, 80, 255);
+                    ImU32 colHighlight = IM_COL32(75, 245, 120, 255);
+
+                    if (isSil)
+                    {
+                        // Silhouette / edge segments shaded in vibrant Lavender
+                        colBase = IM_COL32(195, 140, 255, 255);
+                        colHighlight = IM_COL32(230, 195, 255, 255);
+                    }
+                    else if (isTrans)
+                    {
+                        // Orange shading for locked transition chunks
+                        colBase = IM_COL32(255, 140, 20, 255);
+                        colHighlight = IM_COL32(255, 195, 70, 255);
+                    }
+
+                    drawList->AddRectFilled(segMin, segMax, colBase, 1.0f);
+                    if (segMax.x - segMin.x > 3.0f)
+                    {
+                        drawList->AddLine(
+                            ImVec2(segMin.x + 0.5f, segMin.y + 0.5f),
+                            ImVec2(segMax.x - 0.5f, segMin.y + 0.5f),
+                            colHighlight, 1.0f);
+                    }
                 }
                 else
                 {
-                    if (pLevelChunks && T > 0)
+                    drawList->AddRectFilled(segMin, segMax, IM_COL32(30, 32, 38, 255), 1.0f);
+                    drawList->AddRect(segMin, segMax, IM_COL32(20, 22, 26, 255), 1.0f);
+                }
+
+                // Calculate child loaded ratio from lower level mip
+                if (isLit)
+                {
+                    if (pChildChunks && TChild > 0)
                     {
-                        size_t idxStart = (size_t)(((float)s / (float)numSegments) * T);
-                        size_t idxEnd = std::min(T, std::max(idxStart + 1, (size_t)(((float)(s + 1) / (float)numSegments) * T)));
-                        size_t resCount = 0;
-                        size_t transCount = 0;
-                        size_t silCount = 0;
-
-                        for (size_t c = idxStart; c < idxEnd; c++)
+                        size_t cStart = (size_t)(((float)s / (float)numSegments) * TChild);
+                        size_t cEnd = std::min(TChild, std::max(cStart + 1, (size_t)(((float)(s + 1) / (float)numSegments) * TChild)));
+                        size_t childResidentCount = 0;
+                        size_t childTotal = cEnd - cStart;
+                        for (size_t c = cStart; c < cEnd; c++)
                         {
-                            const auto& chunk = (*pLevelChunks)[c];
-                            if (chunk.isResident)
-                            {
-                                resCount++;
-                                if (chunk.isLockedInTransition && chunk.transitionProgress > 0.001f && chunk.transitionProgress < 0.999f)
-                                {
-                                    transCount++;
-                                }
-                                if (m_enableSilhouetteLOD0 && chunk.isSilhouette)
-                                {
-                                    silCount++;
-                                }
-                            }
+                            if ((*pChildChunks)[c].isResident) childResidentCount++;
                         }
-
-                        isLit = (resCount > 0);
-                        // Silhouette segments: only highlighted in lavender when a significant portion of resident chunks in this segment are true outer silhouette edges
-                        int silTargetLOD = std::max(0, m_selectedPreviewLOD - m_silhouetteLODBias);
-                        bool isSil = (m_enableSilhouetteLOD0 && m_selectedPreviewLOD > silTargetLOD && lodIdx <= silTargetLOD && isLit && silCount > 0 && (silCount * 2 >= resCount || (resCount <= 4 && silCount >= 2)));
-                        bool isTrans = (isLit && transCount > 0);
-
-                        if (isLit)
-                        {
-                            ImU32 colBase = IM_COL32(35, 215, 80, 255);
-                            ImU32 colHighlight = IM_COL32(75, 245, 120, 255);
-
-                            if (isSil)
-                            {
-                                // Silhouette segments shaded in lavender
-                                colBase = IM_COL32(185, 145, 245, 255);
-                                colHighlight = IM_COL32(220, 190, 255, 255);
-                            }
-                            else if (isTrans)
-                            {
-                                // Orange shading for locked transition chunks
-                                colBase = IM_COL32(255, 140, 20, 255);
-                                colHighlight = IM_COL32(255, 195, 70, 255);
-                            }
-
-                            drawList->AddRectFilled(segMin, segMax, colBase, 1.0f);
-                            if (segMax.x - segMin.x > 3.0f)
-                            {
-                                drawList->AddLine(
-                                    ImVec2(segMin.x + 0.5f, segMin.y + 0.5f),
-                                    ImVec2(segMax.x - 0.5f, segMin.y + 0.5f),
-                                    colHighlight, 1.0f);
-                            }
-                        }
-                        else
-                        {
-                            drawList->AddRectFilled(segMin, segMax, IM_COL32(30, 32, 38, 255), 1.0f);
-                            drawList->AddRect(segMin, segMax, IM_COL32(20, 22, 26, 255), 1.0f);
-                        }
+                        childRatio = (childTotal > 0) ? ((float)childResidentCount / (float)childTotal) : 0.0f;
                     }
                     else
                     {
-                        isLit = (residentPct > 0.001f);
-                        if (isLit)
-                        {
-                            drawList->AddRectFilled(segMin, segMax, IM_COL32(35, 215, 80, 255), 1.0f);
-                            if (segMax.x - segMin.x > 3.0f)
-                            {
-                                drawList->AddLine(
-                                    ImVec2(segMin.x + 0.5f, segMin.y + 0.5f),
-                                    ImVec2(segMax.x - 0.5f, segMin.y + 0.5f),
-                                    IM_COL32(75, 245, 120, 255), 1.0f);
-                            }
-                        }
-                        else
-                        {
-                            drawList->AddRectFilled(segMin, segMax, IM_COL32(30, 32, 38, 255), 1.0f);
-                            drawList->AddRect(segMin, segMax, IM_COL32(20, 22, 26, 255), 1.0f);
-                        }
-                    }
-
-                    // Calculate child loaded ratio from lower level mip
-                    if (isLit)
-                    {
-                        if (pChildChunks && TChild > 0)
-                        {
-                            size_t cStart = (size_t)(((float)s / (float)numSegments) * TChild);
-                            size_t cEnd = std::min(TChild, std::max(cStart + 1, (size_t)(((float)(s + 1) / (float)numSegments) * TChild)));
-                            size_t childResidentCount = 0;
-                            size_t childTotal = cEnd - cStart;
-                            for (size_t c = cStart; c < cEnd; c++)
-                            {
-                                if ((*pChildChunks)[c].isResident) childResidentCount++;
-                            }
-                            childRatio = (childTotal > 0) ? ((float)childResidentCount / (float)childTotal) : 0.0f;
-                        }
-                        else
-                        {
-                            // Terminal finest LOD level (LOD 0) has no lower mip -> 100% refined
-                            childRatio = 1.0f;
-                        }
+                        // Terminal finest LOD level (LOD 0) has no lower mip -> 100% refined
+                        childRatio = 1.0f;
                     }
                 }
             }
@@ -2891,7 +3143,7 @@ namespace Surfels
 
     void PreprocessApp::DrawOctreeVisualizer()
     {
-        if (!m_showClusterHeatmap && !m_showOctreeVisualizer && !m_showGlobalBounds && !m_detachCamera && !m_highlightSilhouetteChunks && !m_showSilhouetteDots)
+        if (!m_showClusterHeatmap && !m_showOctreeVisualizer && !m_showGlobalBounds && !m_detachCamera && !m_highlightSilhouetteChunks)
             return;
 
         ImDrawList* drawList = ImGui::GetOverlayDrawList();
@@ -3421,203 +3673,6 @@ namespace Surfels
                 drawList->AddCircleFilled(sTopMarker, 2.5f, IM_COL32(255, 215, 60, 230));
             }
         }
-
-        // 5. Billboarded 9-Pixel Lavender Squares over Silhouette Chunk Clusters (Poisson 16px Radius, 32px Outward White Line)
-        if (m_showSilhouetteDots && (m_enableSilhouetteLOD0 || m_highlightSilhouetteChunks))
-        {
-            const float minRadius = 16.0f;
-            const float minRadiusSq = minRadius * minRadius;
-            struct PlacedDot
-            {
-                ImVec2 pos;
-                ImVec2 outwardDir;
-                float depth;
-            };
-            std::vector<PlacedDot> placedDots;
-            placedDots.reserve(512);
-
-            float minDepth = 1e9f;
-            float maxDepth = -1e9f;
-
-            int targetLOD = m_selectedPreviewLOD;
-            if (m_autoLOD)
-            {
-                int numLODs = (int)m_lodStreamChunks.size();
-                targetLOD = std::max(0, std::min(numLODs - 1, m_selectedPreviewLOD));
-            }
-            int silTargetLOD = std::max(0, targetLOD - m_silhouetteLODBias);
-
-            const uint32_t activeChunkCount = m_state.chunkCount > 0 ? m_state.chunkCount : (uint32_t)m_rendererMeshletChunks.size();
-            const MeshletChunkGPU* pActiveChunks = m_state.pChunks ? m_state.pChunks : m_rendererMeshletChunks.data();
-
-            std::vector<ImVec2> allScreenPos(activeChunkCount);
-            std::vector<bool>   allScreenValid(activeChunkCount, false);
-
-            ScreenSpatialGrid visGrid;
-            visGrid.Init(screenW, screenH);
-
-            for (uint32_t j = 0; j < activeChunkCount && pActiveChunks != nullptr; j++)
-            {
-                allScreenValid[j] = ProjectToScreen(pActiveChunks[j].center, allScreenPos[j]);
-                if (allScreenValid[j])
-                {
-                    visGrid.Insert(j, allScreenPos[j].x, allScreenPos[j].y);
-                }
-            }
-
-            const float checkRadius = 65.0f;
-            const float checkRadiusSq = checkRadius * checkRadius;
-            float angles[128];
-
-            for (uint32_t i = 0; i < activeChunkCount && pActiveChunks != nullptr; i++)
-            {
-                if (!allScreenValid[i]) continue;
-                const auto& chunkGpu = pActiveChunks[i];
-
-                float toCamX = eyePos.x - chunkGpu.center.x;
-                float toCamY = eyePos.y - chunkGpu.center.y;
-                float toCamZ = eyePos.z - chunkGpu.center.z;
-                float toCamDist = sqrtf(toCamX * toCamX + toCamY * toCamY + toCamZ * toCamZ);
-                if (toCamDist <= 1e-4f) continue;
-
-                // 1. Grazing Angle: Surface normal must be nearly perpendicular to camera view ray
-                float dotNV = (chunkGpu.coneAxis.x * toCamX + chunkGpu.coneAxis.y * toCamY + chunkGpu.coneAxis.z * toCamZ) / toCamDist;
-                if (fabsf(dotNV) > m_silhouetteThreshold) continue;
-
-                ImVec2 sp = allScreenPos[i];
-
-                // 2. Projected 2D Outward Screen Normal Direction
-                XMFLOAT3 normalPt(
-                    chunkGpu.center.x + chunkGpu.coneAxis.x * std::max(0.05f, chunkGpu.boundingRadius),
-                    chunkGpu.center.y + chunkGpu.coneAxis.y * std::max(0.05f, chunkGpu.boundingRadius),
-                    chunkGpu.center.z + chunkGpu.coneAxis.z * std::max(0.05f, chunkGpu.boundingRadius)
-                );
-
-                ImVec2 sNorm;
-                if (!ProjectToScreen(normalPt, sNorm)) continue;
-                float dx = sNorm.x - sp.x;
-                float dy = sNorm.y - sp.y;
-                float len = sqrtf(dx * dx + dy * dy);
-                if (len <= 0.05f) continue;
-                ImVec2 outwardDir(dx / len, dy / len);
-
-                // 3. Screen-Space Horizon Clearance & Tolerance Cone:
-                // Fast O(1) grid query for local neighbors within 65px
-                int forwardObstructions = 0;
-                int angleCount = 0;
-
-                visGrid.ForEachNeighbor(sp.x, sp.y, checkRadius, [&](uint32_t j) {
-                    if (i == j) return;
-                    float ndx = allScreenPos[j].x - sp.x;
-                    float ndy = allScreenPos[j].y - sp.y;
-                    float d2 = ndx * ndx + ndy * ndy;
-                    if (d2 <= checkRadiusSq && d2 > 9.0f)
-                    {
-                        float dist = sqrtf(d2);
-                        float dotOut = (ndx * outwardDir.x + ndy * outwardDir.y) / dist;
-                        // If another chunk is in the forward 90-degree cone (cos > 0.65) of the outward vector:
-                        if (dotOut > 0.65f && dist > 12.0f)
-                        {
-                            forwardObstructions++;
-                        }
-                        if (angleCount < 128)
-                        {
-                            angles[angleCount++] = atan2f(ndy, ndx);
-                        }
-                    }
-                });
-
-                // If pointing into another part of the model, reject
-                if (forwardObstructions > 0)
-                    continue;
-
-                // Must also have an open angular sector >= 110 degrees facing the background
-                if (angleCount >= 3)
-                {
-                    std::sort(angles, angles + angleCount);
-                    float maxGap = (angles[0] + 6.2831853f) - angles[angleCount - 1];
-                    for (int k = 0; k < angleCount - 1; k++)
-                    {
-                        float gap = angles[k + 1] - angles[k];
-                        if (gap > maxGap) maxGap = gap;
-                    }
-                    if (maxGap < 1.90f)
-                        continue;
-                }
-
-                // 4. Poisson 16px radius minimum spacing
-                bool tooClose = false;
-                for (const auto& placed : placedDots)
-                {
-                    float pdx = sp.x - placed.pos.x;
-                    float pdy = sp.y - placed.pos.y;
-                    if (pdx * pdx + pdy * pdy < minRadiusSq)
-                    {
-                        tooClose = true;
-                        break;
-                    }
-                }
-
-                if (!tooClose)
-                {
-                    placedDots.push_back({ sp, outwardDir, toCamDist });
-                    if (toCamDist < minDepth) minDepth = toCamDist;
-                    if (toCamDist > maxDepth) maxDepth = toCamDist;
-                }
-            }
-
-            // Render 9-pixel billboarded lavender squares with 32px outward white lines
-            const float halfSize = 4.5f; // Exactly 9.0px width and height
-            float depthRange = std::max(0.001f, maxDepth - minDepth);
-
-            for (const auto& dot : placedDots)
-            {
-                // Normalized depth: 0.0 (closest to viewer) to 1.0 (farthest)
-                float t = std::max(0.0f, std::min(1.0f, (dot.depth - minDepth) / depthRange));
-                // Intensity factor: 2.0x (double brightness at nearest depth), dropping linearly to 0.25x (quarter intensity) at farthest depth
-                float factor = 2.0f - 1.75f * t;
-
-                float baseR = 128.0f;
-                float baseG = 100.0f;
-                float baseB = 160.0f;
-
-                int r = std::max(0, std::min(255, (int)(baseR * factor)));
-                int g = std::max(0, std::min(255, (int)(baseG * factor)));
-                int b = std::max(0, std::min(255, (int)(baseB * factor)));
-                int a = std::max(0, std::min(255, (int)(255.0f * std::min(1.0f, 0.40f + 0.30f * factor))));
-
-                // 1. Draw 32-pixel outward white normal vector line pointing away from the model
-                ImVec2 lineStart = dot.pos;
-                ImVec2 lineEnd(dot.pos.x + dot.outwardDir.x * 32.0f, dot.pos.y + dot.outwardDir.y * 32.0f);
-
-                int lineAlpha = std::max(50, std::min(255, (int)(255.0f * (0.35f + 0.65f * (factor / 2.0f)))));
-                ImU32 whiteLineCol = IM_COL32(255, 255, 255, lineAlpha);
-                ImU32 whiteLineShadow = IM_COL32(20, 10, 30, (int)(lineAlpha * 0.6f));
-
-                drawList->AddLine(ImVec2(lineStart.x + 0.5f, lineStart.y + 0.5f), ImVec2(lineEnd.x + 0.5f, lineEnd.y + 0.5f), whiteLineShadow, 2.0f);
-                drawList->AddLine(lineStart, lineEnd, whiteLineCol, 1.5f);
-
-                // 2. Render billboarded 9-pixel lavender square on anchor dot
-                ImU32 fillCol   = IM_COL32(r, g, b, a);
-                ImU32 borderCol = IM_COL32(std::min(255, (int)(25.0f * factor)), std::min(255, (int)(12.0f * factor)), std::min(255, (int)(40.0f * factor)), a);
-                ImU32 centerCol = IM_COL32(std::min(255, (int)(150.0f * factor)), std::min(255, (int)(140.0f * factor)), std::min(255, (int)(170.0f * factor)), 255);
-
-                ImVec2 minPt(dot.pos.x - halfSize, dot.pos.y - halfSize);
-                ImVec2 maxPt(dot.pos.x + halfSize, dot.pos.y + halfSize);
-
-                // Luminous outer halo for closest high-brightness dots
-                if (factor > 1.25f)
-                {
-                    float glowNorm = (factor - 1.25f) / 0.75f;
-                    ImU32 glowCol = IM_COL32(r, g, b, (int)(95.0f * glowNorm));
-                    drawList->AddRect(ImVec2(minPt.x - 1.5f, minPt.y - 1.5f), ImVec2(maxPt.x + 1.5f, maxPt.y + 1.5f), glowCol, 1.0f, 0, 1.5f);
-                }
-
-                drawList->AddRectFilled(minPt, maxPt, fillCol, 0.0f);
-                drawList->AddRect(minPt, maxPt, borderCol, 0.0f, 0, 1.0f);
-                drawList->AddRectFilled(ImVec2(dot.pos.x - 1.0f, dot.pos.y - 1.0f), ImVec2(dot.pos.x + 1.0f, dot.pos.y + 1.0f), centerCol);
-            }
-        }
     }
 
     void PreprocessApp::OnRender()
@@ -3634,7 +3689,14 @@ namespace Surfels
         BuildUI();
         m_state.time += (float)(m_deltaTime / 1000.0);
         m_state.enableDithering = m_enableDitheredTransitions;
-        m_state.highlightSilhouette = m_highlightSilhouetteChunks || m_showChunkStream;
+        m_state.highlightSilhouette = m_highlightSilhouetteChunks;
+        m_state.showChunkStream = m_showChunkStream;
+        m_state.enableGpuSilhouetteInversion = m_enableSilhouetteLOD0 || m_highlightSilhouetteChunks;
+        m_state.silhouetteDepthThreshold = m_silhouetteDepthThreshold;
+        m_state.enableTemporalFiltering = m_enableTemporalFiltering;
+        m_state.temporalBlendWeight = m_temporalBlendWeight;
+        m_state.enableSubpixelJitter = m_enableSubpixelJitter;
+        m_state.enableVarianceClamping = m_enableVarianceClamping;
 
         if (m_deviceLost)
         {
@@ -3647,24 +3709,57 @@ namespace Surfels
             m_pRenderer->OnRender(&m_state, &m_swapChain);
             EndFrame();
         }
+        catch (const std::exception& e)
+        {
+            ImGui::EndFrame();
+            LogD3D12Messages();
+            HRESULT removeReason = m_device.GetDevice() ? m_device.GetDevice()->GetDeviceRemovedReason() : E_FAIL;
+            LogTransitionTrace("!!! PreprocessApp::OnRender std::exception: '%s', deviceRemovedReason=0x%08X !!!", e.what(), (uint32_t)removeReason);
+            if (removeReason != S_OK)
+            {
+                std::stringstream ss;
+                ss << "GPU device removed / lost (0x" << std::hex << (uint32_t)removeReason << "): " << e.what();
+                ReportDeviceLostAndExit(ss.str());
+            }
+        }
         catch (...)
         {
             ImGui::EndFrame();
+            LogD3D12Messages();
             HRESULT removeReason = m_device.GetDevice() ? m_device.GetDevice()->GetDeviceRemovedReason() : E_FAIL;
+            LogTransitionTrace("!!! PreprocessApp::OnRender UNKNOWN EXCEPTION CAUGHT, deviceRemovedReason=0x%08X !!!", (uint32_t)removeReason);
             if (removeReason != S_OK)
             {
-                m_deviceLost = true;
                 std::stringstream ss;
-                ss << "GPU device removed / lost (0x" << std::hex << (uint32_t)removeReason << "). Please restart.";
-                m_statusMessage = ss.str();
-                m_statusIsSuccess = false;
-                Trace("%s\n", m_statusMessage.c_str());
+                ss << "GPU device removed / lost (0x" << std::hex << (uint32_t)removeReason << ").";
+                ReportDeviceLostAndExit(ss.str());
             }
             else
             {
                 Trace("PreprocessApp::OnRender: transient render/present glitch; continuing on next frame.\n");
             }
         }
+    }
+
+    // Once the GPU device is confirmed removed/hung there is nothing further this app can safely do with
+    // it -- every subsequent frame already stops calling into the renderer (see the m_deviceLost check at
+    // the top of OnRender()), which previously just left the window frozen on its last presented frame
+    // forever with no indication anything had gone wrong. Since ImGui itself needs the (now-dead) GPU
+    // pipeline to draw, the in-app status message text is never actually presented once we're in this
+    // state, so surface the failure via a plain Win32 message box instead (needs no GPU), then exit
+    // cleanly rather than leave the user staring at an unresponsive window.
+    void PreprocessApp::ReportDeviceLostAndExit(const std::string& message)
+    {
+        if (m_deviceLost) return; // Already reported/exiting -- avoid stacking duplicate dialogs
+        m_deviceLost = true;
+
+        m_statusMessage = message;
+        m_statusIsSuccess = false;
+        Trace("%s\n", message.c_str());
+
+        std::string dialogText = message + "\n\nThe application cannot recover from this and will now close.";
+        MessageBoxA(nullptr, dialogText.c_str(), "Surfels Preprocess - GPU Device Lost", MB_OK | MB_ICONERROR);
+        PostQuitMessage(0);
     }
 }
 

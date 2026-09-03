@@ -37,6 +37,7 @@ set(shaders
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/DX12/Shaders/GPURadixSortCS.hlsl
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/DX12/Shaders/CullSurfelsCS.hlsl
     ${CMAKE_CURRENT_SOURCE_DIR}/../../src/DX12/Shaders/BuildIndirectArgsCS.hlsl
+    ${CMAKE_CURRENT_SOURCE_DIR}/../../src/DX12/Shaders/SilhouetteEdgeExtractCS.hlsl
 )
 
 set_source_files_properties(${shaders} PROPERTIES HEADER_FILE_ONLY TRUE)

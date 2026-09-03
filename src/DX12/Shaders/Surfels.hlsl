@@ -65,7 +65,8 @@ cbuffer SurfelsCB : register(b0)
     uint     g_EnableDithering;
     uint     g_HighlightSilhouette;
     uint     g_EnableConeCulling;
-    float    g_PadCB;
+    uint     g_ShowOnlyLocked;
+    uint     g_ShowChunkStream;
 };
 
 struct ChunkPayload
@@ -166,6 +167,10 @@ void mainAS(
     if (globalChunkIdx < g_TotalChunks)
     {
         chunkIdx = g_SortedChunkIndices[globalChunkIdx];
+        if (chunkIdx >= g_TotalChunks)
+        {
+            chunkIdx = globalChunkIdx;
+        }
         MeshletChunk chunk = g_ChunkBuffer[chunkIdx];
 
         // Conservative AABB Frustum Culling (supports detached debug camera)
@@ -224,12 +229,22 @@ void mainAS(
                 }
             }
         }
+
+        // Show ONLY Locked Chunks (Transition or Edge)
+        if (isVisible && g_ShowOnlyLocked == 1)
+        {
+            bool isLocked = (chunk.isSilhouette > 0.001) || (abs(chunk.blendWeight) > 0.001 && abs(chunk.blendWeight) < 0.999);
+            if (!isLocked)
+            {
+                isVisible = false;
+            }
+        }
     }
 
     uint visibleOffset = WavePrefixCountBits(isVisible);
     uint totalVisible = WaveActiveCountBits(isVisible);
 
-    if (isVisible)
+    if (isVisible && visibleOffset < AS_GROUP_SIZE)
     {
         s_Payload.chunkIndices[visibleOffset] = chunkIdx;
     }
@@ -239,7 +254,7 @@ void mainAS(
     if (threadId == 0)
     {
         s_Payload.flatGroupIndex = 0;
-        DispatchMesh(totalVisible, 1, 1, s_Payload);
+        DispatchMesh(min(totalVisible, (uint)AS_GROUP_SIZE), 1, 1, s_Payload);
     }
 }
 
@@ -264,11 +279,17 @@ void mainMS(
     float chunkIsSilhouette = 0.0;
     if (g_UseChunkedPipeline == 1)
     {
-        uint chunkIdx = payload.chunkIndices[groupId.x];
+        uint pIdx = min(groupId.x, (uint)(AS_GROUP_SIZE - 1));
+        uint chunkIdx = payload.chunkIndices[pIdx];
+        if (chunkIdx >= g_TotalChunks)
+        {
+            SetMeshOutputCounts(0, 0);
+            return;
+        }
         MeshletChunk chunk = g_ChunkBuffer[chunkIdx];
         groupSurfelCount = min((uint)SURFELS_PER_GROUP, chunk.surfelCount);
         surfelIndex = chunk.surfelOffset + threadId;
-        chunkBlendWeight = (abs(chunk.blendWeight) > 0.001f) ? chunk.blendWeight : 1.0f;
+        chunkBlendWeight = chunk.blendWeight;
         chunkDilationMorph = chunk.dilationMorph;
         chunkIsSilhouette = chunk.isSilhouette;
     }
@@ -280,9 +301,19 @@ void mainMS(
         surfelIndex = groupBase + threadId;
     }
 
+    if (g_ShowOnlyLocked == 1 && g_UseChunkedPipeline == 1)
+    {
+        bool isLocked = (chunkIsSilhouette > 0.001) || (abs(chunkBlendWeight) > 0.001 && abs(chunkBlendWeight) < 0.999);
+        if (!isLocked)
+        {
+            SetMeshOutputCounts(0, 0);
+            return;
+        }
+    }
+
     SetMeshOutputCounts(groupSurfelCount * 4, groupSurfelCount * 2);
 
-    if (threadId >= groupSurfelCount)
+    if (threadId >= groupSurfelCount || surfelIndex >= g_SurfelCount)
         return;
     float3 worldPos;
     float3 normal;
@@ -412,7 +443,6 @@ void mainMS(
             }
             return;
         }
-
         // 3. Hollow Mold Interior Shading when camera is detached
         if (dot(normal, normal) > 0.1)
         {
@@ -452,23 +482,25 @@ void mainMS(
     float lighting = (dot(normal, normal) > 0.01) ? (0.35 + 0.65 * ndl) : 1.0;
     float3 litColor = color * lighting;
 
-    // Show Chunk Stream - Lavender Wavefront & Retained Alpha Tint Dissipation
-    if (g_HighlightSilhouette == 1 && chunkIsSilhouette > 0.001)
+    // Show Chunk Stream & Edge Highlighting
+    if (chunkIsSilhouette > 0.001)
     {
         float w = saturate(chunkIsSilhouette);
-        if (w >= 0.65)
+        if (w >= 0.99)
         {
-            // 1. Advancing Leading Edge (Vibrant Lavender Wave Crest)
-            float leadFactor = saturate((w - 0.65) / 0.35);
-            float3 hotLavender = float3(0.85, 0.55, 0.98);
-            litColor = lerp(litColor, hotLavender, 0.85 + leadFactor * 0.15);
+            // Pure Silhouette Edge Chunks: Crisp Lavender Outline (ONLY when Highlight Edge Chunks toggle is ON)
+            if (g_HighlightSilhouette == 1)
+            {
+                float3 hotLavender = float3(0.85, 0.55, 0.98);
+                litColor = lerp(litColor, hotLavender, 0.90);
+            }
         }
-        else
+        else if (g_ShowChunkStream == 1)
         {
-            // 2. Trailing Wake of Retained Alpha Tint that Dissolves and Blends Over Time
-            float trailFactor = saturate(w / 0.65);
-            float3 trailLavender = float3(0.78, 0.48, 0.92);
-            litColor = lerp(litColor, trailLavender * lighting, trailFactor * 0.65);
+            // Wave Sweep: 10% Orange Tint Opacity
+            float trailFactor = saturate(w / 0.95);
+            float3 orangeTint = float3(1.0, 0.55, 0.1);
+            litColor = lerp(litColor, orangeTint * lighting, 0.10 * trailFactor);
         }
     }
 
@@ -555,3 +587,171 @@ float4 mainPS(VSOut i) : SV_Target
 
     return float4(i.color * alpha, alpha);
 }
+
+// =========================================================================
+// GPU Item Prepass Stage (itemMS & itemPS) for Silhouette Edge Inversion
+// =========================================================================
+
+struct ItemVSOut
+{
+    float4 pos     : SV_POSITION;
+    float2 uv      : TEXCOORD0;
+    nointerpolation uint chunkId : CHUNKID0;
+};
+
+[outputtopology("triangle")]
+[numthreads(SURFELS_PER_GROUP, 1, 1)]
+void itemMS(
+    in uint threadId : SV_GroupIndex,
+    in uint3 groupId : SV_GroupID,
+    out vertices ItemVSOut verts[SURFELS_PER_GROUP * 4],
+    out indices uint3 tris[SURFELS_PER_GROUP * 2]
+)
+{
+    uint groupSurfelCount = SURFELS_PER_GROUP;
+    uint surfelIndex = 0;
+    uint chunkIndex = groupId.y * 32768 + groupId.x;
+
+    if (g_UseChunkedPipeline == 1)
+    {
+        if (chunkIndex >= g_TotalChunks)
+        {
+            SetMeshOutputCounts(0, 0);
+            return;
+        }
+        MeshletChunk c = g_ChunkBuffer[chunkIndex];
+
+        // Fast Normal Cone Backface Culling in itemMS
+        if (g_EnableConeCulling == 1 && c.coneCutoff > -0.99)
+        {
+            float3 toChunk = c.center - g_ViewerEyePos;
+            float dist = length(toChunk);
+            if (dist > 1e-4)
+            {
+                float3 viewDir = toChunk / dist;
+                float sinCone = sqrt(max(0.0, 1.0 - c.coneCutoff * c.coneCutoff));
+                if (dot(c.coneAxis, viewDir) > sinCone + 0.02)
+                {
+                    SetMeshOutputCounts(0, 0);
+                    return;
+                }
+            }
+        }
+
+        groupSurfelCount = min((uint)SURFELS_PER_GROUP, c.surfelCount);
+        surfelIndex = c.surfelOffset + threadId;
+    }
+    else
+    {
+        uint groupBase = chunkIndex * SURFELS_PER_GROUP;
+        if (groupBase >= g_SurfelCount)
+        {
+            SetMeshOutputCounts(0, 0);
+            return;
+        }
+        groupSurfelCount = min((uint)SURFELS_PER_GROUP, g_SurfelCount - groupBase);
+        surfelIndex = groupBase + threadId;
+        chunkIndex = 0;
+    }
+
+    SetMeshOutputCounts(groupSurfelCount * 4, groupSurfelCount * 2);
+
+    if (threadId >= groupSurfelCount || surfelIndex >= g_SurfelCount)
+        return;
+
+    float3 worldPos;
+    float3 normal;
+    float3 tangentX, tangentY;
+
+    if (g_RenderMode == 1)
+    {
+        PackedSurfel s = g_SurfelBuffer[surfelIndex];
+        uint qx = s.packedPosRadius & 0x3FF;
+        uint qy = (s.packedPosRadius >> 10) & 0x3FF;
+        uint qz = (s.packedPosRadius >> 20) & 0x3FF;
+        uint re = (s.packedPosRadius >> 30) & 0x3;
+
+        worldPos = g_AABBMin + float3(qx / 1023.0, qy / 1023.0, qz / 1023.0) * g_AABBExtents;
+        normal = UnpackNormalOct16(s.packedNormalColor & 0xFFFF);
+
+        static const float s_radScales[4] = { 1.0f, 1.5f, 2.5f, 4.5f };
+        float maxExtent = max(g_AABBExtents.x, max(g_AABBExtents.y, g_AABBExtents.z));
+        float baseVoxelRadius = max(0.0005f, (maxExtent / 1024.0f) * 1.35f);
+        float splatRadius = g_Radius * baseVoxelRadius * s_radScales[re];
+
+        float4 clipCenter = mul(g_ViewProj, float4(worldPos, 1.0));
+        float distToCam = max(0.1f, clipCenter.w);
+        float minCoverageRadius = distToCam * 0.00015f;
+        splatRadius = max(splatRadius, minCoverageRadius);
+
+        if (g_OrientMode == 0 && abs(normal.x) + abs(normal.y) + abs(normal.z) > 0.1f)
+        {
+            float3 up = abs(normal.y) < 0.99f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+            float3 tX = normalize(cross(up, normal));
+            float3 tY = cross(normal, tX);
+            tangentX = tX * splatRadius;
+            tangentY = tY * splatRadius;
+        }
+        else
+        {
+            tangentX = g_CamRight * splatRadius;
+            tangentY = g_CamUp * splatRadius;
+        }
+    }
+    else if (g_RenderMode == 2)
+    {
+        RawSurfel s = g_RawSurfelBuffer[surfelIndex];
+        worldPos = s.position;
+        normal = s.normal;
+        float splatRadius = max(0.001f, s.radius * g_Radius);
+        if (g_OrientMode == 0 && dot(normal, normal) > 0.1f)
+        {
+            float3 up = abs(normal.y) < 0.99f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);
+            float3 tX = normalize(cross(up, normal));
+            float3 tY = cross(normal, tX);
+            tangentX = tX * splatRadius;
+            tangentY = tY * splatRadius;
+        }
+        else
+        {
+            tangentX = g_CamRight * splatRadius;
+            tangentY = g_CamUp * splatRadius;
+        }
+    }
+    else
+    {
+        float3 dir = FibonacciSpherePoint(surfelIndex, g_SurfelCount);
+        worldPos = dir * g_SphereRadius;
+        normal = dir;
+        tangentX = g_CamRight * (g_Radius * 0.05);
+        tangentY = g_CamUp * (g_Radius * 0.05);
+    }
+
+    float2 corners[4] = { float2(-1.0, -1.0), float2(1.0, -1.0), float2(-1.0, 1.0), float2(1.0, 1.0) };
+
+    uint vBase = threadId * 4;
+    [unroll]
+    for (uint c = 0; c < 4; c++)
+    {
+        float3 offset = tangentX * corners[c].x + tangentY * corners[c].y;
+
+        ItemVSOut o;
+        o.pos = mul(g_ViewProj, float4(worldPos + offset, 1.0));
+        o.uv = corners[c] * 0.5 + 0.5;
+        o.chunkId = chunkIndex + 1; // 1-based chunk ID so 0 is background
+        verts[vBase + c] = o;
+    }
+
+    uint pBase = threadId * 2;
+    tris[pBase + 0] = uint3(vBase + 0, vBase + 1, vBase + 2);
+    tris[pBase + 1] = uint3(vBase + 1, vBase + 3, vBase + 2);
+}
+
+uint itemPS(ItemVSOut i) : SV_Target0
+{
+    float2 centered = i.uv * 2.0 - 1.0;
+    if (dot(centered, centered) > 1.0)
+        discard;
+    return i.chunkId;
+}
+
