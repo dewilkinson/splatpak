@@ -3388,12 +3388,39 @@ namespace Surfels
             }
             int silTargetLOD = std::max(0, targetLOD - m_silhouetteLODBias);
 
-            // Iterate over all active resident meshlet chunks
-            for (size_t i = 0; i < m_rendererMeshletChunks.size(); i++)
+            const uint32_t activeChunkCount = m_state.chunkCount > 0 ? m_state.chunkCount : (uint32_t)m_rendererMeshletChunks.size();
+            const MeshletChunkGPU* pActiveChunks = m_state.pChunks ? m_state.pChunks : m_rendererMeshletChunks.data();
+
+            for (uint32_t i = 0; i < activeChunkCount && pActiveChunks != nullptr; i++)
             {
-                const auto& chunkGpu = m_rendererMeshletChunks[i];
-                // Must be marked as silhouette chunk at or finer than the silhouette target LOD
-                if (chunkGpu.lodLevel <= (uint32_t)silTargetLOD && chunkGpu.isSilhouette > 0.5f)
+                const auto& chunkGpu = pActiveChunks[i];
+                bool isSil = (chunkGpu.isSilhouette > 0.5f);
+
+                if (!isSil)
+                {
+                    if (i < m_rendererSourceChunks.size() && m_rendererSourceChunks[i])
+                    {
+                        isSil = m_rendererSourceChunks[i]->isSilhouette;
+                    }
+                    
+                    if (!isSil)
+                    {
+                        float toCamX = eyePos.x - chunkGpu.center.x;
+                        float toCamY = eyePos.y - chunkGpu.center.y;
+                        float toCamZ = eyePos.z - chunkGpu.center.z;
+                        float toCamDist = sqrtf(toCamX * toCamX + toCamY * toCamY + toCamZ * toCamZ);
+                        if (toCamDist > 1e-4f)
+                        {
+                            float dotNV = (chunkGpu.coneAxis.x * toCamX + chunkGpu.coneAxis.y * toCamY + chunkGpu.coneAxis.z * toCamZ) / toCamDist;
+                            if (fabsf(dotNV) <= m_silhouetteThreshold)
+                            {
+                                isSil = true;
+                            }
+                        }
+                    }
+                }
+
+                if (isSil)
                 {
                     ImVec2 sp;
                     if (ProjectToScreen(chunkGpu.center, sp))
