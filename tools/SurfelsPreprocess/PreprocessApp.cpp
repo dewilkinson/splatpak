@@ -1879,6 +1879,9 @@ namespace Surfels
                         }
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Highlights active silhouette edge chunks in lavender.");
 
+                        ImGui::Checkbox("Show Silhouette Billboard Dots (Lavender)", &m_showSilhouetteDots);
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Renders 9-pixel billboarded lavender squares over clusters of silhouette edge chunks (Poisson 32px spacing).");
+
                         if (ImGui::Checkbox("Show Chunk Stream (Lavender Wave)", &m_showChunkStream))
                         {
                             m_streamStateDirty = true;
@@ -2838,7 +2841,7 @@ namespace Surfels
 
     void PreprocessApp::DrawOctreeVisualizer()
     {
-        if (!m_showClusterHeatmap && !m_showOctreeVisualizer && !m_showGlobalBounds && !m_detachCamera && !m_highlightSilhouetteChunks)
+        if (!m_showClusterHeatmap && !m_showOctreeVisualizer && !m_showGlobalBounds && !m_detachCamera && !m_highlightSilhouetteChunks && !m_showSilhouetteDots)
             return;
 
         ImDrawList* drawList = ImGui::GetOverlayDrawList();
@@ -3366,6 +3369,70 @@ namespace Surfels
             {
                 drawList->AddLine(sTopMid, sTopMarker, IM_COL32(255, 215, 60, 200), 1.5f);
                 drawList->AddCircleFilled(sTopMarker, 2.5f, IM_COL32(255, 215, 60, 230));
+            }
+        }
+
+        // 5. Billboarded 9-Pixel Lavender Squares over Silhouette Chunk Clusters (Poisson 32px Radius)
+        if (m_showSilhouetteDots && (m_enableSilhouetteLOD0 || m_highlightSilhouetteChunks))
+        {
+            const float minRadius = 32.0f;
+            const float minRadiusSq = minRadius * minRadius;
+            std::vector<ImVec2> placedDots;
+            placedDots.reserve(256);
+
+            int targetLOD = m_selectedPreviewLOD;
+            if (m_autoLOD)
+            {
+                int numLODs = (int)m_lodStreamChunks.size();
+                targetLOD = std::max(0, std::min(numLODs - 1, m_selectedPreviewLOD));
+            }
+            int silTargetLOD = std::max(0, targetLOD - m_silhouetteLODBias);
+
+            // Iterate over all active resident meshlet chunks
+            for (size_t i = 0; i < m_rendererMeshletChunks.size(); i++)
+            {
+                const auto& chunkGpu = m_rendererMeshletChunks[i];
+                // Must be marked as silhouette chunk at or finer than the silhouette target LOD
+                if (chunkGpu.lodLevel <= (uint32_t)silTargetLOD && chunkGpu.isSilhouette > 0.5f)
+                {
+                    ImVec2 sp;
+                    if (ProjectToScreen(chunkGpu.center, sp))
+                    {
+                        // Check if within 32-pixel radius of any already placed billboard square
+                        bool tooClose = false;
+                        for (const auto& placed : placedDots)
+                        {
+                            float dx = sp.x - placed.x;
+                            float dy = sp.y - placed.y;
+                            if (dx * dx + dy * dy < minRadiusSq)
+                            {
+                                tooClose = true;
+                                break;
+                            }
+                        }
+
+                        if (!tooClose)
+                        {
+                            placedDots.push_back(sp);
+                        }
+                    }
+                }
+            }
+
+            // Render 9-pixel billboarded lavender squares centered on each placed cluster
+            const float halfSize = 4.5f; // Exactly 9.0px width and height
+            const ImU32 fillCol   = IM_COL32(200, 160, 255, 240);  // Vibrant lavender fill
+            const ImU32 borderCol = IM_COL32(35, 15, 55, 230);     // Crisp dark outline for contrast
+            const ImU32 centerCol = IM_COL32(255, 240, 255, 255);  // Bright 1px inner highlight
+
+            for (const auto& pt : placedDots)
+            {
+                ImVec2 minPt(pt.x - halfSize, pt.y - halfSize);
+                ImVec2 maxPt(pt.x + halfSize, pt.y + halfSize);
+
+                drawList->AddRectFilled(minPt, maxPt, fillCol, 0.0f);
+                drawList->AddRect(minPt, maxPt, borderCol, 0.0f, 0, 1.0f);
+                drawList->AddRectFilled(ImVec2(pt.x - 1.0f, pt.y - 1.0f), ImVec2(pt.x + 1.0f, pt.y + 1.0f), centerCol);
             }
         }
     }
