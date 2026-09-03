@@ -2632,7 +2632,7 @@ namespace Surfels
         }
         if (ImGui::IsItemHovered())
         {
-            ImGui::SetTooltip("Immediately evicts all resident stream chunks and resets streaming delivery.");
+            ImGui::SetTooltip("Evicts refined detail stream chunks (LOD 0..max-2) while keeping the top two base mip levels (max & max-1) permanently resident.");
         }
 
         ImGui::SameLine();
