@@ -39,3 +39,13 @@ set_target_properties(TestLoadPackage PROPERTIES
     DEBUG_POSTFIX "d"
 )
 
+add_executable(TestGeometryCull ${CMAKE_CURRENT_SOURCE_DIR}/TestGeometryCull.cpp)
+set_target_properties(TestGeometryCull PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    FOLDER "Tests"
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_HOME_DIRECTORY}/bin"
+    DEBUG_POSTFIX "d"
+)
+
+

@@ -271,6 +271,64 @@ namespace Surfels
                     if (dist2 > maxR2) maxR2 = dist2;
                 }
                 chunk.boundingRadius = std::sqrt(maxR2) + 0.01f;
+                chunk.blendWeight = 1.0f;
+                chunk.lodLevel = 0;
+                chunk.dilationMorph = 0.0f;
+                chunk.isSilhouette = 0.0f;
+
+                // Compute cluster bounding normal cone for Task Shader (mainAS) backface culling
+                float nxSum = 0.0f, nySum = 0.0f, nzSum = 0.0f;
+                bool hasNormals = false;
+                for (uint32_t i = 0; i < count; i++)
+                {
+                    const auto& n = inOutPoints[startIdx + i].normal;
+                    float nLen2 = n.x * n.x + n.y * n.y + n.z * n.z;
+                    if (nLen2 > 0.01f)
+                    {
+                        nxSum += n.x;
+                        nySum += n.y;
+                        nzSum += n.z;
+                        hasNormals = true;
+                    }
+                }
+
+                XMFLOAT3 coneAxis(0.0f, 1.0f, 0.0f);
+                float coneCutoff = -1.0f; // Disabled by default
+
+                if (hasNormals)
+                {
+                    float axisLen = std::sqrt(nxSum * nxSum + nySum * nySum + nzSum * nzSum);
+                    if (axisLen > 1e-4f)
+                    {
+                        coneAxis = XMFLOAT3(nxSum / axisLen, nySum / axisLen, nzSum / axisLen);
+
+                        // Find minimum dot product (maximum angular deviation from cone axis)
+                        float minDot = 1.0f;
+                        for (uint32_t i = 0; i < count; i++)
+                        {
+                            const auto& n = inOutPoints[startIdx + i].normal;
+                            float nLen = std::sqrt(n.x * n.x + n.y * n.y + n.z * n.z);
+                            if (nLen > 1e-4f)
+                            {
+                                float dotVal = (n.x * coneAxis.x + n.y * coneAxis.y + n.z * coneAxis.z) / nLen;
+                                minDot = std::min(minDot, dotVal);
+                            }
+                        }
+
+                        // If normals spread across more than 90 degrees, cone culling cannot cull safely
+                        if (minDot > 0.0f)
+                        {
+                            coneCutoff = minDot; // cos(theta_max) in (0, 1]
+                        }
+                        else
+                        {
+                            coneCutoff = -1.0f;
+                        }
+                    }
+                }
+
+                chunk.coneAxis = coneAxis;
+                chunk.coneCutoff = coneCutoff;
             }
         }
     };

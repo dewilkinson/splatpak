@@ -227,14 +227,12 @@ namespace Surfels
                         if (opacity < 0.15f && sortedS[1] > 0.04f)
                             continue;
 
-                        // Continuous surface footprint: 1.5 sigma
-                        float footprint = sortedS[1] * 1.5f;
-                        v.radius = std::min(0.038f, footprint);
+                        // Continuous surface footprint: 1.25 * median scale
+                        v.radius = std::max(1e-5f, sortedS[1] * 1.25f);
                     }
                     else if (radOffset >= 0)
                     {
-                        float rVal = *reinterpret_cast<const float*>(ptr + radOffset);
-                        v.radius = std::min(0.038f, rVal);
+                        v.radius = std::max(1e-5f, *reinterpret_cast<const float*>(ptr + radOffset));
                         s0 = s1 = s2 = v.radius;
                     }
                     else
@@ -255,10 +253,32 @@ namespace Surfels
                         float qx = *reinterpret_cast<const float*>(ptr + rot1Offset);
                         float qy = *reinterpret_cast<const float*>(ptr + rot2Offset);
                         float qz = *reinterpret_cast<const float*>(ptr + rot3Offset);
+                        float qlen = std::sqrt(qw * qw + qx * qx + qy * qy + qz * qz);
+                        if (qlen > 1e-6f) { qw /= qlen; qx /= qlen; qy /= qlen; qz /= qlen; }
 
-                        v.normal.x = 2.0f * (qx * qz + qw * qy);
-                        v.normal.y = 2.0f * (qy * qz - qw * qx);
-                        v.normal.z = 1.0f - 2.0f * (qx * qx + qy * qy);
+                        // In 3DGS, the surface normal corresponds to the thinnest/smallest scale dimension
+                        int minIdx = 0;
+                        if (s1 <= s0 && s1 <= s2) minIdx = 1;
+                        else if (s2 <= s0 && s2 <= s1) minIdx = 2;
+
+                        if (minIdx == 0) // Column 0 (Local X axis)
+                        {
+                            v.normal.x = 1.0f - 2.0f * (qy * qy + qz * qz);
+                            v.normal.y = 2.0f * (qx * qy + qw * qz);
+                            v.normal.z = 2.0f * (qx * qz - qw * qy);
+                        }
+                        else if (minIdx == 1) // Column 1 (Local Y axis)
+                        {
+                            v.normal.x = 2.0f * (qx * qy - qw * qz);
+                            v.normal.y = 1.0f - 2.0f * (qx * qx + qz * qz);
+                            v.normal.z = 2.0f * (qy * qz + qw * qx);
+                        }
+                        else // Column 2 (Local Z axis)
+                        {
+                            v.normal.x = 2.0f * (qx * qz + qw * qy);
+                            v.normal.y = 2.0f * (qy * qz - qw * qx);
+                            v.normal.z = 1.0f - 2.0f * (qx * qx + qy * qy);
+                        }
                     }
                     else
                     {
@@ -270,6 +290,8 @@ namespace Surfels
                         v.normal.y = -v.normal.y;
                         v.normal.z = -v.normal.z;
                     }
+                    float nlen = std::sqrt(v.normal.x * v.normal.x + v.normal.y * v.normal.y + v.normal.z * v.normal.z);
+                    if (nlen > 1e-6f) { v.normal.x /= nlen; v.normal.y /= nlen; v.normal.z /= nlen; }
 
                     // Color extraction
                     if (rOffset >= 0)
@@ -286,14 +308,9 @@ namespace Surfels
                         float f1 = *reinterpret_cast<const float*>(ptr + fdc1Offset);
                         float f2 = *reinterpret_cast<const float*>(ptr + fdc2Offset);
 
-                        float lr = std::max(0.0f, std::min(1.0f, 0.5f + SH_C0 * f0));
-                        float lg = std::max(0.0f, std::min(1.0f, 0.5f + SH_C0 * f1));
-                        float lb = std::max(0.0f, std::min(1.0f, 0.5f + SH_C0 * f2));
-
-                        // Rich, warm terracotta tone curve (gamma 1.6 for deeper contrast and warm shadows)
-                        v.color.x = std::pow(lr, 1.6f);
-                        v.color.y = std::pow(lg, 1.6f);
-                        v.color.z = std::pow(lb, 1.6f);
+                        v.color.x = std::max(0.0f, std::min(1.0f, 0.5f + SH_C0 * f0));
+                        v.color.y = std::max(0.0f, std::min(1.0f, 0.5f + SH_C0 * f1));
+                        v.color.z = std::max(0.0f, std::min(1.0f, 0.5f + SH_C0 * f2));
                     }
                     else
                     {

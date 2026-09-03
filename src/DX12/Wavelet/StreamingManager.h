@@ -96,6 +96,32 @@ namespace Surfels
 
             m_isLoaded = true;
             m_currentFrame = 0;
+
+            // Pre-load and permanently pin the highest two mip levels (coarsest LODs) in resident memory
+            for (size_t c = 0; c < m_chunks.size(); c++)
+            {
+                const auto& chunk = m_chunks[c];
+                if (chunk.lods.empty()) continue;
+                uint32_t coarsest = (uint32_t)chunk.lods.size() - 1;
+                uint32_t minPinLOD = (coarsest > 0) ? (coarsest - 1) : coarsest;
+
+                for (uint32_t lvl = minPinLOD; lvl <= coarsest; lvl++)
+                {
+                    uint64_t key = ((uint64_t)c << 32) | lvl;
+                    if (m_cache.find(key) == m_cache.end())
+                    {
+                        CachedChunkLOD loadedChunk;
+                        loadedChunk.chunkId = (uint32_t)c;
+                        loadedChunk.lodLevel = lvl;
+                        loadedChunk.lastUsedFrame = 0;
+                        if (LoadChunkFromDisk(chunk, lvl, loadedChunk.surfels))
+                        {
+                            m_cache[key] = std::move(loadedChunk);
+                        }
+                    }
+                }
+            }
+
             return true;
         }
 

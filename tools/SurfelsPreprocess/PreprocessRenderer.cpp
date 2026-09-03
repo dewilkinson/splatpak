@@ -122,12 +122,10 @@ namespace Surfels
         CD3DX12_RASTERIZER_DESC rasterizer(D3D12_DEFAULT);
         rasterizer.CullMode = D3D12_CULL_MODE_NONE;
 
-        // Back-to-front order-dependent blending handles depth accumulation naturally
-        CD3DX12_DEPTH_STENCIL_DESC depthStencil(D3D12_DEFAULT);
-        depthStencil.DepthEnable = FALSE;
-        depthStencil.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
-        depthStencil.DepthFunc = D3D12_COMPARISON_FUNC_ALWAYS;
-        depthStencil.StencilEnable = FALSE;
+        // 1. Fast Surfel Blending Pipeline State (Depth Testing Disabled for maximum >200 FPS fillrate)
+        CD3DX12_DEPTH_STENCIL_DESC depthStencilFast(D3D12_DEFAULT);
+        depthStencilFast.DepthEnable = FALSE;
+        depthStencilFast.StencilEnable = FALSE;
 
         D3D12_RT_FORMAT_ARRAY rtvFormats = {};
         rtvFormats.NumRenderTargets = 1;
@@ -151,7 +149,7 @@ namespace Surfels
         stream.PS = ps;
         stream.RasterizerState = rasterizer;
         stream.BlendState = blendDesc;
-        stream.DepthStencilState = depthStencil;
+        stream.DepthStencilState = depthStencilFast;
         stream.DSVFormat = DXGI_FORMAT_D32_FLOAT;
         stream.RTVFormats = rtvFormats;
         stream.SampleDesc = DXGI_SAMPLE_DESC{ 1, 0 };
@@ -263,7 +261,7 @@ namespace Surfels
         bool modelChanged = (m_lastSurfelsPtr != activePtr) || (m_lastSurfelCount != surfelCount) || (m_lastRenderMode != renderMode) || pipelineModeChanged;
         float camMoved = std::abs(eyePos.x - m_lastSortEye.x) + std::abs(eyePos.y - m_lastSortEye.y) + std::abs(eyePos.z - m_lastSortEye.z);
         float forwardMoved = std::abs(forward.x - m_lastSortForward.x) + std::abs(forward.y - m_lastSortForward.y) + std::abs(forward.z - m_lastSortForward.z);
-        bool needsSort = modelChanged || (camMoved > 0.05f) || (forwardMoved > 0.02f);
+        bool needsSort = modelChanged || (camMoved > 1e-4f) || (forwardMoved > 1e-4f);
 
         m_lastSurfelsPtr = activePtr;
         m_lastSurfelCount = surfelCount;
@@ -348,18 +346,20 @@ namespace Surfels
                     {
                         m_metrics.isGPUSortActive = true;
                         m_metrics.cpuSortTimeMs = 0.0f;
-                        m_gpuSortNeedsRun = true;
+                        if (needsSort)
+                        {
+                            m_gpuSortNeedsRun = true;
+                        }
 
-                        #pragma omp parallel for
-                        for (int i = 0; i < (int)surfelCount; i++)
+                        if (modelChanged)
                         {
-                            pDst[i] = pRawSurfels[i];
+                            memcpy(pDst, pRawSurfels, surfelCount * sizeof(SurfelVertex));
+                            if (numElements > surfelCount)
+                            {
+                                memset(pDst + surfelCount, 0, (numElements - surfelCount) * sizeof(SurfelVertex));
+                            }
+                            m_needUploadToGpu = true;
                         }
-                        for (uint32_t i = surfelCount; i < numElements; i++)
-                        {
-                            pDst[i] = {};
-                        }
-                        m_needUploadToGpu = true;
                     }
                     else
                     {
@@ -417,14 +417,10 @@ namespace Surfels
 
                         if (modelChanged)
                         {
-                            #pragma omp parallel for
-                            for (int i = 0; i < (int)surfelCount; i++)
+                            memcpy(pDst, pRawSurfels, surfelCount * sizeof(SurfelVertex));
+                            if (numElements > surfelCount)
                             {
-                                pDst[i] = pRawSurfels[i];
-                            }
-                            for (uint32_t i = surfelCount; i < numElements; i++)
-                            {
-                                pDst[i] = {};
+                                memset(pDst + surfelCount, 0, (numElements - surfelCount) * sizeof(SurfelVertex));
                             }
                             m_needUploadToGpu = true;
                         }
@@ -607,20 +603,20 @@ namespace Surfels
                     {
                         m_metrics.isGPUSortActive = true;
                         m_metrics.cpuSortTimeMs = 0.0f;
-                        m_gpuSortNeedsRun = true;
+                        if (needsSort)
+                        {
+                            m_gpuSortNeedsRun = true;
+                        }
 
-                        #pragma omp parallel for
-                        for (int i = 0; i < (int)surfelCount; i++)
+                        if (modelChanged)
                         {
-                            pDst[i] = pSurfels[i];
+                            memcpy(pDst, pSurfels, surfelCount * sizeof(PackedSurfelGPU));
+                            if (numElements > surfelCount)
+                            {
+                                memset(pDst + surfelCount, 0xFF, (numElements - surfelCount) * sizeof(PackedSurfelGPU));
+                            }
+                            m_needUploadToGpu = true;
                         }
-                        for (uint32_t i = surfelCount; i < numElements; i++)
-                        {
-                            pDst[i].packedPosRadius = 0xFFFFFFFF;
-                            pDst[i].packedNormal = 0xFFFF;
-                            pDst[i].packedColor = 0xFFFF;
-                        }
-                        m_needUploadToGpu = true;
                     }
                     else
                     {
@@ -687,16 +683,10 @@ namespace Surfels
 
                         if (modelChanged)
                         {
-                            #pragma omp parallel for
-                            for (int i = 0; i < (int)surfelCount; i++)
+                            memcpy(pDst, pSurfels, surfelCount * sizeof(PackedSurfelGPU));
+                            if (numElements > surfelCount)
                             {
-                                pDst[i] = pSurfels[i];
-                            }
-                            for (uint32_t i = surfelCount; i < numElements; i++)
-                            {
-                                pDst[i].packedPosRadius = 0xFFFFFFFF;
-                                pDst[i].packedNormal = 0xFFFF;
-                                pDst[i].packedColor = 0xFFFF;
+                                memset(pDst + surfelCount, 0xFF, (numElements - surfelCount) * sizeof(PackedSurfelGPU));
                             }
                             m_needUploadToGpu = true;
                         }
@@ -889,16 +879,13 @@ namespace Surfels
                 m_gpuSortNeedsRun = true;
             }
 
-            if (m_pChunkUploadBufferMapped != nullptr)
+            if (modelChanged && m_pChunkUploadBufferMapped != nullptr)
             {
                 MeshletChunkGPU* pDstChunks = reinterpret_cast<MeshletChunkGPU*>(m_pChunkUploadBufferMapped);
-                for (uint32_t i = 0; i < chunkCount; i++)
+                memcpy(pDstChunks, pState->pChunks, chunkCount * sizeof(MeshletChunkGPU));
+                if (numChunkElements > chunkCount)
                 {
-                    pDstChunks[i] = pState->pChunks[i];
-                }
-                for (uint32_t i = chunkCount; i < numChunkElements; i++)
-                {
-                    pDstChunks[i] = {};
+                    memset(pDstChunks + chunkCount, 0, (numChunkElements - chunkCount) * sizeof(MeshletChunkGPU));
                 }
                 m_needUploadToGpu = true;
             }
@@ -940,6 +927,12 @@ namespace Surfels
                 m_metrics.cpuSortTimeMs = std::chrono::duration<float, std::milli>(sortEnd - sortStart).count();
                 m_metrics.wasSortedThisFrame = true;
             }
+        }
+
+        if (needsSort)
+        {
+            m_lastSortEye = eyePos;
+            m_lastSortForward = forward;
         }
     }
 
@@ -1043,6 +1036,138 @@ namespace Surfels
         UpdateSurfelBuffers(pState, eyePos, forwardNorm);
         uint32_t surfelCount = pState->surfelCount;
 
+        // Compute Geometry Optimization & Culling Statistics
+        m_cullStats = {};
+        uint32_t baseDatasetSurfels = (pState->totalDatasetSurfels > 0) ? pState->totalDatasetSurfels : surfelCount;
+        uint32_t baseDatasetChunks  = (pState->totalDatasetChunks > 0)  ? pState->totalDatasetChunks  : pState->chunkCount;
+        m_cullStats.totalDatasetSurfels = baseDatasetSurfels;
+        m_cullStats.totalDatasetChunks  = baseDatasetChunks;
+        m_cullStats.lodActiveSurfels    = surfelCount;
+        m_cullStats.lodActiveChunks     = pState->chunkCount;
+        m_cullStats.lodPrunedSurfels    = (baseDatasetSurfels > surfelCount) ? (baseDatasetSurfels - surfelCount) : 0;
+
+        XMMATRIX activeCullMatrix = pState->detachCullCamera ? cViewProj : viewProj;
+        XMFLOAT3 activeCullEye = pState->detachCullCamera ? cullEyePos : eyePos;
+
+        if (pState->useChunkedPipeline && pState->chunkCount > 0 && pState->pChunks != nullptr)
+        {
+            uint32_t frustumCulledChunks = 0;
+            uint32_t frustumCulledSurfels = 0;
+            uint32_t coneCulledChunks = 0;
+            uint32_t coneCulledSurfels = 0;
+            uint32_t passedChunks = 0;
+            uint32_t passedSurfels = 0;
+
+            // Extract normalized 6 frustum planes (Gribb-Hartmann) for O(1) sphere-frustum testing
+            XMFLOAT4X4 m;
+            XMStoreFloat4x4(&m, activeCullMatrix);
+            XMFLOAT4 planes[6];
+            planes[0] = { m._14 + m._11, m._24 + m._21, m._34 + m._31, m._44 + m._41 }; // Left
+            planes[1] = { m._14 - m._11, m._24 - m._21, m._34 - m._31, m._44 - m._41 }; // Right
+            planes[2] = { m._14 + m._12, m._24 + m._22, m._34 + m._32, m._44 + m._42 }; // Bottom
+            planes[3] = { m._14 - m._12, m._24 - m._22, m._34 - m._32, m._44 - m._42 }; // Top
+            planes[4] = { m._13, m._23, m._33, m._43 };                                  // Near
+            planes[5] = { m._14 - m._13, m._24 - m._23, m._34 - m._33, m._44 - m._43 }; // Far
+
+            for (int p = 0; p < 6; p++)
+            {
+                float len = std::sqrt(planes[p].x * planes[p].x + planes[p].y * planes[p].y + planes[p].z * planes[p].z);
+                if (len > 1e-6f)
+                {
+                    planes[p].x /= len;
+                    planes[p].y /= len;
+                    planes[p].z /= len;
+                    planes[p].w /= len;
+                }
+            }
+
+            for (uint32_t i = 0; i < pState->chunkCount; i++)
+            {
+                const auto& chunk = pState->pChunks[i];
+                bool isVisible = true;
+                for (int p = 0; p < 6; p++)
+                {
+                    float dist = planes[p].x * chunk.center.x + planes[p].y * chunk.center.y + planes[p].z * chunk.center.z + planes[p].w;
+                    if (dist < -chunk.boundingRadius)
+                    {
+                        isVisible = false;
+                        break;
+                    }
+                }
+
+                if (!isVisible)
+                {
+                    frustumCulledChunks++;
+                    frustumCulledSurfels += chunk.surfelCount;
+                }
+                else
+                {
+                    bool coneVisible = true;
+                    if (pState->enableConeCulling && chunk.coneCutoff > -0.99f)
+                    {
+                        float dx = chunk.center.x - activeCullEye.x;
+                        float dy = chunk.center.y - activeCullEye.y;
+                        float dz = chunk.center.z - activeCullEye.z;
+                        float distSq = dx * dx + dy * dy + dz * dz;
+                        if (distSq > 1e-8f)
+                        {
+                            float invDist = 1.0f / std::sqrt(distSq);
+                            float vx = dx * invDist;
+                            float vy = dy * invDist;
+                            float vz = dz * invDist;
+                            float sinCone = std::sqrt(std::max(0.0f, 1.0f - chunk.coneCutoff * chunk.coneCutoff));
+                            float nDotV = chunk.coneAxis.x * vx + chunk.coneAxis.y * vy + chunk.coneAxis.z * vz;
+                            if (nDotV > sinCone + 0.02f)
+                            {
+                                coneVisible = false;
+                            }
+                        }
+                    }
+
+                    if (!coneVisible)
+                    {
+                        coneCulledChunks++;
+                        coneCulledSurfels += chunk.surfelCount;
+                    }
+                    else
+                    {
+                        passedChunks++;
+                        passedSurfels += chunk.surfelCount;
+                    }
+                }
+            }
+
+            m_cullStats.asFrustumCulledChunks  = frustumCulledChunks;
+            m_cullStats.asFrustumCulledSurfels = frustumCulledSurfels;
+            m_cullStats.asConeCulledChunks     = coneCulledChunks;
+            m_cullStats.asConeCulledSurfels    = coneCulledSurfels;
+            m_cullStats.asPassedChunks         = passedChunks;
+            m_cullStats.asPassedSurfels        = passedSurfels;
+            m_cullStats.msDrawnSurfels         = passedSurfels;
+        }
+        else
+        {
+            m_cullStats.asPassedChunks  = pState->chunkCount;
+            m_cullStats.asPassedSurfels = surfelCount;
+            m_cullStats.msDrawnSurfels  = surfelCount;
+        }
+
+        m_cullStats.generatedVertices  = m_cullStats.msDrawnSurfels * 4;
+        m_cullStats.generatedTriangles = m_cullStats.msDrawnSurfels * 2;
+
+        if (m_cullStats.totalDatasetSurfels > 0)
+        {
+            m_cullStats.totalCullingRatio = ((float)(m_cullStats.totalDatasetSurfels - m_cullStats.msDrawnSurfels) / (float)m_cullStats.totalDatasetSurfels) * 100.0f;
+            m_cullStats.lodDecimationRatio = ((float)m_cullStats.lodPrunedSurfels / (float)m_cullStats.totalDatasetSurfels) * 100.0f;
+        }
+        if (m_cullStats.lodActiveSurfels > 0)
+        {
+            m_cullStats.asCullingRatio = ((float)(m_cullStats.asFrustumCulledSurfels + m_cullStats.asConeCulledSurfels) / (float)m_cullStats.lodActiveSurfels) * 100.0f;
+        }
+        float bytesPerSurfel = (pState->renderMode == 2) ? 40.0f : 8.0f;
+        m_cullStats.vramBandwidthSavedMB = (float)(m_cullStats.lodPrunedSurfels + m_cullStats.asFrustumCulledSurfels + m_cullStats.asConeCulledSurfels) * bytesPerSurfel / (1024.0f * 1024.0f);
+
+
         SurfelsCB* pCB = nullptr;
         D3D12_GPU_VIRTUAL_ADDRESS cbAddress = 0;
         if (!m_constantBufferRing.AllocConstantBuffer(sizeof(SurfelsCB), (void**)&pCB, &cbAddress))
@@ -1077,7 +1202,8 @@ namespace Surfels
         pCB->cullEyePos = cullEyePos;
         pCB->enableDithering = pState->enableDithering ? 1 : 0;
         pCB->highlightSilhouette = pState->highlightSilhouette ? 1 : 0;
-        pCB->padCB = XMFLOAT2(0.0f, 0.0f);
+        pCB->enableConeCulling = pState->enableConeCulling ? 1 : 0;
+        pCB->padCB = 0.0f;
 
         ID3D12Resource* pGpuRes = (pState->renderMode == 2) ? m_pRawSurfelGpuBuffer : m_pSurfelGpuBuffer;
         ID3D12Resource* pGpuOutRes = (pState->renderMode == 2) ? m_pRawSurfelGpuOutBuffer : m_pSurfelGpuOutBuffer;

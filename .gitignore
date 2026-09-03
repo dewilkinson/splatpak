@@ -16,15 +16,6 @@
 CMakeCache.txt
 CMakeFiles/
 cmake_install.cmake
-datasets/**.splat
-datasets/**.sflw
-datasets/**.ply
-datasets/**.xyz
-datasets/**.bin
-datasets/**.json
-data/**.splat
-data/**.sflw
-data/**.ply
-data/**.xyz
-data/**.bin
+datasets/
+data/
 

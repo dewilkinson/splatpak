@@ -36,21 +36,23 @@ namespace Surfels
 
     static_assert(sizeof(PackedSurfelGPU) == 8, "PackedSurfelGPU must be exactly 8 bytes");
 
-    // Meshlet / Micro-Chunk descriptor for 128-surfel spatial clusters
+    // Meshlet / Micro-Chunk descriptor for 64/128-surfel spatial clusters
     struct MeshletChunkGPU
     {
-        XMFLOAT3 center;
-        float    boundingRadius;
-        XMFLOAT3 aabbMin;
-        uint32_t surfelOffset;
-        XMFLOAT3 aabbExtents;
-        uint32_t surfelCount;
-        float    blendWeight;
-        uint32_t lodLevel;
-        float    dilationMorph; // Morph dilation factor for silhouette reconstruction
-        float    isSilhouette;  // 1.0f if silhouette chunk, 0.0f otherwise
+        XMFLOAT3 center = { 0.0f, 0.0f, 0.0f };
+        float    boundingRadius = 0.0f;
+        XMFLOAT3 aabbMin = { 0.0f, 0.0f, 0.0f };
+        uint32_t surfelOffset = 0;
+        XMFLOAT3 aabbExtents = { 0.0f, 0.0f, 0.0f };
+        uint32_t surfelCount = 0;
+        float    blendWeight = 1.0f; // 1.0f = 100% solid opacity
+        uint32_t lodLevel = 0;
+        float    dilationMorph = 0.0f; // Morph dilation factor for silhouette reconstruction
+        float    isSilhouette = 0.0f;  // 1.0f if silhouette chunk, 0.0f otherwise
+        XMFLOAT3 coneAxis = { 0.0f, 1.0f, 0.0f }; // Average unit normal vector of cluster
+        float    coneCutoff = -1.0f;              // cos(theta_max) of cluster normal cone (-1.0 = cone culling disabled)
     };
-    static_assert(sizeof(MeshletChunkGPU) == 64, "MeshletChunkGPU must be exactly 64 bytes");
+    static_assert(sizeof(MeshletChunkGPU) == 80, "MeshletChunkGPU must be exactly 80 bytes");
 
     // Uncompressed intermediate surfel representation for CPU / preprocessor
     struct SurfelVertex
@@ -210,5 +212,42 @@ namespace Surfels
         float z = aabbMin.z + (qz / 1023.0f) * aabbExtents.z;
         return XMFLOAT3(x, y, z);
     }
+
+    // =========================================================================
+    // Geometry Optimization & Culling Pipeline Telemetry
+    // =========================================================================
+    struct GeometryCullStats
+    {
+        uint32_t totalDatasetSurfels = 0;   // Total points in source model / LOD0
+        uint32_t totalDatasetChunks = 0;    // Total chunks in source model
+        
+        // Stage 1: CPU / LOD Decimation
+        uint32_t lodPrunedSurfels = 0;      // Surfels eliminated by multi-res LOD selection
+        uint32_t lodActiveSurfels = 0;      // Surfels submitted for rendering this frame
+        uint32_t lodActiveChunks = 0;       // Chunks submitted this frame
+        
+        // Stage 2: Amplification / Task Shader (mainAS) Culling
+        uint32_t asFrustumCulledChunks = 0; // Chunks culled by view frustum AABB test
+        uint32_t asFrustumCulledSurfels = 0;// Surfels in frustum-culled chunks
+        uint32_t asConeCulledChunks = 0;    // Chunks culled by normal cone backface test
+        uint32_t asConeCulledSurfels = 0;   // Surfels in cone-culled chunks
+        uint32_t asPassedChunks = 0;        // Chunks passed AS -> dispatched to MS
+        uint32_t asPassedSurfels = 0;       // Surfels dispatched to MS
+        
+        // Stage 3: Mesh Shader (mainMS) Culling
+        uint32_t msDetachedCulledSurfels = 0; // Surfels culled in MS (e.g. detached cull cam)
+        uint32_t msDrawnSurfels = 0;          // Surfels successfully drawn / rasterized
+        
+        // Amplification & Rasterizer Output
+        uint32_t generatedVertices = 0;     // msDrawnSurfels * 4
+        uint32_t generatedTriangles = 0;    // msDrawnSurfels * 2
+        
+        // Derived Efficiency Ratios
+        float totalCullingRatio = 0.0f;     // Overall reduction % (Total - Drawn) / Total * 100
+        float asCullingRatio = 0.0f;        // AS Stage Culling %
+        float lodDecimationRatio = 0.0f;    // LOD Decimation %
+        float vramBandwidthSavedMB = 0.0f;  // Estimated bandwidth saved vs flat rendering
+    };
 }
+
 

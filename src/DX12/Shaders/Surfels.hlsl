@@ -34,6 +34,8 @@ struct MeshletChunk
     uint   lodLevel;
     float  dilationMorph; // Morph dilation factor for silhouette reconstruction
     float  isSilhouette;  // 1.0 if silhouette chunk, 0.0 otherwise
+    float3 coneAxis;      // Average unit normal vector of cluster
+    float  coneCutoff;    // cos(theta_max) of cluster normal cone (-1.0 = disabled)
 };
 
 StructuredBuffer<PackedSurfel>  g_SurfelBuffer       : register(t0);
@@ -62,7 +64,8 @@ cbuffer SurfelsCB : register(b0)
     float3   g_CullEyePos;
     uint     g_EnableDithering;
     uint     g_HighlightSilhouette;
-    float2   g_PadCB;
+    uint     g_EnableConeCulling;
+    float    g_PadCB;
 };
 
 struct ChunkPayload
@@ -176,23 +179,51 @@ void mainAS(
             float3(bMin.x, bMax.y, bMax.z), float3(bMax.x, bMax.y, bMax.z)
         };
 
-        bool allOutLeft = true, allOutRight = true;
-        bool allOutBottom = true, allOutTop = true;
-        bool allOutNear = true, allOutFar = true;
+        int outsideLeft = 0, outsideRight = 0;
+        int outsideBottom = 0, outsideTop = 0;
+        int outsideNear = 0, outsideFar = 0;
 
         [unroll]
         for (int i = 0; i < 8; i++)
         {
             float4 c = mul(cullMatrix, float4(corners[i], 1.0));
-            if (c.x >= -c.w) allOutLeft = false;
-            if (c.x <=  c.w) allOutRight = false;
-            if (c.y >= -c.w) allOutBottom = false;
-            if (c.y <=  c.w) allOutTop = false;
-            if (c.z >=  0.0) allOutNear = false;
-            if (c.z <=  c.w) allOutFar = false;
+            if (c.w > 0.0001)
+            {
+                if (c.x < -c.w) outsideLeft++;
+                if (c.x >  c.w) outsideRight++;
+                if (c.y < -c.w) outsideBottom++;
+                if (c.y >  c.w) outsideTop++;
+                if (c.z <  0.0) outsideNear++;
+                if (c.z >  c.w) outsideFar++;
+            }
+            else
+            {
+                outsideNear++;
+            }
         }
 
-        isVisible = !(allOutLeft || allOutRight || allOutBottom || allOutTop || allOutNear || allOutFar);
+        isVisible = (outsideLeft < 8) && (outsideRight < 8) && 
+                    (outsideBottom < 8) && (outsideTop < 8) && 
+                    (outsideNear < 8) && (outsideFar < 8);
+
+        // Conservative Normal Cone Backface Culling in Task Shader
+        if (isVisible && g_EnableConeCulling == 1 && chunk.coneCutoff > -0.99)
+        {
+            float3 eyePos = (g_UseDetachedCullCam == 1) ? g_CullEyePos : g_ViewerEyePos;
+            float3 toChunk = chunk.center - eyePos;
+            float dist = length(toChunk);
+            if (dist > 1e-4)
+            {
+                float3 viewDir = toChunk / dist; // Ray from camera towards chunk center
+                float sinCone = sqrt(max(0.0, 1.0 - chunk.coneCutoff * chunk.coneCutoff));
+                float nDotV = dot(chunk.coneAxis, viewDir);
+                // When cluster normal cone points in direction of view ray, cluster is backfacing
+                if (nDotV > sinCone + 0.02)
+                {
+                    isVisible = false;
+                }
+            }
+        }
     }
 
     uint visibleOffset = WavePrefixCountBits(isVisible);
@@ -237,7 +268,7 @@ void mainMS(
         MeshletChunk chunk = g_ChunkBuffer[chunkIdx];
         groupSurfelCount = min((uint)SURFELS_PER_GROUP, chunk.surfelCount);
         surfelIndex = chunk.surfelOffset + threadId;
-        chunkBlendWeight = chunk.blendWeight;
+        chunkBlendWeight = (abs(chunk.blendWeight) > 0.001f) ? chunk.blendWeight : 1.0f;
         chunkDilationMorph = chunk.dilationMorph;
         chunkIsSilhouette = chunk.isSilhouette;
     }
@@ -286,12 +317,14 @@ void mainMS(
         normal = UnpackNormalOct16(s.packedNormalColor & 0xFFFF);
         color = UnpackColorRGB565((s.packedNormalColor >> 16) & 0xFFFF);
 
-        static const float s_radScales[4] = { 0.2f, 0.4f, 0.8f, 1.5f };
-        float splatRadius = g_Radius * s_radScales[re] * 0.15f;
+        static const float s_radScales[4] = { 1.0f, 1.5f, 2.5f, 4.5f };
+        float maxExtent = max(g_AABBExtents.x, max(g_AABBExtents.y, g_AABBExtents.z));
+        float baseVoxelRadius = max(0.0005f, (maxExtent / 1024.0f) * 1.35f);
+        float splatRadius = g_Radius * baseVoxelRadius * s_radScales[re];
 
         float4 clipCenter = mul(g_ViewProj, float4(worldPos, 1.0));
         float distToCam = max(0.1f, clipCenter.w);
-        float minCoverageRadius = distToCam * 0.0003f;
+        float minCoverageRadius = distToCam * 0.00015f;
         splatRadius = max(splatRadius, minCoverageRadius);
 
         if (g_OrientMode == 0 && abs(normal.x) + abs(normal.y) + abs(normal.z) > 0.1f)
@@ -316,12 +349,14 @@ void mainMS(
         normal = s.normal;
         color = s.color;
 
-        float baseRadius = (s.radius > 0.00001f) ? s.radius : 0.02f;
+        float maxExtent = max(g_AABBExtents.x, max(g_AABBExtents.y, g_AABBExtents.z));
+        float defaultRadius = max(0.0005f, (maxExtent / 1024.0f) * 1.35f);
+        float baseRadius = (s.radius > 0.00001f) ? s.radius : defaultRadius;
         float splatRadius = baseRadius * g_Radius;
 
         float4 clipCenter = mul(g_ViewProj, float4(worldPos, 1.0));
         float distToCam = max(0.1f, clipCenter.w);
-        float minCoverageRadius = distToCam * 0.0003f;
+        float minCoverageRadius = distToCam * 0.00015f;
         splatRadius = max(splatRadius, minCoverageRadius);
 
         if (g_OrientMode == 0 && abs(normal.x) + abs(normal.y) + abs(normal.z) > 0.1f)
@@ -417,6 +452,18 @@ void mainMS(
     // Quad corners in local 2D tangent space: 0(-1,-1) 1(1,-1) 2(-1,1) 3(1,1)
     float2 corners[4] = { float2(-1.0, -1.0), float2(1.0, -1.0), float2(-1.0, 1.0), float2(1.0, 1.0) };
 
+    // Two-sided surface directional lighting computed once per surfel
+    float3 norm = (dot(normal, normal) > 0.01) ? normalize(normal) : float3(0.0, 1.0, 0.0);
+    float3 lightDir = normalize(float3(0.5, 0.8, 0.6));
+    float ndl = abs(dot(norm, lightDir));
+    float lighting = (dot(normal, normal) > 0.01) ? (0.35 + 0.65 * ndl) : 1.0;
+    float3 litColor = color * lighting;
+    if (g_HighlightSilhouette == 1 && chunkIsSilhouette > 0.5)
+    {
+        float3 lavender = float3(0.88, 0.65, 0.98);
+        litColor = lerp(litColor, lavender, 0.75);
+    }
+
     uint vBase = threadId * 4;
     [unroll]
     for (uint c = 0; c < 4; c++)
@@ -426,7 +473,7 @@ void mainMS(
         VSOut o;
         o.pos = mul(g_ViewProj, float4(worldPos + offset, 1.0));
         o.uv = corners[c] * 0.5 + 0.5;
-        o.color = color;
+        o.color = litColor;
         o.norm = normal;
         o.blendWeight = chunkBlendWeight;
         o.isSil = (g_HighlightSilhouette == 1) ? chunkIsSilhouette : 0.0;
@@ -498,13 +545,5 @@ float4 mainPS(VSOut i) : SV_Target
     // With back-to-front depth sorting, overlapping splats melt together into continuous, silky-smooth marble.
     float alpha = saturate(exp(-2.5 * d) * 0.90);
 
-    float3 finalColor = i.color;
-    if (i.isSil > 0.5)
-    {
-        // Lavender highlight on silhouette edge chunks:
-        float3 lavender = float3(0.88, 0.65, 0.98);
-        finalColor = lerp(finalColor, lavender, 0.75);
-    }
-
-    return float4(finalColor * alpha, alpha);
+    return float4(i.color * alpha, alpha);
 }

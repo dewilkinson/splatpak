@@ -48,9 +48,12 @@ struct MeshletChunk
     uint   surfelCount;
     float  blendWeight;
     uint   lodLevel;
-    float  pad0;
-    float  pad1;
+    float  dilationMorph; // Morph dilation factor for silhouette reconstruction
+    float  isSilhouette;  // 1.0 if silhouette chunk, 0.0 otherwise
+    float3 coneAxis;      // Average unit normal vector of cluster
+    float  coneCutoff;    // cos(theta_max) of cluster normal cone (-1.0 = disabled)
 };
+
 
 StructuredBuffer<PackedSurfel>   g_InPackedSurfels : register(t0);
 StructuredBuffer<RawSurfel>      g_InRawSurfels    : register(t1);

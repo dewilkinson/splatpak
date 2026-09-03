@@ -388,6 +388,127 @@ void SurfelsSample::BuildProfilerUI()
         ImGui::Columns(1);
     }
 
+    // --- Geometry Optimisations & Culling Stats ---
+    if (ImGui::CollapsingHeader("Geometry Optimisations & Culling Stats", ImGuiTreeNodeFlags_DefaultOpen))
+    {
+        const auto& cStats = m_pRenderer->GetCullStats();
+
+        uint32_t totalSurfels = cStats.totalDatasetSurfels;
+        uint32_t drawnSurfels = cStats.msDrawnSurfels;
+        uint32_t culledSurfels = (totalSurfels >= drawnSurfels) ? (totalSurfels - drawnSurfels) : 0;
+        float reductionPct = totalSurfels > 0 ? (float)culledSurfels / (float)totalSurfels * 100.0f : 0.0f;
+        float reductionFactor = drawnSurfels > 0 ? (float)totalSurfels / (float)drawnSurfels : 1.0f;
+
+        // Summary Badges / KPI Cards
+        ImGui::Columns(3, "SampleCullKpiCols", false);
+        ImGui::TextDisabled("TOTAL SURFELS");
+        ImGui::TextColored(ImVec4(0.3f, 0.85f, 1.0f, 1.0f), "%u", totalSurfels);
+        ImGui::NextColumn();
+
+        ImGui::TextDisabled("CULLED / SAVED");
+        ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%u (%.1f%%)", culledSurfels, reductionPct);
+        ImGui::NextColumn();
+
+        ImGui::TextDisabled("DRAWN TO SCREEN");
+        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "%u (%.1f%%)", drawnSurfels, 100.0f - reductionPct);
+        ImGui::NextColumn();
+        ImGui::Columns(1);
+
+        ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Optimization Efficiency: %.1fx reduction (%.1f%% eliminated)", reductionFactor, reductionPct);
+
+        ImGui::Spacing();
+
+        // Visual Proportional Multi-Segment Breakdown Bar
+        if (totalSurfels > 0)
+        {
+            ImVec2 barSize = ImVec2(ImGui::GetContentRegionAvailWidth(), 16.0f);
+            ImVec2 barPos = ImGui::GetCursorScreenPos();
+            ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+            drawList->AddRectFilled(barPos, ImVec2(barPos.x + barSize.x, barPos.y + barSize.y), IM_COL32(30, 30, 30, 255), 2.0f);
+
+            float fracDrawn   = (float)drawnSurfels / (float)totalSurfels;
+            float fracFrustum = (float)cStats.asFrustumCulledSurfels / (float)totalSurfels;
+            float fracCone    = (float)cStats.asConeCulledSurfels / (float)totalSurfels;
+            float fracLod     = (float)cStats.lodPrunedSurfels / (float)totalSurfels;
+
+            float curX = barPos.x;
+            auto drawSegment = [&](float frac, ImU32 col) {
+                float w = frac * barSize.x;
+                if (w > 0.5f)
+                {
+                    drawList->AddRectFilled(ImVec2(curX, barPos.y), ImVec2(curX + w, barPos.y + barSize.y), col, 2.0f);
+                    curX += w;
+                }
+            };
+
+            drawSegment(fracDrawn,   IM_COL32(50, 205, 50, 255));   // Green: Drawn
+            drawSegment(fracFrustum, IM_COL32(70, 130, 230, 255));  // Blue: Frustum Culled
+            drawSegment(fracCone,    IM_COL32(255, 140, 0, 255));   // Orange: Normal Cone Culled
+            drawSegment(fracLod,     IM_COL32(160, 90, 220, 255));  // Purple: LOD Decimated
+
+            ImGui::Dummy(barSize);
+
+            // Legend Swatches
+            ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "[■] Drawn (%.1f%%)", fracDrawn * 100.0f);
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.3f, 0.6f, 1.0f, 1.0f), "[■] Frustum (%.1f%%)", fracFrustum * 100.0f);
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.1f, 1.0f), "[■] Cone (%.1f%%)", fracCone * 100.0f);
+            ImGui::SameLine();
+            ImGui::TextColored(ImVec4(0.7f, 0.4f, 0.9f, 1.0f), "[■] LOD (%.1f%%)", fracLod * 100.0f);
+        }
+
+        ImGui::Spacing();
+        ImGui::Separator();
+
+        // Rejection Stage Breakdown Table
+        ImGui::Text("Rejection Stage Breakdown:");
+        ImGui::Columns(4, "SampleRejectionCols", true);
+        ImGui::Text("Optimization Stage"); ImGui::NextColumn();
+        ImGui::Text("Surfels"); ImGui::NextColumn();
+        ImGui::Text("Chunks"); ImGui::NextColumn();
+        ImGui::Text("Share / Rule"); ImGui::NextColumn();
+        ImGui::Separator();
+
+        // 1. LOD Decimation
+        float lodShare = totalSurfels > 0 ? (float)cStats.lodPrunedSurfels / (float)totalSurfels * 100.0f : 0.0f;
+        ImGui::TextColored(ImVec4(0.75f, 0.5f, 0.95f, 1.0f), "1. LOD Multi-Res"); ImGui::NextColumn();
+        ImGui::Text("%u", cStats.lodPrunedSurfels); ImGui::NextColumn();
+        ImGui::Text("%u", cStats.totalDatasetChunks > cStats.lodActiveChunks ? (cStats.totalDatasetChunks - cStats.lodActiveChunks) : 0); ImGui::NextColumn();
+        ImGui::Text("%.1f%% (Pixel error)", lodShare); ImGui::NextColumn();
+
+        // 2. Task Shader Frustum Culling
+        float frustumShare = totalSurfels > 0 ? (float)cStats.asFrustumCulledSurfels / (float)totalSurfels * 100.0f : 0.0f;
+        ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "2. Task Frustum Cull"); ImGui::NextColumn();
+        ImGui::Text("%u", cStats.asFrustumCulledSurfels); ImGui::NextColumn();
+        ImGui::Text("%u", cStats.asFrustumCulledChunks); ImGui::NextColumn();
+        ImGui::Text("%.1f%% (6 Planes AABB)", frustumShare); ImGui::NextColumn();
+
+        // 3. Task Shader Normal Cone Culling
+        float coneShare = totalSurfels > 0 ? (float)cStats.asConeCulledSurfels / (float)totalSurfels * 100.0f : 0.0f;
+        ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f), "3. Task Backface Cone"); ImGui::NextColumn();
+        ImGui::Text("%u", cStats.asConeCulledSurfels); ImGui::NextColumn();
+        ImGui::Text("%u", cStats.asConeCulledChunks); ImGui::NextColumn();
+        ImGui::Text("%.1f%% (Cone Axis . Ray)", coneShare); ImGui::NextColumn();
+
+        // 4. Mesh Shader & Drawn
+        float drawnShare = totalSurfels > 0 ? (float)drawnSurfels / (float)totalSurfels * 100.0f : 0.0f;
+        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "4. Mesh Shader Emitted"); ImGui::NextColumn();
+        ImGui::Text("%u", drawnSurfels); ImGui::NextColumn();
+        ImGui::Text("%u", cStats.asPassedChunks); ImGui::NextColumn();
+        ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "%.1f%% (SURVIVED)", drawnShare); ImGui::NextColumn();
+
+        ImGui::Columns(1);
+        ImGui::Separator();
+
+        // On-Chip Amplification & Bandwidth Savings
+        ImGui::Text("Hardware Amplification & Bandwidth:");
+        ImGui::BulletText("Generated Vertices:   %u  (4 per surfel)", cStats.generatedVertices);
+        ImGui::BulletText("Generated Triangles:  %u  (2 per surfel)", cStats.generatedTriangles);
+        ImGui::BulletText("VRAM Bandwidth Saved: %.2f MB/frame", cStats.vramBandwidthSavedMB);
+    }
+
     // --- Mesh Shader Workload Metrics ---
     if (ImGui::CollapsingHeader("Mesh Shader Workload Stats", ImGuiTreeNodeFlags_DefaultOpen))
     {
@@ -506,6 +627,8 @@ void SurfelsSample::OnRender()
         m_state.streamedSurfelCount = (uint32_t)m_activeSurfels.size();
 
         const auto& hdr = m_streamingManager.GetHeader();
+        m_state.totalDatasetSurfels = (uint32_t)hdr.totalSurfelsLOD0;
+        m_state.totalDatasetChunks = hdr.numChunks;
         m_state.aabbMin = hdr.globalBoundsMin;
         m_state.aabbExtents = XMFLOAT3(
             hdr.globalBoundsMax.x - hdr.globalBoundsMin.x,
@@ -517,6 +640,8 @@ void SurfelsSample::OnRender()
     {
         m_state.pStreamedSurfels = nullptr;
         m_state.streamedSurfelCount = 0;
+        m_state.totalDatasetSurfels = m_state.surfelCount;
+        m_state.totalDatasetChunks = 0;
     }
 
     auto updateEnd = std::chrono::high_resolution_clock::now();

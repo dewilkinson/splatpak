@@ -10,7 +10,7 @@ namespace Surfels
     public:
         struct State
         {
-            float    splatRadius = 0.05f;
+            float    splatRadius = 1.0f;
             float    camYaw      = 0.6f;
             float    camPitch    = 0.35f;
             float    camDistance = 15.0f;
@@ -29,6 +29,8 @@ namespace Surfels
             const MeshletChunkGPU* pChunks     = nullptr;
             uint32_t surfelCount      = 0;
             uint32_t chunkCount       = 0;
+            uint32_t totalDatasetSurfels = 0; // Base unculled model point count
+            uint32_t totalDatasetChunks  = 0; // Base total chunk count
             bool     gpuRadixSort     = true;
             bool     useChunkedPipeline = true;
             bool     detachCullCamera = false;
@@ -38,6 +40,7 @@ namespace Surfels
             XMFLOAT3 cullTarget       = { 0.0f, 0.0f, 0.0f };
             bool     enableDithering  = true; // Stochastic screen-space Bayer dithering for smooth LOD transitions
             bool     highlightSilhouette = false; // Highlight silhouette chunks in lavender semi-transparent effect
+            bool     enableConeCulling = true; // Task Shader (mainAS) backface normal cone culling
         };
 
         struct FrameTimingMetrics
@@ -64,9 +67,11 @@ namespace Surfels
         void FlushGPU() { if (m_pDevice) m_pDevice->GPUFlush(); }
 
         const FrameTimingMetrics& GetTimingMetrics() const { return m_metrics; }
+        const GeometryCullStats&  GetCullStats() const { return m_cullStats; }
         float GetSmoothGpuSortMs() const { return m_smoothGpuSortMs; }
         float GetSmoothDispatchMs() const { return m_smoothDispatchMs; }
         float GetSmoothUiMs() const { return m_smoothUiMs; }
+
 
     private:
         struct SurfelsCB
@@ -90,7 +95,8 @@ namespace Surfels
             XMFLOAT3   cullEyePos;
             uint32_t   enableDithering;
             uint32_t   highlightSilhouette;
-            XMFLOAT2   padCB;
+            uint32_t   enableConeCulling;
+            float      padCB;
         };
 
         CAULDRON_DX12::Device* m_pDevice = nullptr;
@@ -135,6 +141,7 @@ namespace Surfels
         std::vector<uint32_t>      m_sortKeys;
         std::vector<float>         m_sortDists;
         FrameTimingMetrics         m_metrics;
+        GeometryCullStats          m_cullStats;
 
         float                      m_fpsAccumTimeMs = 0.0f;
         uint32_t                   m_fpsAccumFrames = 0;

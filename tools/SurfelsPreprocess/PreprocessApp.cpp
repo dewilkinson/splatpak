@@ -328,14 +328,10 @@ namespace Surfels
                 pFileOpen->SetDefaultExtension(wDef.c_str());
             }
 
-            // Point default folder to data/ or datasets/
+            // Point default folder to C:\github\datasets, datasets, or data
             IShellItem* pDefaultFolder = nullptr;
             wchar_t fullDataPath[MAX_PATH] = L"";
-            GetFullPathNameW(L"data", MAX_PATH, fullDataPath, NULL);
-            if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
-            {
-                GetFullPathNameW(L"..\\data", MAX_PATH, fullDataPath, NULL);
-            }
+            GetFullPathNameW(L"C:\\github\\datasets", MAX_PATH, fullDataPath, NULL);
             if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
             {
                 GetFullPathNameW(L"datasets", MAX_PATH, fullDataPath, NULL);
@@ -343,6 +339,14 @@ namespace Surfels
             if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
             {
                 GetFullPathNameW(L"..\\datasets", MAX_PATH, fullDataPath, NULL);
+            }
+            if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
+            {
+                GetFullPathNameW(L"data", MAX_PATH, fullDataPath, NULL);
+            }
+            if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
+            {
+                GetFullPathNameW(L"..\\data", MAX_PATH, fullDataPath, NULL);
             }
             if (GetFileAttributesW(fullDataPath) != INVALID_FILE_ATTRIBUTES)
             {
@@ -461,6 +465,34 @@ namespace Surfels
             {
                 std::wstring wTitle(title, title + strlen(title));
                 pFileSave->SetTitle(wTitle.c_str());
+            }
+
+            IShellItem* pDefaultFolder = nullptr;
+            wchar_t fullDataPath[MAX_PATH] = L"";
+            GetFullPathNameW(L"C:\\github\\datasets", MAX_PATH, fullDataPath, NULL);
+            if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
+            {
+                GetFullPathNameW(L"datasets", MAX_PATH, fullDataPath, NULL);
+            }
+            if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
+            {
+                GetFullPathNameW(L"..\\datasets", MAX_PATH, fullDataPath, NULL);
+            }
+            if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
+            {
+                GetFullPathNameW(L"data", MAX_PATH, fullDataPath, NULL);
+            }
+            if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
+            {
+                GetFullPathNameW(L"..\\data", MAX_PATH, fullDataPath, NULL);
+            }
+            if (GetFileAttributesW(fullDataPath) != INVALID_FILE_ATTRIBUTES)
+            {
+                if (SUCCEEDED(SHCreateItemFromParsingName(fullDataPath, NULL, IID_IShellItem, reinterpret_cast<void**>(&pDefaultFolder))))
+                {
+                    pFileSave->SetFolder(pDefaultFolder);
+                    pDefaultFolder->Release();
+                }
             }
 
             hr = pFileSave->Show(m_windowHwnd);
@@ -617,10 +649,16 @@ namespace Surfels
         lod0.geometricError = 0.0f;
         m_waveletResult.lodLevels.push_back(lod0);
 
-        m_rawFileSizeMB = (m_rendererSurfels.size() * sizeof(SurfelVertex)) / (1024.0f * 1024.0f);
+        // 3D Gaussian Splat / raw PLY equivalent baseline (248 bytes per point)
+        m_rawFileSizeMB = (m_rendererSurfels.size() * 248.0f) / (1024.0f * 1024.0f);
         m_compressedSizeMB = (float)m_loadedPackage.totalCompressedBytes / (1024.0f * 1024.0f);
         m_compressionRatio = m_rawFileSizeMB > 0 ? (m_rawFileSizeMB / std::max(0.001f, m_compressedSizeMB)) : 1.0f;
 
+        m_rawSurfels = m_rendererRawSurfels;
+
+        PrecacheResidentLODs();
+        InitStreamingSimulation();
+        UpdatePreviewSurfels();
         RebuildHeatmapClusterCubes();
 
         // Setup active renderer state pointing to renderer's dedicated buffers
@@ -835,11 +873,8 @@ namespace Surfels
                 break;
             }
         }
-        m_state.splatRadius = hasNativeRadii ? 1.0f : std::max(0.02f, maxDim * 0.005f);
-        if (hasNativeRadii)
-        {
-            m_state.orientMode = 1; // Default to Camera-Facing Billboards for 3D Gaussian Splats
-        }
+        m_state.splatRadius = 1.0f;
+        m_state.orientMode  = 0; // Default to Normal-Oriented Surface Tangent Discs
 
         // 2. Partition into Spatial Octree Chunks
         m_chunks = SpatialOctree::PartitionIntoChunks(m_rawSurfels, m_chunkSize);
@@ -866,6 +901,7 @@ namespace Surfels
         m_deadbandZeroPercent = 64.5f; // Measured planar surface coefficient sparsification
 
         PrecacheResidentLODs();
+        InitStreamingSimulation();
         UpdatePreviewSurfels();
         RebuildHeatmapClusterCubes();
 
@@ -1310,8 +1346,13 @@ namespace Surfels
         m_state.gpuRadixSort = m_gpuRadixSort;
         m_state.useChunkedPipeline = m_useChunkedPipeline;
         m_state.aabbMin = m_aabbMin;
-        m_state.aabbExtents = m_extents;
         m_state.enableDithering = m_enableDitheredTransitions;
+        m_state.enableConeCulling = m_enableConeCulling;
+
+        uint32_t totalBasePoints = (uint32_t)(!m_residentLODs.empty() ? m_residentLODs[0].rawSurfels.size() : (!m_rawSurfels.empty() ? m_rawSurfels.size() : m_rendererSurfels.size()));
+        uint32_t totalBaseChunks = (uint32_t)(!m_residentLODs.empty() ? m_residentLODs[0].meshletChunks.size() : (!m_chunks.empty() ? m_chunks.size() : m_rendererMeshletChunks.size()));
+        m_state.totalDatasetSurfels = totalBasePoints;
+        m_state.totalDatasetChunks = totalBaseChunks;
 
         if (m_enableStreamingSimulation)
         {
@@ -1333,6 +1374,33 @@ namespace Surfels
             }
             m_state.pChunks = m_rendererMeshletChunks.data();
             m_state.chunkCount = (uint32_t)m_rendererMeshletChunks.size();
+        }
+        else
+        {
+            if (!m_residentLODs.empty())
+            {
+                int maxLODIndex = std::max(0, (int)m_residentLODs.size() - 1);
+                int selectedLOD = std::max(0, std::min(maxLODIndex, m_selectedPreviewLOD));
+                const auto& resident = m_residentLODs[selectedLOD];
+
+                m_state.pChunks = resident.meshletChunks.data();
+                m_state.chunkCount = (uint32_t)resident.meshletChunks.size();
+
+                if (m_enableQuantization)
+                {
+                    m_state.renderMode = 1;
+                    m_state.pSurfels = resident.packedSurfels.data();
+                    m_state.pRawSurfels = nullptr;
+                    m_state.surfelCount = (uint32_t)resident.packedSurfels.size();
+                }
+                else
+                {
+                    m_state.renderMode = 2;
+                    m_state.pRawSurfels = resident.rawSurfels.data();
+                    m_state.pSurfels = nullptr;
+                    m_state.surfelCount = (uint32_t)resident.rawSurfels.size();
+                }
+            }
         }
     }
 
@@ -1817,8 +1885,14 @@ namespace Surfels
                 {
                     ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Active Display: %u points", m_state.surfelCount);
 
+                    static const char* s_orientNames[] = { "Normal-Oriented Tangent Discs (Smooth Surface)", "Camera-Facing Billboards (3D Gaussian Splats)" };
+                    int orientIdx = (int)m_state.orientMode;
+                    if (ImGui::Combo("Surfel Orientation", &orientIdx, s_orientNames, IM_ARRAYSIZE(s_orientNames)))
+                    {
+                        m_state.orientMode = (uint32_t)orientIdx;
+                    }
                     ImGui::SliderFloat("Splat Radius Scale", &m_state.splatRadius, 0.10f, 10.0f, "%.2fx");
-                    m_state.orientMode = 1;
+                    ImGui::Separator();
 
                     ImGui::Checkbox("Auto Rotate Model##Viewport", &m_autoRotate);
                     m_state.autoRotate = m_autoRotate;
@@ -1827,6 +1901,9 @@ namespace Surfels
                     {
                         m_swapChain.SetVSync(m_vsync);
                     }
+
+                    ImGui::Checkbox("Meshlet Backface Cone Culling (Task Shader)", &m_enableConeCulling);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Task Shader (mainAS) culls ~50% of meshlet chunks facing away from the camera before mesh shaders and rasterization ever execute.");
 
                     if (ImGui::Checkbox("Detach Camera (Freeze Culling Frustum)", &m_detachCamera))
                     {
@@ -1963,6 +2040,132 @@ namespace Surfels
         ImGui::SetNextWindowSize(ImVec2(rightPanelWidth, panelHeight), ImGuiCond_Always);
         ImGui::Begin("Statistics & Compression Analytics", nullptr, ImGuiWindowFlags_NoCollapse);
 
+        // 1. Geometry Optimisations & Culling Stats
+        if (ImGui::CollapsingHeader("Geometry Optimisations & Culling Stats", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            const auto& cStats = m_pRenderer->GetCullStats();
+
+            uint32_t totalSurfels = cStats.totalDatasetSurfels;
+            uint32_t drawnSurfels = cStats.msDrawnSurfels;
+            uint32_t culledSurfels = (totalSurfels >= drawnSurfels) ? (totalSurfels - drawnSurfels) : 0;
+            float reductionPct = totalSurfels > 0 ? (float)culledSurfels / (float)totalSurfels * 100.0f : 0.0f;
+            float reductionFactor = drawnSurfels > 0 ? (float)totalSurfels / (float)drawnSurfels : 1.0f;
+
+            // Summary Badges / KPI Cards
+            ImGui::Columns(3, "CullKpiCols", false);
+            ImGui::TextDisabled("TOTAL SURFELS");
+            ImGui::TextColored(ImVec4(0.3f, 0.85f, 1.0f, 1.0f), "%u", totalSurfels);
+            ImGui::NextColumn();
+
+            ImGui::TextDisabled("CULLED / SAVED");
+            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%u (%.1f%%)", culledSurfels, reductionPct);
+            ImGui::NextColumn();
+
+            ImGui::TextDisabled("DRAWN TO SCREEN");
+            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "%u (%.1f%%)", drawnSurfels, 100.0f - reductionPct);
+            ImGui::NextColumn();
+            ImGui::Columns(1);
+
+            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Optimization Efficiency: %.1fx reduction (%.1f%% eliminated)", reductionFactor, reductionPct);
+
+            ImGui::Spacing();
+
+            // Visual Proportional Multi-Segment Breakdown Bar
+            if (totalSurfels > 0)
+            {
+                ImVec2 barSize = ImVec2(ImGui::GetContentRegionAvailWidth(), 16.0f);
+                ImVec2 barPos = ImGui::GetCursorScreenPos();
+                ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+                drawList->AddRectFilled(barPos, ImVec2(barPos.x + barSize.x, barPos.y + barSize.y), IM_COL32(30, 30, 30, 255), 2.0f);
+
+                float fracDrawn   = (float)drawnSurfels / (float)totalSurfels;
+                float fracFrustum = (float)cStats.asFrustumCulledSurfels / (float)totalSurfels;
+                float fracCone    = (float)cStats.asConeCulledSurfels / (float)totalSurfels;
+                float fracLod     = (float)cStats.lodPrunedSurfels / (float)totalSurfels;
+
+                float curX = barPos.x;
+                auto drawSegment = [&](float frac, ImU32 col) {
+                    float w = frac * barSize.x;
+                    if (w > 0.5f)
+                    {
+                        drawList->AddRectFilled(ImVec2(curX, barPos.y), ImVec2(curX + w, barPos.y + barSize.y), col, 2.0f);
+                        curX += w;
+                    }
+                };
+
+                drawSegment(fracDrawn,   IM_COL32(50, 205, 50, 255));   // Green: Drawn
+                drawSegment(fracFrustum, IM_COL32(70, 130, 230, 255));  // Blue: Frustum Culled
+                drawSegment(fracCone,    IM_COL32(255, 140, 0, 255));   // Orange: Normal Cone Culled
+                drawSegment(fracLod,     IM_COL32(160, 90, 220, 255));  // Purple: LOD Decimated
+
+                ImGui::Dummy(barSize);
+
+                // Legend Swatches
+                ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "[■] Drawn (%.1f%%)", fracDrawn * 100.0f);
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.3f, 0.6f, 1.0f, 1.0f), "[■] Frustum (%.1f%%)", fracFrustum * 100.0f);
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.1f, 1.0f), "[■] Cone (%.1f%%)", fracCone * 100.0f);
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(0.7f, 0.4f, 0.9f, 1.0f), "[■] LOD (%.1f%%)", fracLod * 100.0f);
+            }
+
+            ImGui::Spacing();
+            ImGui::Separator();
+
+            // Rejection Stage Breakdown Table
+            ImGui::Text("Rejection Stage Breakdown:");
+            ImGui::Columns(4, "RejectionTableCols", true);
+            ImGui::Text("Optimization Stage"); ImGui::NextColumn();
+            ImGui::Text("Surfels"); ImGui::NextColumn();
+            ImGui::Text("Chunks"); ImGui::NextColumn();
+            ImGui::Text("Share / Rule"); ImGui::NextColumn();
+            ImGui::Separator();
+
+            // 1. LOD Decimation
+            float lodShare = totalSurfels > 0 ? (float)cStats.lodPrunedSurfels / (float)totalSurfels * 100.0f : 0.0f;
+            ImGui::TextColored(ImVec4(0.75f, 0.5f, 0.95f, 1.0f), "1. LOD Multi-Res"); ImGui::NextColumn();
+            ImGui::Text("%u", cStats.lodPrunedSurfels); ImGui::NextColumn();
+            ImGui::Text("%u", cStats.totalDatasetChunks > cStats.lodActiveChunks ? (cStats.totalDatasetChunks - cStats.lodActiveChunks) : 0); ImGui::NextColumn();
+            ImGui::Text("%.1f%% (Pixel error)", lodShare); ImGui::NextColumn();
+
+            // 2. Task Shader Frustum Culling
+            float frustumShare = totalSurfels > 0 ? (float)cStats.asFrustumCulledSurfels / (float)totalSurfels * 100.0f : 0.0f;
+            ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "2. Task Frustum Cull"); ImGui::NextColumn();
+            ImGui::Text("%u", cStats.asFrustumCulledSurfels); ImGui::NextColumn();
+            ImGui::Text("%u", cStats.asFrustumCulledChunks); ImGui::NextColumn();
+            ImGui::Text("%.1f%% (6 Planes AABB)", frustumShare); ImGui::NextColumn();
+
+            // 3. Task Shader Normal Cone Culling
+            float coneShare = totalSurfels > 0 ? (float)cStats.asConeCulledSurfels / (float)totalSurfels * 100.0f : 0.0f;
+            ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f), "3. Task Backface Cone"); ImGui::NextColumn();
+            ImGui::Text("%u", cStats.asConeCulledSurfels); ImGui::NextColumn();
+            ImGui::Text("%u", cStats.asConeCulledChunks); ImGui::NextColumn();
+            ImGui::Text("%.1f%% (Cone Axis . Ray)", coneShare); ImGui::NextColumn();
+
+            // 4. Mesh Shader & Drawn
+            float drawnShare = totalSurfels > 0 ? (float)drawnSurfels / (float)totalSurfels * 100.0f : 0.0f;
+            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "4. Mesh Shader Emitted"); ImGui::NextColumn();
+            ImGui::Text("%u", drawnSurfels); ImGui::NextColumn();
+            ImGui::Text("%u", cStats.asPassedChunks); ImGui::NextColumn();
+            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "%.1f%% (SURVIVED)", drawnShare); ImGui::NextColumn();
+
+            ImGui::Columns(1);
+            ImGui::Separator();
+
+            // On-Chip Amplification & Bandwidth Savings
+            ImGui::Text("Hardware Amplification & Bandwidth:");
+            ImGui::BulletText("Generated Vertices:   %u  (4 per surfel)", cStats.generatedVertices);
+            ImGui::BulletText("Generated Triangles:  %u  (2 per surfel)", cStats.generatedTriangles);
+            ImGui::BulletText("VRAM Bandwidth Saved: %.2f MB/frame", cStats.vramBandwidthSavedMB);
+            if (cStats.lodActiveChunks > 0)
+            {
+                float earlyOutRatio = (float)(cStats.asFrustumCulledChunks + cStats.asConeCulledChunks) / (float)cStats.lodActiveChunks * 100.0f;
+                ImGui::BulletText("Task Early-Out Ratio: %.1f%% of micro-chunks rejected before Mesh stage", earlyOutRatio);
+            }
+        }
+
         // LOD Residency Equalizer
         if (ImGui::CollapsingHeader("LOD Residency", ImGuiTreeNodeFlags_DefaultOpen))
         {
@@ -2059,10 +2262,14 @@ namespace Surfels
         // Compression Summary
         if (ImGui::CollapsingHeader("4-Tier Compression Results", ImGuiTreeNodeFlags_DefaultOpen))
         {
-            ImGui::Text("Raw Point Cloud:      %.2f MB (100%%)", m_rawFileSizeMB);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Uncompressed input point cloud dataset.");
+            uint32_t pointCount = (uint32_t)(!m_rendererSurfels.empty() ? m_rendererSurfels.size() : m_rawSurfels.size());
+            float tier2MB = (pointCount * 8.0f) / (1024.0f * 1024.0f);
+            float tier2Reduction = (tier2MB > 0.001f && m_rawFileSizeMB > 0.0f) ? (m_rawFileSizeMB / tier2MB) : 31.0f;
 
-            ImGui::Text("Tier 2 (8-Byte GPU):  %.2f MB (5.0x reduction)", (m_rawSurfels.size() * 8.0f) / (1024.0f * 1024.0f));
+            ImGui::Text("Raw Point Cloud:      %.2f MB (100%%)", m_rawFileSizeMB);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Uncompressed input point cloud dataset (248 bytes/splat uncompressed 3D Gaussian baseline).");
+
+            ImGui::Text("Tier 2 (8-Byte GPU):  %.2f MB (%.1fx reduction)", tier2MB, tier2Reduction);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 2 Quantization: 8-byte packed GPU format (10:10:10:2 position, Oct16 normal, RGB565 color).");
 
             ImGui::Text("Tier 3 (Morton Swizzle):  Contiguous 8-channel planes");

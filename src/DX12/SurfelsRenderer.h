@@ -28,6 +28,8 @@ public:
         XMFLOAT3 aabbExtents = { 80.0f, 30.0f, 160.0f };
         const Surfels::PackedSurfelGPU* pStreamedSurfels = nullptr;
         uint32_t streamedSurfelCount = 0;
+        uint32_t totalDatasetSurfels = 0;
+        uint32_t totalDatasetChunks  = 0;
         bool     gpuRadixSort = true;
     };
 
@@ -41,8 +43,10 @@ public:
     void OnRender(State* pState, CAULDRON_DX12::SwapChain* pSwapChain);
 
     const std::vector<TimeStamp>& GetGPUTimestamps() const { return m_gpuTimestamps; }
+    const Surfels::GeometryCullStats& GetCullStats() const { return m_cullStats; }
 
 private:
+    Surfels::GeometryCullStats m_cullStats;
     struct SurfelsCB
     {
         XMFLOAT4X4 viewProj;
@@ -50,7 +54,7 @@ private:
         float      radius;
         XMFLOAT3   camUp;
         float      time;
-        XMFLOAT3   sphereCenter;
+        XMFLOAT3   viewerEyePos;
         float      sphereRadius;
         uint32_t   surfelCount;
         uint32_t   renderMode;
@@ -62,7 +66,10 @@ private:
         uint32_t   useDetachedCullCam;
         XMFLOAT4X4 cullViewProj;
         XMFLOAT3   cullEyePos;
-        float      pad3;
+        uint32_t   enableDithering;
+        uint32_t   highlightSilhouette;
+        uint32_t   enableConeCulling;
+        float      padCB;
     };
 
     CAULDRON_DX12::Device* m_pDevice = nullptr;

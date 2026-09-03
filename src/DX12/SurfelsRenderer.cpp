@@ -294,6 +294,32 @@ void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
     if (pState->renderMode == 1 && pState->pStreamedSurfels != nullptr && pState->streamedSurfelCount > 0)
     {
         surfelCount = pState->streamedSurfelCount;
+    }
+
+    // Geometry Optimization and Culling Statistics
+    m_cullStats = {};
+    uint32_t baseDatasetSurfels = (pState->totalDatasetSurfels > 0) ? pState->totalDatasetSurfels : surfelCount;
+    uint32_t baseDatasetChunks  = (pState->totalDatasetChunks > 0)  ? pState->totalDatasetChunks  : 0;
+    m_cullStats.totalDatasetSurfels = baseDatasetSurfels;
+    m_cullStats.totalDatasetChunks  = baseDatasetChunks;
+    m_cullStats.lodActiveSurfels    = surfelCount;
+    m_cullStats.lodPrunedSurfels    = (baseDatasetSurfels > surfelCount) ? (baseDatasetSurfels - surfelCount) : 0;
+    m_cullStats.asPassedSurfels     = surfelCount;
+    m_cullStats.msDrawnSurfels      = surfelCount;
+    m_cullStats.generatedVertices   = surfelCount * 4;
+    m_cullStats.generatedTriangles  = surfelCount * 2;
+
+    if (m_cullStats.totalDatasetSurfels > 0)
+    {
+        m_cullStats.totalCullingRatio = ((float)(m_cullStats.totalDatasetSurfels - m_cullStats.msDrawnSurfels) / (float)m_cullStats.totalDatasetSurfels) * 100.0f;
+        m_cullStats.lodDecimationRatio = ((float)m_cullStats.lodPrunedSurfels / (float)m_cullStats.totalDatasetSurfels) * 100.0f;
+    }
+    float bytesPerSurfel = 8.0f;
+    m_cullStats.vramBandwidthSavedMB = (float)m_cullStats.lodPrunedSurfels * bytesPerSurfel / (1024.0f * 1024.0f);
+
+    if (pState->renderMode == 1 && pState->pStreamedSurfels != nullptr && pState->streamedSurfelCount > 0)
+    {
+
 
         // Calculate power of 2 size for GPU Bitonic sorting network
         uint32_t numElements = 1;
@@ -367,12 +393,9 @@ void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
             m_lastSurfelCount = surfelCount;
 
             memcpy(m_pSurfelBufferMapped, pState->pStreamedSurfels, surfelCount * sizeof(Surfels::PackedSurfelGPU));
-            for (uint32_t i = surfelCount; i < numElements; i++)
+            if (numElements > surfelCount)
             {
-                Surfels::PackedSurfelGPU* pDst = (Surfels::PackedSurfelGPU*)m_pSurfelBufferMapped;
-                pDst[i].packedPosRadius = 0xFFFFFFFF;
-                pDst[i].packedNormal = 0xFFFF;
-                pDst[i].packedColor = 0xFFFF;
+                memset((uint8_t*)m_pSurfelBufferMapped + surfelCount * sizeof(Surfels::PackedSurfelGPU), 0xFF, (numElements - surfelCount) * sizeof(Surfels::PackedSurfelGPU));
             }
             m_needUploadToGpu = true;
             m_gpuSortNeedsRun = true;
@@ -391,7 +414,7 @@ void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
 
     float camMoved = std::abs(eyePos.x - m_lastSortEye.x) + std::abs(eyePos.y - m_lastSortEye.y) + std::abs(eyePos.z - m_lastSortEye.z);
     float forwardMoved = std::abs(forwardNorm.x - m_lastSortForward.x) + std::abs(forwardNorm.y - m_lastSortForward.y) + std::abs(forwardNorm.z - m_lastSortForward.z);
-    if (camMoved > 0.05f || forwardMoved > 0.02f)
+    if (camMoved > 1e-4f || forwardMoved > 1e-4f)
     {
         m_gpuSortNeedsRun = true;
         m_lastSortEye = eyePos;
@@ -448,9 +471,11 @@ void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
             pCmdLst->SetComputeRootSignature(m_pComputeRootSignature);
             pCmdLst->SetComputeRootShaderResourceView(1, m_pSurfelGpuBuffer->GetGPUVirtualAddress());
             pCmdLst->SetComputeRootShaderResourceView(2, m_pSurfelGpuBuffer->GetGPUVirtualAddress());
-            pCmdLst->SetComputeRootUnorderedAccessView(3, m_pGPUSortPairBuffer->GetGPUVirtualAddress());
-            pCmdLst->SetComputeRootUnorderedAccessView(4, m_pSurfelGpuOutBuffer->GetGPUVirtualAddress());
+            pCmdLst->SetComputeRootShaderResourceView(3, m_pSurfelGpuBuffer->GetGPUVirtualAddress());
+            pCmdLst->SetComputeRootUnorderedAccessView(4, m_pGPUSortPairBuffer->GetGPUVirtualAddress());
             pCmdLst->SetComputeRootUnorderedAccessView(5, m_pSurfelGpuOutBuffer->GetGPUVirtualAddress());
+            pCmdLst->SetComputeRootUnorderedAccessView(6, m_pSurfelGpuOutBuffer->GetGPUVirtualAddress());
+            pCmdLst->SetComputeRootUnorderedAccessView(7, m_pGPUSortPairBuffer->GetGPUVirtualAddress());
 
             uint32_t localGroups = (numElements + 1023) / 1024;
             uint32_t globalGroups = (numElements + 255) / 256;
@@ -575,7 +600,7 @@ void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
     pCB->radius = pState->splatRadius;
     XMStoreFloat3(&pCB->camUp, camUp);
     pCB->time = pState->time;
-    pCB->sphereCenter = XMFLOAT3(0.0f, 0.0f, 0.0f);
+    pCB->viewerEyePos = eyePos;
     pCB->sphereRadius = pState->sphereRadius;
     pCB->surfelCount = surfelCount;
     pCB->renderMode = pState->renderMode;
@@ -587,7 +612,10 @@ void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
     pCB->useDetachedCullCam = 0;
     XMStoreFloat4x4(&pCB->cullViewProj, viewProj);
     pCB->cullEyePos = eyePos;
-    pCB->pad3 = 0.0f;
+    pCB->enableDithering = 0;
+    pCB->highlightSilhouette = 0;
+    pCB->enableConeCulling = 0;
+    pCB->padCB = 0.0f;
 
     pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
     pCmdLst->SetPipelineState(m_pPipelineState);
