@@ -250,6 +250,7 @@ namespace Surfels
 
         std::vector<std::vector<StreamChunk>> m_lodStreamChunks; // Chunks grouped by LOD level for O(1) equalizer
         std::vector<StreamChunk*>             m_allStreamChunkPtrs; // Flat list of pointers for priority sorting
+        std::vector<StreamChunk*>             m_rendererSourceChunks; // Source chunk pointers corresponding to m_rendererMeshletChunks
         std::vector<size_t>                   m_lodTotalSurfels;   // Total surfels per LOD level
         std::vector<size_t>                   m_lodResidentSurfels;// Resident surfels per LOD level
 

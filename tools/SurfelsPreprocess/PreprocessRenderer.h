@@ -156,6 +156,7 @@ namespace Surfels
         ID3D12Resource*            m_pGPUSortPairBuffer = nullptr;
         uint32_t                   m_sortPairBufferCapacityBytes = 0;
         bool                       m_needUploadToGpu = false;
+        bool                       m_needUploadChunksToGpu = false;
         bool                       m_gpuSortNeedsRun = true;
 
         std::vector<MeshletChunkGPU> m_meshletChunks;

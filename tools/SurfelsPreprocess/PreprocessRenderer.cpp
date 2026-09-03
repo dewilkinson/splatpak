@@ -915,7 +915,7 @@ namespace Surfels
                 m_gpuSortNeedsRun = true;
             }
 
-            if (modelChanged && m_pChunkUploadBufferMapped != nullptr && pState->pChunks != nullptr && chunkCount > 0)
+            if (m_pChunkUploadBufferMapped != nullptr && pState->pChunks != nullptr && chunkCount > 0)
             {
                 MeshletChunkGPU* pDstChunks = reinterpret_cast<MeshletChunkGPU*>(m_pChunkUploadBufferMapped);
                 memcpy(pDstChunks, pState->pChunks, chunkCount * sizeof(MeshletChunkGPU));
@@ -923,7 +923,7 @@ namespace Surfels
                 {
                     memset(pDstChunks + chunkCount, 0, (numChunkElements - chunkCount) * sizeof(MeshletChunkGPU));
                 }
-                m_needUploadToGpu = true;
+                m_needUploadChunksToGpu = true;
             }
 
             // If CPU sort is active in Chunked Pipeline, compute chunk sorting on CPU and prepare upload
@@ -1248,7 +1248,7 @@ namespace Surfels
 
         if (surfelCount > 0 && pGpuRes != nullptr && pUploadRes != nullptr)
         {
-            if (m_needUploadToGpu)
+            if (m_needUploadToGpu || m_needUploadChunksToGpu)
             {
                 if (pState->useCopyQueue && m_pCopyQueue != nullptr && m_pCopyCmdList != nullptr && m_pCopyAllocator != nullptr)
                 {
@@ -1262,8 +1262,11 @@ namespace Surfels
                     m_pCopyAllocator->Reset();
                     m_pCopyCmdList->Reset(m_pCopyAllocator, nullptr);
 
-                    m_pCopyCmdList->CopyResource(pGpuRes, pUploadRes);
-                    if (m_pChunkGpuBuffer != nullptr && m_pChunkUploadBuffer != nullptr)
+                    if (m_needUploadToGpu)
+                    {
+                        m_pCopyCmdList->CopyResource(pGpuRes, pUploadRes);
+                    }
+                    if (m_needUploadChunksToGpu && m_pChunkGpuBuffer != nullptr && m_pChunkUploadBuffer != nullptr)
                     {
                         m_pCopyCmdList->CopyResource(m_pChunkGpuBuffer, m_pChunkUploadBuffer);
                     }
@@ -1278,7 +1281,7 @@ namespace Surfels
                     // Direct graphics queue awaits completion of background DMA upload before compute/mesh execution
                     m_pDevice->GetGraphicsQueue()->Wait(m_pCopyFence, fenceVal);
 
-                    if (m_pChunkGpuBuffer != nullptr)
+                    if (m_needUploadChunksToGpu && m_pChunkGpuBuffer != nullptr)
                     {
                         D3D12_RESOURCE_BARRIER chunkToSrv = CD3DX12_RESOURCE_BARRIER::Transition(
                             m_pChunkGpuBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
@@ -1289,8 +1292,11 @@ namespace Surfels
                 else
                 {
                     // Direct Queue fallback
-                    pCmdLst->CopyResource(pGpuRes, pUploadRes);
-                    if (m_pChunkGpuBuffer != nullptr && m_pChunkUploadBuffer != nullptr)
+                    if (m_needUploadToGpu)
+                    {
+                        pCmdLst->CopyResource(pGpuRes, pUploadRes);
+                    }
+                    if (m_needUploadChunksToGpu && m_pChunkGpuBuffer != nullptr && m_pChunkUploadBuffer != nullptr)
                     {
                         if (m_chunkGpuBufferState != D3D12_RESOURCE_STATE_COPY_DEST)
                         {
@@ -1309,6 +1315,7 @@ namespace Surfels
                     }
                 }
                 m_needUploadToGpu = false;
+                m_needUploadChunksToGpu = false;
             }
 
             bool useChunked = (pState->useChunkedPipeline && pState->chunkCount > 0 && m_pChunkGpuBuffer != nullptr && m_pSortedChunkIndicesGpuBuffer != nullptr);
