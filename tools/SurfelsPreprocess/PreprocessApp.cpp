@@ -3372,10 +3372,10 @@ namespace Surfels
             }
         }
 
-        // 5. Billboarded 9-Pixel Lavender Squares over Silhouette Chunk Clusters (Poisson 32px Radius)
+        // 5. Billboarded 9-Pixel Lavender Squares over Silhouette Chunk Clusters (Poisson 16px Radius, 2.0x -> 0.25x Depth Range)
         if (m_showSilhouetteDots && (m_enableSilhouetteLOD0 || m_highlightSilhouetteChunks))
         {
-            const float minRadius = 32.0f;
+            const float minRadius = 16.0f;
             const float minRadiusSq = minRadius * minRadius;
             struct PlacedDot
             {
@@ -3383,7 +3383,7 @@ namespace Surfels
                 float depth;
             };
             std::vector<PlacedDot> placedDots;
-            placedDots.reserve(256);
+            placedDots.reserve(512);
 
             float minDepth = 1e9f;
             float maxDepth = -1e9f;
@@ -3431,7 +3431,7 @@ namespace Surfels
                     ImVec2 sp;
                     if (ProjectToScreen(chunkGpu.center, sp))
                     {
-                        // Check if within 32-pixel radius of any already placed billboard square
+                        // Check if within 16-pixel radius of any already placed billboard square
                         bool tooClose = false;
                         for (const auto& placed : placedDots)
                         {
@@ -3454,7 +3454,7 @@ namespace Surfels
                 }
             }
 
-            // Render 9-pixel billboarded lavender squares with depth-attenuated brightness (1.0 closest -> 0.25 farthest)
+            // Render 9-pixel billboarded lavender squares with depth-attenuated brightness (2.0x closest -> 0.25x farthest)
             const float halfSize = 4.5f; // Exactly 9.0px width and height
             float depthRange = std::max(0.001f, maxDepth - minDepth);
 
@@ -3462,20 +3462,32 @@ namespace Surfels
             {
                 // Normalized depth: 0.0 (closest to viewer) to 1.0 (farthest)
                 float t = std::max(0.0f, std::min(1.0f, (dot.depth - minDepth) / depthRange));
-                // Intensity factor: 1.0 at nearest depth, dropping linearly to 0.25 (quarter intensity) at farthest depth
-                float factor = 1.0f - 0.75f * t;
+                // Intensity factor: 2.0x (double brightness at nearest depth), dropping linearly to 0.25x (quarter intensity) at farthest depth
+                float factor = 2.0f - 1.75f * t;
 
-                int r = (int)(215.0f * factor);
-                int g = (int)(175.0f * factor);
-                int b = (int)(255.0f * factor);
-                int a = (int)(255.0f * (0.35f + 0.65f * factor));
+                float baseR = 128.0f;
+                float baseG = 100.0f;
+                float baseB = 160.0f;
+
+                int r = std::max(0, std::min(255, (int)(baseR * factor)));
+                int g = std::max(0, std::min(255, (int)(baseG * factor)));
+                int b = std::max(0, std::min(255, (int)(baseB * factor)));
+                int a = std::max(0, std::min(255, (int)(255.0f * std::min(1.0f, 0.40f + 0.30f * factor))));
 
                 ImU32 fillCol   = IM_COL32(r, g, b, a);
-                ImU32 borderCol = IM_COL32((int)(35.0f * factor), (int)(15.0f * factor), (int)(55.0f * factor), a);
-                ImU32 centerCol = IM_COL32((int)(255.0f * factor), (int)(240.0f * factor), (int)(255.0f * factor), a);
+                ImU32 borderCol = IM_COL32(std::min(255, (int)(25.0f * factor)), std::min(255, (int)(12.0f * factor)), std::min(255, (int)(40.0f * factor)), a);
+                ImU32 centerCol = IM_COL32(std::min(255, (int)(150.0f * factor)), std::min(255, (int)(140.0f * factor)), std::min(255, (int)(170.0f * factor)), 255);
 
                 ImVec2 minPt(dot.pos.x - halfSize, dot.pos.y - halfSize);
                 ImVec2 maxPt(dot.pos.x + halfSize, dot.pos.y + halfSize);
+
+                // Luminous outer halo for closest high-brightness dots
+                if (factor > 1.25f)
+                {
+                    float glowNorm = (factor - 1.25f) / 0.75f;
+                    ImU32 glowCol = IM_COL32(r, g, b, (int)(95.0f * glowNorm));
+                    drawList->AddRect(ImVec2(minPt.x - 1.5f, minPt.y - 1.5f), ImVec2(maxPt.x + 1.5f, maxPt.y + 1.5f), glowCol, 1.0f, 0, 1.5f);
+                }
 
                 drawList->AddRectFilled(minPt, maxPt, fillCol, 0.0f);
                 drawList->AddRect(minPt, maxPt, borderCol, 0.0f, 0, 1.0f);
