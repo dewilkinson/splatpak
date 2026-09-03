@@ -437,17 +437,17 @@ void mainMS(
         }
     }
 
-    // Smooth Geometric Dilation Morph along silhouette normals
+    // Genesis Device Wavefront Dilation / Expanding Edge & Silhouette Morphing
+    float splatRad = length(tangentX);
+    if (splatRad < 1e-6) splatRad = 0.02;
+
     if (chunkDilationMorph > 0.0001 && abs(chunkBlendWeight) < 0.999)
     {
         float w = (chunkBlendWeight >= 0.0) ? (1.0 - chunkBlendWeight) * chunkDilationMorph : (-chunkBlendWeight) * chunkDilationMorph;
-        float splatRad = length(tangentX);
-        if (splatRad < 1e-6) splatRad = 0.02;
         worldPos += normal * (splatRad * w * 1.5);
         tangentX *= (1.0 + w * 0.4);
         tangentY *= (1.0 + w * 0.4);
     }
-
 
     // Quad corners in local 2D tangent space: 0(-1,-1) 1(1,-1) 2(-1,1) 3(1,1)
     float2 corners[4] = { float2(-1.0, -1.0), float2(1.0, -1.0), float2(-1.0, 1.0), float2(1.0, 1.0) };
@@ -458,10 +458,30 @@ void mainMS(
     float ndl = abs(dot(norm, lightDir));
     float lighting = (dot(normal, normal) > 0.01) ? (0.35 + 0.65 * ndl) : 1.0;
     float3 litColor = color * lighting;
-    if (g_HighlightSilhouette == 1 && chunkIsSilhouette > 0.5)
+
+    // Star Trek Genesis Device Creeping Wavefront & Retained Alpha Tint Dissipation
+    if (g_HighlightSilhouette == 1 && chunkIsSilhouette > 0.001)
     {
-        float3 lavender = float3(0.88, 0.65, 0.98);
-        litColor = lerp(litColor, lavender, 0.75);
+        float w = saturate(chunkIsSilhouette);
+        if (w >= 0.70)
+        {
+            // 1. Advancing Genesis Wave Crest (Glowing, expanding lavender frontier edge)
+            float leadFactor = saturate((w - 0.70) / 0.30);
+            float3 hotWaveLavender = float3(0.96, 0.75, 1.0) * (1.0 + leadFactor * 1.5);
+            litColor = lerp(litColor, hotWaveLavender, 0.85 + leadFactor * 0.15);
+
+            // Expanding wave crest geometry along surface normal
+            tangentX *= (1.0 + leadFactor * 0.45);
+            tangentY *= (1.0 + leadFactor * 0.45);
+            worldPos += norm * (splatRad * leadFactor * 0.60);
+        }
+        else
+        {
+            // 2. Trailing Wake of Retained Alpha Tint that Disappears and Blends Over Time
+            float trailFactor = saturate(w / 0.70);
+            float3 trailLavender = float3(0.85, 0.58, 0.96);
+            litColor = lerp(litColor, trailLavender * lighting, trailFactor * 0.75);
+        }
     }
 
     uint vBase = threadId * 4;

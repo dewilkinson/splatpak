@@ -198,7 +198,7 @@ namespace Surfels
             bool     isLockedInTransition = false; // Locked against eviction while transition is running in either direction
             bool     isSilhouette = false;         // Active in-view silhouette edge chunk (locked against eviction)
             float    transitionProgress = 0.0f;   // 0.0 (Parent Level N Solid) <-> 1.0 (Children Level N-1 Solid)
-            float    loadingHighlightTimer = 0.0f; // Countdown timer to highlight actively streaming/loading cluster in lavender
+            float    genesisWaveTimer = 0.0f;     // Star Trek Genesis Device creeping lavender wavefront timer (3.0s -> 0.0s)
             XMFLOAT3 aabbMin = { 0, 0, 0 };
             XMFLOAT3 aabbMax = { 0, 0, 0 };
         };
@@ -237,13 +237,16 @@ namespace Surfels
         float  m_streamRefinementProgress   = 1.0f;   // 0.0f to 1.0f
         size_t m_evictedSurfelCount         = 0;      // Count of earlier slots evicted from GPU Ring Buffer
 
+        // Star Trek Genesis Device Creeping Wavefront & Dissolving Alpha Wake
+        bool   m_enableGenesisWave          = true;   // Creeping lavender wavefront & dissolving alpha wake across surface as chunks stream in
+        float  m_genesisWaveDuration        = 3.0f;   // Duration in seconds of advancing wave crest & trailing alpha dissipation
+
         // Silhouette Edge Focused Reconstruction & Dilation Morphing
         bool   m_enableSilhouetteLOD0       = true;   // Refine silhouette edges using biased LOD levels
         int    m_silhouetteLODBias          = 2;      // Silhouette edge LOD bias (renders fine edges using Level N - 2, min value 0)
         float  m_silhouetteThreshold        = 0.25f;  // 2D screen-space grazing rim angle threshold (|N . V| <= threshold)
         float  m_dilationMorphAmount        = 0.40f;  // Geometric dilation morph factor during edge transitions
         bool   m_highlightSilhouetteChunks  = false;  // Highlight silhouette chunks in lavender semi-transparent effect
-        bool   m_highlightLoadingClusters   = true;   // Highlight cluster groups currently being loaded in lavender
 
         std::vector<std::vector<StreamChunk>> m_lodStreamChunks; // Chunks grouped by LOD level for O(1) equalizer
         std::vector<StreamChunk*>             m_allStreamChunkPtrs; // Flat list of pointers for priority sorting
