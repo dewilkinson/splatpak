@@ -41,6 +41,7 @@ namespace Surfels
             bool     enableDithering  = true; // Stochastic screen-space Bayer dithering for smooth LOD transitions
             bool     highlightSilhouette = false; // Highlight silhouette chunks in lavender semi-transparent effect
             bool     enableConeCulling = true; // Task Shader (mainAS) backface normal cone culling
+            bool     useCopyQueue = true; // Dedicated DX12 Hardware DMA Copy Queue for asynchronous PCIe transfers
         };
 
         struct FrameTimingMetrics
@@ -192,8 +193,15 @@ namespace Surfels
         ID3D12Resource*            m_pGPUSortKeyBuffer = nullptr;
         ID3D12Resource*            m_pGPUIndirectArgsBuffer = nullptr;
         ID3D12Resource*            m_pGPUCounterBuffer = nullptr;
-
         bool                       m_enableGPUPipeline = true;
+
+        // Dedicated Hardware DMA Copy Queue
+        ID3D12CommandQueue*        m_pCopyQueue = nullptr;
+        ID3D12CommandAllocator*    m_pCopyAllocator = nullptr;
+        ID3D12GraphicsCommandList* m_pCopyCmdList = nullptr;
+        ID3D12Fence*               m_pCopyFence = nullptr;
+        uint64_t                   m_copyFenceValue = 0;
+        HANDLE                     m_copyFenceEvent = nullptr;
     };
 }
 

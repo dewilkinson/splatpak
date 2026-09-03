@@ -66,6 +66,7 @@ private:
     bool  m_showTelemetry = true;
     bool  m_hasGeneratedSample = false;
     bool  m_showAboutDialog = false;
+    bool  m_useCopyQueue = true; // Dedicated DX12 Hardware DMA Copy Queue
 
     SurfelsRenderer*       m_pRenderer = nullptr;
     SurfelsRenderer::State m_state;

@@ -172,10 +172,46 @@ namespace Surfels
         sigDesc.pArgumentDescs = &argDesc;
 
         m_pDevice->GetDevice()->CreateCommandSignature(&sigDesc, m_pRootSignature, IID_PPV_ARGS(&m_pCommandSignature));
+
+        // Create Dedicated DX12 Hardware DMA Copy Queue for asynchronous PCIe transfers
+        D3D12_COMMAND_QUEUE_DESC copyQueueDesc = {};
+        copyQueueDesc.Type     = D3D12_COMMAND_LIST_TYPE_COPY;
+        copyQueueDesc.Priority = D3D12_COMMAND_QUEUE_PRIORITY_NORMAL;
+        copyQueueDesc.Flags    = D3D12_COMMAND_QUEUE_FLAG_NONE;
+
+        if (SUCCEEDED(m_pDevice->GetDevice()->CreateCommandQueue(&copyQueueDesc, IID_PPV_ARGS(&m_pCopyQueue))))
+        {
+            SetName(m_pCopyQueue, "PreprocessRenderer::m_pCopyQueue");
+            m_pDevice->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY, IID_PPV_ARGS(&m_pCopyAllocator));
+            SetName(m_pCopyAllocator, "PreprocessRenderer::m_pCopyAllocator");
+            m_pDevice->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COPY, m_pCopyAllocator, nullptr, IID_PPV_ARGS(&m_pCopyCmdList));
+            SetName(m_pCopyCmdList, "PreprocessRenderer::m_pCopyCmdList");
+            m_pCopyCmdList->Close();
+
+            m_pDevice->GetDevice()->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_pCopyFence));
+            SetName(m_pCopyFence, "PreprocessRenderer::m_pCopyFence");
+            m_copyFenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
+            m_copyFenceValue = 0;
+        }
     }
 
     void PreprocessRenderer::OnDestroy()
     {
+        if (m_pCopyQueue && m_pCopyFence)
+        {
+            uint64_t fv = ++m_copyFenceValue;
+            m_pCopyQueue->Signal(m_pCopyFence, fv);
+            if (m_pCopyFence->GetCompletedValue() < fv)
+            {
+                m_pCopyFence->SetEventOnCompletion(fv, m_copyFenceEvent);
+                WaitForSingleObject(m_copyFenceEvent, INFINITE);
+            }
+        }
+        if (m_copyFenceEvent) { CloseHandle(m_copyFenceEvent); m_copyFenceEvent = nullptr; }
+        if (m_pCopyFence) { m_pCopyFence->Release(); m_pCopyFence = nullptr; }
+        if (m_pCopyCmdList) { m_pCopyCmdList->Release(); m_pCopyCmdList = nullptr; }
+        if (m_pCopyAllocator) { m_pCopyAllocator->Release(); m_pCopyAllocator = nullptr; }
+        if (m_pCopyQueue) { m_pCopyQueue->Release(); m_pCopyQueue = nullptr; }
         if (m_pSurfelBuffer) { m_pSurfelBuffer->Unmap(0, nullptr); m_pSurfelBuffer->Release(); m_pSurfelBuffer = nullptr; }
         if (m_pSurfelGpuBuffer) { m_pSurfelGpuBuffer->Release(); m_pSurfelGpuBuffer = nullptr; }
         if (m_pSurfelGpuOutBuffer) { m_pSurfelGpuOutBuffer->Release(); m_pSurfelGpuOutBuffer = nullptr; }
@@ -1214,24 +1250,51 @@ namespace Surfels
         {
             if (m_needUploadToGpu)
             {
-                // Copy canonical unsorted data to GPU input buffer only when modified/loaded!
-                pCmdLst->CopyResource(pGpuRes, pUploadRes);
-                if (m_pChunkGpuBuffer != nullptr && m_pChunkUploadBuffer != nullptr)
+                if (pState->useCopyQueue && m_pCopyQueue != nullptr && m_pCopyCmdList != nullptr && m_pCopyAllocator != nullptr)
                 {
-                    if (m_chunkGpuBufferState != D3D12_RESOURCE_STATE_COPY_DEST)
+                    // Asynchronous DMA copy using dedicated DX12 Copy Queue
+                    m_pCopyAllocator->Reset();
+                    m_pCopyCmdList->Reset(m_pCopyAllocator, nullptr);
+
+                    m_pCopyCmdList->CopyResource(pGpuRes, pUploadRes);
+                    if (m_pChunkGpuBuffer != nullptr && m_pChunkUploadBuffer != nullptr)
                     {
-                        D3D12_RESOURCE_BARRIER preCopy = CD3DX12_RESOURCE_BARRIER::Transition(
-                            m_pChunkGpuBuffer, m_chunkGpuBufferState, D3D12_RESOURCE_STATE_COPY_DEST);
-                        pCmdLst->ResourceBarrier(1, &preCopy);
-                        m_chunkGpuBufferState = D3D12_RESOURCE_STATE_COPY_DEST;
+                        m_pCopyCmdList->CopyResource(m_pChunkGpuBuffer, m_pChunkUploadBuffer);
                     }
 
-                    pCmdLst->CopyResource(m_pChunkGpuBuffer, m_pChunkUploadBuffer);
+                    m_pCopyCmdList->Close();
+                    ID3D12CommandList* ppCopyLists[] = { m_pCopyCmdList };
+                    m_pCopyQueue->ExecuteCommandLists(1, ppCopyLists);
 
-                    D3D12_RESOURCE_BARRIER chunkToSrv = CD3DX12_RESOURCE_BARRIER::Transition(
-                        m_pChunkGpuBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
-                    pCmdLst->ResourceBarrier(1, &chunkToSrv);
-                    m_chunkGpuBufferState = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+                    uint64_t fenceVal = ++m_copyFenceValue;
+                    m_pCopyQueue->Signal(m_pCopyFence, fenceVal);
+
+                    // Direct graphics queue awaits completion of background DMA upload before compute/mesh execution
+                    m_pDevice->GetGraphicsQueue()->Wait(m_pCopyFence, fenceVal);
+
+                    m_chunkGpuBufferState = D3D12_RESOURCE_STATE_COPY_DEST;
+                }
+                else
+                {
+                    // Direct Queue fallback
+                    pCmdLst->CopyResource(pGpuRes, pUploadRes);
+                    if (m_pChunkGpuBuffer != nullptr && m_pChunkUploadBuffer != nullptr)
+                    {
+                        if (m_chunkGpuBufferState != D3D12_RESOURCE_STATE_COPY_DEST)
+                        {
+                            D3D12_RESOURCE_BARRIER preCopy = CD3DX12_RESOURCE_BARRIER::Transition(
+                                m_pChunkGpuBuffer, m_chunkGpuBufferState, D3D12_RESOURCE_STATE_COPY_DEST);
+                            pCmdLst->ResourceBarrier(1, &preCopy);
+                            m_chunkGpuBufferState = D3D12_RESOURCE_STATE_COPY_DEST;
+                        }
+
+                        pCmdLst->CopyResource(m_pChunkGpuBuffer, m_pChunkUploadBuffer);
+
+                        D3D12_RESOURCE_BARRIER chunkToSrv = CD3DX12_RESOURCE_BARRIER::Transition(
+                            m_pChunkGpuBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+                        pCmdLst->ResourceBarrier(1, &chunkToSrv);
+                        m_chunkGpuBufferState = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+                    }
                 }
                 m_needUploadToGpu = false;
             }

@@ -1348,6 +1348,7 @@ namespace Surfels
         m_state.aabbMin = m_aabbMin;
         m_state.enableDithering = m_enableDitheredTransitions;
         m_state.enableConeCulling = m_enableConeCulling;
+        m_state.useCopyQueue = m_useCopyQueue;
 
         uint32_t totalBasePoints = (uint32_t)(!m_residentLODs.empty() ? m_residentLODs[0].rawSurfels.size() : (!m_rawSurfels.empty() ? m_rawSurfels.size() : m_rendererSurfels.size()));
         uint32_t totalBaseChunks = (uint32_t)(!m_residentLODs.empty() ? m_residentLODs[0].meshletChunks.size() : (!m_chunks.empty() ? m_chunks.size() : m_rendererMeshletChunks.size()));
@@ -1904,6 +1905,9 @@ namespace Surfels
 
                     ImGui::Checkbox("Meshlet Backface Cone Culling (Task Shader)", &m_enableConeCulling);
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Task Shader (mainAS) culls ~50% of meshlet chunks facing away from the camera before mesh shaders and rasterization ever execute.");
+
+                    ImGui::Checkbox("Use DX12 CopyQueue (Async DMA)", &m_useCopyQueue);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Uses a dedicated D3D12_COMMAND_LIST_TYPE_COPY hardware DMA queue for PCIe buffer uploads in parallel with 3D rendering.");
 
                     if (ImGui::Checkbox("Detach Camera (Freeze Culling Frustum)", &m_detachCamera))
                     {

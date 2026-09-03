@@ -136,6 +136,7 @@ namespace Surfels
         bool  m_enableMortonOrder    = true;  // Checkbox: "Morton Spatial Curve Ordering" under Accelerators
         bool  m_enableConeCulling    = true;  // Checkbox: "Meshlet Backface Cone Culling" in Task Shader (mainAS)
         bool  m_useChunkedPipeline   = true;  // Micro-chunked meshlet pipeline with AS culling
+        bool  m_useCopyQueue         = true;  // Dedicated DX12 Hardware DMA Copy Queue for asynchronous PCIe transfers
         bool  m_vsync                = false; // Uncapped framerate by default to expose true compute/render timings
         float m_uiScale              = 1.0f;  // Dynamic UI and font scaling factor (0.70x to 2.00x)
         struct HeatmapClusterCube

@@ -174,6 +174,8 @@ void SurfelsSample::BuildUI()
     }
 
     ImGui::Separator();
+    ImGui::Checkbox("Use DX12 CopyQueue (Async DMA)", &m_useCopyQueue);
+    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Uses a dedicated D3D12_COMMAND_LIST_TYPE_COPY hardware DMA queue for PCIe buffer uploads in parallel with 3D rendering.");
     ImGui::Checkbox("Show Frame Profiler", &m_profiler.showProfiler);
     if (ImGui::Button("About Surfels..."))
     {
@@ -599,6 +601,7 @@ void SurfelsSample::OnRender()
     auto updateStart = std::chrono::high_resolution_clock::now();
     UpdateCamera(ImGui::GetIO());
     m_state.time += (float)(m_deltaTime / 1000.0);
+    m_state.useCopyQueue = m_useCopyQueue;
 
     // AutoLOD Selection & Streaming Update
     if (m_state.renderMode == 1 && m_streamingManager.IsLoaded())

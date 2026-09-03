@@ -31,6 +31,7 @@ public:
         uint32_t totalDatasetSurfels = 0;
         uint32_t totalDatasetChunks  = 0;
         bool     gpuRadixSort = true;
+        bool     useCopyQueue = true; // Dedicated DX12 Hardware DMA Copy Queue for asynchronous PCIe transfers
     };
 
     void OnCreate(CAULDRON_DX12::Device* pDevice, CAULDRON_DX12::SwapChain* pSwapChain);
@@ -115,4 +116,12 @@ private:
 
     uint32_t m_width  = 0;
     uint32_t m_height = 0;
+
+    // Dedicated Hardware DMA Copy Queue
+    ID3D12CommandQueue*        m_pCopyQueue = nullptr;
+    ID3D12CommandAllocator*    m_pCopyAllocator = nullptr;
+    ID3D12GraphicsCommandList* m_pCopyCmdList = nullptr;
+    ID3D12Fence*               m_pCopyFence = nullptr;
+    uint64_t                   m_copyFenceValue = 0;
+    HANDLE                     m_copyFenceEvent = nullptr;
 };
