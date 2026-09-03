@@ -1252,7 +1252,13 @@ namespace Surfels
             {
                 if (pState->useCopyQueue && m_pCopyQueue != nullptr && m_pCopyCmdList != nullptr && m_pCopyAllocator != nullptr)
                 {
-                    // Asynchronous DMA copy using dedicated DX12 Copy Queue
+                    // Ensure previous background copy execution has completed before resetting allocator
+                    if (m_pCopyFence->GetCompletedValue() < m_copyFenceValue)
+                    {
+                        m_pCopyFence->SetEventOnCompletion(m_copyFenceValue, m_copyFenceEvent);
+                        WaitForSingleObject(m_copyFenceEvent, INFINITE);
+                    }
+
                     m_pCopyAllocator->Reset();
                     m_pCopyCmdList->Reset(m_pCopyAllocator, nullptr);
 
@@ -1272,7 +1278,13 @@ namespace Surfels
                     // Direct graphics queue awaits completion of background DMA upload before compute/mesh execution
                     m_pDevice->GetGraphicsQueue()->Wait(m_pCopyFence, fenceVal);
 
-                    m_chunkGpuBufferState = D3D12_RESOURCE_STATE_COPY_DEST;
+                    if (m_pChunkGpuBuffer != nullptr)
+                    {
+                        D3D12_RESOURCE_BARRIER chunkToSrv = CD3DX12_RESOURCE_BARRIER::Transition(
+                            m_pChunkGpuBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+                        pCmdLst->ResourceBarrier(1, &chunkToSrv);
+                        m_chunkGpuBufferState = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+                    }
                 }
                 else
                 {

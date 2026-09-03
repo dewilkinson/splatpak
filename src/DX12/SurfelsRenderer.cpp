@@ -464,7 +464,13 @@ void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
         {
             if (pState->useCopyQueue && m_pCopyQueue != nullptr && m_pCopyCmdList != nullptr && m_pCopyAllocator != nullptr)
             {
-                // Asynchronous DMA copy using dedicated DX12 Copy Queue
+                // Ensure previous background copy has completed before resetting allocator
+                if (m_pCopyFence->GetCompletedValue() < m_copyFenceValue)
+                {
+                    m_pCopyFence->SetEventOnCompletion(m_copyFenceValue, m_copyFenceEvent);
+                    WaitForSingleObject(m_copyFenceEvent, INFINITE);
+                }
+
                 m_pCopyAllocator->Reset();
                 m_pCopyCmdList->Reset(m_pCopyAllocator, nullptr);
 
