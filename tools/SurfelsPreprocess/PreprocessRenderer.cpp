@@ -915,7 +915,7 @@ namespace Surfels
                 m_gpuSortNeedsRun = true;
             }
 
-            if (modelChanged && m_pChunkUploadBufferMapped != nullptr)
+            if (modelChanged && m_pChunkUploadBufferMapped != nullptr && pState->pChunks != nullptr && chunkCount > 0)
             {
                 MeshletChunkGPU* pDstChunks = reinterpret_cast<MeshletChunkGPU*>(m_pChunkUploadBufferMapped);
                 memcpy(pDstChunks, pState->pChunks, chunkCount * sizeof(MeshletChunkGPU));
