@@ -413,7 +413,7 @@ void mainMS(
             return;
         }
 
-        // 3. Hollow Mold Interior & Rim Edge Shading from Active Viewer Perspective:
+        // 3. Hollow Mold Interior Shading when camera is detached
         if (dot(normal, normal) > 0.1)
         {
             float3 toViewer = g_ViewerEyePos - worldPos;
@@ -427,17 +427,10 @@ void mainMS(
                 float3 darkInterior = float3(0.08, 0.07, 0.09);
                 color = lerp(color * 0.45, darkInterior, innerFade * 0.85);
             }
-            else
-            {
-                float rimStrength = 1.0 - saturate(abs(nDotViewer));
-                rimStrength = pow(rimStrength, 2.5);
-                float3 rimHighlight = float3(0.85, 0.90, 1.0);
-                color = lerp(color, rimHighlight, rimStrength * 0.92);
-            }
         }
     }
 
-    // Genesis Device Wavefront Dilation / Expanding Edge & Silhouette Morphing
+    // Smooth Geometric Dilation Morph along silhouette normals
     float splatRad = length(tangentX);
     if (splatRad < 1e-6) splatRad = 0.02;
 
@@ -459,28 +452,23 @@ void mainMS(
     float lighting = (dot(normal, normal) > 0.01) ? (0.35 + 0.65 * ndl) : 1.0;
     float3 litColor = color * lighting;
 
-    // Star Trek Genesis Device Creeping Wavefront & Retained Alpha Tint Dissipation
+    // Show Chunk Stream - Lavender Wavefront & Retained Alpha Tint Dissipation
     if (g_HighlightSilhouette == 1 && chunkIsSilhouette > 0.001)
     {
         float w = saturate(chunkIsSilhouette);
-        if (w >= 0.70)
+        if (w >= 0.65)
         {
-            // 1. Advancing Genesis Wave Crest (Glowing, expanding lavender frontier edge)
-            float leadFactor = saturate((w - 0.70) / 0.30);
-            float3 hotWaveLavender = float3(0.96, 0.75, 1.0) * (1.0 + leadFactor * 1.5);
-            litColor = lerp(litColor, hotWaveLavender, 0.85 + leadFactor * 0.15);
-
-            // Expanding wave crest geometry along surface normal
-            tangentX *= (1.0 + leadFactor * 0.45);
-            tangentY *= (1.0 + leadFactor * 0.45);
-            worldPos += norm * (splatRad * leadFactor * 0.60);
+            // 1. Advancing Leading Edge (Vibrant Lavender Wave Crest)
+            float leadFactor = saturate((w - 0.65) / 0.35);
+            float3 hotLavender = float3(0.85, 0.55, 0.98);
+            litColor = lerp(litColor, hotLavender, 0.85 + leadFactor * 0.15);
         }
         else
         {
-            // 2. Trailing Wake of Retained Alpha Tint that Disappears and Blends Over Time
-            float trailFactor = saturate(w / 0.70);
-            float3 trailLavender = float3(0.85, 0.58, 0.96);
-            litColor = lerp(litColor, trailLavender * lighting, trailFactor * 0.75);
+            // 2. Trailing Wake of Retained Alpha Tint that Dissolves and Blends Over Time
+            float trailFactor = saturate(w / 0.65);
+            float3 trailLavender = float3(0.78, 0.48, 0.92);
+            litColor = lerp(litColor, trailLavender * lighting, trailFactor * 0.65);
         }
     }
 

@@ -198,7 +198,7 @@ namespace Surfels
             bool     isLockedInTransition = false; // Locked against eviction while transition is running in either direction
             bool     isSilhouette = false;         // Active in-view silhouette edge chunk (locked against eviction)
             float    transitionProgress = 0.0f;   // 0.0 (Parent Level N Solid) <-> 1.0 (Children Level N-1 Solid)
-            float    genesisWaveTimer = 0.0f;     // Star Trek Genesis Device creeping lavender wavefront timer (3.0s -> 0.0s)
+            float    streamWaveTimer = 0.0f;      // Active chunk streaming lavender wavefront timer (3.0s -> 0.0s)
             XMFLOAT3 aabbMin = { 0, 0, 0 };
             XMFLOAT3 aabbMax = { 0, 0, 0 };
         };
@@ -237,9 +237,9 @@ namespace Surfels
         float  m_streamRefinementProgress   = 1.0f;   // 0.0f to 1.0f
         size_t m_evictedSurfelCount         = 0;      // Count of earlier slots evicted from GPU Ring Buffer
 
-        // Star Trek Genesis Device Creeping Wavefront & Dissolving Alpha Wake
-        bool   m_enableGenesisWave          = true;   // Creeping lavender wavefront & dissolving alpha wake across surface as chunks stream in
-        float  m_genesisWaveDuration        = 3.0f;   // Duration in seconds of advancing wave crest & trailing alpha dissipation
+        // Show Chunk Stream: Creeping Wavefront & Dissolving Alpha Wake
+        bool   m_showChunkStream            = true;   // Show Chunk Stream: creeping lavender wavefront & dissolving alpha wake as chunks load
+        float  m_chunkStreamDuration        = 3.0f;   // Duration in seconds of advancing wave crest & trailing alpha dissipation
 
         // Silhouette Edge Focused Reconstruction & Dilation Morphing
         bool   m_enableSilhouetteLOD0       = true;   // Refine silhouette edges using biased LOD levels

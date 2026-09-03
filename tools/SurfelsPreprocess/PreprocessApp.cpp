@@ -1879,15 +1879,15 @@ namespace Surfels
                         }
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Highlights active silhouette edge chunks in lavender.");
 
-                        if (ImGui::Checkbox("Genesis Device Surface Wave (Lavender)", &m_enableGenesisWave))
+                        if (ImGui::Checkbox("Show Chunk Stream (Lavender Wave)", &m_showChunkStream))
                         {
                             m_streamStateDirty = true;
                         }
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Simulates a Star Trek Genesis Device creeping surface wave: an advancing glowing lavender wavefront edge followed by a dissipating alpha wake as chunks stream in over the model body.");
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Visualizes newly arrived chunks as a creeping lavender wavefront and dissolving alpha wake as chunks stream in over the model body.");
 
-                        if (m_enableGenesisWave)
+                        if (m_showChunkStream)
                         {
-                            if (ImGui::SliderFloat("Genesis Wave Dissolve", &m_genesisWaveDuration, 0.5f, 6.0f, "%.1fs"))
+                            if (ImGui::SliderFloat("Chunk Stream Fade Time", &m_chunkStreamDuration, 0.5f, 6.0f, "%.1fs"))
                             {
                                 m_streamStateDirty = true;
                             }
@@ -3384,7 +3384,7 @@ namespace Surfels
         BuildUI();
         m_state.time += (float)(m_deltaTime / 1000.0);
         m_state.enableDithering = m_enableDitheredTransitions;
-        m_state.highlightSilhouette = m_highlightSilhouetteChunks || m_enableGenesisWave;
+        m_state.highlightSilhouette = m_highlightSilhouetteChunks || m_showChunkStream;
 
         if (m_deviceLost)
         {
