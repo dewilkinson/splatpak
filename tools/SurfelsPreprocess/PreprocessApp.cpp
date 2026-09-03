@@ -3377,8 +3377,16 @@ namespace Surfels
         {
             const float minRadius = 32.0f;
             const float minRadiusSq = minRadius * minRadius;
-            std::vector<ImVec2> placedDots;
+            struct PlacedDot
+            {
+                ImVec2 pos;
+                float depth;
+            };
+            std::vector<PlacedDot> placedDots;
             placedDots.reserve(256);
+
+            float minDepth = 1e9f;
+            float maxDepth = -1e9f;
 
             int targetLOD = m_selectedPreviewLOD;
             if (m_autoLOD)
@@ -3396,6 +3404,11 @@ namespace Surfels
                 const auto& chunkGpu = pActiveChunks[i];
                 bool isSil = (chunkGpu.isSilhouette > 0.5f);
 
+                float toCamX = eyePos.x - chunkGpu.center.x;
+                float toCamY = eyePos.y - chunkGpu.center.y;
+                float toCamZ = eyePos.z - chunkGpu.center.z;
+                float toCamDist = sqrtf(toCamX * toCamX + toCamY * toCamY + toCamZ * toCamZ);
+
                 if (!isSil)
                 {
                     if (i < m_rendererSourceChunks.size() && m_rendererSourceChunks[i])
@@ -3403,19 +3416,12 @@ namespace Surfels
                         isSil = m_rendererSourceChunks[i]->isSilhouette;
                     }
                     
-                    if (!isSil)
+                    if (!isSil && toCamDist > 1e-4f)
                     {
-                        float toCamX = eyePos.x - chunkGpu.center.x;
-                        float toCamY = eyePos.y - chunkGpu.center.y;
-                        float toCamZ = eyePos.z - chunkGpu.center.z;
-                        float toCamDist = sqrtf(toCamX * toCamX + toCamY * toCamY + toCamZ * toCamZ);
-                        if (toCamDist > 1e-4f)
+                        float dotNV = (chunkGpu.coneAxis.x * toCamX + chunkGpu.coneAxis.y * toCamY + chunkGpu.coneAxis.z * toCamZ) / toCamDist;
+                        if (fabsf(dotNV) <= m_silhouetteThreshold)
                         {
-                            float dotNV = (chunkGpu.coneAxis.x * toCamX + chunkGpu.coneAxis.y * toCamY + chunkGpu.coneAxis.z * toCamZ) / toCamDist;
-                            if (fabsf(dotNV) <= m_silhouetteThreshold)
-                            {
-                                isSil = true;
-                            }
+                            isSil = true;
                         }
                     }
                 }
@@ -3429,8 +3435,8 @@ namespace Surfels
                         bool tooClose = false;
                         for (const auto& placed : placedDots)
                         {
-                            float dx = sp.x - placed.x;
-                            float dy = sp.y - placed.y;
+                            float dx = sp.x - placed.pos.x;
+                            float dy = sp.y - placed.pos.y;
                             if (dx * dx + dy * dy < minRadiusSq)
                             {
                                 tooClose = true;
@@ -3440,26 +3446,40 @@ namespace Surfels
 
                         if (!tooClose)
                         {
-                            placedDots.push_back(sp);
+                            placedDots.push_back({ sp, toCamDist });
+                            if (toCamDist < minDepth) minDepth = toCamDist;
+                            if (toCamDist > maxDepth) maxDepth = toCamDist;
                         }
                     }
                 }
             }
 
-            // Render 9-pixel billboarded lavender squares centered on each placed cluster
+            // Render 9-pixel billboarded lavender squares with depth-attenuated brightness (1.0 closest -> 0.25 farthest)
             const float halfSize = 4.5f; // Exactly 9.0px width and height
-            const ImU32 fillCol   = IM_COL32(200, 160, 255, 240);  // Vibrant lavender fill
-            const ImU32 borderCol = IM_COL32(35, 15, 55, 230);     // Crisp dark outline for contrast
-            const ImU32 centerCol = IM_COL32(255, 240, 255, 255);  // Bright 1px inner highlight
+            float depthRange = std::max(0.001f, maxDepth - minDepth);
 
-            for (const auto& pt : placedDots)
+            for (const auto& dot : placedDots)
             {
-                ImVec2 minPt(pt.x - halfSize, pt.y - halfSize);
-                ImVec2 maxPt(pt.x + halfSize, pt.y + halfSize);
+                // Normalized depth: 0.0 (closest to viewer) to 1.0 (farthest)
+                float t = std::max(0.0f, std::min(1.0f, (dot.depth - minDepth) / depthRange));
+                // Intensity factor: 1.0 at nearest depth, dropping linearly to 0.25 (quarter intensity) at farthest depth
+                float factor = 1.0f - 0.75f * t;
+
+                int r = (int)(215.0f * factor);
+                int g = (int)(175.0f * factor);
+                int b = (int)(255.0f * factor);
+                int a = (int)(255.0f * (0.35f + 0.65f * factor));
+
+                ImU32 fillCol   = IM_COL32(r, g, b, a);
+                ImU32 borderCol = IM_COL32((int)(35.0f * factor), (int)(15.0f * factor), (int)(55.0f * factor), a);
+                ImU32 centerCol = IM_COL32((int)(255.0f * factor), (int)(240.0f * factor), (int)(255.0f * factor), a);
+
+                ImVec2 minPt(dot.pos.x - halfSize, dot.pos.y - halfSize);
+                ImVec2 maxPt(dot.pos.x + halfSize, dot.pos.y + halfSize);
 
                 drawList->AddRectFilled(minPt, maxPt, fillCol, 0.0f);
                 drawList->AddRect(minPt, maxPt, borderCol, 0.0f, 0, 1.0f);
-                drawList->AddRectFilled(ImVec2(pt.x - 1.0f, pt.y - 1.0f), ImVec2(pt.x + 1.0f, pt.y + 1.0f), centerCol);
+                drawList->AddRectFilled(ImVec2(dot.pos.x - 1.0f, dot.pos.y - 1.0f), ImVec2(dot.pos.x + 1.0f, dot.pos.y + 1.0f), centerCol);
             }
         }
     }
