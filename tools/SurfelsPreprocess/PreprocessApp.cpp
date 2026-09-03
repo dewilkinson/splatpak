@@ -2508,9 +2508,9 @@ namespace Surfels
                         }
 
                         isLit = (resCount > 0);
-                        // Silhouette segments: only highlighted in lavender when silhouette refinement is active and refined finer than the base target LOD
+                        // Silhouette segments: only highlighted in lavender when a significant portion of resident chunks in this segment are true outer silhouette edges
                         int silTargetLOD = std::max(0, m_selectedPreviewLOD - m_silhouetteLODBias);
-                        bool isSil = (m_enableSilhouetteLOD0 && m_selectedPreviewLOD > silTargetLOD && lodIdx <= silTargetLOD && isLit && silCount > 0);
+                        bool isSil = (m_enableSilhouetteLOD0 && m_selectedPreviewLOD > silTargetLOD && lodIdx <= silTargetLOD && isLit && silCount > 0 && (silCount * 2 >= resCount || (resCount <= 4 && silCount >= 2)));
                         bool isTrans = (isLit && transCount > 0);
 
                         if (isLit)
