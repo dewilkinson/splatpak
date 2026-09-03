@@ -9,6 +9,56 @@ extern "C" { __declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\
 
 namespace Surfels
 {
+    // Fast 2D Screen-Space Spatial Partitioning Grid for O(1) Horizon & Clearance Queries
+    struct ScreenSpatialGrid
+    {
+        static constexpr float CELL_SIZE = 64.0f;
+        static constexpr float INV_CELL = 1.0f / 64.0f;
+        int gridW = 0;
+        int gridH = 0;
+        std::vector<std::vector<uint32_t>> cells;
+
+        void Init(float screenW, float screenH)
+        {
+            gridW = std::max(1, (int)ceilf(screenW * INV_CELL) + 2);
+            gridH = std::max(1, (int)ceilf(screenH * INV_CELL) + 2);
+            cells.assign(gridW * gridH, std::vector<uint32_t>());
+        }
+
+        void Insert(uint32_t idx, float px, float py)
+        {
+            if (px < 0.0f || py < 0.0f) return;
+            int cx = (int)(px * INV_CELL);
+            int cy = (int)(py * INV_CELL);
+            if (cx >= 0 && cx < gridW && cy >= 0 && cy < gridH)
+            {
+                cells[cy * gridW + cx].push_back(idx);
+            }
+        }
+
+        template <typename Func>
+        void ForEachNeighbor(float px, float py, float radius, Func&& func) const
+        {
+            int minCx = std::max(0, (int)((px - radius) * INV_CELL));
+            int maxCx = std::min(gridW - 1, (int)((px + radius) * INV_CELL));
+            int minCy = std::max(0, (int)((py - radius) * INV_CELL));
+            int maxCy = std::min(gridH - 1, (int)((py + radius) * INV_CELL));
+
+            for (int cy = minCy; cy <= maxCy; cy++)
+            {
+                int rowOffset = cy * gridW;
+                for (int cx = minCx; cx <= maxCx; cx++)
+                {
+                    const auto& bucket = cells[rowOffset + cx];
+                    for (uint32_t neighborIdx : bucket)
+                    {
+                        func(neighborIdx);
+                    }
+                }
+            }
+        }
+    };
+
     PreprocessApp::PreprocessApp(LPCSTR name) : CAULDRON_DX12::FrameworkWindows(name)
     {
         m_isCpuValidationLayerEnabled = false;
@@ -3402,9 +3452,17 @@ namespace Surfels
 
             std::vector<ImVec2> allScreenPos(activeChunkCount);
             std::vector<bool>   allScreenValid(activeChunkCount, false);
+
+            ScreenSpatialGrid visGrid;
+            visGrid.Init(screenW, screenH);
+
             for (uint32_t j = 0; j < activeChunkCount && pActiveChunks != nullptr; j++)
             {
                 allScreenValid[j] = ProjectToScreen(pActiveChunks[j].center, allScreenPos[j]);
+                if (allScreenValid[j])
+                {
+                    visGrid.Insert(j, allScreenPos[j].x, allScreenPos[j].y);
+                }
             }
 
             const float checkRadius = 65.0f;
@@ -3444,13 +3502,12 @@ namespace Surfels
                 ImVec2 outwardDir(dx / len, dy / len);
 
                 // 3. Screen-Space Horizon Clearance & Tolerance Cone:
-                // Check all active scene chunks to verify this normal points out into empty background (NOT into the model!)
+                // Fast O(1) grid query for local neighbors within 65px
                 int forwardObstructions = 0;
                 int angleCount = 0;
 
-                for (uint32_t j = 0; j < activeChunkCount; j++)
-                {
-                    if (i == j || !allScreenValid[j]) continue;
+                visGrid.ForEachNeighbor(sp.x, sp.y, checkRadius, [&](uint32_t j) {
+                    if (i == j) return;
                     float ndx = allScreenPos[j].x - sp.x;
                     float ndy = allScreenPos[j].y - sp.y;
                     float d2 = ndx * ndx + ndy * ndy;
@@ -3468,7 +3525,7 @@ namespace Surfels
                             angles[angleCount++] = atan2f(ndy, ndx);
                         }
                     }
-                }
+                });
 
                 // If pointing into another part of the model, reject
                 if (forwardObstructions > 0)
