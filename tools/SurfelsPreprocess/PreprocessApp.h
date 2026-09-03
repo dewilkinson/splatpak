@@ -244,10 +244,10 @@ namespace Surfels
         // Silhouette Edge Focused Reconstruction & Dilation Morphing
         bool   m_enableSilhouetteLOD0       = true;   // Refine silhouette edges using biased LOD levels
         int    m_silhouetteLODBias          = 2;      // Silhouette edge LOD bias (renders fine edges using Level N - 2, min value 0)
-        float  m_silhouetteThreshold        = 0.25f;  // 2D screen-space grazing rim angle threshold (|N . V| <= threshold)
+        float  m_silhouetteThreshold        = 0.40f;  // 2D screen-space grazing rim angle threshold (|N . V| <= threshold)
         float  m_dilationMorphAmount        = 0.40f;  // Geometric dilation morph factor during edge transitions
         bool   m_highlightSilhouetteChunks  = false;  // Highlight silhouette chunks in lavender semi-transparent effect
-        bool   m_showSilhouetteDots         = true;   // Render 9-pixel billboarded lavender squares over silhouette clusters with 32px Poisson spacing
+        bool   m_showSilhouetteDots         = true;   // Render 9-pixel billboarded lavender squares over silhouette clusters with 16px Poisson spacing
 
         std::vector<std::vector<StreamChunk>> m_lodStreamChunks; // Chunks grouped by LOD level for O(1) equalizer
         std::vector<StreamChunk*>             m_allStreamChunkPtrs; // Flat list of pointers for priority sorting
