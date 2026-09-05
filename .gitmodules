@@ -1,3 +1,7 @@
 [submodule "libs/cauldron"]
 	path = libs/cauldron
-	url = https://github.com/GPUOpen-LibrariesAndSDKs/Cauldron.git
+	# Pinned to a fork rather than upstream AMD: the checked-in commit carries a local patch
+	# (prebuilt-static-lib support, DXC/AgilitySDK path fixes, device-lost hardening) that was
+	# never upstreamed, so a fresh `git submodule update --init` against the real AMD repo can't
+	# fetch it. See libs/cauldron's own commit log for exactly what the patch changes.
+	url = https://github.com/dewilkinson/Cauldron.git
