@@ -53,7 +53,7 @@ add_subdirectory(tests)
 # fails with "Unable to start program ... access denied". Pin it to the
 # client-facing app instead. Right-click another project > Set as Startup
 # Project to override for a session.
-set_property(DIRECTORY ${CMAKE_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT SurfelLab)
+set_property(DIRECTORY ${CMAKE_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT SplatLab)
 
 # Docs project: a build-nothing target whose only purpose is to list the
 # Markdown docs in Solution Explorer so they can be opened and edited from

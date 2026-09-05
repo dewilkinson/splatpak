@@ -23,7 +23,7 @@
 namespace Surfels
 {
     // Telemetry's lodDistribution array only tracks this many levels -- plenty of headroom over the
-    // preprocessor's practical max (SurfelLab's own LOD slider tops out well below this).
+    // preprocessor's practical max (SplatLab's own LOD slider tops out well below this).
     static constexpr uint32_t kMaxTrackedLODLevels = 8;
 
     struct CachedChunkLOD

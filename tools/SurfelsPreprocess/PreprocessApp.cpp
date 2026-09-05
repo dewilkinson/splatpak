@@ -2,7 +2,7 @@
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// Implements the SurfelLab app shell: file I/O, the wavelet preprocessing
+// Implements the SplatLab app shell: file I/O, the wavelet preprocessing
 // pipeline, the streaming/decay/silhouette simulation, and every ImGui panel. See
 // PreprocessApp.h for the class overview and PreprocessRenderer.cpp for the GPU side.
 
@@ -4114,7 +4114,7 @@ namespace Surfels
         Trace("%s\n", message.c_str());
 
         std::string dialogText = message + "\n\nThe application cannot recover from this and will now close.";
-        MessageBoxA(nullptr, dialogText.c_str(), "SurfelLab - GPU Device Lost", MB_OK | MB_ICONERROR);
+        MessageBoxA(nullptr, dialogText.c_str(), "SplatLab - GPU Device Lost", MB_OK | MB_ICONERROR);
         PostQuitMessage(0);
     }
 }

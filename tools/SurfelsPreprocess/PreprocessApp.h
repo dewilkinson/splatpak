@@ -2,7 +2,7 @@
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// The SurfelLab app shell: owns the whole offline preprocessing pipeline (load ->
+// The SplatLab app shell: owns the whole offline preprocessing pipeline (load ->
 // octree chunk -> wavelet decompose -> quantize -> export) plus the runtime streaming
 // simulation and every ImGui panel. PreprocessRenderer handles the actual GPU work; this
 // class is everything else -- UI, file I/O, and the streaming/decay/silhouette simulation.

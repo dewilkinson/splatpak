@@ -21,7 +21,7 @@ swapchain/ImGui bootstrap — Cauldron ships no sample apps of its own, so
 
 The solution is organized into Solution Explorer folders:
 
-1. **`SurfelLab` (Tools)** — source in `tools/SurfelsPreprocess/`. The primary
+1. **`SplatLab` (Tools)** — source in `tools/SurfelsPreprocess/`. The primary
    application: preprocessor and viewer in one window, and the default startup
    project. This is what the User Guide describes.
    - Loaders for binary and ASCII `.ply` and for `.splat` (3D Gaussian Splat)
@@ -42,7 +42,7 @@ The solution is organized into Solution Explorer folders:
    with no preprocessing UI. Loads `scene.sflw` from its working directory (or
    a `models/` folder near it) and streams it; if none is found it generates a
    synthetic benchmark package on first launch. It shares the renderer and
-   streaming manager with SurfelLab but omits the silhouette prepass, TAA,
+   streaming manager with SplatLab but omits the silhouette prepass, TAA,
    occlusion volume, and streaming-simulator UI.
 
 3. **Tests** — `tests/`. Small standalone console executables, each built as its
@@ -52,7 +52,7 @@ The solution is organized into Solution Explorer folders:
    `TestLoadPackage` (loads `models/venus.sflw` and prints chunk/surfel counts),
    `TestOcclusionVolume` (runs the occlusion volume generator on a package and
    prints its trace; optional resolution override and shave values), and
-   `CompressVenus` (command-line packager: writes the same `.sflw` SurfelLab
+   `CompressVenus` (command-line packager: writes the same `.sflw` SplatLab
    would export for a `.ply` with default settings, occlusion volume included;
    used to regenerate the bundled assets).
 
@@ -61,7 +61,7 @@ The solution is organized into Solution Explorer folders:
    volume generator: the three pieces of this project judged distinctive enough to be
    worth keeping as compiled objects rather than open source, even within this repo. Each
    module is a public header (data structures and function declarations only) plus a
-   `.cpp` implementation; `SurfelLab`, `Surfels_DX12`, and the console test tools all link
+   `.cpp` implementation; `SplatLab`, `Surfels_DX12`, and the console test tools all link
    against it. **This subtree is explicitly not covered by the repository's top-level
    Apache-2.0 `LICENSE`** — see `libs/SurfelsCore/README.md` for the licensing boundary
    and its limits (a static library keeps source out of ordinary distribution; it doesn't
@@ -94,7 +94,7 @@ structs and version history.
 
 `bin/` is build output and is not tracked, but two convenience launchers live there:
 
-- `bin/launch_surfellab.cmd` — launches SurfelLab, forwarding any arguments (so a file path can be dropped on it).
+- `bin/launch_surfellab.cmd` — launches SplatLab, forwarding any arguments (so a file path can be dropped on it).
 - `bin/launch.cmd` — launches the standalone viewer.
 
 ## Building
@@ -128,7 +128,7 @@ The `.ply` assets under `assets/` are also LFS objects.
 
 Open the generated solution in `build/` (`Surfels_DX12.slnx` with the VS 2026
 generator, `Surfels_DX12.sln` with older ones) and build/run, or build from the
-command line with `cmake --build . --config Release`. SurfelLab is pinned as the
+command line with `cmake --build . --config Release`. SplatLab is pinned as the
 startup project. Executables and shaders land in `bin/`: every `.hlsl` under
 `src/DX12/Shaders/` is copied to `bin/ShaderLibDX/` so `CompileShaderFromFile`
 can find it at runtime, and the post-build step also clears Cauldron's on-disk
@@ -149,19 +149,19 @@ If you already cloned without `--recurse-submodules`, run
 
 `CMakeSettings.json` defines both `x64-Debug` and `x64-Release` configurations
 (pick one from Visual Studio's configuration dropdown); both build to the same
-`bin/` output, with Debug binaries getting a `d` suffix (`SurfelLabd.exe`
-vs `SurfelLab.exe`). Release builds keep full optimization but also emit PDBs
+`bin/` output, with Debug binaries getting a `d` suffix (`SplatLabd.exe`
+vs `SplatLab.exe`). Release builds keep full optimization but also emit PDBs
 (`/Zi` + `/DEBUG`) so crashes in the shipping configuration are debuggable.
 
 ### Runtime configuration
 
-SurfelLab reads an optional `config.json` (searched in the working directory
+SplatLab reads an optional `config.json` (searched in the working directory
 and a few parent directories; `surfels_config.ini` is also accepted). Keys
 that are read: `startup_dataset` (path loaded when no file is given on the
 command line), `benchmark_dataset`, and `occlusion_shave_bias` (extra cells,
 positive or negative, added to the occlusion volume's unconditional cull band
 around the sampled surface; use it when a noisy cloud still shows cubes poking
-through). The file SurfelLab writes when none exists also lists
+through). The file SplatLab writes when none exists also lists
 `fallback_synthetic_points`, `default_chunk_size`, `default_max_lods`, and
 `default_deadband_mm`, but those are informational and not currently parsed.
 Without a config file the built-in defaults apply and the bundled
@@ -184,7 +184,7 @@ generator changes, so they always match the current format.
   incorrectly reject translucent surfaces behind whatever drew first. Enabling
   real depth test/write on this pass would break blending, not improve it. The
   separate GPU silhouette item-prepass and the occlusion-volume cube pass
-  (SurfelLab only) are a different story — they use a real depth test
+  (SplatLab only) are a different story — they use a real depth test
   (`DepthEnable = TRUE`, `DepthFunc = LESS`) since they need correct
   nearest-item-wins occlusion, not blending.
 - `.sog` (PlayCanvas Spatially Ordered Gaussians) support exists as a loader

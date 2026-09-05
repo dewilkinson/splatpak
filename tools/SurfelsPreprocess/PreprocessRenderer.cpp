@@ -2,7 +2,7 @@
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// The GPU heart of SurfelLab: root signatures, PSOs, and per-frame command
+// The GPU heart of SplatLab: root signatures, PSOs, and per-frame command
 // recording for the main mesh-shader splat pass, the GPU silhouette item-prepass, the
 // interior occlusion volume pass, the GPU bitonic depth sort, and TAA resolve.
 
@@ -46,7 +46,7 @@ namespace Surfels
             HRESULT hr = pDevice->GetDevice()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &options7, sizeof(options7));
             if (FAILED(hr) || options7.MeshShaderTier == D3D12_MESH_SHADER_TIER_NOT_SUPPORTED)
             {
-                MessageBoxA(NULL, "Mesh Shaders are not supported on this GPU.", "SurfelLab", MB_ICONERROR);
+                MessageBoxA(NULL, "Mesh Shaders are not supported on this GPU.", "SplatLab", MB_ICONERROR);
                 exit(1);
             }
         }

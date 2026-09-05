@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(SurfelLab)
+project(SplatLab)
 
 include(${CMAKE_CURRENT_SOURCE_DIR}/../../libs/cauldron/common.cmake)
 
@@ -45,11 +45,11 @@ source_group("Shaders" FILES ${shaders})
 
 copyTargetCommand("${shaders}" ${CMAKE_HOME_DIRECTORY}/bin/ShaderLibDX copied_preprocess_shaders)
 
-add_executable(SurfelLab WIN32 ${sources} ${shaders})
-target_link_libraries(SurfelLab LINK_PUBLIC Cauldron_DX12 ImGUI amd_ags d3d12 dxgi SurfelsCore)
-add_dependencies(SurfelLab copied_preprocess_shaders)
+add_executable(SplatLab WIN32 ${sources} ${shaders})
+target_link_libraries(SplatLab LINK_PUBLIC Cauldron_DX12 ImGUI amd_ags d3d12 dxgi SurfelsCore)
+add_dependencies(SplatLab copied_preprocess_shaders)
 
-set_target_properties(SurfelLab PROPERTIES
+set_target_properties(SplatLab PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
     FOLDER "Tools"
@@ -57,10 +57,10 @@ set_target_properties(SurfelLab PROPERTIES
     DEBUG_POSTFIX "d"
 )
 
-addManifest(SurfelLab)
+addManifest(SplatLab)
 
 add_custom_command(
-    TARGET SurfelLab
+    TARGET SplatLab
     POST_BUILD
     COMMAND ${CMAKE_COMMAND} -E copy_directory
         "${CMAKE_CURRENT_SOURCE_DIR}/../../src/DX12/Shaders"
@@ -71,7 +71,7 @@ add_custom_command(
 
 if(EXISTS "C:/Program Files (x86)/Windows Kits/10/Redist/D3D/x64/dxcompiler.dll")
     add_custom_command(
-        TARGET SurfelLab
+        TARGET SplatLab
         POST_BUILD
         COMMAND ${CMAKE_COMMAND} -E copy_if_different
             "C:/Program Files (x86)/Windows Kits/10/Redist/D3D/x64/dxcompiler.dll"

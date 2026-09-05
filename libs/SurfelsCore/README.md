@@ -3,7 +3,7 @@
 This directory holds the algorithmic core of Surfels: the lifting-wavelet LOD decomposition
 (`LiftingWavelet.h`/`.cpp`), the compression codec (`ByteShuffle.h`/`.cpp`), and the interior
 occlusion volume generator (`OcclusionVolume.h`/`.cpp`). It builds as a single static library,
-`SurfelsCore`, that `SurfelLab`, `Surfels_DX12`, and the console test tools link against.
+`SurfelsCore`, that `SplatLab`, `Surfels_DX12`, and the console test tools link against.
 
 ## Licensing boundary
 

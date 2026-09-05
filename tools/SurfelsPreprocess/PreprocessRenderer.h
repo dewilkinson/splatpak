@@ -2,7 +2,7 @@
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// GPU-side renderer for SurfelLab: owns every root signature, PSO, and GPU
+// GPU-side renderer for SplatLab: owns every root signature, PSO, and GPU
 // buffer, and exposes a single State snapshot + OnRender() entry point that
 // PreprocessApp drives once per frame. See PreprocessRenderer.cpp for the implementation.
 

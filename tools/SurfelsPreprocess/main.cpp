@@ -2,7 +2,7 @@
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// Entry point for SurfelLab: installs crash-dump handlers (so a hard crash still
+// Entry point for SplatLab: installs crash-dump handlers (so a hard crash still
 // leaves a trace-log entry and a minidump for post-mortem debugging) before handing off
 // to Cauldron's RunFramework with a PreprocessApp instance.
 
@@ -101,7 +101,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR lpCmd
 #endif
 
     HRESULT hrCom = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    int result = RunFramework(hInstance, lpCmdLine, nCmdShow, new Surfels::PreprocessApp("SurfelLab - Surfel-based 3D Streaming Demo"));
+    int result = RunFramework(hInstance, lpCmdLine, nCmdShow, new Surfels::PreprocessApp("SplatLab"));
     if (SUCCEEDED(hrCom))
     {
         CoUninitialize();

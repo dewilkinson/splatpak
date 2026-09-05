@@ -1,16 +1,16 @@
-# SurfelLab User Guide
+# SplatLab User Guide
 
 This guide describes how to operate the software. Readers seeking the technical architecture should consult [README.md](../README.md).
 
 ## Overview
 
-The primary application is **SurfelLab**, a single window that combines the preprocessor and the viewer. Its three tabs carry a dataset from raw point cloud to streamed render without leaving the program:
+The primary application is **SplatLab**, a single window that combines the preprocessor and the viewer. Its three tabs carry a dataset from raw point cloud to streamed render without leaving the program:
 
 1. **Surfel Generator** — loads a `.ply` or `.splat` file, exposes the chunking and compression parameters, and exports a `.sflw` package.
 2. **Renderer** — displays the current dataset, or any previously exported package, using the GPU-driven mesh-shader renderer, with level-of-detail controls and the interior occlusion volume.
 3. **Streaming** — simulates progressive delivery over a constrained connection and visualises which detail levels are resident.
 
-SurfelLab is the recommended entry point, and every section of this guide describes it.
+SplatLab is the recommended entry point, and every section of this guide describes it.
 
 ```mermaid
 flowchart LR
@@ -26,15 +26,15 @@ flowchart LR
 The same renderer is also available as separate components for situations in which only one half is required:
 
 - **Surfels_DX12** is the standalone viewer. It contains no preprocessing interface. On launch it loads the `scene.sflw` package located beside the executable (or in a `models/` folder nearby) and streams it; if no package is present, it generates a synthetic benchmark package on first run. It is intended for viewer-only distributions and for observing the runtime in isolation. The script `bin/launch.cmd` starts it.
-- **The preprocessor on its own.** SurfelLab accepts a file path on its command line. Dropping a point cloud onto `SurfelLab.exe` (or onto `bin/launch_surfellab.cmd`) opens it directly in the Surfel Generator tab. A package exported from there may be copied beside `Surfels_DX12.exe` as `scene.sflw`, after which the standalone viewer will load it.
+- **The preprocessor on its own.** SplatLab accepts a file path on its command line. Dropping a point cloud onto `SplatLab.exe` (or onto `bin/launch_surfellab.cmd`) opens it directly in the Surfel Generator tab. A package exported from there may be copied beside `Surfels_DX12.exe` as `scene.sflw`, after which the standalone viewer will load it.
 
-Both programs share one code base for the renderer and the streaming manager, so the image shown in SurfelLab's Renderer tab is the image the standalone viewer produces.
+Both programs share one code base for the renderer and the streaming manager, so the image shown in SplatLab's Renderer tab is the image the standalone viewer produces.
 
 ## Getting Started
 
-**Running a release build.** Download the latest build from the [Releases page](../../../releases), extract it, and run `SurfelLab.exe`. No installation is required. The only hardware requirement is a DirectX 12 Ultimate–class GPU (NVIDIA RTX 20-series or newer, AMD RDNA2 or newer).
+**Running a release build.** Download the latest build from the [Releases page](../../../releases), extract it, and run `SplatLab.exe`. No installation is required. The only hardware requirement is a DirectX 12 Ultimate–class GPU (NVIDIA RTX 20-series or newer, AMD RDNA2 or newer).
 
-**Building from source.** The Building section of [README.md](../README.md) gives the full procedure. In brief, the user runs `cmake .. -G "Visual Studio 18 2026" -A x64` from a `build/` directory and opens the generated solution. SurfelLab is the default startup project; Surfels_DX12 is available in the same solution for those who require the standalone viewer.
+**Building from source.** The Building section of [README.md](../README.md) gives the full procedure. In brief, the user runs `cmake .. -G "Visual Studio 18 2026" -A x64` from a `build/` directory and opens the generated solution. SplatLab is the default startup project; Surfels_DX12 is available in the same solution for those who require the standalone viewer.
 
 On first launch the application automatically loads a bundled Cthulhu bust, so the window is never empty.
 
