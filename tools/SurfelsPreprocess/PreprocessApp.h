@@ -237,7 +237,11 @@ namespace Surfels
         float  m_bandwidthThrottleMBps      = 10.0f;  // Simulated bandwidth in MB/s
         float  m_ringBufferCapacityMB       = 64.0f;  // GPU Ring Buffer capacity limit in MB
         bool   m_enableStreamDecay          = false;  // Toggle cache decay on/off
-        float  m_streamDecayRate            = 0.50f;  // Decay rate (0.0 to 1.0) for memory reclamation
+        float  m_streamDecayRate            = 5.00f;  // Decay rate (0.0 to 10.0) for memory reclamation. At 10.0 (max),
+                                                        // a full drain (everything but the two pinned coarsest levels)
+                                                        // is paced to complete within ~10 seconds regardless of
+                                                        // bandwidth -- see the decay budget calculation in
+                                                        // UpdateStreamingSimulation. Scales linearly below max.
         bool   m_isStreamingPaused          = false;  // Pause/Resume packet streaming
         float  m_simulatedBytesDelivered    = 0.0f;   // Transferred bytes accumulator
         float  m_totalStreamBytes           = 0.0f;   // Total model transfer size

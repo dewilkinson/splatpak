@@ -223,40 +223,16 @@ namespace Surfels
 
         ImGUI_Init((void*)m_windowHwnd);
 
-        // Load initial scene: command line argument or default to Venus dataset
+        // Load initial scene: only from an explicit command line argument. No dataset is auto-loaded
+        // by default -- the user must select one via File -> Open (or pass a path on the command line).
         if (strlen(m_inputPathBuf) > 0)
         {
             LoadFile(m_inputPathBuf);
         }
         else
         {
-            const char* defaultVenusPaths[] = {
-                "datasets/Venus/scene.ply",
-                "../datasets/Venus/scene.ply",
-                "../../datasets/Venus/scene.ply",
-                "C:/github/datasets/Venus/scene.ply"
-            };
-
-            bool loaded = false;
-            for (const char* path : defaultVenusPaths)
-            {
-                std::ifstream check(path, std::ios::binary);
-                if (check.good())
-                {
-                    check.close();
-                    if (LoadFile(path))
-                    {
-                        loaded = true;
-                        break;
-                    }
-                }
-            }
-
-            if (!loaded)
-            {
-                m_statusMessage = "Ready. Use File -> Open to load a .ply or .splat dataset.";
-                m_statusIsSuccess = true;
-            }
+            m_statusMessage = "Ready. Use File -> Open to load a .ply or .splat dataset.";
+            m_statusIsSuccess = true;
         }
 
         m_swapChain.SetVSync(m_vsync);
@@ -2956,7 +2932,7 @@ namespace Surfels
 
         ImGui::SameLine();
         ImGui::PushItemWidth(availWidth - 165.0f);
-        if (ImGui::SliderFloat("##DecaySlider", &m_streamDecayRate, 0.0f, 1.0f, "Decay Rate: %.2f"))
+        if (ImGui::SliderFloat("##DecaySlider", &m_streamDecayRate, 0.0f, 10.0f, "Decay Rate: %.2f"))
         {
             m_streamStateDirty = true;
         }
