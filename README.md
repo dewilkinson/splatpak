@@ -50,8 +50,11 @@ The solution is organized into Solution Explorer folders:
    `TestGPUSort` (runs `GPURadixSortCS.hlsl` on a raw D3D12 device and checks
    against a CPU sort), `TestGeometryCull` (culling-statistics math),
    `TestLoadPackage` (loads `models/venus.sflw` and prints chunk/surfel counts),
-   and `CompressVenus` (command-line `.ply` → `.sflw` pipeline smoke test;
-   takes an input `.ply` and output base name as arguments).
+   `TestOcclusionVolume` (runs the occlusion volume generator on a package and
+   prints its trace; optional resolution override and shave values), and
+   `CompressVenus` (command-line packager: writes the same `.sflw` SurfelLab
+   would export for a `.ply` with default settings, occlusion volume included;
+   used to regenerate the bundled assets).
 
 4. **Docs** — a build-nothing target that lists `README.md` and
    `docs/USER_GUIDE.md` in Solution Explorer for editing.
@@ -150,7 +153,10 @@ through). The file SurfelLab writes when none exists also lists
 `fallback_synthetic_points`, `default_chunk_size`, `default_max_lods`, and
 `default_deadband_mm`, but those are informational and not currently parsed.
 Without a config file the built-in defaults apply and the bundled
-`assets/cthulu/cthulu.sflw` is loaded.
+`assets/cthulu/cthulu.sflw` is loaded. A second bundled package,
+`assets/venus/venus.sflw`, can be opened from the File menu. Both are
+regenerated with `CompressVenus` whenever the pipeline or the occlusion volume
+generator changes, so they always match the current format.
 
 ## Known gaps
 
