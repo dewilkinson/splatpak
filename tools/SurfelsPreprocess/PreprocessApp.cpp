@@ -2065,9 +2065,17 @@ namespace Surfels
                 // a good baked volume (see LoadSFLWFile), and rebuilding here from the reconstructed
                 // points would silently replace it with an inferior one before the user ever touches a
                 // slider -- exactly the Venus regression this comment used to cause.
-                if (m_generateOcclusionVolume && !m_occlusionGrid.valid && m_occlusionVoxels.empty())
+                //
+                // Fires at most once per volume state: when the bake itself yields no cubes (an empty
+                // scene, or a build whose codec has no occlusion feature) every condition above stays
+                // true, and without the version check this re-voxelized the whole cloud and wrote two
+                // trace lines on EVERY frame. Any load or pipeline rebuild bumps the version and so
+                // re-arms it.
+                if (m_generateOcclusionVolume && !m_occlusionGrid.valid && m_occlusionVoxels.empty()
+                    && m_occlusionSafetyNetVersion != m_occlusionVoxelsVersion)
                 {
-                    RefreshOcclusionVolume();
+                    RefreshOcclusionVolume(); // Bumps m_occlusionVoxelsVersion whether or not cubes came out
+                    m_occlusionSafetyNetVersion = m_occlusionVoxelsVersion;
                 }
 
                 ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Preprocessor Parameters:");

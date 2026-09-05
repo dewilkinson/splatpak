@@ -159,6 +159,7 @@ namespace Surfels
         OcclusionVolume::Grid m_occlusionGrid;
         void  BuildOcclusionGrid();
         uint32_t m_occlusionVoxelsVersion = 0;   // Incremented whenever m_occlusionVoxels is rebuilt or cleared (renderer re-upload trigger)
+        uint32_t m_occlusionSafetyNetVersion = UINT32_MAX; // m_occlusionVoxelsVersion right after the Surfel Generator tab's fallback bake last fired (see BuildUI): equal = already tried for this volume state
         std::vector<OcclusionVoxelGPU> m_occlusionVoxels; // Baked result -- from BuildOcclusionVolume() or loaded from an .sflw's package
         bool  m_enableOcclusionCulling    = true;  // Viewer: "Show Occlusion Volume" -- draw the volume and depth-test splats against it (on by default)
         bool  m_showOcclusionVolumeOnly   = false; // Viewer: debug view -- render only the occluder geometry
@@ -183,7 +184,7 @@ namespace Surfels
         bool  m_enableMortonOrder    = true;  // Checkbox: "Morton Spatial Curve Ordering" under Accelerators
         bool  m_enableConeCulling    = true;  // Checkbox: "Meshlet Backface Cone Culling" in Task Shader (mainAS)
         bool  m_useChunkedPipeline   = true;  // Micro-chunked meshlet pipeline with AS culling
-        bool  m_useCopyQueue         = false; // Direct queue PCIe uploads to prevent cross-queue sync hazards
+        bool  m_useCopyQueue         = true;  // Dedicated DX12 copy queue for async PCIe uploads (on by default; off = direct-queue uploads, the fallback for cross-queue sync problems)
         bool  m_vsync                = false; // Uncapped framerate by default to expose true compute/render timings
         float m_uiScale              = 1.0f;  // Dynamic UI and font scaling factor (0.70x to 2.00x)
         struct HeatmapClusterCube
@@ -311,7 +312,7 @@ namespace Surfels
         bool   m_freezeRenderingAndMemory   = false;  // Freeze streaming simulation, memory management, and edge updates to remove flickering when paused
 
         // Temporal Anti-Aliasing (TAA) & Dither Transition Resolver
-        bool   m_enableTemporalFiltering    = false;  // Enable Temporal Accumulation & Dither Resolver (Disabled by default)
+        bool   m_enableTemporalFiltering    = true;   // Enable Temporal Accumulation & Dither Resolver (on by default)
         float  m_temporalBlendWeight        = 0.15f;  // History blend weight (0.05 = maximum smoothness, 0.50 = responsive)
         bool   m_enableSubpixelJitter       = true;   // 8-phase Halton(2,3) sub-pixel camera jitter
         bool   m_enableVarianceClamping     = true;   // 3x3 YCoCg neighborhood variance color box clamping (anti-ghosting)

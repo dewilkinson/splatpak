@@ -76,16 +76,19 @@ The solution is organized into Solution Explorer folders:
 ### Public repository
 
 `https://github.com/dewilkinson/splatlab` is a public mirror of this repository with
-`bluesec-codec`'s proprietary implementation replaced by an open stand-in (see that
-library's own README for exactly what differs) — the algorithm never appears anywhere in
-its git history, not just at the current tip. It's generated, not hand-maintained: run
+`bluesec-codec`'s proprietary *source* replaced by prebuilt `.lib` binaries of the same
+code (plus open stand-in sources as a fallback -- see that library's public README for
+exactly what differs) — the algorithm source never appears anywhere in its git history,
+not just at the current tip, while the public build still bakes real occlusion volumes
+and runs the real wavelet/codec. It's generated, not hand-maintained: run
 `python scripts/sync-public-repo.py` from a clean working tree to rebuild it from the
 current state of this repo (strips the proprietary paths from every commit, drops in the
-open stand-in, swaps a couple of private-repo-specific README passages, builds the result,
-regenerates the bundled example packages so they're readable by the open codec, runs the
-stress test, and pushes). Pass `--no-push` to inspect the result first. The script's own
-header comment documents each step and the config that needs updating if a proprietary
-module is ever renamed or moved again.
+stand-in sources, compiles this repo's codec into the prebuilt `.lib` files, swaps a
+couple of private-repo-specific README passages, builds the result, regenerates the
+bundled example packages with it, runs the stress test, and pushes). Pass `--no-push` to
+inspect the result first, or `--no-prebuilt-codec` to publish a stand-in-only build. The
+script's own header comment documents each step and the config that needs updating if a
+proprietary module is ever renamed or moved again.
 
 ### Package format (`.sflw`)
 
@@ -241,4 +244,13 @@ illumination.
 
 ## License
 
-This project is licensed under the [Apache License, Version 2.0](LICENSE).
+The source code in this repository is licensed under the [Apache License, Version 2.0](LICENSE),
+with these exceptions:
+
+- `libs/bluesec-codec/` (the proprietary algorithm core) is **All Rights Reserved** and is not
+  covered by the Apache License -- see that directory's README for the boundary. The public
+  mirror ships it as prebuilt binaries under the bluesec-codec Binary License
+  (`scripts/public-release-stubs/libs/bluesec-codec/prebuilt/LICENSE.txt`), which lets anyone
+  use the binaries, copy them with the repository, and ship them inside builds of the project.
+- `libs/cauldron/` is AMD's Cauldron framework under the MIT License (`libs/cauldron/license.txt`,
+  third-party notices in `libs/cauldron/NOTICES.txt`).
