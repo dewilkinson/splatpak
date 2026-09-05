@@ -2394,6 +2394,7 @@ namespace Surfels
                         ImGui::Checkbox("Draw Cube Outlines", &m_showHeatmapWireframe);
                     }
                     ImGui::Checkbox("Show Culled Chunks (Darker Shade)", &m_showCulledChunks);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Colors chunks/cubes the culling frustum rejects. Only has something to color when 'Show Density Heatmap Cluster Cubes' or 'Show Macro Clusters' is also on, and only has anything VISIBLE to show when 'Detach Camera' is also on -- otherwise the culling frustum is the exact one you're viewing through, so anything culled is off-screen by definition.");
                     ImGui::Checkbox("Show Macro Clusters (Amber)", &m_showOctreeVisualizer);
                     ImGui::Checkbox("Show Global Model Bounds (Blue)", &m_showGlobalBounds);
                 }
