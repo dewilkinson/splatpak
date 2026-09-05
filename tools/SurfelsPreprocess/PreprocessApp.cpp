@@ -146,11 +146,11 @@ namespace Surfels
         if (GetModuleFileNameA(nullptr, exePath, MAX_PATH) > 0)
         {
             std::string exeDir = exePath;
-            size_t slash = exeDir.find_last_of("\/");
+            size_t slash = exeDir.find_last_of("\\/");
             if (slash != std::string::npos)
             {
                 exeDir = exeDir.substr(0, slash); // Strip the exe filename -> .../bin
-                size_t parentSlash = exeDir.find_last_of("\/");
+                size_t parentSlash = exeDir.find_last_of("\\/");
                 if (parentSlash != std::string::npos)
                 {
                     return exeDir.substr(0, parentSlash); // Strip "bin" -> project root
@@ -179,7 +179,7 @@ namespace Surfels
     void PreprocessApp::RememberDialogFolder(const std::string& filePath)
     {
         if (filePath.empty()) return;
-        size_t slash = filePath.find_last_of("\/");
+        size_t slash = filePath.find_last_of("\\/");
         if (slash == std::string::npos) return;
         std::string folder = filePath.substr(0, slash);
         if (folder == m_lastDialogFolder) return;
