@@ -1,19 +1,38 @@
 # Surfels
 
-A minimal DirectX 12 **mesh shader** sample built on AMD's [Cauldron](https://github.com/GPUOpen-LibrariesAndSDKs/Cauldron)
-framework, vendored as a git submodule under `libs/cauldron`. It's a bare Cauldron
-bootstrap intended as the starting point for a surfel-based GI renderer, not a
-finished one: it draws a procedural point-splat cloud (billboard quads placed on
-a Fibonacci sphere), generated entirely inside a mesh shader with no vertex/index
-buffers and no `DrawInstanced` at all, plus an ImGui control panel — no scene
-geometry, no lighting/GI pass, no depth buffer yet.
+A GPU-driven DirectX 12 **mesh shader** renderer for massive surfel/point-cloud
+datasets — wavelet-based multi-resolution LOD streaming and GPU silhouette
+refinement, with geometry generated, culled, sorted, and cross-faded entirely
+on-GPU. There is no vertex/index buffer and no `DrawInstanced` anywhere in the
+pipeline: every splat is procedurally emitted by an amplification/mesh shader
+pair each frame, directly from a `StructuredBuffer` of packed surfels.
 
-Cauldron itself ships no bundled sample apps (that changed at some point after
-`glTFSample`/`FidelityFX-CAS` were built against it); this project's `src/DX12/`
-was written directly against Cauldron's current `FrameworkWindows` API by reading
-its header/source (device + swapchain are now owned by the framework base class,
-`OnCreate()` takes no window handle, etc.) rather than copied from an existing
-sample.
+**Core pieces:**
+
+- **Wavelet LOD hierarchy.** Offline preprocessing (`SurfelsPreprocess`) runs a
+  second-generation lifting wavelet decomposition with deadband sparsification
+  over Morton/Z-order-partitioned chunks, producing a multi-resolution `.sflw`
+  package. At runtime, chunks stream in and out of a bandwidth-throttled GPU
+  ring buffer based on screen-space error and camera distance, with dithered
+  (Bayer-pattern) cross-fades between LOD levels so refinement never pops.
+- **GPU silhouette detection.** A compute pass renders a low-res item/depth
+  buffer, extracts screen-space silhouette edges directly on the GPU, and
+  biases streaming to refine those edges toward the finest LOD first — so
+  contours stay crisp while the rest of a receding object coarsens.
+- **GPU-driven culling and sorting.** Per-chunk AABB frustum culling and
+  normal-cone backface culling run in the amplification shader; a GPU bitonic
+  radix sort keeps overlapping splats correctly depth-ordered for alpha
+  blending — all without a CPU round-trip.
+- **Streaming controls for experimentation.** Bandwidth throttling, an
+  LRU-style decay pass for forcing cache eviction, and a live residency
+  equalizer visualizing exactly which chunks are resident, transitioning, or
+  silhouette-locked at each LOD level.
+
+Built on top of AMD's [Cauldron](https://github.com/GPUOpen-LibrariesAndSDKs/Cauldron)
+framework (vendored as a git submodule under `libs/cauldron`) for device/
+swapchain/ImGui bootstrap — Cauldron ships no sample apps of its own, so
+`src/DX12/` and `tools/SurfelsPreprocess/` are written directly against its
+`FrameworkWindows` API.
 
 ## Solution & Workspace Structure
 
