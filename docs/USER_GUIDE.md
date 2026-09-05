@@ -81,7 +81,7 @@ flowchart TD
 The panel is ordered, top to bottom, roughly by how often each section is consulted:
 
 1. **Real-Time Performance & Stage Timings** — frame rate and a per-stage breakdown (upload, sort, silhouette prepass, occlusion pass, main dispatch, TAA). When performance drops, this section identifies the responsible stage.
-2. **4-Tier Compression Results** — the size reduction achieved by the package and its causes.
+2. **4-Tier Compression Results** — the size reduction achieved by the package and its causes. The headline ratio is the size of the original point-cloud file against the size of the `.sflw` file; the original size is stored inside the package so the figure survives a reload.
 3. **LOD Residency** — described above.
 4. **Wavelet Multi-Resolution Pyramid** — clicking any row jumps directly to that level for inspection.
 5. **Input Model Metrics / Geometry Optimizations & Culling Stats / Spatial Partitioning** — detailed diagnostics that are safe to ignore in ordinary use.

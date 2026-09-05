@@ -30,7 +30,8 @@ namespace Surfels
             uint32_t maxLODs = 4,
             float deadbandThreshold = 0.003f,
             float splatRadius = 1.0f,
-            const std::vector<OcclusionVoxelGPU>& occlusionVoxels = {})
+            const std::vector<OcclusionVoxelGPU>& occlusionVoxels = {},
+            uint64_t sourceFileBytes = 0)
         {
             std::string sflwPath = outputBasepath + ".sflw";
 
@@ -72,6 +73,7 @@ namespace Surfels
             header.globalBoundsMin = gMin;
             header.globalBoundsMax = gMax;
             header.splatRadius = splatRadius;
+            header.sourceFileBytes = sourceFileBytes;
 
             sflwOut.write(reinterpret_cast<const char*>(&header), sizeof(SFLWFileHeader));
 
@@ -239,6 +241,10 @@ namespace Surfels
             if (outPackage.header.version < 4)
             {
                 outPackage.header.manifestOffset = 0;
+            }
+            if (outPackage.header.version < 5)
+            {
+                outPackage.header.sourceFileBytes = 0;
             }
 
             // v4+ packages carry their chunk manifest inside the .sflw; older ones kept it in a

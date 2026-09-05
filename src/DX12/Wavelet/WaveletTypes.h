@@ -30,7 +30,7 @@ namespace Surfels
 
     // Magic bytes for .sflw binary stream container ("SFLW" in ASCII)
     static constexpr uint32_t SFLW_MAGIC = 0x574C4653;
-    static constexpr uint32_t SFLW_VERSION = 4; // v2 adds SFLWFileHeader::splatRadius (appended at the
+    static constexpr uint32_t SFLW_VERSION = 5; // v2 adds SFLWFileHeader::splatRadius (appended at the
                                                  // struct's end so v1 files still read correctly -- see
                                                  // the version check in StreamPackager::LoadPackage).
                                                  // v3 adds an optional occlusion voxel array, appended
@@ -42,6 +42,10 @@ namespace Surfels
                                                  // SFLWFileHeader::manifestOffset, so a package is a
                                                  // single self-contained file. v1-v3 files still load via
                                                  // their companion .json (see ParseLegacyJsonManifest).
+                                                 // v5 adds sourceFileBytes: the size of the original
+                                                 // input file (.ply/.splat) the package was built from,
+                                                 // so the compression ratio shown is always that file
+                                                 // against this one. 0 on v1-v4 files or when unknown.
 
     #pragma pack(push, 1)
     // One baked occluder block of the interior occlusion volume (see PreprocessApp::BuildOcclusionVolume).
@@ -168,6 +172,8 @@ namespace Surfels
         uint64_t manifestOffset;       // v4+ only -- absolute byte offset of the embedded chunk manifest
                                        // table (see ChunkManifestRecord). 0 / unset on v1-v3 files, which
                                        // keep their manifest in a companion .json instead.
+        uint64_t sourceFileBytes;      // v5+ only -- byte size of the original input file this package was
+                                       // built from (0 = unknown). Compression ratio = this / package size.
     };
 
     // On-disk form of one ChunkManifest entry in a v4+ .sflw's embedded manifest table. The table

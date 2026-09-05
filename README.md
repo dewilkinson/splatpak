@@ -60,11 +60,11 @@ The solution is organized into Solution Explorer folders:
 
 ### Package format (`.sflw`)
 
-A package is a single self-contained binary file (format version 4):
+A package is a single self-contained binary file (format version 5):
 
 | Section | Contents |
 |---|---|
-| `SFLWFileHeader` | magic, version, chunk count, LOD count, global bounds, splat radius, and absolute offsets of the occlusion volume and manifest |
+| `SFLWFileHeader` | magic, version, chunk count, LOD count, global bounds, splat radius, absolute offsets of the occlusion volume and manifest, and the byte size of the original input file (so the compression ratio shown is always source file vs package file) |
 | Chunk LOD payloads | one compressed blob per chunk per LOD level, in export order |
 | Occlusion voxels | optional `OcclusionVoxelGPU` array (only when a volume was baked) |
 | Manifest table | one `ChunkManifestRecord` per chunk (id, bounds, centre, radius, LOD count) followed by its `ChunkLODHeader` array (surfel count, byte sizes, payload offset, geometric error) |

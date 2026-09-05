@@ -870,9 +870,19 @@ namespace Surfels
             m_waveletResult.lodLevels.push_back(std::move(wLod));
         }
 
-        // 3D Gaussian Splat / raw PLY equivalent baseline (248 bytes per point)
-        m_rawFileSizeMB = (m_rendererSurfels.size() * 248.0f) / (1024.0f * 1024.0f);
-        m_compressedSizeMB = (float)m_loadedPackage.totalCompressedBytes / (1024.0f * 1024.0f);
+        // Compression ratio = original input file vs this package file. The original's size is
+        // carried in the v5 header; older packages fall back to the 248-byte-per-splat 3DGS baseline.
+        m_sourceFileBytes = m_loadedPackage.header.sourceFileBytes;
+        m_rawFileSizeMB = m_sourceFileBytes > 0
+            ? (float)m_sourceFileBytes / (1024.0f * 1024.0f)
+            : (m_rendererSurfels.size() * 248.0f) / (1024.0f * 1024.0f);
+        {
+            std::string sflwPath, jsonPath;
+            ResolvePackagePaths(filepath, sflwPath, jsonPath);
+            std::ifstream pkg(sflwPath, std::ios::ate | std::ios::binary);
+            uint64_t packageBytes = pkg.is_open() ? (uint64_t)pkg.tellg() : (uint64_t)m_loadedPackage.totalCompressedBytes;
+            m_compressedSizeMB = (float)packageBytes / (1024.0f * 1024.0f);
+        }
         m_compressionRatio = m_rawFileSizeMB > 0 ? (m_rawFileSizeMB / std::max(0.001f, m_compressedSizeMB)) : 1.0f;
 
         m_rawSurfels = m_rendererRawSurfels;
@@ -931,11 +941,13 @@ namespace Surfels
         std::ifstream in(filepath, std::ios::ate | std::ios::binary);
         if (in.is_open())
         {
-            m_rawFileSizeMB = (float)in.tellg() / (1024.0f * 1024.0f);
+            m_sourceFileBytes = (uint64_t)in.tellg();
+            m_rawFileSizeMB = (float)m_sourceFileBytes / (1024.0f * 1024.0f);
             in.close();
         }
         else
         {
+            m_sourceFileBytes = 0;
             m_rawFileSizeMB = (m_rawSurfels.size() * 32.0f) / (1024.0f * 1024.0f);
         }
 
@@ -967,11 +979,13 @@ namespace Surfels
         std::ifstream in(filepath, std::ios::ate | std::ios::binary);
         if (in.is_open())
         {
-            m_rawFileSizeMB = (float)in.tellg() / (1024.0f * 1024.0f);
+            m_sourceFileBytes = (uint64_t)in.tellg();
+            m_rawFileSizeMB = (float)m_sourceFileBytes / (1024.0f * 1024.0f);
             in.close();
         }
         else
         {
+            m_sourceFileBytes = 0;
             m_rawFileSizeMB = (m_rawSurfels.size() * 32.0f) / (1024.0f * 1024.0f);
         }
 
@@ -1042,6 +1056,7 @@ namespace Surfels
         m_rawSurfels = SyntheticGenerator::GenerateUrbanStreetScene(count);
         m_loadedFilePath = "Synthetic Benchmark (" + std::to_string(count / 1000) + "K points)";
         m_isLoadedFromSFLW = false;
+        m_sourceFileBytes = 0;
         m_rawFileSizeMB = (m_rawSurfels.size() * sizeof(SurfelVertex)) / (1024.0f * 1024.0f);
 
         RecomputeWaveletHierarchy();
@@ -1134,8 +1149,18 @@ namespace Surfels
         auto shuffled = ByteShuffle::Shuffle(reinterpret_cast<const uint8_t*>(packedLOD0.data()), packedLOD0.size(), sizeof(PackedSurfelGPU));
         auto compressed = ByteShuffle::CompressShuffled(shuffled);
 
-        m_compressedSizeMB = (float)compressed.size() / (1024.0f * 1024.0f);
-        m_compressionRatio = m_rawFileSizeMB > 0.0f ? (m_rawFileSizeMB / m_compressedSizeMB) : 1.0f;
+        // Package-size estimate: every LOD level ships in full inside the .sflw, so sum them all (the
+        // header, manifest and occlusion volume are negligible next to the payloads). The ratio shown
+        // is therefore the original file against the file that will be written.
+        size_t packageBytes = sizeof(SFLWFileHeader) + compressed.size();
+        for (size_t lvl = 1; lvl < m_waveletResult.lodLevels.size(); lvl++)
+        {
+            auto packedLvl = Quantizer::QuantizeSurfels(m_waveletResult.lodLevels[lvl].surfels, m_aabbMin, m_aabbMax);
+            auto shuffledLvl = ByteShuffle::Shuffle(reinterpret_cast<const uint8_t*>(packedLvl.data()), packedLvl.size(), sizeof(PackedSurfelGPU));
+            packageBytes += ByteShuffle::CompressShuffled(shuffledLvl).size();
+        }
+        m_compressedSizeMB = (float)packageBytes / (1024.0f * 1024.0f);
+        m_compressionRatio = m_rawFileSizeMB > 0.0f ? (m_rawFileSizeMB / std::max(0.001f, m_compressedSizeMB)) : 1.0f;
         m_deadbandZeroPercent = 64.5f; // Measured planar surface coefficient sparsification
 
         PrecacheResidentLODs();
@@ -1361,9 +1386,15 @@ namespace Surfels
         // m_occlusionVoxels is already current: the occlusion sliders rebuild it live, and any pending
         // chunking/wavelet change is applied the moment its slider is released (before a click on Save
         // can land), so nothing exported here can be stale.
-        if (StreamPackager::PackageDataset(outputPath, m_chunks, m_maxLODLevels, deadbandMeters, m_state.splatRadius, m_occlusionVoxels))
+        if (StreamPackager::PackageDataset(outputPath, m_chunks, m_maxLODLevels, deadbandMeters, m_state.splatRadius, m_occlusionVoxels, m_sourceFileBytes))
         {
-            m_statusMessage = "Success! Created " + outputPath + ".sflw (" + std::to_string(m_compressedSizeMB) + " MB)";
+            std::ifstream pkg(outputPath + ".sflw", std::ios::ate | std::ios::binary);
+            if (pkg.is_open())
+            {
+                m_compressedSizeMB = (float)(uint64_t)pkg.tellg() / (1024.0f * 1024.0f);
+                m_compressionRatio = m_rawFileSizeMB > 0.0f ? (m_rawFileSizeMB / std::max(0.001f, m_compressedSizeMB)) : 1.0f;
+            }
+            m_statusMessage = "Success! Created " + outputPath + ".sflw (" + std::to_string(m_compressedSizeMB) + " MB, " + std::to_string(m_compressionRatio) + "x vs source)";
             m_statusIsSuccess = true;
         }
         else

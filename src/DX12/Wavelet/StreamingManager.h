@@ -104,6 +104,10 @@ namespace Surfels
             {
                 m_header.manifestOffset = 0; // field didn't exist yet; holds misread payload bytes
             }
+            if (m_header.version < 5)
+            {
+                m_header.sourceFileBytes = 0;
+            }
 
             if (!ParseManifest())
             {

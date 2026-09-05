@@ -107,6 +107,7 @@ namespace Surfels
         XMFLOAT3 m_aabbMax = { 0, 0, 0 };
         XMFLOAT3 m_center  = { 0, 0, 0 };
         XMFLOAT3 m_extents = { 0, 0, 0 };
+        uint64_t m_sourceFileBytes = 0;     // Size of the original .ply/.splat on disk; travels inside the .sflw (v5 header) so the ratio survives a reload
         float    m_rawFileSizeMB = 0.0f;
         float    m_compressedSizeMB = 0.0f;
         float    m_compressionRatio = 1.0f;
