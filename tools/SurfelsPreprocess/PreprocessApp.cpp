@@ -156,6 +156,43 @@ namespace Surfels
                             if (!val.empty()) m_benchmarkDatasetPath = val;
                         }
                     }
+
+                    // Startup Dataset Path (JSON or INI) -- auto-loaded on launch, see OnCreate()
+                    size_t sPos = line.find("\"startup_dataset\":");
+                    if (sPos == std::string::npos) sPos = line.find("\"startup_path\":");
+                    if (sPos != std::string::npos)
+                    {
+                        // Search for the value's opening quote starting after the colon, not at a
+                        // hardcoded offset -- the equivalent benchmark_dataset/benchmark_path parser
+                        // above uses a fixed "+18" that lands on the *key's* closing quote rather than
+                        // past it, so it actually extracts ": " instead of the real value; harmless
+                        // there since a garbage path just falls through to the next candidate, but no
+                        // reason to copy the same mistake here.
+                        size_t colonPos = line.find(':', sPos);
+                        size_t q1 = (colonPos != std::string::npos) ? line.find("\"", colonPos + 1) : std::string::npos;
+                        if (q1 != std::string::npos)
+                        {
+                            size_t q2 = line.find("\"", q1 + 1);
+                            if (q2 != std::string::npos)
+                            {
+                                m_startupDatasetPath = line.substr(q1 + 1, q2 - q1 - 1);
+                            }
+                        }
+                    }
+                    else if (line.find("StartupDataset=") != std::string::npos ||
+                             line.find("StartupPath=") != std::string::npos ||
+                             line.find("startup_dataset=") != std::string::npos ||
+                             line.find("startup_path=") != std::string::npos)
+                    {
+                        size_t eqPos = line.find('=');
+                        if (eqPos != std::string::npos)
+                        {
+                            std::string val = line.substr(eqPos + 1);
+                            while (!val.empty() && (val.back() == '\r' || val.back() == ' ' || val.back() == '\n' || val.back() == '"')) val.pop_back();
+                            while (!val.empty() && (val.front() == ' ' || val.front() == '"')) val.erase(val.begin());
+                            if (!val.empty()) m_startupDatasetPath = val;
+                        }
+                    }
                 }
                 file.close();
                 break;
@@ -175,6 +212,7 @@ namespace Surfels
         {
             out << "{\n";
             out << "  \"benchmark_dataset\": \"" << m_benchmarkDatasetPath << "\",\n";
+            out << "  \"startup_dataset\": \"" << m_startupDatasetPath << "\",\n";
             out << "  \"fallback_synthetic_points\": 300000,\n";
             out << "  \"default_chunk_size\": 16.0,\n";
             out << "  \"default_max_lods\": 4,\n";
@@ -223,16 +261,52 @@ namespace Surfels
 
         ImGUI_Init((void*)m_windowHwnd);
 
-        // Load initial scene: only from an explicit command line argument. No dataset is auto-loaded
-        // by default -- the user must select one via File -> Open (or pass a path on the command line).
+        // Load initial scene: command line argument takes priority, otherwise auto-load
+        // m_startupDatasetPath (default: the built-in assets/cthulu/ demo package, but configurable
+        // via config.json/surfels_config.ini's "startup_dataset" key -- see LoadConfigFile() above,
+        // already called earlier in OnCreate() -- so a different default can be swapped in without
+        // recompiling). This intentionally does NOT fall back to any external "datasets" scratch
+        // folder the user might separately have configured, so a default launch keeps working even if
+        // that external folder gets cleared out. The default points at a pre-built .sflw package (fast,
+        // streaming-ready) rather than a raw .ply, which would mean re-running the full wavelet
+        // preprocessing pipeline over millions of points on every single launch -- LoadFile() below
+        // still auto-detects extension, so a config override to a .ply/.splat path works too, just
+        // slower. Tried as-is and at a few relative depths since CWD varies (bin/ when launched
+        // normally, the repo root, or a build-output subdirectory when launched via the VS debugger).
         if (strlen(m_inputPathBuf) > 0)
         {
             LoadFile(m_inputPathBuf);
         }
         else
         {
-            m_statusMessage = "Ready. Use File -> Open to load a .ply or .splat dataset.";
-            m_statusIsSuccess = true;
+            std::vector<std::string> startupPaths = {
+                m_startupDatasetPath,
+                "../" + m_startupDatasetPath,
+                "../../" + m_startupDatasetPath,
+                "../../../" + m_startupDatasetPath,
+            };
+
+            bool loaded = false;
+            for (const auto& path : startupPaths)
+            {
+                if (path.empty()) continue;
+                std::ifstream check(path, std::ios::binary);
+                if (check.good())
+                {
+                    check.close();
+                    if (LoadFile(path))
+                    {
+                        loaded = true;
+                        break;
+                    }
+                }
+            }
+
+            if (!loaded)
+            {
+                m_statusMessage = "Ready. Use File -> Open to load a .ply or .splat dataset.";
+                m_statusIsSuccess = true;
+            }
         }
 
         m_swapChain.SetVSync(m_vsync);
@@ -666,8 +740,10 @@ namespace Surfels
         float maxDim = std::max(m_extents.x, std::max(m_extents.y, m_extents.z));
         m_distance = std::max(0.1f, maxDim * 0.85f);
 
-        // Splat sizing & orientation
-        m_state.splatRadius = std::max(0.005f, maxDim * 0.003f);
+        // Splat sizing & orientation: restore the radius the package was exported with (see
+        // StreamPackager::PackageDataset/LoadPackage). Packages older than SFLW v2 didn't store this,
+        // and LoadPackage already falls back to 1.0 (PreprocessRenderer::State's own default) in that case.
+        m_state.splatRadius = m_loadedPackage.header.splatRadius;
 
         // Collect all raw surfels from package
         m_rendererSurfels.clear();
@@ -707,13 +783,46 @@ namespace Surfels
         // Re-quantize to guarantee exact alignment with meshlet ordering
         m_rendererSurfels = Quantizer::QuantizeSurfels(m_rendererRawSurfels, m_aabbMin, m_aabbMax);
 
-        // Populate wavelet result metadata for LOD display table
+        // Populate wavelet result metadata for the full LOD hierarchy. The package stores every LOD
+        // level per chunk (m_loadedPackage.chunkManifests[c].lods / chunkLODSurfels[c][lvl]) -- this
+        // used to only ever read back level 0, so a loaded .sflw would show a single LOD everywhere
+        // (residency equalizer, decay, silhouette refinement, PrecacheResidentLODs/InitStreamingSimulation
+        // all key off m_waveletResult.lodLevels.size()) regardless of how many levels the file actually
+        // contains. Reassemble each level by concatenating that level's already-decompressed surfels
+        // across every chunk that has it (chunks can have fewer levels than the global max, e.g. very
+        // small chunks whose wavelet decomposition terminated early) and unquantizing against the same
+        // global AABB they were quantized against at export time.
         m_waveletResult.lodLevels.clear();
-        WaveletLODLevel lod0;
-        lod0.level = 0;
-        lod0.surfels = m_rendererRawSurfels;
-        lod0.geometricError = 0.0f;
-        m_waveletResult.lodLevels.push_back(lod0);
+
+        size_t numLODs = 0;
+        for (const auto& cm : m_loadedPackage.chunkManifests)
+        {
+            numLODs = std::max(numLODs, cm.lods.size());
+        }
+
+        for (size_t lvl = 0; lvl < numLODs; lvl++)
+        {
+            std::vector<PackedSurfelGPU> levelPacked;
+            float errorSum = 0.0f;
+            size_t errorCount = 0;
+
+            for (size_t c = 0; c < m_loadedPackage.chunkManifests.size(); c++)
+            {
+                const auto& cm = m_loadedPackage.chunkManifests[c];
+                if (lvl >= cm.lods.size() || lvl >= m_loadedPackage.chunkLODSurfels[c].size()) continue;
+
+                const auto& levelSurfels = m_loadedPackage.chunkLODSurfels[c][lvl];
+                levelPacked.insert(levelPacked.end(), levelSurfels.begin(), levelSurfels.end());
+                errorSum += cm.lods[lvl].geometricError;
+                errorCount++;
+            }
+
+            WaveletLODLevel wLod;
+            wLod.level = (int)lvl;
+            wLod.surfels = Quantizer::UnquantizeSurfels(levelPacked, m_aabbMin, m_aabbMax);
+            wLod.geometricError = errorCount > 0 ? (errorSum / (float)errorCount) : 0.0f;
+            m_waveletResult.lodLevels.push_back(std::move(wLod));
+        }
 
         // 3D Gaussian Splat / raw PLY equivalent baseline (248 bytes per point)
         m_rawFileSizeMB = (m_rendererSurfels.size() * 248.0f) / (1024.0f * 1024.0f);
@@ -823,15 +932,22 @@ namespace Surfels
         m_statusMessage = "Loading synthetic benchmark...";
         LoadConfigFile(); // Refresh config from disk
 
+        // Built-in project-internal copy takes priority over any external "datasets" folder reference
+        // below: this is the fallback that keeps the benchmark working even if the user's own scratch
+        // datasets folder gets cleared out, so it must never be shadowed by an external path. Tried at
+        // a few relative depths since CWD varies (bin/ when double-clicked/launched normally, the repo
+        // root, or a build-output subdirectory when launched via the VS debugger).
         std::vector<std::string> candidatePaths = {
+            "assets/cthulu/cthulu.ply",
+            "../assets/cthulu/cthulu.ply",
+            "../../assets/cthulu/cthulu.ply",
+            "../../../assets/cthulu/cthulu.ply",
             m_benchmarkDatasetPath,
             "data/" + m_benchmarkDatasetPath,
             "datasets/" + m_benchmarkDatasetPath,
             "../" + m_benchmarkDatasetPath,
             "../data/" + m_benchmarkDatasetPath,
             "../datasets/" + m_benchmarkDatasetPath,
-            "data/venus.ply",
-            "datasets/venus.ply"
         };
 
         std::string foundPath = "";
@@ -1179,7 +1295,7 @@ namespace Surfels
         m_statusMessage = "Processing and exporting stream package to: " + outputPath + "...";
         float deadbandMeters = m_deadbandThresholdMM / 1000.0f;
 
-        if (StreamPackager::PackageDataset(outputPath, m_chunks, m_maxLODLevels, deadbandMeters))
+        if (StreamPackager::PackageDataset(outputPath, m_chunks, m_maxLODLevels, deadbandMeters, m_state.splatRadius))
         {
             m_statusMessage = "Success! Created " + outputPath + ".sflw (" + std::to_string(m_compressedSizeMB) + " MB) and " + outputPath + ".json";
             m_statusIsSuccess = true;

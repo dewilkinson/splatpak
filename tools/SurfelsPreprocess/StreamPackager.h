@@ -18,7 +18,8 @@ namespace Surfels
             const std::string& outputBasepath,
             std::vector<ChunkData>& chunks,
             uint32_t maxLODs = 4,
-            float deadbandThreshold = 0.003f)
+            float deadbandThreshold = 0.003f,
+            float splatRadius = 1.0f)
         {
             std::string sflwPath = outputBasepath + ".sflw";
             std::string jsonPath = outputBasepath + ".json";
@@ -60,6 +61,7 @@ namespace Surfels
             header.globalOriginZ = 0.0;
             header.globalBoundsMin = gMin;
             header.globalBoundsMax = gMax;
+            header.splatRadius = splatRadius;
 
             sflwOut.write(reinterpret_cast<const char*>(&header), sizeof(SFLWFileHeader));
 
@@ -182,7 +184,8 @@ namespace Surfels
         {
             SFLWFileHeader header = {};
             std::vector<ChunkManifest> chunkManifests;
-            std::vector<std::vector<PackedSurfelGPU>> chunkLOD0Surfels;
+            std::vector<std::vector<PackedSurfelGPU>> chunkLOD0Surfels; // kept for existing callers (== chunkLODSurfels[c][0])
+            std::vector<std::vector<std::vector<PackedSurfelGPU>>> chunkLODSurfels; // [chunkIndex][lodLevelIndex] -> surfels
             uint64_t totalSurfels = 0;
             size_t totalCompressedBytes = 0;
         };
@@ -222,6 +225,16 @@ namespace Surfels
             {
                 std::cerr << "Invalid SFLW magic header in " << sflwPath << std::endl;
                 return false;
+            }
+
+            // splatRadius was appended to SFLWFileHeader in version 2. A version-1 file is shorter than
+            // sizeof(SFLWFileHeader), so the read above ran past its true header boundary into the start
+            // of chunk 0's compressed data (harmless -- every subsequent read seeks by absolute offset,
+            // never relative to this position), leaving splatRadius holding misinterpreted chunk bytes
+            // rather than a real value. Only trust it on version 2+; default to 1.0 otherwise.
+            if (outPackage.header.version < 2)
+            {
+                outPackage.header.splatRadius = 1.0f;
             }
 
             std::ifstream jsonIn(jsonPath);
@@ -328,6 +341,7 @@ namespace Surfels
             }
 
             outPackage.chunkLOD0Surfels.resize(outPackage.chunkManifests.size());
+            outPackage.chunkLODSurfels.resize(outPackage.chunkManifests.size());
             outPackage.totalSurfels = 0;
             outPackage.totalCompressedBytes = 0;
 
@@ -336,24 +350,35 @@ namespace Surfels
                 const auto& cm = outPackage.chunkManifests[c];
                 if (cm.lods.empty()) continue;
 
-                const auto& lod0 = cm.lods[0];
-                outPackage.totalCompressedBytes += lod0.compressedByteSize;
-                std::vector<uint8_t> compressedBytes(lod0.compressedByteSize);
-                sflwIn.seekg(lod0.fileOffset, std::ios::beg);
-                sflwIn.read(reinterpret_cast<char*>(compressedBytes.data()), lod0.compressedByteSize);
+                outPackage.chunkLODSurfels[c].resize(cm.lods.size());
 
-                std::vector<uint8_t> shuffled(lod0.uncompressedByteSize);
-                if (ByteShuffle::DecompressShuffled(compressedBytes.data(), compressedBytes.size(), shuffled.data(), lod0.uncompressedByteSize))
+                for (size_t l = 0; l < cm.lods.size(); l++)
                 {
-                    outPackage.chunkLOD0Surfels[c].resize(lod0.surfelCount);
-                    ByteShuffle::Unshuffle(
-                        shuffled.data(),
-                        reinterpret_cast<uint8_t*>(outPackage.chunkLOD0Surfels[c].data()),
-                        lod0.surfelCount,
-                        sizeof(PackedSurfelGPU)
-                    );
-                    outPackage.totalSurfels += lod0.surfelCount;
+                    const auto& lodHeader = cm.lods[l];
+                    outPackage.totalCompressedBytes += lodHeader.compressedByteSize;
+                    std::vector<uint8_t> compressedBytes(lodHeader.compressedByteSize);
+                    sflwIn.seekg(lodHeader.fileOffset, std::ios::beg);
+                    sflwIn.read(reinterpret_cast<char*>(compressedBytes.data()), lodHeader.compressedByteSize);
+
+                    std::vector<uint8_t> shuffled(lodHeader.uncompressedByteSize);
+                    if (ByteShuffle::DecompressShuffled(compressedBytes.data(), compressedBytes.size(), shuffled.data(), lodHeader.uncompressedByteSize))
+                    {
+                        outPackage.chunkLODSurfels[c][l].resize(lodHeader.surfelCount);
+                        ByteShuffle::Unshuffle(
+                            shuffled.data(),
+                            reinterpret_cast<uint8_t*>(outPackage.chunkLODSurfels[c][l].data()),
+                            lodHeader.surfelCount,
+                            sizeof(PackedSurfelGPU)
+                        );
+                        if (l == 0)
+                        {
+                            outPackage.totalSurfels += lodHeader.surfelCount;
+                        }
+                    }
                 }
+
+                // Kept for existing callers that only ever wanted the finest level.
+                outPackage.chunkLOD0Surfels[c] = outPackage.chunkLODSurfels[c][0];
             }
 
             sflwIn.close();

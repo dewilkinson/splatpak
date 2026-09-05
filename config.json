@@ -1,7 +1,0 @@
-﻿{
-  "benchmark_dataset": "data/venus.ply",
-  "fallback_synthetic_points": 300000,
-  "default_chunk_size": 16.0,
-  "default_max_lods": 4,
-  "default_deadband_mm": 3.0
-}

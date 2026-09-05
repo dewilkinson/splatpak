@@ -12,7 +12,9 @@ namespace Surfels
 
     // Magic bytes for .sflw binary stream container ("SFLW" in ASCII)
     static constexpr uint32_t SFLW_MAGIC = 0x574C4653;
-    static constexpr uint32_t SFLW_VERSION = 1;
+    static constexpr uint32_t SFLW_VERSION = 2; // v2 adds SFLWFileHeader::splatRadius (appended at the
+                                                 // struct's end so v1 files still read correctly -- see
+                                                 // the version check in StreamPackager::LoadPackage).
 
     // Packed 8-byte GPU Surfel structure
     // Layout:
@@ -100,6 +102,9 @@ namespace Surfels
         double   globalOriginZ;
         XMFLOAT3 globalBoundsMin;
         XMFLOAT3 globalBoundsMax;
+        float    splatRadius; // v2+ only (SFLW_VERSION >= 2) -- garbage/unset on files packaged by v1.
+                               // Always check header.version before trusting this field; see
+                               // StreamPackager::LoadPackage, which falls back to 1.0f otherwise.
     };
 
     // =========================================================================

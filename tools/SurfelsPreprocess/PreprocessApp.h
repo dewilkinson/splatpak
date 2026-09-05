@@ -121,7 +121,14 @@ namespace Surfels
         std::string m_statusMessage = "Ready. Load a PLY file or generate a synthetic benchmark.";
         bool  m_statusIsSuccess     = true;
         bool  m_showAboutDialog     = false;
-        std::string m_benchmarkDatasetPath = "data/venus.ply";
+        std::string m_benchmarkDatasetPath = "cthulu.ply"; // Secondary fallback only -- the built-in
+                                                            // assets/cthulu/ copy (see GenerateSyntheticScene)
+                                                            // is always tried first.
+
+        // Dataset auto-loaded on launch when no file is passed on the command line (see OnCreate()).
+        // Configurable via config.json/surfels_config.ini ("startup_dataset") so a different default
+        // can be swapped in without recompiling. Tried as-is and at a few relative CWD depths.
+        std::string m_startupDatasetPath = "assets/cthulu/cthulu.sflw";
 
         float m_yaw      = 0.6f;
         float m_pitch    = 0.35f;
