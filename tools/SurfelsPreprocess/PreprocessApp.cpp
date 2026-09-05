@@ -338,6 +338,8 @@ namespace Surfels
         }
     }
 
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
+
     // Persists the current config-file-backed settings back to disk
     void PreprocessApp::SaveConfigFile()
     {
@@ -2243,7 +2245,7 @@ namespace Surfels
                     {
                         ImGui::SameLine();
                         ImGui::PushItemWidth(100.0f);
-                        if (ImGui::SliderFloat("##DitherDurationTab", &m_ditherTransitionDurationSec, 0.05f, 0.50f, "%.2f s"))
+                        if (ImGui::SliderFloat("##DitherDurationTab", &m_ditherTransitionDurationSec, 0.05f, 5.0f, "%.2f s"))
                         {
                             m_streamStateDirty = true;
                         }
@@ -2597,7 +2599,7 @@ namespace Surfels
                     ImGui::PopStyleColor();
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Removes bandwidth throttle caps and streams at uncapped maximum rate.");
 
-                    float maxRingMB = std::max(512.0f, std::ceil(m_totalStreamBytes / (1024.0f * 1024.0f) * 2.0f));
+                    float maxRingMB = MaxRingBufferMB();
 
                     if (m_unthrottledBandwidth)
                     {

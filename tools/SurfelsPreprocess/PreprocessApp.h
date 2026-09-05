@@ -275,12 +275,13 @@ namespace Surfels
         StreamingPolicy m_streamingPolicy           = StreamingPolicy::Greedy; // Greedy (default) or Conservative
         float  m_conservativeNeighborBufferMargin   = 1.35f;  // Frustum margin for pre-fetching local neighbors in conservative mode
         bool   m_enableDitheredTransitions  = true;   // Stochastic screen-space Bayer dithering for smooth LOD transitions
-        float  m_ditherTransitionDurationSec= 0.20f;  // Transition dissolve duration in seconds
+        float  m_ditherTransitionDurationSec= 0.75f;  // Transition dissolve duration in seconds (slider 0.05..5 s)
         bool   m_enableStreamingSimulation  = true;  // Hierarchical streaming simulation & LOD refinement
         bool   m_unthrottledBandwidth       = true;  // Full uncapped bandwidth (removes throttle cap) -- the default; pick a network profile to throttle
         bool   m_prioritizeFrustumAndProximity = true; // Stream view frustum & close proximity chunks first
         float  m_bandwidthThrottleMBps      = 10.0f;  // Simulated bandwidth in MB/s
-        float  m_ringBufferCapacityMB       = 64.0f;  // GPU Ring Buffer capacity limit in MB
+        float  m_ringBufferCapacityMB       = 512.0f; // GPU Ring Buffer capacity limit in MB. Defaults to the slider's ceiling (see MaxRingBufferMB) whenever a dataset's stream is built
+        float  MaxRingBufferMB() const;               // Ring buffer slider ceiling: 512 MB, or twice the loaded dataset's total stream size, whichever is larger
         bool   m_enableStreamDecay          = false;  // Toggle cache decay on/off
         float  m_streamDecayRate            = 5.00f;  // Decay rate (0.0 = no decay .. 10.0 = max) for memory reclamation.
                                                         // At 10.0 a full drain (everything but the two pinned coarsest
