@@ -10,7 +10,7 @@
 #include <vector>
 #include <cstdint>
 #include "WaveletTypes.h"
-#include "../../tools/SurfelsPreprocess/ByteShuffle.h"
+#include "../../libs/SurfelsCore/ByteShuffle.h"
 
 namespace Surfels
 {

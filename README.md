@@ -56,10 +56,22 @@ The solution is organized into Solution Explorer folders:
    would export for a `.ply` with default settings, occlusion volume included;
    used to regenerate the bundled assets).
 
-4. **Docs** — a build-nothing target that lists `README.md` and
+4. **`SurfelsCore` (Core)** — source in `libs/SurfelsCore/`. A static library holding the
+   lifting-wavelet decomposition, the byte-shuffle/RLE codec, and the interior occlusion
+   volume generator: the three pieces of this project judged distinctive enough to be
+   worth keeping as compiled objects rather than open source, even within this repo. Each
+   module is a public header (data structures and function declarations only) plus a
+   `.cpp` implementation; `SurfelLab`, `Surfels_DX12`, and the console test tools all link
+   against it. **This subtree is explicitly not covered by the repository's top-level
+   Apache-2.0 `LICENSE`** — see `libs/SurfelsCore/README.md` for the licensing boundary
+   and its limits (a static library keeps source out of ordinary distribution; it doesn't
+   protect against disassembly of a shipped binary, and the GPU-side shader source under
+   `src/DX12/Shaders/` still ships as plain text in `bin/ShaderLibDX/` regardless).
+
+5. **Docs** — a build-nothing target that lists `README.md` and
    `docs/USER_GUIDE.md` in Solution Explorer for editing.
 
-5. **ThirdParty/Cauldron** — every vendored Cauldron target, swept into one folder.
+6. **ThirdParty/Cauldron** — every vendored Cauldron target, swept into one folder.
 
 ### Package format (`.sflw`)
 

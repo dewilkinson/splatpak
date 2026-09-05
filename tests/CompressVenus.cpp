@@ -15,7 +15,7 @@
 #include "../tools/SurfelsPreprocess/PLYLoader.h"
 #include "../tools/SurfelsPreprocess/SpatialOctree.h"
 #include "../tools/SurfelsPreprocess/StreamPackager.h"
-#include "../tools/SurfelsPreprocess/OcclusionVolume.h"
+#include "../libs/SurfelsCore/OcclusionVolume.h"
 
 int main(int argc, char** argv)
 {

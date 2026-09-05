@@ -8,16 +8,16 @@
 // class is everything else -- UI, file I/O, and the streaming/decay/silhouette simulation.
 
 #pragma once
-#include "OcclusionVolume.h"
+#include "../../libs/SurfelsCore/OcclusionVolume.h"
 #include "../../src/DX12/stdafx.h"
 #include "PreprocessRenderer.h"
 #include "SyntheticGenerator.h"
 #include "PLYLoader.h"
 #include "SPLATLoader.h"
 #include "SpatialOctree.h"
-#include "LiftingWavelet.h"
+#include "../../libs/SurfelsCore/LiftingWavelet.h"
 #include "Quantizer.h"
-#include "ByteShuffle.h"
+#include "../../libs/SurfelsCore/ByteShuffle.h"
 #include "StreamPackager.h"
 #include <commdlg.h>
 #include <string>

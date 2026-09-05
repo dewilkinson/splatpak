@@ -43,6 +43,7 @@ set(CMAKE_EXE_LINKER_FLAGS_RELEASE "${CMAKE_EXE_LINKER_FLAGS_RELEASE} /DEBUG /OP
 set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /DEBUG /OPT:REF /OPT:ICF")
 
 add_subdirectory(libs/cauldron)
+add_subdirectory(libs/SurfelsCore)
 add_subdirectory(src/DX12)
 add_subdirectory(tools/SurfelsPreprocess)
 add_subdirectory(tests)

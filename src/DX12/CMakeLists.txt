@@ -47,7 +47,7 @@ copyTargetCommand("${shaders}" ${CMAKE_HOME_DIRECTORY}/bin/ShaderLibDX copied_su
 # it calls into (Device.cpp uses agsInitialize/agsDriverExtensionsDX12_* directly) --
 # every consumer executable has to link them explicitly.
 add_executable(Surfels_DX12 WIN32 ${sources} ${shaders})
-target_link_libraries(Surfels_DX12 LINK_PUBLIC Cauldron_DX12 ImGUI amd_ags d3d12 dxgi)
+target_link_libraries(Surfels_DX12 LINK_PUBLIC Cauldron_DX12 ImGUI amd_ags d3d12 dxgi SurfelsCore)
 add_dependencies(Surfels_DX12 copied_surfels_shaders)
 
 set_target_properties(Surfels_DX12 PROPERTIES 

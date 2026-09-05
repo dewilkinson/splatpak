@@ -25,9 +25,7 @@ set(sources
     PLYLoader.h
     SPLATLoader.h
     SpatialOctree.h
-    LiftingWavelet.h
     Quantizer.h
-    ByteShuffle.h
     StreamPackager.h
     ../../src/DX12/Wavelet/WaveletTypes.h
 )
@@ -48,7 +46,7 @@ source_group("Shaders" FILES ${shaders})
 copyTargetCommand("${shaders}" ${CMAKE_HOME_DIRECTORY}/bin/ShaderLibDX copied_preprocess_shaders)
 
 add_executable(SurfelLab WIN32 ${sources} ${shaders})
-target_link_libraries(SurfelLab LINK_PUBLIC Cauldron_DX12 ImGUI amd_ags d3d12 dxgi)
+target_link_libraries(SurfelLab LINK_PUBLIC Cauldron_DX12 ImGUI amd_ags d3d12 dxgi SurfelsCore)
 add_dependencies(SurfelLab copied_preprocess_shaders)
 
 set_target_properties(SurfelLab PROPERTIES
