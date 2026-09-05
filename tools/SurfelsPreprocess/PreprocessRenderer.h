@@ -55,6 +55,14 @@ namespace Surfels
             float    temporalBlendWeight      = 0.15f; // History blend weight (0.05 = maximum smoothness, 0.50 = responsive)
             bool     enableSubpixelJitter     = true;  // 8-phase Halton(2,3) sub-pixel camera jitter
             bool     enableVarianceClamping   = true;  // 3x3 YCoCg neighborhood variance color box clamping (anti-ghosting)
+
+            // Interior Occlusion Volume: solid depth-writing cubes baked at preprocessing time so far-side
+            // surfels don't show through gaps in the near side. Disabled by default.
+            const OcclusionVoxelGPU* pOcclusionVoxels  = nullptr;
+            uint32_t                 occlusionVoxelCount = 0;
+            bool                     enableOcclusionCulling  = false; // Disabled by default
+            float                    occlusionShrinkRuntime  = 1.0f; // Live/interactive shrink on top of the baked shrink already applied at export time
+            bool                     showOcclusionVolumeOnly = false; // Debug view: render only the occluder geometry
         };
 
         struct FrameTimingMetrics
@@ -122,6 +130,14 @@ namespace Surfels
             uint32_t   highlightSilhouette;
             uint32_t   enableConeCulling;
             uint32_t   showOnlyLocked;
+            uint32_t   showChunkStream;          // Matches a pre-existing HLSL-only g_ShowChunkStream cbuffer
+                                                   // field that was never previously mirrored here -- keeping
+                                                   // it in this exact slot keeps everything below it correctly
+                                                   // byte-aligned with the shader's cbuffer layout.
+            uint32_t   enableOcclusionCulling;
+            float      occlusionShrinkRuntime;
+            uint32_t   showOcclusionVolumeOnly;
+            uint32_t   occlusionVoxelCount;
         };
 
         CAULDRON_DX12::Device* m_pDevice = nullptr;
@@ -134,6 +150,15 @@ namespace Surfels
 
         ID3D12RootSignature* m_pRootSignature = nullptr;
         ID3D12PipelineState* m_pPipelineState = nullptr;
+        ID3D12PipelineState* m_pPipelineStateOcclusionTest = nullptr; // Same as m_pPipelineState but with depth-test-only (no write) enabled, used when occlusion culling is active
+        ID3D12PipelineState* m_pOccluderPSO = nullptr; // Solid depth-writing interior occlusion volume cubes (occluderMS/occluderPS)
+
+        void UpdateOcclusionVoxelBuffer(const State* pState);
+        ID3D12Resource*      m_pOcclusionVoxelBuffer = nullptr; // Upload-heap resource read directly as an SRV -- small & infrequently updated, doesn't need the default-heap/copy-queue machinery used for chunks/surfels
+        uint8_t*              m_pOcclusionVoxelBufferMapped = nullptr;
+        uint32_t               m_occlusionVoxelBufferCapacityBytes = 0;
+        const void*             m_lastOcclusionVoxelsPtr = nullptr;
+        uint32_t                m_lastOcclusionVoxelCount = 0;
 
         uint32_t m_width  = 0;
         uint32_t m_height = 0;

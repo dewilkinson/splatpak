@@ -4,7 +4,7 @@
 int main()
 {
     Surfels::StreamPackager::SFLWPackageData pkg;
-    bool ok = Surfels::StreamPackager::LoadPackage("data/venus.sflw", pkg);
+    bool ok = Surfels::StreamPackager::LoadPackage("models/venus.sflw", pkg);
     std::cout << "LoadPackage ok=" << ok << " chunks=" << pkg.chunkManifests.size() << " surfels=" << pkg.totalSurfels << " bytes=" << pkg.totalCompressedBytes << std::endl;
     for (size_t i = 0; i < pkg.chunkManifests.size(); i++)
     {

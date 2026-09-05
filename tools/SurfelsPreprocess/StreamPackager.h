@@ -19,7 +19,8 @@ namespace Surfels
             std::vector<ChunkData>& chunks,
             uint32_t maxLODs = 4,
             float deadbandThreshold = 0.003f,
-            float splatRadius = 1.0f)
+            float splatRadius = 1.0f,
+            const std::vector<OcclusionVoxelGPU>& occlusionVoxels = {})
         {
             std::string sflwPath = outputBasepath + ".sflw";
             std::string jsonPath = outputBasepath + ".json";
@@ -123,6 +124,25 @@ namespace Surfels
                 chunkManifests.push_back(std::move(cm));
             }
 
+            // Occlusion voxels (v3+, optional) go after all chunk LOD data. Written last since their
+            // count/offset weren't known when the header placeholder above was first written -- patch
+            // the header in place now that we know them.
+            header.occlusionVoxelCount = (uint32_t)occlusionVoxels.size();
+            if (!occlusionVoxels.empty())
+            {
+                header.occlusionVoxelOffset = (uint64_t)sflwOut.tellp();
+                sflwOut.write(reinterpret_cast<const char*>(occlusionVoxels.data()),
+                    occlusionVoxels.size() * sizeof(OcclusionVoxelGPU));
+            }
+            else
+            {
+                header.occlusionVoxelOffset = 0;
+            }
+
+            sflwOut.seekp(0, std::ios::beg);
+            sflwOut.write(reinterpret_cast<const char*>(&header), sizeof(SFLWFileHeader));
+            sflwOut.seekp(0, std::ios::end);
+
             sflwOut.close();
 
             // Write manifest.json
@@ -186,6 +206,7 @@ namespace Surfels
             std::vector<ChunkManifest> chunkManifests;
             std::vector<std::vector<PackedSurfelGPU>> chunkLOD0Surfels; // kept for existing callers (== chunkLODSurfels[c][0])
             std::vector<std::vector<std::vector<PackedSurfelGPU>>> chunkLODSurfels; // [chunkIndex][lodLevelIndex] -> surfels
+            std::vector<OcclusionVoxelGPU> occlusionVoxels; // v3+ only; empty on older files or files with no volume baked
             uint64_t totalSurfels = 0;
             size_t totalCompressedBytes = 0;
         };
@@ -235,6 +256,14 @@ namespace Surfels
             if (outPackage.header.version < 2)
             {
                 outPackage.header.splatRadius = 1.0f;
+            }
+
+            // occlusionVoxelCount/Offset were appended in version 3, same reasoning as splatRadius above --
+            // on a shorter (v1/v2) file these fields hold misinterpreted chunk bytes, not real values.
+            if (outPackage.header.version < 3)
+            {
+                outPackage.header.occlusionVoxelCount = 0;
+                outPackage.header.occlusionVoxelOffset = 0;
             }
 
             std::ifstream jsonIn(jsonPath);
@@ -379,6 +408,15 @@ namespace Surfels
 
                 // Kept for existing callers that only ever wanted the finest level.
                 outPackage.chunkLOD0Surfels[c] = outPackage.chunkLODSurfels[c][0];
+            }
+
+            outPackage.occlusionVoxels.clear();
+            if (outPackage.header.occlusionVoxelCount > 0)
+            {
+                outPackage.occlusionVoxels.resize(outPackage.header.occlusionVoxelCount);
+                sflwIn.seekg(outPackage.header.occlusionVoxelOffset, std::ios::beg);
+                sflwIn.read(reinterpret_cast<char*>(outPackage.occlusionVoxels.data()),
+                    outPackage.header.occlusionVoxelCount * sizeof(OcclusionVoxelGPU));
             }
 
             sflwIn.close();

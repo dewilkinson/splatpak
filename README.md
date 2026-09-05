@@ -43,7 +43,6 @@ The solution contains two complementary projects organized into **Apps** and **T
    - Normal-oriented elliptical discs with procedural circular pixel clipping.
    - Screen-Space Error (SSE) hierarchical AutoLOD selection and frustum culling.
    - Built-in CPU/GPU frame profiler and real-time streaming telemetry HUD.
-   - Procedural Fibonacci sphere benchmark mode.
 
 2. **`SurfelsPreprocess` (Tools)**: The offline PLY and dataset processing tool:
    - Built-in synthetic urban street benchmark generator (`--generate <N>`).
@@ -76,6 +75,16 @@ cd surfels
 mkdir build && cd build
 cmake .. -G "Visual Studio 17 2022" -A x64
 ```
+
+**You don't need to build Cauldron.** `libs/cauldron-prebuilt/lib/{Debug,Release}/` ships prebuilt
+`Cauldron_Common`/`Cauldron_DX12`/`ImGUI` static libraries (checked in via [Git LFS](https://git-lfs.com/),
+so `git lfs install` once per machine before cloning, or `git lfs pull` after if you already cloned
+without it) — the build links against those directly instead of compiling Cauldron's ~50 source files.
+This is controlled by the `CAULDRON_USE_PREBUILT` CMake option (`ON` by default); it's still Cauldron's
+own source/headers doing the work, this only skips recompiling three of its libraries, and it falls back
+to a normal from-source build automatically if the prebuilt `.lib` files aren't present (e.g. LFS objects
+not pulled). Pass `-DCAULDRON_USE_PREBUILT=OFF` to force a from-source build regardless (useful if you're
+patching Cauldron itself, or building for a toolset/platform the prebuilt libs don't cover).
 
 Open `build/Surfels_DX12.sln` in Visual Studio and build/run, or build from the
 command line with `cmake --build . --config Debug`. The executable and its
@@ -110,9 +119,18 @@ and Release.
   checked via `D3D12_FEATURE_D3D12_OPTIONS7` on startup, with a message box
   and clean exit if unsupported. Any DX12 Ultimate-class GPU (RTX 20-series+,
   RDNA2+) has this.
-- No depth buffer / depth test — overlapping splats just draw in whatever
-  order their threadgroup happens to complete, not sorted. Fine for a
-  placeholder, not for real surfel rendering.
+- The main splat pass renders with a depth buffer bound (`D32_FLOAT`, cleared
+  every frame) but hardware depth test/write both disabled
+  (`DepthWriteMask = ZERO`, `DepthFunc = ALWAYS`) — intentional, not a
+  placeholder gap: overlapping splats are alpha-blended, so correct visual
+  order comes from the GPU bitonic radix depth sort (front-to-back is wrong
+  for blending; the sort orders them back-to-front) rather than from
+  per-pixel hardware Z-testing, which would incorrectly reject translucent
+  surfaces behind whatever drew first. Enabling real depth test/write on
+  this pass would break blending, not improve it. The separate GPU
+  silhouette item-prepass (`SurfelsPreprocess` only) is a different story —
+  it does use a real depth test (`DepthEnable = TRUE`, `DepthFunc = LESS`)
+  since it needs correct nearest-item-wins occlusion, not blending.
 - No Agility SDK opt-in (see the comment in `SurfelsSample.cpp`) — uses
   whatever D3D12 runtime Windows provides.
 - `SurfelsSample.cpp` calls `InitDirectXCompiler()` (from
@@ -138,11 +156,11 @@ and Release.
 
 ## Where this goes next
 
-The obvious next steps toward an actual surfel GI renderer: replace the
-procedural Fibonacci-sphere placement with surfels seeded from real scene
-geometry (e.g. loaded via Cauldron's glTF loader), add a depth buffer, and
-add an irradiance-accumulation/shading pass instead of the flat hash-color
-shading the splats currently get.
+Real scene geometry is already the normal path (`.ply`/`.splat` loading, the
+wavelet LOD hierarchy, GPU streaming) rather than a placeholder -- the
+obvious next step toward an actual surfel GI renderer is an
+irradiance-accumulation/shading pass, since splats currently get simple
+per-vertex color with a flat diffuse (`N.L`) term and no global illumination.
 
 ## License
 

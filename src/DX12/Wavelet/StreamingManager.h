@@ -45,9 +45,10 @@ namespace Surfels
             
             std::vector<std::string> searchBases = {
                 basepath,
-                "../datasets/" + basepath,
-                "datasets/" + basepath,
-                "../../datasets/" + basepath
+                "../" + basepath,
+                "models/" + basepath,
+                "../models/" + basepath,
+                "../../models/" + basepath
             };
 
             bool manifestFound = false;

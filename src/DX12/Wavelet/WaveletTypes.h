@@ -12,9 +12,27 @@ namespace Surfels
 
     // Magic bytes for .sflw binary stream container ("SFLW" in ASCII)
     static constexpr uint32_t SFLW_MAGIC = 0x574C4653;
-    static constexpr uint32_t SFLW_VERSION = 2; // v2 adds SFLWFileHeader::splatRadius (appended at the
+    static constexpr uint32_t SFLW_VERSION = 3; // v2 adds SFLWFileHeader::splatRadius (appended at the
                                                  // struct's end so v1 files still read correctly -- see
                                                  // the version check in StreamPackager::LoadPackage).
+                                                 // v3 adds an optional occlusion voxel array, appended
+                                                 // after all chunk LOD data; occlusionVoxelCount/Offset
+                                                 // are 0 on v1/v2 files and on v3 files that simply chose
+                                                 // not to generate one.
+
+    // A single solid occluder cube: interior/enclosed geometry generated at preprocessing time so the
+    // (alpha-blended, non-depth-writing) surfel splat pass can depth-test against it and avoid seeing
+    // through gaps in a sparse point cloud to surfels on the far side. halfSize already has the
+    // preprocessing-time "baked" shrink factor applied; the renderer additionally applies a live,
+    // interactive shrink multiplier on top at draw time (see SurfelsCB::occlusionShrink).
+    #pragma pack(push, 1)
+    struct OcclusionVoxelGPU
+    {
+        XMFLOAT3 center;
+        float    halfSize;
+    };
+    #pragma pack(pop)
+    static_assert(sizeof(OcclusionVoxelGPU) == 16, "OcclusionVoxelGPU must be exactly 16 bytes");
 
     // Packed 8-byte GPU Surfel structure
     // Layout:
@@ -105,6 +123,8 @@ namespace Surfels
         float    splatRadius; // v2+ only (SFLW_VERSION >= 2) -- garbage/unset on files packaged by v1.
                                // Always check header.version before trusting this field; see
                                // StreamPackager::LoadPackage, which falls back to 1.0f otherwise.
+        uint32_t occlusionVoxelCount;  // v3+ only -- 0 (and occlusionVoxelOffset unset/ignored) on v1/v2
+        uint64_t occlusionVoxelOffset; // files, or on a v3 file that chose not to generate a volume.
     };
 
     // =========================================================================

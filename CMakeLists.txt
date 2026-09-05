@@ -20,6 +20,21 @@ endforeach()
 add_compile_options(/MP)
 set_property(GLOBAL PROPERTY USE_FOLDERS ON)
 
+# Prebuilt Cauldron: libs/cauldron-prebuilt/lib/{Debug,Release}/*.lib are checked in (via Git LFS) so a
+# normal clone can link Cauldron_Common/Cauldron_DX12/ImGUI directly instead of compiling ~50 files of
+# vendored framework code from source. Each of the three CMakeLists.txt that build those targets
+# (libs/cauldron/libs/ImGUI, libs/cauldron/src/Common, libs/cauldron/src/DX12) branch on this option to
+# create an IMPORTED library pointing at the prebuilt .lib instead of an ordinary add_library(... STATIC
+# <sources>); everything else about them (include dirs, link deps, shader/media copy commands) is
+# unchanged either way. Falls back to building from source automatically if the prebuilt libs aren't
+# present (e.g. LFS objects not pulled, or a fresh submodule bump before the libs are rebuilt), so this
+# never hard-fails a build -- it can also be turned off explicitly to force a from-source build.
+option(CAULDRON_USE_PREBUILT "Link prebuilt Cauldron static libraries instead of building from source" ON)
+if(CAULDRON_USE_PREBUILT AND NOT EXISTS "${CMAKE_HOME_DIRECTORY}/libs/cauldron-prebuilt/lib/Release/Cauldron_DX12.lib")
+    message(STATUS "CAULDRON_USE_PREBUILT requested but libs/cauldron-prebuilt/lib/Release/Cauldron_DX12.lib is missing (Git LFS objects not pulled?) -- building Cauldron from source instead.")
+    set(CAULDRON_USE_PREBUILT OFF)
+endif()
+
 # Release-with-symbols: keep the exact Release optimizer settings (this is the
 # build we're chasing crashes in) but still emit a PDB so a debugger can
 # resolve symbols and locals instead of a bare stack of addresses.

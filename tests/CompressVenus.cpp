@@ -8,8 +8,8 @@
 
 int main(int argc, char** argv)
 {
-    std::string inputPLY = (argc > 1) ? argv[1] : "datasets/venus.ply";
-    std::string outputBase = (argc > 2) ? argv[2] : "datasets/venus";
+    std::string inputPLY = (argc > 1) ? argv[1] : "models/venus.ply";
+    std::string outputBase = (argc > 2) ? argv[2] : "models/venus";
 
     std::cout << "Loading " << inputPLY << "..." << std::endl;
     std::vector<Surfels::SurfelVertex> surfels;

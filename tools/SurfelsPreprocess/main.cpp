@@ -76,7 +76,7 @@ int WINAPI WinMain(HINSTANCE hInstance, HINSTANCE /*hPrevInstance*/, LPSTR lpCmd
 #endif
 
     HRESULT hrCom = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    int result = RunFramework(hInstance, lpCmdLine, nCmdShow, new Surfels::PreprocessApp("Surfels PLY Preprocessor & Wavelet Studio"));
+    int result = RunFramework(hInstance, lpCmdLine, nCmdShow, new Surfels::PreprocessApp("Surfel-based 3D Streaming Demo"));
     if (SUCCEEDED(hrCom))
     {
         CoUninitialize();

@@ -94,8 +94,6 @@ namespace Surfels
         const char* configPaths[] = {
             "config.json",
             "../config.json",
-            "data/config.json",
-            "../data/config.json",
             "surfels_config.ini",
             "../surfels_config.ini",
             "config.ini",
@@ -943,11 +941,10 @@ namespace Surfels
             "../../assets/cthulu/cthulu.ply",
             "../../../assets/cthulu/cthulu.ply",
             m_benchmarkDatasetPath,
-            "data/" + m_benchmarkDatasetPath,
-            "datasets/" + m_benchmarkDatasetPath,
             "../" + m_benchmarkDatasetPath,
-            "../data/" + m_benchmarkDatasetPath,
-            "../datasets/" + m_benchmarkDatasetPath,
+            "models/" + m_benchmarkDatasetPath,
+            "../models/" + m_benchmarkDatasetPath,
+            "../../models/" + m_benchmarkDatasetPath,
         };
 
         std::string foundPath = "";
@@ -1790,7 +1787,7 @@ namespace Surfels
         ImGui::Begin("##LeftPanel", nullptr, ImGuiWindowFlags_NoCollapse);
 
         // Tab Selector Buttons
-        float tabWidth = (ImGui::GetContentRegionAvailWidth() - 6.0f) * 0.5f;
+        float tabWidth = (ImGui::GetContentRegionAvailWidth() - 12.0f) / 3.0f;
         ImGui::PushStyleColor(ImGuiCol_Button, m_activeTab == 0 ? ImVec4(0.18f, 0.45f, 0.75f, 1.0f) : ImVec4(0.22f, 0.22f, 0.25f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Text, m_activeTab == 0 ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
         if (ImGui::Button("1. Surfel Generator", ImVec2(tabWidth, 28))) m_activeTab = 0;
@@ -1800,7 +1797,14 @@ namespace Surfels
 
         ImGui::PushStyleColor(ImGuiCol_Button, m_activeTab == 1 ? ImVec4(0.18f, 0.45f, 0.75f, 1.0f) : ImVec4(0.22f, 0.22f, 0.25f, 1.0f));
         ImGui::PushStyleColor(ImGuiCol_Text, m_activeTab == 1 ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
-        if (ImGui::Button("2. Stream Renderer", ImVec2(tabWidth, 28))) m_activeTab = 1;
+        if (ImGui::Button("2. Renderer", ImVec2(tabWidth, 28))) m_activeTab = 1;
+        ImGui::PopStyleColor(2);
+
+        ImGui::SameLine();
+
+        ImGui::PushStyleColor(ImGuiCol_Button, m_activeTab == 2 ? ImVec4(0.18f, 0.45f, 0.75f, 1.0f) : ImVec4(0.22f, 0.22f, 0.25f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, m_activeTab == 2 ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
+        if (ImGui::Button("3. Streaming", ImVec2(tabWidth, 28))) m_activeTab = 2;
         ImGui::PopStyleColor(2);
 
         ImGui::Separator();
@@ -1936,7 +1940,7 @@ namespace Surfels
         // =========================================================================
         // TAB 2: STREAM VIEWER & RENDERER (Real-Time LODs, Viewport, Accelerators)
         // =========================================================================
-        else
+        else if (m_activeTab == 1)
         {
             ImGui::Spacing();
             if (m_isLoadedFromSFLW)
@@ -1962,123 +1966,8 @@ namespace Surfels
 
             if (!m_rawSurfels.empty() || m_isLoadedFromSFLW)
             {
-                // Section 1: Progressive Streaming & Network Throttle
-                if (ImGui::CollapsingHeader("1. Progressive Streaming & Network Throttle", ImGuiTreeNodeFlags_DefaultOpen))
-                {
-                    if (ImGui::Checkbox("Simulate Network Streaming", &m_enableStreamingSimulation))
-                    {
-                        if (m_enableStreamingSimulation)
-                        {
-                            InitStreamingSimulation();
-                        }
-                        else
-                        {
-                            UpdatePreviewSurfels();
-                        }
-                    }
-
-                    if (m_enableStreamingSimulation)
-                    {
-                        ImGui::SameLine();
-                        ImGui::TextColored(m_isStreamingPaused ? ImVec4(1.0f, 0.6f, 0.2f, 1.0f) : ImVec4(0.3f, 1.0f, 0.4f, 1.0f),
-                            m_isStreamingPaused ? "[PAUSED]" : "[STREAMING]");
-
-                        ImGui::Checkbox("Prioritize View Frustum & Proximity", &m_prioritizeFrustumAndProximity);
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Streams the coarsest base LOD first, followed by high-detail chunks in the current camera frustum and near the viewer.");
-
-                        // Bandwidth Preset Buttons
-                        ImGui::Text("Network Profiles:");
-                        if (ImGui::Button("3G (1.5 MB/s)", ImVec2(85, 22)))
-                        {
-                            m_bandwidthThrottleMBps = 1.5f;
-                            m_unthrottledBandwidth = false;
-                        }
-                        ImGui::SameLine();
-                        if (ImGui::Button("4G (15 MB/s)", ImVec2(80, 22)))
-                        {
-                            m_bandwidthThrottleMBps = 15.0f;
-                            m_unthrottledBandwidth = false;
-                        }
-                        ImGui::SameLine();
-                        if (ImGui::Button("5G (60 MB/s)", ImVec2(80, 22)))
-                        {
-                            m_bandwidthThrottleMBps = 60.0f;
-                            m_unthrottledBandwidth = false;
-                        }
-                        ImGui::SameLine();
-                        ImGui::PushStyleColor(ImGuiCol_Button, m_unthrottledBandwidth ? ImVec4(0.18f, 0.55f, 0.35f, 1.0f) : ImVec4(0.25f, 0.25f, 0.28f, 1.0f));
-                        if (ImGui::Button("Full", ImVec2(48, 22)))
-                        {
-                            m_unthrottledBandwidth = !m_unthrottledBandwidth;
-                        }
-                        ImGui::PopStyleColor();
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Removes bandwidth throttle caps and streams at uncapped maximum rate.");
-
-                        float maxRingMB = std::max(512.0f, std::ceil(m_totalStreamBytes / (1024.0f * 1024.0f) * 2.0f));
-
-                        if (m_unthrottledBandwidth)
-                        {
-                            ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
-                            float dummyVal = 100.0f;
-                            ImGui::SliderFloat("Bandwidth Throttle", &dummyVal, 0.2f, 100.0f, "Full (Uncapped)");
-                            ImGui::PopStyleVar();
-                        }
-                        else
-                        {
-                            if (ImGui::SliderFloat("Bandwidth Throttle", &m_bandwidthThrottleMBps, 0.2f, 100.0f, "%.1f MB/s"))
-                            {
-                                m_unthrottledBandwidth = false;
-                            }
-                        }
-
-                        ImGui::SliderFloat("GPU Ring Buffer Size", &m_ringBufferCapacityMB, 4.0f, maxRingMB, "%.0f MB");
-
-                        // Streaming Progress Bar
-                        float deliveredMB = m_simulatedBytesDelivered / (1024.0f * 1024.0f);
-                        float totalMB = m_totalStreamBytes / (1024.0f * 1024.0f);
-                        char progressOverlay[128];
-                        if (m_evictedSurfelCount > 0)
-                        {
-                            snprintf(progressOverlay, sizeof(progressOverlay), "%.1f / %.1f MB (%.0f%%) | %u in RingBuffer (%zu Evicted)",
-                                deliveredMB, totalMB, m_streamRefinementProgress * 100.0f, m_state.surfelCount, m_evictedSurfelCount);
-                        }
-                        else
-                        {
-                            snprintf(progressOverlay, sizeof(progressOverlay), "%.1f / %.1f MB (%.0f%%) | %u resident pts",
-                                deliveredMB, totalMB, m_streamRefinementProgress * 100.0f, m_state.surfelCount);
-                        }
-                        ImGui::ProgressBar(m_streamRefinementProgress, ImVec2(-1, 20), progressOverlay);
-
-                        // Playback Controls
-                        if (ImGui::Button("Re-Stream (Reset)", ImVec2(125, 24)))
-                        {
-                            ResetStreamingSimulation();
-                        }
-                        ImGui::SameLine();
-                        if (ImGui::Button(m_isStreamingPaused ? "Resume" : "Pause", ImVec2(75, 24)))
-                        {
-                            m_isStreamingPaused = !m_isStreamingPaused;
-                        }
-                        ImGui::SameLine();
-                        if (ImGui::Button("Instant Full Load", ImVec2(110, 24)))
-                        {
-                            m_simulatedBytesDelivered = m_totalStreamBytes;
-                            m_streamRefinementProgress = 1.0f;
-                            UpdateStreamingSimulation(1.0);
-                        }
-
-                        if (ImGui::Checkbox("Freeze Rendering & Memory (Eliminate Flickering)", &m_freezeRenderingAndMemory))
-                        {
-                            m_streamStateDirty = true;
-                        }
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Completely freezes streaming simulation, LOD transitions, memory evictions, and edge recalculations.\nEliminates all flickering and jitter artifacts when movement is paused.");
-
-                        ImGui::Separator();
-                    }
-                }
-
-                // Section 2: Runtime LOD Settings
-                if (ImGui::CollapsingHeader("2. Runtime LOD & Quality", ImGuiTreeNodeFlags_DefaultOpen))
+                // Section 1: Runtime LOD Settings
+                if (ImGui::CollapsingHeader("1. Runtime LOD & Quality", ImGuiTreeNodeFlags_DefaultOpen))
                 {
                     int maxLODIndex = std::max(0, (int)m_waveletResult.lodLevels.size() - 1);
                     if (maxLODIndex > 0)
@@ -2092,7 +1981,7 @@ namespace Surfels
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Automatically adapts active LOD level dynamically based on distance from camera.");
 
                         ImGui::PushItemWidth(ImGui::GetContentRegionAvailWidth() - 95.0f);
-                        if (ImGui::SliderInt("##LODSlider", &m_selectedPreviewLOD, 0, maxLODIndex, "LOD %d"))
+                        if (ImGui::SliderInt("##LODSlider", &m_selectedPreviewLOD, 0, maxLODIndex, "LOD %.0f"))
                         {
                             m_selectedPreviewLOD = std::max(0, std::min(maxLODIndex, m_selectedPreviewLOD));
                             m_autoLOD = false;
@@ -2109,17 +1998,6 @@ namespace Surfels
                         }
 
                         ImGui::Separator();
-                    }
-
-                    if (ImGui::Checkbox("Wavelet Transform", &m_enableWavelet))
-                    {
-                        PrecacheResidentLODs();
-                        UpdatePreviewSurfels();
-                    }
-
-                    if (ImGui::Checkbox("Apply Quantization (8-Byte GPU)", &m_enableQuantization))
-                    {
-                        UpdatePreviewSurfels();
                     }
 
                     if (ImGui::Checkbox("Dithered LOD Transitions", &m_enableDitheredTransitions))
@@ -2183,7 +2061,15 @@ namespace Surfels
 
                     if (m_enableSilhouetteLOD0)
                     {
-                        if (ImGui::SliderInt("Silhouette LOD Bias", &m_silhouetteLODBias, 0, 4, "Level N - %d"))
+                        // Vendored ImGui 1.53's SliderInt() is a thin wrapper around SliderFloat(): it
+                        // casts the int to float internally and passes the display_format string straight
+                        // through unchanged (imgui.cpp: "float v_f = (float)*v; SliderFloat(label, &v_f,
+                        // ..., display_format, ...)"). A custom format here must use a float specifier
+                        // (%.0f) even though the underlying value is an int -- a %d here reads the float
+                        // argument through an int-typed varargs slot, which on x64 pulls from the wrong
+                        // register entirely, showing garbage (a large/negative number while actively
+                        // dragging, or a value that just happens to stay 0) instead of the real value.
+                        if (ImGui::SliderInt("Silhouette LOD Bias", &m_silhouetteLODBias, 0, 4, "Bias: %.0f"))
                         {
                             m_streamStateDirty = true;
                         }
@@ -2194,21 +2080,6 @@ namespace Surfels
                             m_streamStateDirty = true;
                         }
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Grazing angle dot product threshold |N . V| to classify boundary chunks as silhouette.");
-
-                        if (ImGui::Checkbox("Exterior Perimeter Edges Only", &m_silhouetteExteriorOnly))
-                        {
-                            m_streamStateDirty = true;
-                        }
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("When checked, detects and refines ONLY the exterior boundary edges against the background (ignores interior self-occlusion folds).");
-
-                        if (!m_silhouetteExteriorOnly)
-                        {
-                            if (ImGui::SliderFloat("Occlusion Depth Step", &m_silhouetteDepthThreshold, 0.01f, 0.20f, "%.3f"))
-                            {
-                                m_streamStateDirty = true;
-                            }
-                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Depth delta step threshold for detecting interior self-occluding edges (e.g. arm or cloth folds crossing over torso).");
-                        }
 
                         if (ImGui::SliderFloat("Dilation Morph", &m_dilationMorphAmount, 0.0f, 1.0f, "%.2fx"))
                         {
@@ -2252,7 +2123,7 @@ namespace Surfels
                 }
 
                 // Section 3: 3D Viewport & Splat Sizing
-                if (ImGui::CollapsingHeader("3. 3D Viewport & Splat Sizing", ImGuiTreeNodeFlags_DefaultOpen))
+                if (ImGui::CollapsingHeader("2. 3D Viewport & Splat Sizing", ImGuiTreeNodeFlags_DefaultOpen))
                 {
                     ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Active Display: %u points", m_state.surfelCount);
 
@@ -2368,7 +2239,7 @@ namespace Surfels
                 }
 
                 // Section 4: Hardware Accelerators & Pipeline
-                if (ImGui::CollapsingHeader("4. Accelerators & Meshlet Pipeline", ImGuiTreeNodeFlags_DefaultOpen))
+                if (ImGui::CollapsingHeader("3. Accelerators & Meshlet Pipeline", ImGuiTreeNodeFlags_DefaultOpen))
                 {
                     if (ImGui::Checkbox("GPU Radix Sort", &m_gpuRadixSort))
                     {
@@ -2402,7 +2273,7 @@ namespace Surfels
                 }
 
                 // Section 5: Spatial & Cluster Visualizers
-                if (ImGui::CollapsingHeader("5. Spatial & Cluster Visualizers", ImGuiTreeNodeFlags_DefaultOpen))
+                if (ImGui::CollapsingHeader("4. Spatial & Cluster Visualizers", ImGuiTreeNodeFlags_DefaultOpen))
                 {
                     const char* cubePresets[] = { "512 Cubes", "1,024 Cubes", "2,048 Cubes", "4,096 Cubes", "8,192 Cubes", "16,384 Cubes" };
                     int cubeValues[] = { 512, 1024, 2048, 4096, 8192, 16384 };
@@ -2435,6 +2306,131 @@ namespace Surfels
                 }
             }
         }
+        // =========================================================================
+        // TAB 3: NETWORK STREAMING (Progressive Bandwidth-Throttled Simulation)
+        // =========================================================================
+        else
+        {
+            ImGui::Spacing();
+
+            if (!m_rawSurfels.empty() || m_isLoadedFromSFLW)
+            {
+                if (ImGui::Checkbox("Simulate Network Streaming", &m_enableStreamingSimulation))
+                {
+                    if (m_enableStreamingSimulation)
+                    {
+                        InitStreamingSimulation();
+                    }
+                    else
+                    {
+                        UpdatePreviewSurfels();
+                    }
+                }
+
+                if (m_enableStreamingSimulation)
+                {
+                    ImGui::SameLine();
+                    ImGui::TextColored(m_isStreamingPaused ? ImVec4(1.0f, 0.6f, 0.2f, 1.0f) : ImVec4(0.3f, 1.0f, 0.4f, 1.0f),
+                        m_isStreamingPaused ? "[PAUSED]" : "[STREAMING]");
+
+                    ImGui::Checkbox("Prioritize View Frustum & Proximity", &m_prioritizeFrustumAndProximity);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Streams the coarsest base LOD first, followed by high-detail chunks in the current camera frustum and near the viewer.");
+
+                    // Bandwidth Preset Buttons
+                    ImGui::Text("Network Profiles:");
+                    if (ImGui::Button("3G (1.5 MB/s)", ImVec2(85, 22)))
+                    {
+                        m_bandwidthThrottleMBps = 1.5f;
+                        m_unthrottledBandwidth = false;
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("4G (15 MB/s)", ImVec2(80, 22)))
+                    {
+                        m_bandwidthThrottleMBps = 15.0f;
+                        m_unthrottledBandwidth = false;
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("5G (60 MB/s)", ImVec2(80, 22)))
+                    {
+                        m_bandwidthThrottleMBps = 60.0f;
+                        m_unthrottledBandwidth = false;
+                    }
+                    ImGui::SameLine();
+                    ImGui::PushStyleColor(ImGuiCol_Button, m_unthrottledBandwidth ? ImVec4(0.18f, 0.55f, 0.35f, 1.0f) : ImVec4(0.25f, 0.25f, 0.28f, 1.0f));
+                    if (ImGui::Button("Full", ImVec2(48, 22)))
+                    {
+                        m_unthrottledBandwidth = !m_unthrottledBandwidth;
+                    }
+                    ImGui::PopStyleColor();
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Removes bandwidth throttle caps and streams at uncapped maximum rate.");
+
+                    float maxRingMB = std::max(512.0f, std::ceil(m_totalStreamBytes / (1024.0f * 1024.0f) * 2.0f));
+
+                    if (m_unthrottledBandwidth)
+                    {
+                        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, ImGui::GetStyle().Alpha * 0.5f);
+                        float dummyVal = 100.0f;
+                        ImGui::SliderFloat("Bandwidth Throttle", &dummyVal, 0.2f, 100.0f, "Full (Uncapped)");
+                        ImGui::PopStyleVar();
+                    }
+                    else
+                    {
+                        if (ImGui::SliderFloat("Bandwidth Throttle", &m_bandwidthThrottleMBps, 0.2f, 100.0f, "%.1f MB/s"))
+                        {
+                            m_unthrottledBandwidth = false;
+                        }
+                    }
+
+                    ImGui::SliderFloat("GPU Ring Buffer Size", &m_ringBufferCapacityMB, 4.0f, maxRingMB, "%.0f MB");
+
+                    // Streaming Progress Bar
+                    float deliveredMB = m_simulatedBytesDelivered / (1024.0f * 1024.0f);
+                    float totalMB = m_totalStreamBytes / (1024.0f * 1024.0f);
+                    char progressOverlay[128];
+                    if (m_evictedSurfelCount > 0)
+                    {
+                        snprintf(progressOverlay, sizeof(progressOverlay), "%.1f / %.1f MB (%.0f%%) | %u in RingBuffer (%zu Evicted)",
+                            deliveredMB, totalMB, m_streamRefinementProgress * 100.0f, m_state.surfelCount, m_evictedSurfelCount);
+                    }
+                    else
+                    {
+                        snprintf(progressOverlay, sizeof(progressOverlay), "%.1f / %.1f MB (%.0f%%) | %u resident pts",
+                            deliveredMB, totalMB, m_streamRefinementProgress * 100.0f, m_state.surfelCount);
+                    }
+                    ImGui::ProgressBar(m_streamRefinementProgress, ImVec2(-1, 20), progressOverlay);
+
+                    // Playback Controls
+                    if (ImGui::Button("Re-Stream (Reset)", ImVec2(125, 24)))
+                    {
+                        ResetStreamingSimulation();
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button(m_isStreamingPaused ? "Resume" : "Pause", ImVec2(75, 24)))
+                    {
+                        m_isStreamingPaused = !m_isStreamingPaused;
+                    }
+                    ImGui::SameLine();
+                    if (ImGui::Button("Instant Full Load", ImVec2(110, 24)))
+                    {
+                        m_simulatedBytesDelivered = m_totalStreamBytes;
+                        m_streamRefinementProgress = 1.0f;
+                        UpdateStreamingSimulation(1.0);
+                    }
+
+                    if (ImGui::Checkbox("Freeze Rendering & Memory (Eliminate Flickering)", &m_freezeRenderingAndMemory))
+                    {
+                        m_streamStateDirty = true;
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Completely freezes streaming simulation, LOD transitions, memory evictions, and edge recalculations.\nEliminates all flickering and jitter artifacts when movement is paused.");
+
+                    ImGui::Separator();
+                }
+            }
+            else
+            {
+                ImGui::TextDisabled("No active model loaded -- nothing to stream.");
+            }
+        }
 
         ImGui::End();
 
@@ -2443,7 +2439,123 @@ namespace Surfels
         ImGui::SetNextWindowSize(ImVec2(rightPanelWidth, panelHeight), ImGuiCond_Always);
         ImGui::Begin("Statistics & Compression Analytics", nullptr, ImGuiWindowFlags_NoCollapse);
 
-        // 1. Geometry Optimisations & Culling Stats
+        // Real-Time Performance & Stage Timings
+        if (ImGui::CollapsingHeader("Real-Time Performance & Stage Timings", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            const auto& metrics = m_pRenderer->GetTimingMetrics();
+
+            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "Framerate:       %.1f FPS", metrics.frameRate);
+            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Total Frame Time:%.2f ms", metrics.totalFrameTimeMs);
+            ImGui::Separator();
+            ImGui::Text("Per-Stage Breakdown (ms):");
+
+            if (m_gpuRadixSort)
+            {
+                float sortDisplay = (metrics.gpuSortTimeMs > 0.0001f) ? metrics.gpuSortTimeMs : m_pRenderer->GetSmoothGpuSortMs();
+                ImGui::TextColored(ImVec4(0.3f, 0.9f, 1.0f, 1.0f), "  • GPU Radix Depth Sort (32-Bit): %.2f ms", sortDisplay);
+            }
+            else
+            {
+                ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "  • CPU Radix Depth Sort (16-Bit): %.2f ms", metrics.cpuSortTimeMs);
+            }
+
+            ImGui::Text("  • GPU Mesh Shader Dispatch: %.2f ms", m_pRenderer->GetSmoothDispatchMs());
+            ImGui::Text("  • ImGui Overlay UI Render:  %.2f ms", m_pRenderer->GetSmoothUiMs());
+        }
+
+        // Compression Summary
+        if (ImGui::CollapsingHeader("4-Tier Compression Results", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            uint32_t pointCount = (uint32_t)(!m_rendererSurfels.empty() ? m_rendererSurfels.size() : m_rawSurfels.size());
+            float tier2MB = (pointCount * 8.0f) / (1024.0f * 1024.0f);
+            float tier2Reduction = (tier2MB > 0.001f && m_rawFileSizeMB > 0.0f) ? (m_rawFileSizeMB / tier2MB) : 31.0f;
+
+            ImGui::Text("Raw Point Cloud:      %.2f MB (100%%)", m_rawFileSizeMB);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Uncompressed input point cloud dataset (248 bytes/splat uncompressed 3D Gaussian baseline).");
+
+            ImGui::Text("Tier 2 (8-Byte GPU):  %.2f MB (%.1fx reduction)", tier2MB, tier2Reduction);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 2 Quantization: 8-byte packed GPU format (10:10:10:2 position, Oct16 normal, RGB565 color).");
+
+            ImGui::Text("Tier 3 (Morton Swizzle):  Contiguous 8-channel planes");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 3 Morton Swizzle & Transposition: Interleaves 3D spatial coordinate bits via Z-order curve and transposes 8-byte structures into 8 contiguous channels to maximize entropy redundancy.");
+
+            ImGui::Text("Tier 4 (Codec: Byte-RLE / Zstd Entropy): %.2f MB", m_compressedSizeMB);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 4 Bitstream Codec: Byte-plane Run-Length Entropy & Zstandard lossless stream compression on transposed 8-byte channels.");
+
+            ImGui::Separator();
+            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "TOTAL COMPRESSION:    %.2fx (%.2f MB -> %.2f MB)", m_compressionRatio, m_rawFileSizeMB, m_compressedSizeMB);
+        }
+
+        // LOD Residency Equalizer
+        bool lodResidencyOpen = ImGui::CollapsingHeader("LOD Residency", ImGuiTreeNodeFlags_DefaultOpen);
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetTooltip(
+                "Shows how much of each LOD level is currently resident in the simulated ring buffer\n"
+                "(green), locked mid-transition (orange), or protected as an active silhouette edge\n"
+                "(lavender). Chunks stream in as the camera needs finer detail and drain out (via the\n"
+                "Decay control below) when no longer needed.\n\n"
+                "The rate at which memory fills or drains is controlled by the Network Profiles /\n"
+                "Bandwidth Throttle options on the Streaming tab -- lower bandwidth means slower fill,\n"
+                "and drain speed also scales with the Decay Rate slider below regardless of bandwidth."
+            );
+        }
+        if (lodResidencyOpen)
+        {
+            DrawLODResidencyEqualizer();
+        }
+
+        // Wavelet Multi-Resolution Pyramid Table
+        if (ImGui::CollapsingHeader("Wavelet Multi-Resolution Pyramid", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            ImGui::Columns(4, "LODColumns");
+            ImGui::Text("Level"); ImGui::NextColumn();
+            ImGui::Text("Points"); ImGui::NextColumn();
+            ImGui::Text("Retained"); ImGui::NextColumn();
+            ImGui::Text("Max Err"); ImGui::NextColumn();
+            ImGui::Separator();
+
+            for (size_t i = 0; i < m_waveletResult.lodLevels.size(); i++)
+            {
+                const auto& lod = m_waveletResult.lodLevels[i];
+                float percent = (lod.surfels.size() * 100.0f) / std::max(1ULL, (unsigned long long)m_rawSurfels.size());
+
+                // Highlight the active visible LOD level in green/asterisk
+                bool isVisible = ((int)i == m_selectedPreviewLOD);
+
+                char label[64];
+                sprintf_s(label, "LOD %d%s", lod.level, isVisible ? " (ACTIVE)" : "");
+
+                if (ImGui::Selectable(label, isVisible, ImGuiSelectableFlags_SpanAllColumns))
+                {
+                    m_selectedPreviewLOD = (int)i;
+                    m_autoLOD = false; // Disable auto when user clicks manual table row
+                    m_enableWavelet = true;
+                    UpdatePreviewSurfels();
+                }
+                ImGui::NextColumn();
+
+                ImGui::Text("%u", (uint32_t)lod.surfels.size()); ImGui::NextColumn();
+                ImGui::Text("%.1f%%", percent); ImGui::NextColumn();
+                ImGui::Text("%.1f mm", lod.geometricError * 1000.0f); ImGui::NextColumn();
+            }
+            ImGui::Columns(1);
+            ImGui::TextDisabled("Tip: Click any row to visualize that LOD.");
+        }
+
+        // Model Metrics
+        if (ImGui::CollapsingHeader("Input Model Metrics", ImGuiTreeNodeFlags_DefaultOpen))
+        {
+            uint32_t totalVertices = (uint32_t)(!m_rendererSurfels.empty() ? m_rendererSurfels.size() : m_rawSurfels.size());
+            ImGui::Text("Active Source:   %s", m_rendererSourceDescription.c_str());
+            ImGui::Text("Total Vertices:  %u points", totalVertices);
+            ImGui::Text("Uncompressed:    %.2f MB", m_rawFileSizeMB);
+            ImGui::Text("Bounding Box Min:[%.2f, %.2f, %.2f]", m_aabbMin.x, m_aabbMin.y, m_aabbMin.z);
+            ImGui::Text("Bounding Box Max:[%.2f, %.2f, %.2f]", m_aabbMax.x, m_aabbMax.y, m_aabbMax.z);
+            ImGui::Text("Spatial Extents: %.1f x %.1f x %.1f m", m_extents.x, m_extents.y, m_extents.z);
+        }
+
+        // Geometry Optimisations & Culling Stats
         if (ImGui::CollapsingHeader("Geometry Optimisations & Culling Stats", ImGuiTreeNodeFlags_DefaultOpen))
         {
             const auto& cStats = m_pRenderer->GetCullStats();
@@ -2593,48 +2705,6 @@ namespace Surfels
             }
         }
 
-        // LOD Residency Equalizer
-        if (ImGui::CollapsingHeader("LOD Residency", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            DrawLODResidencyEqualizer();
-        }
-
-        // Real-Time Performance & Stage Timings
-        if (ImGui::CollapsingHeader("Real-Time Performance & Stage Timings", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            const auto& metrics = m_pRenderer->GetTimingMetrics();
-
-            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "Framerate:       %.1f FPS", metrics.frameRate);
-            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Total Frame Time:%.2f ms", metrics.totalFrameTimeMs);
-            ImGui::Separator();
-            ImGui::Text("Per-Stage Breakdown (ms):");
-
-            if (m_gpuRadixSort)
-            {
-                float sortDisplay = (metrics.gpuSortTimeMs > 0.0001f) ? metrics.gpuSortTimeMs : m_pRenderer->GetSmoothGpuSortMs();
-                ImGui::TextColored(ImVec4(0.3f, 0.9f, 1.0f, 1.0f), "  • GPU Radix Depth Sort (32-Bit): %.2f ms", sortDisplay);
-            }
-            else
-            {
-                ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "  • CPU Radix Depth Sort (16-Bit): %.2f ms", metrics.cpuSortTimeMs);
-            }
-
-            ImGui::Text("  • GPU Mesh Shader Dispatch: %.2f ms", m_pRenderer->GetSmoothDispatchMs());
-            ImGui::Text("  • ImGui Overlay UI Render:  %.2f ms", m_pRenderer->GetSmoothUiMs());
-        }
-
-        // Model Metrics
-        if (ImGui::CollapsingHeader("Input Model Metrics", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            uint32_t totalVertices = (uint32_t)(!m_rendererSurfels.empty() ? m_rendererSurfels.size() : m_rawSurfels.size());
-            ImGui::Text("Active Source:   %s", m_rendererSourceDescription.c_str());
-            ImGui::Text("Total Vertices:  %u points", totalVertices);
-            ImGui::Text("Uncompressed:    %.2f MB", m_rawFileSizeMB);
-            ImGui::Text("Bounding Box Min:[%.2f, %.2f, %.2f]", m_aabbMin.x, m_aabbMin.y, m_aabbMin.z);
-            ImGui::Text("Bounding Box Max:[%.2f, %.2f, %.2f]", m_aabbMax.x, m_aabbMax.y, m_aabbMax.z);
-            ImGui::Text("Spatial Extents: %.1f x %.1f x %.1f m", m_extents.x, m_extents.y, m_extents.z);
-        }
-
         // Spatial Octree Metrics
         if (ImGui::CollapsingHeader("Spatial Partitioning", ImGuiTreeNodeFlags_DefaultOpen))
         {
@@ -2646,67 +2716,6 @@ namespace Surfels
             {
                 ImGui::Text("Avg Points/Chunk: %u points", totalVertices / totalChunks);
             }
-        }
-
-        // Wavelet Multi-Resolution Pyramid Table
-        if (ImGui::CollapsingHeader("Wavelet Multi-Resolution Pyramid", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            ImGui::Columns(4, "LODColumns");
-            ImGui::Text("Level"); ImGui::NextColumn();
-            ImGui::Text("Points"); ImGui::NextColumn();
-            ImGui::Text("Retained"); ImGui::NextColumn();
-            ImGui::Text("Max Err"); ImGui::NextColumn();
-            ImGui::Separator();
-
-            for (size_t i = 0; i < m_waveletResult.lodLevels.size(); i++)
-            {
-                const auto& lod = m_waveletResult.lodLevels[i];
-                float percent = (lod.surfels.size() * 100.0f) / std::max(1ULL, (unsigned long long)m_rawSurfels.size());
-
-                // Highlight the active visible LOD level in green/asterisk
-                bool isVisible = ((int)i == m_selectedPreviewLOD);
-
-                char label[64];
-                sprintf_s(label, "LOD %d%s", lod.level, isVisible ? " (ACTIVE)" : "");
-
-                if (ImGui::Selectable(label, isVisible, ImGuiSelectableFlags_SpanAllColumns))
-                {
-                    m_selectedPreviewLOD = (int)i;
-                    m_autoLOD = false; // Disable auto when user clicks manual table row
-                    m_enableWavelet = true;
-                    UpdatePreviewSurfels();
-                }
-                ImGui::NextColumn();
-
-                ImGui::Text("%u", (uint32_t)lod.surfels.size()); ImGui::NextColumn();
-                ImGui::Text("%.1f%%", percent); ImGui::NextColumn();
-                ImGui::Text("%.1f mm", lod.geometricError * 1000.0f); ImGui::NextColumn();
-            }
-            ImGui::Columns(1);
-            ImGui::TextDisabled("Tip: Click any row to visualize that LOD.");
-        }
-
-        // Compression Summary
-        if (ImGui::CollapsingHeader("4-Tier Compression Results", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            uint32_t pointCount = (uint32_t)(!m_rendererSurfels.empty() ? m_rendererSurfels.size() : m_rawSurfels.size());
-            float tier2MB = (pointCount * 8.0f) / (1024.0f * 1024.0f);
-            float tier2Reduction = (tier2MB > 0.001f && m_rawFileSizeMB > 0.0f) ? (m_rawFileSizeMB / tier2MB) : 31.0f;
-
-            ImGui::Text("Raw Point Cloud:      %.2f MB (100%%)", m_rawFileSizeMB);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Uncompressed input point cloud dataset (248 bytes/splat uncompressed 3D Gaussian baseline).");
-
-            ImGui::Text("Tier 2 (8-Byte GPU):  %.2f MB (%.1fx reduction)", tier2MB, tier2Reduction);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 2 Quantization: 8-byte packed GPU format (10:10:10:2 position, Oct16 normal, RGB565 color).");
-
-            ImGui::Text("Tier 3 (Morton Swizzle):  Contiguous 8-channel planes");
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 3 Morton Swizzle & Transposition: Interleaves 3D spatial coordinate bits via Z-order curve and transposes 8-byte structures into 8 contiguous channels to maximize entropy redundancy.");
-
-            ImGui::Text("Tier 4 (Codec: Byte-RLE / Zstd Entropy): %.2f MB", m_compressedSizeMB);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 4 Bitstream Codec: Byte-plane Run-Length Entropy & Zstandard lossless stream compression on transposed 8-byte channels.");
-
-            ImGui::Separator();
-            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "TOTAL COMPRESSION:    %.2fx (%.2f MB -> %.2f MB)", m_compressionRatio, m_rawFileSizeMB, m_compressedSizeMB);
         }
 
         ImGui::End();
@@ -2769,20 +2778,8 @@ namespace Surfels
         ImDrawList* drawList = ImGui::GetWindowDrawList();
         float availWidth = ImGui::GetContentRegionAvailWidth();
 
-        ImGui::PushStyleColor(ImGuiCol_CheckMark, ImVec4(0.3f, 0.9f, 1.0f, 1.0f));
-        if (ImGui::Checkbox("Freeze Rendering & Memory Management", &m_freezeRenderingAndMemory))
-        {
-            m_streamStateDirty = true;
-        }
-        ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered())
-        {
-            ImGui::SetTooltip("Completely freezes streaming simulation, LOD demotions/evictions, and edge recalculations.\nEliminates all flickering and jitter artifacts when movement is paused.");
-        }
-
         if (m_freezeRenderingAndMemory)
         {
-            ImGui::SameLine();
             ImGui::TextColored(ImVec4(0.3f, 0.9f, 1.0f, 1.0f), "[FROZEN]");
         }
 

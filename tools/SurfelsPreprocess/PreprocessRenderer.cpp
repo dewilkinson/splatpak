@@ -70,15 +70,16 @@ namespace Surfels
 
         m_imGui.OnCreate(pDevice, &m_uploadHeap, &m_resourceViewHeaps, &m_constantBufferRing, pSwapChain->GetFormat());
 
-        CD3DX12_ROOT_PARAMETER rootParams[5];
+        CD3DX12_ROOT_PARAMETER rootParams[6];
         rootParams[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL); // b0 - SurfelsCB
         rootParams[1].InitAsShaderResourceView(0, 0, D3D12_SHADER_VISIBILITY_ALL); // t0 - g_SurfelBuffer
         rootParams[2].InitAsShaderResourceView(1, 0, D3D12_SHADER_VISIBILITY_ALL); // t1 - g_RawSurfelBuffer
         rootParams[3].InitAsShaderResourceView(2, 0, D3D12_SHADER_VISIBILITY_ALL); // t2 - g_ChunkBuffer
         rootParams[4].InitAsShaderResourceView(3, 0, D3D12_SHADER_VISIBILITY_ALL); // t3 - g_SortedChunkIndices
+        rootParams[5].InitAsShaderResourceView(4, 0, D3D12_SHADER_VISIBILITY_ALL); // t4 - g_OcclusionVoxelBuffer
 
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = 5;
+        rsDesc.NumParameters = 6;
         rsDesc.pParameters = rootParams;
         rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
 
@@ -214,6 +215,50 @@ namespace Surfels
         itemStreamDesc.pPipelineStateSubobjectStream = &itemStream;
         device2->CreatePipelineState(&itemStreamDesc, IID_PPV_ARGS(&m_pItemPrepassPSO));
 
+        // Create Occluder Pipeline State Object (occluderMS & occluderPS): solid depth-writing interior
+        // occlusion volume cubes, drawn into the main color+depth target before the splat pass. Same
+        // direct-dispatch (no AS stage) shape as the item prepass above.
+        D3D12_SHADER_BYTECODE occluderMs = {};
+        D3D12_SHADER_BYTECODE occluderPs = {};
+        CompileShaderFromFile("Surfels.hlsl", NULL, "occluderMS", "-T ms_6_5", &occluderMs);
+        CompileShaderFromFile("Surfels.hlsl", NULL, "occluderPS", "-T ps_6_5", &occluderPs);
+
+        MeshShaderPipelineStateStream occluderStream = {};
+        occluderStream.RootSignature = m_pRootSignature;
+        occluderStream.AS = {}; // Direct 1:1 voxel to mesh threadgroup dispatch
+        occluderStream.MS = occluderMs;
+        occluderStream.PS = occluderPs;
+        occluderStream.RasterizerState = rasterizer;
+        occluderStream.BlendState = itemBlendDesc; // Opaque, no blending
+        occluderStream.DepthStencilState = depthStencilItem; // DepthEnable, WriteMask=ALL, Func=LESS
+        occluderStream.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+        occluderStream.RTVFormats = rtvFormats; // Draws straight into the main color target
+        occluderStream.SampleDesc = DXGI_SAMPLE_DESC{ 1, 0 };
+
+        D3D12_PIPELINE_STATE_STREAM_DESC occluderStreamDesc = {};
+        occluderStreamDesc.SizeInBytes = sizeof(occluderStream);
+        occluderStreamDesc.pPipelineStateSubobjectStream = &occluderStream;
+        device2->CreatePipelineState(&occluderStreamDesc, IID_PPV_ARGS(&m_pOccluderPSO));
+
+        // Depth-test-only variant of the main splat pipeline: same mainAS/mainMS/mainPS as m_pPipelineState,
+        // but tests (does not write) depth so splats behind the occluder volume above get discarded, while
+        // the existing CPU/GPU back-to-front sort is still what keeps surviving overlapping splats blended
+        // in the correct order (see the "Known gaps" note in README.md on why the fast path disables depth
+        // test/write entirely).
+        CD3DX12_DEPTH_STENCIL_DESC depthStencilOcclusionTest(D3D12_DEFAULT);
+        depthStencilOcclusionTest.DepthEnable = TRUE;
+        depthStencilOcclusionTest.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+        depthStencilOcclusionTest.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        depthStencilOcclusionTest.StencilEnable = FALSE;
+
+        MeshShaderPipelineStateStream occlusionTestStream = stream; // Copy: same AS/MS/PS/blend/rasterizer as the main pass
+        occlusionTestStream.DepthStencilState = depthStencilOcclusionTest;
+
+        D3D12_PIPELINE_STATE_STREAM_DESC occlusionTestStreamDesc = {};
+        occlusionTestStreamDesc.SizeInBytes = sizeof(occlusionTestStream);
+        occlusionTestStreamDesc.pPipelineStateSubobjectStream = &occlusionTestStream;
+        device2->CreatePipelineState(&occlusionTestStreamDesc, IID_PPV_ARGS(&m_pPipelineStateOcclusionTest));
+
         // Create Silhouette Edge Extraction and Clear Compute Shaders
         m_clearBitmaskCS.OnCreate(pDevice, &m_resourceViewHeaps, "SilhouetteEdgeExtractCS.hlsl", "clearBitmaskCS", 1, 0, 0, 0, 0);
         m_silhouetteEdgeExtractCS.OnCreate(pDevice, &m_resourceViewHeaps, "SilhouetteEdgeExtractCS.hlsl", "mainCS", 1, 2, 0, 0, 0);
@@ -312,6 +357,57 @@ namespace Surfels
         }
     }
 
+    // Occlusion voxel data only changes when a new dataset is loaded/exported, unlike the surfel/chunk
+    // buffers which churn every frame -- so unlike those, this is a plain upload-heap resource read
+    // directly as an SRV rather than a default-heap buffer kept current via the copy queue.
+    void PreprocessRenderer::UpdateOcclusionVoxelBuffer(const State* pState)
+    {
+        if (pState->pOcclusionVoxels == m_lastOcclusionVoxelsPtr && pState->occlusionVoxelCount == m_lastOcclusionVoxelCount)
+            return;
+
+        m_lastOcclusionVoxelsPtr = pState->pOcclusionVoxels;
+        m_lastOcclusionVoxelCount = pState->occlusionVoxelCount;
+
+        if (pState->occlusionVoxelCount == 0 || pState->pOcclusionVoxels == nullptr)
+        {
+            if (m_pOcclusionVoxelBuffer)
+            {
+                m_pDevice->GPUFlush();
+                m_pOcclusionVoxelBuffer->Unmap(0, nullptr);
+                m_pOcclusionVoxelBuffer->Release();
+                m_pOcclusionVoxelBuffer = nullptr;
+            }
+            m_pOcclusionVoxelBufferMapped = nullptr;
+            m_occlusionVoxelBufferCapacityBytes = 0;
+            return;
+        }
+
+        uint32_t neededBytes = pState->occlusionVoxelCount * (uint32_t)sizeof(OcclusionVoxelGPU);
+        if (neededBytes > m_occlusionVoxelBufferCapacityBytes)
+        {
+            m_pDevice->GPUFlush();
+            if (m_pOcclusionVoxelBuffer)
+            {
+                m_pOcclusionVoxelBuffer->Unmap(0, nullptr);
+                m_pOcclusionVoxelBuffer->Release();
+                m_pOcclusionVoxelBuffer = nullptr;
+            }
+
+            CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_UPLOAD);
+            CD3DX12_RESOURCE_DESC bufDesc = CD3DX12_RESOURCE_DESC::Buffer(neededBytes);
+            m_pDevice->GetDevice()->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
+                D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_pOcclusionVoxelBuffer));
+            SetName(m_pOcclusionVoxelBuffer, "PreprocessRenderer::m_pOcclusionVoxelBuffer");
+            m_pOcclusionVoxelBuffer->Map(0, nullptr, reinterpret_cast<void**>(&m_pOcclusionVoxelBufferMapped));
+            m_occlusionVoxelBufferCapacityBytes = neededBytes;
+        }
+
+        if (m_pOcclusionVoxelBufferMapped)
+        {
+            memcpy(m_pOcclusionVoxelBufferMapped, pState->pOcclusionVoxels, neededBytes);
+        }
+    }
+
     void PreprocessRenderer::OnDestroy()
     {
         FlushCopyQueue();
@@ -360,7 +456,14 @@ namespace Surfels
         if (m_pCullPSO) { m_pCullPSO->Release(); m_pCullPSO = nullptr; }
         if (m_pComputeRootSignature) { m_pComputeRootSignature->Release(); m_pComputeRootSignature = nullptr; }
         if (m_pPipelineState) { m_pPipelineState->Release(); m_pPipelineState = nullptr; }
+        if (m_pPipelineStateOcclusionTest) { m_pPipelineStateOcclusionTest->Release(); m_pPipelineStateOcclusionTest = nullptr; }
+        if (m_pOccluderPSO) { m_pOccluderPSO->Release(); m_pOccluderPSO = nullptr; }
         if (m_pItemPrepassPSO) { m_pItemPrepassPSO->Release(); m_pItemPrepassPSO = nullptr; }
+        if (m_pOcclusionVoxelBuffer) { m_pOcclusionVoxelBuffer->Unmap(0, nullptr); m_pOcclusionVoxelBuffer->Release(); m_pOcclusionVoxelBuffer = nullptr; }
+        m_pOcclusionVoxelBufferMapped = nullptr;
+        m_occlusionVoxelBufferCapacityBytes = 0;
+        m_lastOcclusionVoxelsPtr = nullptr;
+        m_lastOcclusionVoxelCount = 0;
         m_clearBitmaskCS.OnDestroy();
         m_silhouetteEdgeExtractCS.OnDestroy();
         if (m_pSilhouetteBitmaskGpuBuffer) { m_pSilhouetteBitmaskGpuBuffer->Release(); m_pSilhouetteBitmaskGpuBuffer = nullptr; }
@@ -1265,6 +1368,7 @@ namespace Surfels
 
         // Depth sorting is ALWAYS executed from the active viewer's perspective
         UpdateSurfelBuffers(pState, eyePos, forwardNorm);
+        UpdateOcclusionVoxelBuffer(pState);
         uint32_t surfelCount = pState->surfelCount;
 
         // Compute Geometry Optimization & Culling Statistics
@@ -1435,11 +1539,44 @@ namespace Surfels
         pCB->highlightSilhouette = pState->highlightSilhouette ? 1 : 0;
         pCB->enableConeCulling = pState->enableConeCulling ? 1 : 0;
         pCB->showOnlyLocked = pState->showOnlyLockedChunks ? 1 : 0;
+        pCB->showChunkStream = pState->showChunkStream ? 1 : 0;
+        pCB->enableOcclusionCulling = (pState->enableOcclusionCulling && pState->occlusionVoxelCount > 0 && m_pOcclusionVoxelBuffer != nullptr) ? 1 : 0;
+        pCB->occlusionShrinkRuntime = pState->occlusionShrinkRuntime;
+        pCB->showOcclusionVolumeOnly = pState->showOcclusionVolumeOnly ? 1 : 0;
+        pCB->occlusionVoxelCount = pState->occlusionVoxelCount;
 
         ID3D12Resource* pGpuRes = (pState->renderMode == 2) ? m_pRawSurfelGpuBuffer : m_pSurfelGpuBuffer;
         ID3D12Resource* pGpuOutRes = (pState->renderMode == 2) ? m_pRawSurfelGpuOutBuffer : m_pSurfelGpuOutBuffer;
         ID3D12Resource* pUploadRes = (pState->renderMode == 2) ? m_pRawSurfelBuffer : m_pSurfelBuffer;
         auto dispatchStart = std::chrono::high_resolution_clock::now();
+
+        // Interior Occlusion Volume: solid depth-writing cubes drawn before the splat pass so far-side
+        // surfels visible through gaps in the near side get discarded by the main pass's depth test
+        // (see m_pPipelineStateOcclusionTest). Reuses the frame's already-allocated SurfelsCB (cbAddress) --
+        // it only needs viewProj/eye and the occlusion-specific fields added to that struct.
+        auto DrawOccluderPass = [&]()
+        {
+            if (!pState->enableOcclusionCulling || pState->occlusionVoxelCount == 0 || m_pOcclusionVoxelBuffer == nullptr || m_pOccluderPSO == nullptr)
+                return;
+
+            pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
+            pCmdLst->SetPipelineState(m_pOccluderPSO);
+            pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
+            pCmdLst->SetGraphicsRootShaderResourceView(1, 0); // Unused by occluderMS/PS
+            pCmdLst->SetGraphicsRootShaderResourceView(2, 0); // Unused by occluderMS/PS
+            pCmdLst->SetGraphicsRootShaderResourceView(3, m_pChunkGpuBuffer ? m_pChunkGpuBuffer->GetGPUVirtualAddress() : 0);
+            pCmdLst->SetGraphicsRootShaderResourceView(4, m_pSortedChunkIndicesGpuBuffer ? m_pSortedChunkIndicesGpuBuffer->GetGPUVirtualAddress() : 0);
+            pCmdLst->SetGraphicsRootShaderResourceView(5, m_pOcclusionVoxelBuffer->GetGPUVirtualAddress());
+
+            Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> occluderCmd6;
+            pCmdLst->QueryInterface(IID_PPV_ARGS(&occluderCmd6));
+            uint32_t dimX = std::min(pState->occlusionVoxelCount, 32768u);
+            uint32_t dimY = (dimX > 0) ? ((pState->occlusionVoxelCount + dimX - 1) / dimX) : 1;
+            occluderCmd6->DispatchMesh(dimX, dimY, 1);
+        };
+        ID3D12PipelineState* pMainSplatPSO = (pState->enableOcclusionCulling && m_pPipelineStateOcclusionTest != nullptr)
+            ? m_pPipelineStateOcclusionTest
+            : m_pPipelineState;
 
         if (surfelCount > 0 && pGpuRes != nullptr && pUploadRes != nullptr)
         {
@@ -1739,18 +1876,25 @@ namespace Surfels
                 }
 
                 D3D12_GPU_VIRTUAL_ADDRESS surfelAddr = pGpuRes->GetGPUVirtualAddress();
-                pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
-                pCmdLst->SetPipelineState(m_pPipelineState);
-                pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
-                pCmdLst->SetGraphicsRootShaderResourceView(1, surfelAddr);
-                pCmdLst->SetGraphicsRootShaderResourceView(2, surfelAddr);
-                pCmdLst->SetGraphicsRootShaderResourceView(3, m_pChunkGpuBuffer->GetGPUVirtualAddress());
-                pCmdLst->SetGraphicsRootShaderResourceView(4, m_pSortedChunkIndicesGpuBuffer->GetGPUVirtualAddress());
 
-                Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> cmdList6;
-                pCmdLst->QueryInterface(IID_PPV_ARGS(&cmdList6));
-                uint32_t asGroupCount = (chunkCount + AS_GROUP_SIZE - 1) / AS_GROUP_SIZE;
-                cmdList6->DispatchMesh(asGroupCount, 1, 1);
+                DrawOccluderPass();
+
+                if (!pState->showOcclusionVolumeOnly)
+                {
+                    pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
+                    pCmdLst->SetPipelineState(pMainSplatPSO);
+                    pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
+                    pCmdLst->SetGraphicsRootShaderResourceView(1, surfelAddr);
+                    pCmdLst->SetGraphicsRootShaderResourceView(2, surfelAddr);
+                    pCmdLst->SetGraphicsRootShaderResourceView(3, m_pChunkGpuBuffer->GetGPUVirtualAddress());
+                    pCmdLst->SetGraphicsRootShaderResourceView(4, m_pSortedChunkIndicesGpuBuffer->GetGPUVirtualAddress());
+                    pCmdLst->SetGraphicsRootShaderResourceView(5, m_pOcclusionVoxelBuffer ? m_pOcclusionVoxelBuffer->GetGPUVirtualAddress() : 0);
+
+                    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> cmdList6;
+                    pCmdLst->QueryInterface(IID_PPV_ARGS(&cmdList6));
+                    uint32_t asGroupCount = (chunkCount + AS_GROUP_SIZE - 1) / AS_GROUP_SIZE;
+                    cmdList6->DispatchMesh(asGroupCount, 1, 1);
+                }
             }
             // Execute Flat GPU LDS Key-Index Sorting Pipeline
             else if (pState->gpuRadixSort && m_pProjectKeysPSO && m_pBitonicLocalSortPSO && m_pBitonicGlobalSortPSO && m_pBitonicLocalMergePSO && m_pGatherSurfelsPSO && m_pComputeRootSignature && pGpuOutRes != nullptr && m_pGPUSortPairBuffer != nullptr)
@@ -2012,6 +2156,7 @@ namespace Surfels
                 pCmdLst->SetGraphicsRootShaderResourceView(2, drawSurfelAddr);
                 pCmdLst->SetGraphicsRootShaderResourceView(3, m_pChunkGpuBuffer ? m_pChunkGpuBuffer->GetGPUVirtualAddress() : 0);
                 pCmdLst->SetGraphicsRootShaderResourceView(4, m_pSortedChunkIndicesGpuBuffer ? m_pSortedChunkIndicesGpuBuffer->GetGPUVirtualAddress() : 0);
+                pCmdLst->SetGraphicsRootShaderResourceView(5, m_pOcclusionVoxelBuffer ? m_pOcclusionVoxelBuffer->GetGPUVirtualAddress() : 0);
 
                 Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> itemCmd6;
                 pCmdLst->QueryInterface(IID_PPV_ARGS(&itemCmd6));
@@ -2083,28 +2228,34 @@ namespace Surfels
                 pCmdLst->RSSetScissorRects(1, &scissor);
             }
 
+            DrawOccluderPass();
+
             // Draw Main Mesh Shader Pass
-            pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
-            pCmdLst->SetPipelineState(m_pPipelineState);
-            pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
-            pCmdLst->SetGraphicsRootShaderResourceView(1, drawSurfelAddr);
-            pCmdLst->SetGraphicsRootShaderResourceView(2, drawSurfelAddr);
-            pCmdLst->SetGraphicsRootShaderResourceView(3, m_pChunkGpuBuffer ? m_pChunkGpuBuffer->GetGPUVirtualAddress() : 0);
-            pCmdLst->SetGraphicsRootShaderResourceView(4, m_pSortedChunkIndicesGpuBuffer ? m_pSortedChunkIndicesGpuBuffer->GetGPUVirtualAddress() : 0);
-
-            Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> cmdList6;
-            pCmdLst->QueryInterface(IID_PPV_ARGS(&cmdList6));
-            uint32_t groupCount = (pState->useChunkedPipeline && pState->chunkCount > 0)
-                ? ((pState->chunkCount + 32 - 1) / 32)
-                : ((surfelCount + SURFELS_PER_GROUP - 1) / SURFELS_PER_GROUP);
-
-            if (pState->chunkCount == 0 || groupCount == 0)
+            if (!pState->showOcclusionVolumeOnly)
             {
-                LogTransitionTrace("PreprocessRenderer::OnRender WARNING: chunkCount=%u, surfelCount=%u, groupCount=%u, useChunkedPipeline=%d",
-                    pState->chunkCount, surfelCount, groupCount, pState->useChunkedPipeline ? 1 : 0);
-            }
+                pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
+                pCmdLst->SetPipelineState(pMainSplatPSO);
+                pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
+                pCmdLst->SetGraphicsRootShaderResourceView(1, drawSurfelAddr);
+                pCmdLst->SetGraphicsRootShaderResourceView(2, drawSurfelAddr);
+                pCmdLst->SetGraphicsRootShaderResourceView(3, m_pChunkGpuBuffer ? m_pChunkGpuBuffer->GetGPUVirtualAddress() : 0);
+                pCmdLst->SetGraphicsRootShaderResourceView(4, m_pSortedChunkIndicesGpuBuffer ? m_pSortedChunkIndicesGpuBuffer->GetGPUVirtualAddress() : 0);
+                pCmdLst->SetGraphicsRootShaderResourceView(5, m_pOcclusionVoxelBuffer ? m_pOcclusionVoxelBuffer->GetGPUVirtualAddress() : 0);
 
-            cmdList6->DispatchMesh(groupCount, 1, 1);
+                Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> cmdList6;
+                pCmdLst->QueryInterface(IID_PPV_ARGS(&cmdList6));
+                uint32_t groupCount = (pState->useChunkedPipeline && pState->chunkCount > 0)
+                    ? ((pState->chunkCount + 32 - 1) / 32)
+                    : ((surfelCount + SURFELS_PER_GROUP - 1) / SURFELS_PER_GROUP);
+
+                if (pState->chunkCount == 0 || groupCount == 0)
+                {
+                    LogTransitionTrace("PreprocessRenderer::OnRender WARNING: chunkCount=%u, surfelCount=%u, groupCount=%u, useChunkedPipeline=%d",
+                        pState->chunkCount, surfelCount, groupCount, pState->useChunkedPipeline ? 1 : 0);
+                }
+
+                cmdList6->DispatchMesh(groupCount, 1, 1);
+            }
         }
         auto dispatchEnd = std::chrono::high_resolution_clock::now();
         m_metrics.gpuDispatchTimeMs = std::chrono::duration<float, std::milli>(dispatchEnd - dispatchStart).count();
