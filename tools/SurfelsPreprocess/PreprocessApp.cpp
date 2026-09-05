@@ -170,6 +170,20 @@ namespace Surfels
                         }
                     }
 
+                    // Occlusion volume shave bias (JSON or INI): extra cells of unconditional cull around
+                    // the sampled surface, on top of the generator's built-in band. Positive = more
+                    // aggressive (fixes residual poke-through on a noisy cloud), negative = tighter fit.
+                    {
+                        size_t bPos = line.find("\"occlusion_shave_bias\":");
+                        size_t eqPos = std::string::npos;
+                        if (bPos != std::string::npos) eqPos = line.find(':', bPos);
+                        else if (line.find("occlusion_shave_bias=") != std::string::npos) eqPos = line.find('=');
+                        if (eqPos != std::string::npos)
+                        {
+                            m_occlusionShaveBiasCells = std::clamp((float)atof(line.c_str() + eqPos + 1), -2.0f, 8.0f);
+                        }
+                    }
+
                     // Startup Dataset Path (JSON or INI) -- auto-loaded on launch, see OnCreate()
                     size_t sPos = line.find("\"startup_dataset\":");
                     if (sPos == std::string::npos) sPos = line.find("\"startup_path\":");
@@ -230,7 +244,8 @@ namespace Surfels
             out << "  \"fallback_synthetic_points\": 300000,\n";
             out << "  \"default_chunk_size\": 16.0,\n";
             out << "  \"default_max_lods\": 4,\n";
-            out << "  \"default_deadband_mm\": 3.0\n";
+            out << "  \"default_deadband_mm\": 3.0,\n";
+            out << "  \"occlusion_shave_bias\": " << m_occlusionShaveBiasCells << "\n";
             out << "}\n";
             out.close();
         }
@@ -3242,7 +3257,7 @@ namespace Surfels
     {
         const auto& sourcePoints = !m_rawSurfels.empty() ? m_rawSurfels : m_rendererRawSurfels;
         std::string trace;
-        OcclusionVolume::BuildGrid(sourcePoints, m_aabbMin, m_aabbMax, m_occlusionGrid, trace);
+        OcclusionVolume::BuildGrid(sourcePoints, m_aabbMin, m_aabbMax, m_occlusionGrid, trace, 0, m_occlusionShaveBiasCells);
         if (!trace.empty()) LogTransitionTrace("%s", trace.c_str());
     }
 

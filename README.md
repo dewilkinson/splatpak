@@ -141,11 +141,16 @@ vs `SurfelLab.exe`). Release builds keep full optimization but also emit PDBs
 ### Runtime configuration
 
 SurfelLab reads an optional `config.json` (searched in the working directory
-and a few parent directories; `surfels_config.ini` is also accepted). Keys:
-`startup_dataset` (path loaded when no file is given on the command line),
-`benchmark_dataset`, `fallback_synthetic_points`, `default_chunk_size`,
-`default_max_lods`, `default_deadband_mm`. Without a config file the built-in
-defaults apply and the bundled `assets/cthulu/cthulu.sflw` is loaded.
+and a few parent directories; `surfels_config.ini` is also accepted). Keys
+that are read: `startup_dataset` (path loaded when no file is given on the
+command line), `benchmark_dataset`, and `occlusion_shave_bias` (extra cells,
+positive or negative, added to the occlusion volume's unconditional cull band
+around the sampled surface; use it when a noisy cloud still shows cubes poking
+through). The file SurfelLab writes when none exists also lists
+`fallback_synthetic_points`, `default_chunk_size`, `default_max_lods`, and
+`default_deadband_mm`, but those are informational and not currently parsed.
+Without a config file the built-in defaults apply and the bundled
+`assets/cthulu/cthulu.sflw` is loaded.
 
 ## Known gaps
 

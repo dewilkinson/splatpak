@@ -141,9 +141,10 @@ namespace Surfels
         // Interior Occlusion Volume: solid depth-writing cubes baked at preprocessing time so far-side
         // surfels can't show through gaps in the near side. Optional and disabled by default.
         bool  m_generateOcclusionVolume   = true;  // Preprocessor: bake a volume for this dataset on export (on by default)
+        float m_occlusionShaveBiasCells   = 0.0f;  // From config.json "occlusion_shave_bias": extra cells added to the unconditional poke-through cull band (see OcclusionVolume::BuildGrid)
         float m_occlusionHueShift         = 0.0f;  // Preprocessor: baked colour grade of the volume -- hue rotation in degrees (-180..180)
         float m_occlusionSaturation       = 1.0f;  // Preprocessor: baked colour grade -- saturation multiplier (0 = greyscale, 1 = as sampled)
-        float m_occlusionBrightness       = 0.05f; // Preprocessor: baked colour grade -- value/brightness multiplier (1 = as sampled; default keeps the volume as a dark shadow interior)
+        float m_occlusionBrightness       = 1.0f;  // Preprocessor: baked colour grade -- value/brightness multiplier (1 = as sampled)
         XMFLOAT3 GradeOcclusionColor(const XMFLOAT3& rgb) const; // Applies the three sliders above
 
         // Cached voxelization of the current raw points, shared by every shave value so dragging the
