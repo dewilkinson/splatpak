@@ -1,5 +1,8 @@
 // CullSurfelsCS.hlsl
-// GPU Frustum Culling and 32-bit Depth Key Generation Compute Shader
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// GPU frustum culling and 32-bit depth key generation compute shader.
 
 cbuffer CullCB : register(b0)
 {

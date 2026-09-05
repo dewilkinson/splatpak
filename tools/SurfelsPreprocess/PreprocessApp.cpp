@@ -1,3 +1,11 @@
+// PreprocessApp.cpp
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Implements the SurfelsPreprocess app shell: file I/O, the wavelet preprocessing
+// pipeline, the streaming/decay/silhouette simulation, and every ImGui panel. See
+// PreprocessApp.h for the class overview and PreprocessRenderer.cpp for the GPU side.
+
 #include "PreprocessApp.h"
 #include <DirectXCollision.h>
 #include <iomanip>
@@ -9,11 +17,14 @@ extern "C" { __declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\
 
 namespace Surfels
 {
+    static constexpr const char* kTraceLogFilename = "lod_transition_trace.log";
+
+    // Appends one timestamped line to the trace log -- the app's primary debugging aid for streaming/LOD issues
     void LogTransitionTrace(const char* fmt, ...)
     {
         static std::mutex s_logMutex;
         std::lock_guard<std::mutex> lock(s_logMutex);
-        FILE* fp = fopen("lod_transition_trace.log", "a");
+        FILE* fp = fopen(kTraceLogFilename, "a");
         if (fp)
         {
             va_list args;
@@ -34,6 +45,7 @@ namespace Surfels
 
     static Microsoft::WRL::ComPtr<ID3D12InfoQueue> g_pInfoQueue;
 
+    // Drains the D3D12 debug-layer message queue into the trace log
     void LogD3D12Messages()
     {
         if (!g_pInfoQueue) return;
@@ -78,6 +90,7 @@ namespace Surfels
         m_stablePowerState = false;
     }
 
+    // Sets the initial window size and disables vsync/validation layers before device creation
     void PreprocessApp::OnParseCommandLine(LPSTR lpCmdLine, uint32_t* pWidth, uint32_t* pHeight)
     {
         *pWidth = 1440;
@@ -89,6 +102,7 @@ namespace Surfels
         }
     }
 
+    // Reads config.json/surfels_config.ini for dev mode, the startup dataset path, and other app settings
     void PreprocessApp::LoadConfigFile()
     {
         const char* configPaths[] = {
@@ -203,6 +217,7 @@ namespace Surfels
         }
     }
 
+    // Persists the current config-file-backed settings back to disk
     void PreprocessApp::SaveConfigFile()
     {
         std::ofstream out("config.json");
@@ -220,10 +235,11 @@ namespace Surfels
         }
     }
 
+    // Boots the renderer, loads config, and auto-loads the startup dataset (or waits for the user to pick one)
     void PreprocessApp::OnCreate()
     {
         {
-            FILE* fp = fopen("lod_transition_trace.log", "w");
+            FILE* fp = fopen(kTraceLogFilename, "w");
             if (fp)
             {
                 fprintf(fp, "=== Surfels LOD Transition Trace Started ===\n");
@@ -310,6 +326,7 @@ namespace Surfels
         m_swapChain.SetVSync(m_vsync);
     }
 
+    // Saves the config file and tears down the renderer
     void PreprocessApp::OnDestroy()
     {
         ImGUI_Shutdown();
@@ -337,6 +354,7 @@ namespace Surfels
         DestroyShaderCache(&m_device);
     }
 
+    // Forwards raw window messages to ImGui
     bool PreprocessApp::OnEvent(MSG msg)
     {
         if (ImGUI_WndProcHandler(msg.hwnd, msg.message, msg.wParam, msg.lParam))
@@ -359,6 +377,7 @@ namespace Surfels
         return true;
     }
 
+    // Recreates window-size-dependent renderer resources
     void PreprocessApp::OnResize(bool resizeRender)
     {
         if (m_pRenderer)
@@ -369,12 +388,14 @@ namespace Surfels
         m_streamStateDirty = true;
     }
 
+    // Rebuilds display-dependent renderer resources (e.g. after a format change)
     void PreprocessApp::OnUpdateDisplay()
     {
         if (m_pRenderer)
             m_pRenderer->OnUpdateDisplayDependentResources(&m_swapChain);
     }
 
+    // Clears every in-memory dataset/streaming structure back to the empty state
     void PreprocessApp::CloseDataset()
     {
         m_rawSurfels.clear();
@@ -406,6 +427,7 @@ namespace Surfels
         m_statusIsSuccess = true;
     }
 
+    // Shows a standard Win32 "Open File" dialog; returns the chosen path, or empty if cancelled
     std::string PreprocessApp::OpenFileDialog(const char* filter, const char* title, const char* defaultExt)
     {
         char currentDir[MAX_PATH] = "";
@@ -548,6 +570,7 @@ namespace Surfels
         return resultPath;
     }
 
+    // Shows a standard Win32 "Save File" dialog; returns the chosen path, or empty if cancelled
     std::string PreprocessApp::SaveFileDialog(const char* filter, const char* defaultExt, const char* title)
     {
         char currentDir[MAX_PATH] = "";
@@ -686,6 +709,7 @@ namespace Surfels
         return resultPath;
     }
 
+    // Dispatches to the right loader (PLY/SPLAT/SFLW) based on the file's extension
     bool PreprocessApp::LoadFile(const std::string& filepath)
     {
         std::string lowerPath = filepath;
@@ -704,6 +728,7 @@ namespace Surfels
         }
     }
 
+    // Loads a pre-compressed .sflw package and restores the full multi-LOD chunk hierarchy from it
     bool PreprocessApp::LoadSFLWFile(const std::string& filepath)
     {
         m_statusMessage = "Loading compressed surfel stream package (.sflw)...";
@@ -742,6 +767,13 @@ namespace Surfels
         // StreamPackager::PackageDataset/LoadPackage). Packages older than SFLW v2 didn't store this,
         // and LoadPackage already falls back to 1.0 (PreprocessRenderer::State's own default) in that case.
         m_state.splatRadius = m_loadedPackage.header.splatRadius;
+
+        // Restore the baked occlusion volume, if this package has one (v3+ only; empty otherwise --
+        // see StreamPackager::LoadPackage). The preprocessing-time controls (resolution/baked shrink)
+        // reflect whatever was baked in, but re-running BuildOcclusionVolume() would require the raw
+        // (unquantized) source point cloud, which loading a package doesn't reconstruct exactly.
+        m_occlusionVoxels = m_loadedPackage.occlusionVoxels;
+        m_generateOcclusionVolume = !m_occlusionVoxels.empty();
 
         // Collect all raw surfels from package
         m_rendererSurfels.clear();
@@ -856,6 +888,7 @@ namespace Surfels
         return true;
     }
 
+    // Loads a raw .splat point cloud and runs it through the octree/wavelet preprocessing pipeline
     bool PreprocessApp::LoadSPLATFile(const std::string& filepath)
     {
         m_statusMessage = "Loading 3D Gaussian Splat (.splat)...";
@@ -890,6 +923,7 @@ namespace Surfels
         return true;
     }
 
+    // Loads a raw .ply point cloud and runs it through the octree/wavelet preprocessing pipeline
     bool PreprocessApp::LoadPLYFile(const std::string& filepath)
     {
         m_statusMessage = "Loading PLY point cloud...";
@@ -925,6 +959,7 @@ namespace Surfels
         return true;
     }
 
+    // Loads the built-in benchmark dataset, generating it from scratch if not found on disk
     void PreprocessApp::GenerateSyntheticScene(uint32_t count)
     {
         m_statusMessage = "Loading synthetic benchmark...";
@@ -992,6 +1027,7 @@ namespace Surfels
         m_statusIsSuccess = true;
     }
 
+    // Re-chunks and re-decomposes the loaded raw point cloud after a preprocessing parameter changes
     void PreprocessApp::RecomputeWaveletHierarchy()
     {
         if (m_rawSurfels.empty()) return;
@@ -1088,6 +1124,7 @@ namespace Surfels
         m_packageReadyToSave = true;
     }
 
+    // Pre-quantizes and pre-chunks every LOD level up front, for instant hitch-free LOD switching later
     void PreprocessApp::PrecacheResidentLODs()
     {
         m_residentLODs.clear();
@@ -1141,6 +1178,7 @@ namespace Surfels
         }
     }
 
+    // Refreshes the CPU-side preview buffer for the currently selected LOD level
     void PreprocessApp::UpdatePreviewSurfels()
     {
         LogTransitionTrace("UpdatePreviewSurfels: m_selectedPreviewLOD=%d, m_autoLOD=%d, isStreaming=%d",
@@ -1198,6 +1236,7 @@ namespace Surfels
 
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
+    // Automated self-test: walks every LOD level checking for buffer overruns, NaN/Inf positions, and dither coverage gaps
     void PreprocessApp::RunMemoryAndLODIntegrityTest()
     {
         std::stringstream ss;
@@ -1285,6 +1324,7 @@ namespace Surfels
 
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
+    // Runs the full wavelet pipeline over m_chunks and writes the resulting .sflw + .json package
     void PreprocessApp::ProcessAndExport(const std::string& outputPath)
     {
         if (m_rawSurfels.empty()) return;
@@ -1292,7 +1332,16 @@ namespace Surfels
         m_statusMessage = "Processing and exporting stream package to: " + outputPath + "...";
         float deadbandMeters = m_deadbandThresholdMM / 1000.0f;
 
-        if (StreamPackager::PackageDataset(outputPath, m_chunks, m_maxLODLevels, deadbandMeters, m_state.splatRadius))
+        if (m_generateOcclusionVolume)
+        {
+            BuildOcclusionVolume();
+        }
+        else
+        {
+            m_occlusionVoxels.clear();
+        }
+
+        if (StreamPackager::PackageDataset(outputPath, m_chunks, m_maxLODLevels, deadbandMeters, m_state.splatRadius, m_occlusionVoxels))
         {
             m_statusMessage = "Success! Created " + outputPath + ".sflw (" + std::to_string(m_compressedSizeMB) + " MB) and " + outputPath + ".json";
             m_statusIsSuccess = true;
@@ -1306,6 +1355,7 @@ namespace Surfels
         }
     }
 
+    // Executes whatever file-dialog/action was queued this frame (kept off the ImGui callback stack)
     void PreprocessApp::ExecutePendingAction()
     {
         if (m_pendingAction == PendingAction::None)
@@ -1428,6 +1478,7 @@ namespace Surfels
         }
     }
 
+    // Mouse-orbit/zoom camera, for both the active viewing camera and the (optional) frozen culling camera
     void PreprocessApp::UpdateCamera(const ImGuiIO& io)
     {
         const float cy = cosf(m_pitch), sy = sinf(m_pitch);
@@ -1695,6 +1746,7 @@ namespace Surfels
         }
     }
 
+    // The entire ImGui frame: the left tool tabs (Generator/Renderer/Streaming) and the right statistics panel
     void PreprocessApp::BuildUI()
     {
         // Draw 3D Octree Bounding Cubes with Dotted Mid-Gray Lines onto the 3D viewport
@@ -1896,6 +1948,27 @@ namespace Surfels
                     m_packageReadyToSave = false;
                 }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Sparsification deadband: wavelet detail coefficients below this threshold are zeroed out.");
+
+                ImGui::Spacing();
+                ImGui::Separator();
+                ImGui::Checkbox("Generate Interior Occlusion Volume", &m_generateOcclusionVolume);
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bakes solid occluder cubes into the interior of the model on export, so the viewer can optionally depth-test against them to hide far-side surfels visible through gaps in a sparse near side. Disabled by default; re-run 'Update Pipeline' after changing.");
+                if (m_generateOcclusionVolume)
+                {
+                    if (ImGui::SliderInt("Voxel Resolution", &m_occlusionVoxelResolution, 8, 64))
+                    {
+                        m_pipelineNeedsUpdate = true;
+                        m_packageReadyToSave = false;
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Voxel grid divisions along the model's longest axis. Higher values follow interior cavities more closely but generate more occluder cubes.");
+
+                    if (ImGui::SliderFloat("Baked Shrink", &m_occlusionBakedShrink, 0.5f, 1.0f, "%.2f"))
+                    {
+                        m_pipelineNeedsUpdate = true;
+                        m_packageReadyToSave = false;
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Extra shrink applied to every occluder cube and saved into the file, on top of the guaranteed 1-voxel erosion against the model's surface shell. Lower values leave more leeway against poke-through.");
+                }
 
                 ImGui::Spacing();
 
@@ -2122,6 +2195,26 @@ namespace Surfels
                     }
                 }
 
+                // Interior Occlusion Volume (viewer controls) -- only relevant when the loaded model
+                // actually has a baked volume (see LoadSFLWFile/ProcessAndExport).
+                if (!m_occlusionVoxels.empty())
+                {
+                    if (ImGui::CollapsingHeader("Interior Occlusion Volume", ImGuiTreeNodeFlags_DefaultOpen))
+                    {
+                        ImGui::Checkbox("Enable Occlusion Culling", &m_enableOcclusionCulling);
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Depth-tests splats against the baked interior occlusion volume (%zu cubes) so far-side surfels don't show through gaps in the near side. Disabled by default.", m_occlusionVoxels.size());
+
+                        if (m_enableOcclusionCulling)
+                        {
+                            ImGui::SliderFloat("Live Shrink", &m_occlusionRuntimeShrink, 0.1f, 1.0f, "%.2f");
+                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Interactive shrink applied on top of the shrink already baked into the file, to fine-tune poke-through in real time without re-exporting.");
+
+                            ImGui::Checkbox("View Occlusion Volume Only", &m_showOcclusionVolumeOnly);
+                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Debug view: renders only the occluder geometry, hiding the surfel splats entirely.");
+                        }
+                    }
+                }
+
                 // Section 3: 3D Viewport & Splat Sizing
                 if (ImGui::CollapsingHeader("2. 3D Viewport & Splat Sizing", ImGuiTreeNodeFlags_DefaultOpen))
                 {
@@ -2338,21 +2431,21 @@ namespace Surfels
 
                     // Bandwidth Preset Buttons
                     ImGui::Text("Network Profiles:");
-                    if (ImGui::Button("3G (1.5 MB/s)", ImVec2(85, 22)))
+                    if (ImGui::Button("3G (0.2 MB/s)", ImVec2(85, 22)))
                     {
-                        m_bandwidthThrottleMBps = 1.5f;
+                        m_bandwidthThrottleMBps = 0.2f;
                         m_unthrottledBandwidth = false;
                     }
                     ImGui::SameLine();
-                    if (ImGui::Button("4G (15 MB/s)", ImVec2(80, 22)))
+                    if (ImGui::Button("4G (2 MB/s)", ImVec2(80, 22)))
                     {
-                        m_bandwidthThrottleMBps = 15.0f;
+                        m_bandwidthThrottleMBps = 2.0f;
                         m_unthrottledBandwidth = false;
                     }
                     ImGui::SameLine();
-                    if (ImGui::Button("5G (60 MB/s)", ImVec2(80, 22)))
+                    if (ImGui::Button("5G (7.5 MB/s)", ImVec2(80, 22)))
                     {
-                        m_bandwidthThrottleMBps = 60.0f;
+                        m_bandwidthThrottleMBps = 7.5f;
                         m_unthrottledBandwidth = false;
                     }
                     ImGui::SameLine();
@@ -2449,18 +2542,38 @@ namespace Surfels
             ImGui::Separator();
             ImGui::Text("Per-Stage Breakdown (ms):");
 
+            float uploadDisplay = m_pRenderer->GetSmoothUploadMs();
+            if (uploadDisplay > 0.0001f)
+            {
+                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "  • Surfel/Chunk Buffer Upload:      %.2f ms", uploadDisplay);
+            }
+
             if (m_gpuRadixSort)
             {
                 float sortDisplay = (metrics.gpuSortTimeMs > 0.0001f) ? metrics.gpuSortTimeMs : m_pRenderer->GetSmoothGpuSortMs();
-                ImGui::TextColored(ImVec4(0.3f, 0.9f, 1.0f, 1.0f), "  • GPU Radix Depth Sort (32-Bit): %.2f ms", sortDisplay);
+                ImGui::TextColored(ImVec4(0.3f, 0.9f, 1.0f, 1.0f), "  • GPU Radix Depth Sort (32-Bit):    %.2f ms", sortDisplay);
             }
             else
             {
-                ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "  • CPU Radix Depth Sort (16-Bit): %.2f ms", metrics.cpuSortTimeMs);
+                ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "  • CPU Radix Depth Sort (16-Bit):    %.2f ms", metrics.cpuSortTimeMs);
             }
 
-            ImGui::Text("  • GPU Mesh Shader Dispatch: %.2f ms", m_pRenderer->GetSmoothDispatchMs());
-            ImGui::Text("  • ImGui Overlay UI Render:  %.2f ms", m_pRenderer->GetSmoothUiMs());
+            if (m_enableSilhouetteLOD0 || m_highlightSilhouetteChunks)
+            {
+                ImGui::TextColored(ImVec4(0.85f, 0.55f, 0.98f, 1.0f), "  • Silhouette Item Prepass:          %.2f ms", m_pRenderer->GetSmoothSilhouettePrepassMs());
+            }
+
+            if (m_enableOcclusionCulling)
+            {
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "  • Occlusion Volume Pass:            %.2f ms", m_pRenderer->GetSmoothOccluderMs());
+            }
+
+            ImGui::Text("  • Main Splat Mesh Shader Dispatch:  %.2f ms", m_pRenderer->GetSmoothMainDispatchMs());
+
+            if (m_enableTemporalFiltering)
+            {
+                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "  • TAA Resolve:                      %.2f ms", m_pRenderer->GetSmoothTaaMs());
+            }
         }
 
         // Compression Summary
@@ -2761,6 +2874,7 @@ namespace Surfels
         }
     }
 
+    // Draws the per-LOD-level residency bar graph plus the Clear/Decay Rate/Policy controls beside it
     void PreprocessApp::DrawLODResidencyEqualizer()
     {
         if (m_residentLODs.empty())
@@ -3087,6 +3201,201 @@ namespace Surfels
         ImGui::Spacing();
     }
 
+    // Voxelizes the current model into a solid interior occlusion volume: cells fully enclosed by the
+    // model's surface shell (or making up a thick section of the shell itself) become depth-writing
+    // occluder cubes, so the splat pass can discard far-side surfels visible through gaps in a sparse
+    // near side. Cells are eroded by one layer against any adjacent exterior (empty, reachable-from-
+    // outside) cell first, guaranteeing the occluder never touches -- let alone pokes through -- the true
+    // surface from any view angle; m_occlusionBakedShrink then shrinks the surviving cubes further for
+    // extra leeway. Each cube's color is baked from the nearest surfels reachable without crossing
+    // color of surfels in its immediate vicinity without a full per-voxel visibility raycast.
+    void PreprocessApp::BuildOcclusionVolume()
+    {
+        m_occlusionVoxels.clear();
+
+        const auto& sourcePoints = !m_rawSurfels.empty() ? m_rawSurfels : m_rendererRawSurfels;
+        if (sourcePoints.empty()) return;
+
+        XMFLOAT3 gMin = m_aabbMin;
+        XMFLOAT3 gMax = m_aabbMax;
+        XMFLOAT3 gExtent(
+            std::max(1e-4f, gMax.x - gMin.x),
+            std::max(1e-4f, gMax.y - gMin.y),
+            std::max(1e-4f, gMax.z - gMin.z));
+
+        float maxExtent = std::max(gExtent.x, std::max(gExtent.y, gExtent.z));
+        int res = std::max(4, m_occlusionVoxelResolution);
+        float cellSize = std::max(0.001f, maxExtent / (float)res);
+
+        int32_t rx = std::max(1, (int32_t)std::ceil(gExtent.x / cellSize));
+        int32_t ry = std::max(1, (int32_t)std::ceil(gExtent.y / cellSize));
+        int32_t rz = std::max(1, (int32_t)std::ceil(gExtent.z / cellSize));
+
+        // ring to seed from, regardless of whether the model touches its own bounding box.
+        const int32_t pad = 1;
+        int32_t nx = rx + pad * 2, ny = ry + pad * 2, nz = rz + pad * 2;
+        auto cellIndex = [&](int32_t x, int32_t y, int32_t z) -> size_t
+        {
+            return (size_t)x + (size_t)y * nx + (size_t)z * (size_t)nx * ny;
+        };
+        size_t totalCells = (size_t)nx * ny * nz;
+
+        // 1. Occupancy + running color sum per cell ("shell" = contains at least one surfel)
+        std::vector<uint8_t>   shell(totalCells, 0);
+        std::vector<XMFLOAT3>  colorSum(totalCells, XMFLOAT3(0.0f, 0.0f, 0.0f));
+        std::vector<uint32_t>  colorCount(totalCells, 0);
+
+        for (const auto& s : sourcePoints)
+        {
+            int32_t ix = pad + (int32_t)((s.position.x - gMin.x) / cellSize);
+            int32_t iy = pad + (int32_t)((s.position.y - gMin.y) / cellSize);
+            int32_t iz = pad + (int32_t)((s.position.z - gMin.z) / cellSize);
+            ix = std::max(pad, std::min(nx - pad - 1, ix));
+            iy = std::max(pad, std::min(ny - pad - 1, iy));
+            iz = std::max(pad, std::min(nz - pad - 1, iz));
+
+            size_t idx = cellIndex(ix, iy, iz);
+            shell[idx] = 1;
+            colorSum[idx].x += s.color.x;
+            colorSum[idx].y += s.color.y;
+            colorSum[idx].z += s.color.z;
+            colorCount[idx]++;
+        }
+
+        // crossing a shell cell) starting from the guaranteed-empty padding ring.
+        std::vector<uint8_t> exterior(totalCells, 0);
+        std::vector<size_t> floodQueue;
+        floodQueue.reserve(totalCells / 4);
+
+        auto tryMarkExterior = [&](int32_t x, int32_t y, int32_t z)
+        {
+            if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz) return;
+            size_t idx = cellIndex(x, y, z);
+            if (shell[idx] || exterior[idx]) return;
+            exterior[idx] = 1;
+            floodQueue.push_back(idx);
+        };
+
+        for (int32_t z = 0; z < nz; z++)
+            for (int32_t y = 0; y < ny; y++)
+                for (int32_t x = 0; x < nx; x++)
+                {
+                    if (x == 0 || y == 0 || z == 0 || x == nx - 1 || y == ny - 1 || z == nz - 1)
+                        tryMarkExterior(x, y, z);
+                }
+
+        for (size_t qi = 0; qi < floodQueue.size(); qi++)
+        {
+            size_t idx = floodQueue[qi];
+            int32_t z = (int32_t)(idx / ((size_t)nx * ny));
+            int32_t rem = (int32_t)(idx % ((size_t)nx * ny));
+            int32_t y = rem / nx;
+            int32_t x = rem % nx;
+            tryMarkExterior(x + 1, y, z); tryMarkExterior(x - 1, y, z);
+            tryMarkExterior(x, y + 1, z); tryMarkExterior(x, y - 1, z);
+            tryMarkExterior(x, y, z + 1); tryMarkExterior(x, y, z - 1);
+        }
+
+        // 3. Solid = shell OR enclosed cavity (anything not reachable from outside). Erode by one layer
+        // against any 6-adjacent exterior cell so the occluder never touches the true outer surface.
+        auto isExteriorAt = [&](int32_t x, int32_t y, int32_t z) -> bool
+        {
+            if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz) return true;
+            return exterior[cellIndex(x, y, z)] != 0;
+        };
+
+        std::vector<uint8_t> eroded(totalCells, 0);
+        for (int32_t z = 0; z < nz; z++)
+            for (int32_t y = 0; y < ny; y++)
+                for (int32_t x = 0; x < nx; x++)
+                {
+                    size_t idx = cellIndex(x, y, z);
+                    if (exterior[idx]) continue; // Not solid at all
+
+                    bool touchesExterior =
+                        isExteriorAt(x + 1, y, z) || isExteriorAt(x - 1, y, z) ||
+                        isExteriorAt(x, y + 1, z) || isExteriorAt(x, y - 1, z) ||
+                        isExteriorAt(x, y, z + 1) || isExteriorAt(x, y, z - 1);
+                    if (!touchesExterior)
+                        eroded[idx] = 1;
+                }
+
+        // 4. Propagate each shell cell's average color inward through solid space via multi-source BFS,
+        // so cells with no surfels of their own inherit the nearest reachable surfel color.
+        std::vector<uint8_t> colored(totalCells, 0);
+        std::vector<size_t> colorQueue;
+        colorQueue.reserve(totalCells / 4);
+        for (size_t idx = 0; idx < totalCells; idx++)
+        {
+            if (shell[idx] && colorCount[idx] > 0)
+            {
+                colored[idx] = 1;
+                colorQueue.push_back(idx);
+            }
+        }
+
+        for (size_t qi = 0; qi < colorQueue.size(); qi++)
+        {
+            size_t idx = colorQueue[qi];
+            int32_t z = (int32_t)(idx / ((size_t)nx * ny));
+            int32_t rem = (int32_t)(idx % ((size_t)nx * ny));
+            int32_t y = rem / nx;
+            int32_t x = rem % nx;
+
+            auto spreadColor = [&](int32_t sx, int32_t sy, int32_t sz)
+            {
+                if (sx < 0 || sy < 0 || sz < 0 || sx >= nx || sy >= ny || sz >= nz) return;
+                size_t nIdx = cellIndex(sx, sy, sz);
+                if (colored[nIdx] || exterior[nIdx]) return;
+                colored[nIdx] = 1;
+                colorSum[nIdx] = colorSum[idx];     // Inherit the source cell's sum+count together so
+                colorCount[nIdx] = colorCount[idx]; // the averaged color below reproduces identically.
+                colorQueue.push_back(nIdx);
+            };
+            spreadColor(x + 1, y, z); spreadColor(x - 1, y, z);
+            spreadColor(x, y + 1, z); spreadColor(x, y - 1, z);
+            spreadColor(x, y, z + 1); spreadColor(x, y, z - 1);
+        }
+
+        // 5. Emit one occluder cube per surviving eroded cell
+        float bakedShrink = std::clamp(m_occlusionBakedShrink, 0.05f, 1.0f);
+        float halfSize = (cellSize * 0.5f) * bakedShrink;
+
+        m_occlusionVoxels.reserve(totalCells / 8);
+        for (int32_t z = 0; z < nz; z++)
+            for (int32_t y = 0; y < ny; y++)
+                for (int32_t x = 0; x < nx; x++)
+                {
+                    size_t idx = cellIndex(x, y, z);
+                    if (!eroded[idx]) continue;
+
+                    OcclusionVoxelGPU v = {};
+                    v.center = XMFLOAT3(
+                        gMin.x + ((float)(x - pad) + 0.5f) * cellSize,
+                        gMin.y + ((float)(y - pad) + 0.5f) * cellSize,
+                        gMin.z + ((float)(z - pad) + 0.5f) * cellSize);
+                    v.halfSize = halfSize;
+
+                    XMFLOAT3 avgColor(0.6f, 0.6f, 0.6f); // Neutral gray fallback if no color ever reached this cell
+                    if (colorCount[idx] > 0)
+                    {
+                        avgColor.x = colorSum[idx].x / (float)colorCount[idx];
+                        avgColor.y = colorSum[idx].y / (float)colorCount[idx];
+                        avgColor.z = colorSum[idx].z / (float)colorCount[idx];
+                    }
+                    uint32_t r5 = (uint32_t)std::clamp(avgColor.x * 31.0f, 0.0f, 31.0f);
+                    uint32_t g6 = (uint32_t)std::clamp(avgColor.y * 63.0f, 0.0f, 63.0f);
+                    uint32_t b5 = (uint32_t)std::clamp(avgColor.z * 31.0f, 0.0f, 31.0f);
+                    v.packedColor = (r5 << 11) | (g6 << 5) | b5;
+
+                    m_occlusionVoxels.push_back(v);
+                }
+
+        LogTransitionTrace("BuildOcclusionVolume: resolution=%d cellSize=%.3f grid=%dx%dx%d -> %zu occluder cubes",
+            res, cellSize, nx, ny, nz, m_occlusionVoxels.size());
+    }
+
+    // Voxelizes the loaded point cloud into a density heatmap for the cluster-cube visualizer
     void PreprocessApp::RebuildHeatmapClusterCubes()
     {
         m_heatmapClusterCubes.clear();
@@ -3230,6 +3539,7 @@ namespace Surfels
         }
     }
 
+    // Draws the ImGui-drawlist wireframe/heatmap overlay for the octree and cluster-cube visualizers
     void PreprocessApp::DrawOctreeVisualizer()
     {
         if (!m_showClusterHeatmap && !m_showOctreeVisualizer && !m_showGlobalBounds && !m_detachCamera && !m_highlightSilhouetteChunks)
@@ -3764,6 +4074,7 @@ namespace Surfels
         }
     }
 
+    // Per-frame entry point: builds the UI, advances the streaming simulation and camera, then hands off to PreprocessRenderer
     void PreprocessApp::OnRender()
     {
         // Safely execute any modal/file operations before beginning the ImGui frame
@@ -3786,6 +4097,12 @@ namespace Surfels
         m_state.temporalBlendWeight = m_temporalBlendWeight;
         m_state.enableSubpixelJitter = m_enableSubpixelJitter;
         m_state.enableVarianceClamping = m_enableVarianceClamping;
+
+        m_state.pOcclusionVoxels = m_occlusionVoxels.empty() ? nullptr : m_occlusionVoxels.data();
+        m_state.occlusionVoxelCount = (uint32_t)m_occlusionVoxels.size();
+        m_state.enableOcclusionCulling = m_enableOcclusionCulling;
+        m_state.occlusionShrinkRuntime = m_occlusionRuntimeShrink;
+        m_state.showOcclusionVolumeOnly = m_showOcclusionVolumeOnly;
 
         if (m_deviceLost)
         {

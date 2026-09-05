@@ -1,3 +1,12 @@
+// PLYLoader.h
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Binary and ASCII .ply point cloud parser. Understands both plain colored point
+// clouds and 3D Gaussian Splatting exports (f_dc_*/scale_*/rot_*/opacity properties),
+// converting the latter's COLMAP coordinate convention and spherical-harmonic DC
+// color term into this project's own SurfelVertex representation.
+
 #pragma once
 #include <fstream>
 #include <sstream>
@@ -13,6 +22,18 @@ namespace Surfels
     class PLYLoader
     {
     public:
+        // Fallback splat scale/radius when a vertex has no scale_0..2 or radius/size property at all.
+        static constexpr float kDefaultSplatScale = 0.02f;
+
+        // 3DGS opacity/scale heuristics: cull true-zero-opacity splats outright, and separately cull
+        // low-opacity, large-footprint splats (typically background "floater" noise from reconstruction).
+        static constexpr float kMinOpacityToKeep = 0.005f;
+        static constexpr float kFloaterOpacityThreshold = 0.15f;
+        static constexpr float kFloaterScaleThreshold = 0.04f;
+
+        // A splat's rendered radius is this factor times its median (2nd-smallest) Gaussian scale axis.
+        static constexpr float kMedianScaleToRadiusFactor = 1.25f;
+
         static bool LoadPLY(const std::string& filepath, std::vector<SurfelVertex>& outSurfels, double originOut[3])
         {
             originOut[0] = 0.0;
@@ -172,7 +193,7 @@ namespace Surfels
                         firstZ = -firstZ;
                     }
 
-                    if (std::abs(firstX) > 10000.0 || std::abs(firstY) > 10000.0 || std::abs(firstZ) > 10000.0)
+                    if (std::abs(firstX) > kGeospatialOffsetThreshold || std::abs(firstY) > kGeospatialOffsetThreshold || std::abs(firstZ) > kGeospatialOffsetThreshold)
                     {
                         originOut[0] = firstX;
                         originOut[1] = firstY;
@@ -194,7 +215,7 @@ namespace Surfels
                     {
                         float opLogit = *reinterpret_cast<const float*>(ptr + opacityOffset);
                         opacity = 1.0f / (1.0f + std::exp(-opLogit));
-                        if (opacity < 0.005f)
+                        if (opacity < kMinOpacityToKeep)
                             continue;
                     }
 
@@ -213,7 +234,7 @@ namespace Surfels
                     v.position.y = (float)(py - originOut[1]);
                     v.position.z = (float)(pz - originOut[2]);
 
-                    float s0 = 0.02f, s1 = 0.02f, s2 = 0.02f;
+                    float s0 = kDefaultSplatScale, s1 = kDefaultSplatScale, s2 = kDefaultSplatScale;
                     if (scale0Offset >= 0 && scale1Offset >= 0 && scale2Offset >= 0)
                     {
                         s0 = std::exp(*reinterpret_cast<const float*>(ptr + scale0Offset));
@@ -224,11 +245,11 @@ namespace Surfels
                         std::sort(sortedS, sortedS + 3);
 
                         // Cull large low-opacity air floaters / background noise
-                        if (opacity < 0.15f && sortedS[1] > 0.04f)
+                        if (opacity < kFloaterOpacityThreshold && sortedS[1] > kFloaterScaleThreshold)
                             continue;
 
-                        // Continuous surface footprint: 1.25 * median scale
-                        v.radius = std::max(1e-5f, sortedS[1] * 1.25f);
+                        // Continuous surface footprint: median scale times kMedianScaleToRadiusFactor
+                        v.radius = std::max(1e-5f, sortedS[1] * kMedianScaleToRadiusFactor);
                     }
                     else if (radOffset >= 0)
                     {
@@ -237,8 +258,8 @@ namespace Surfels
                     }
                     else
                     {
-                        v.radius = 0.02f;
-                        s0 = s1 = s2 = 0.02f;
+                        v.radius = kDefaultSplatScale;
+                        s0 = s1 = s2 = kDefaultSplatScale;
                     }
 
                     if (nxOffset >= 0)
@@ -328,7 +349,7 @@ namespace Surfels
                     SurfelVertex v;
                     double px = 0, py = 0, pz = 0;
                     in >> px >> py >> pz;
-                    if (i == 0 && (std::abs(px) > 10000.0 || std::abs(py) > 10000.0 || std::abs(pz) > 10000.0))
+                    if (i == 0 && (std::abs(px) > kGeospatialOffsetThreshold || std::abs(py) > kGeospatialOffsetThreshold || std::abs(pz) > kGeospatialOffsetThreshold))
                     {
                         originOut[0] = px;
                         originOut[1] = py;

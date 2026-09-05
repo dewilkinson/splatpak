@@ -1,7 +1,15 @@
-// Surfels.hlsl - Modern DirectX 12 Mesh Shader Wavelet & Procedural Surfel Renderer
+// Surfels.hlsl
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
 //
-// Supports both:
-//  1. Procedural Fibonacci-sphere point-splat generation on-chip.
+// The core mesh-shader splat pipeline: every surfel is emitted procedurally by an
+// amplification/mesh shader pair each frame, straight from a StructuredBuffer -- there
+// is no vertex/index buffer or DrawInstanced anywhere in this file. Also home to the
+// GPU silhouette item-prepass (itemMS/itemPS) and the interior occlusion volume pass
+// (occluderMS/occluderPS).
+//
+// Three render paths share the main splat stage (mainAS/mainMS/mainPS):
+//  1. Procedural Fibonacci-sphere point-splat generation on-chip (demo/fallback mode).
 //  2. High-performance progressive streaming from a StructuredBuffer of 8-byte PackedSurfel structs.
 //  3. Normal-oriented tangent-plane discs or camera-facing billboard quads.
 
@@ -38,10 +46,18 @@ struct MeshletChunk
     float  coneCutoff;    // cos(theta_max) of cluster normal cone (-1.0 = disabled)
 };
 
+struct OcclusionVoxel
+{
+    float3 center;
+    float  halfSize;
+    uint   packedColor; // RGB565, see UnpackColorRGB565 below
+};
+
 StructuredBuffer<PackedSurfel>  g_SurfelBuffer       : register(t0);
 StructuredBuffer<RawSurfel>     g_RawSurfelBuffer    : register(t1);
 StructuredBuffer<MeshletChunk>  g_ChunkBuffer        : register(t2);
 StructuredBuffer<uint>          g_SortedChunkIndices : register(t3);
+StructuredBuffer<OcclusionVoxel> g_OcclusionVoxelBuffer : register(t4);
 
 cbuffer SurfelsCB : register(b0)
 {
@@ -67,6 +83,10 @@ cbuffer SurfelsCB : register(b0)
     uint     g_EnableConeCulling;
     uint     g_ShowOnlyLocked;
     uint     g_ShowChunkStream;
+    uint     g_EnableOcclusionCulling;
+    float    g_OcclusionShrinkRuntime;
+    uint     g_ShowOcclusionVolumeOnly;
+    uint     g_OcclusionVoxelCount;
 };
 
 struct ChunkPayload
@@ -766,5 +786,95 @@ uint itemPS(ItemVSOut i) : SV_Target0
     if (dot(centered, centered) > 1.0)
         discard;
     return i.chunkId;
+}
+
+// =========================================================================
+// Interior Occlusion Volume Stage (occluderMS & occluderPS)
+//
+// Solid depth-writing cubes baked at preprocessing time (see PreprocessApp::
+// BuildOcclusionVolume) so the splat pass can depth-test against them and discard
+// far-side surfels visible through gaps in a sparse near side. One threadgroup
+// per voxel, direct-dispatched with no amplification shader stage (like itemMS).
+// =========================================================================
+
+struct OccluderVSOut
+{
+    float4 pos   : SV_POSITION;
+    float3 color : COLOR0;
+    float3 norm  : NORMAL0;
+};
+
+static const float3 s_occluderCubeCorners[8] = {
+    float3(-1,-1,-1), float3( 1,-1,-1), float3(-1, 1,-1), float3( 1, 1,-1),
+    float3(-1,-1, 1), float3( 1,-1, 1), float3(-1, 1, 1), float3( 1, 1, 1)
+};
+
+// Index quads (per face) into s_occluderCubeCorners. Winding is not load-bearing since every PSO in
+// this file rasterizes with CullMode = NONE.
+static const uint s_occluderFaceIdx[6][4] = {
+    { 0, 1, 2, 3 }, // -Z
+    { 5, 4, 7, 6 }, // +Z
+    { 4, 0, 6, 2 }, // -X
+    { 1, 5, 3, 7 }, // +X
+    { 4, 5, 0, 1 }, // -Y
+    { 2, 3, 6, 7 }  // +Y
+};
+
+static const float3 s_occluderFaceNormal[6] = {
+    float3(0,0,-1), float3(0,0,1), float3(-1,0,0), float3(1,0,0), float3(0,-1,0), float3(0,1,0)
+};
+
+[outputtopology("triangle")]
+[numthreads(24, 1, 1)]
+void occluderMS(
+    in uint threadId : SV_GroupIndex,
+    in uint3 groupId : SV_GroupID,
+    out vertices OccluderVSOut verts[24],
+    out indices uint3 tris[12]
+)
+{
+    uint voxelIndex = groupId.y * 32768 + groupId.x;
+    if (voxelIndex >= g_OcclusionVoxelCount)
+    {
+        SetMeshOutputCounts(0, 0);
+        return;
+    }
+
+    SetMeshOutputCounts(24, 12);
+
+    OcclusionVoxel v = g_OcclusionVoxelBuffer[voxelIndex];
+    float shrunkHalf = v.halfSize * max(0.0, g_OcclusionShrinkRuntime);
+    float3 color = UnpackColorRGB565(v.packedColor);
+
+    if (threadId < 24)
+    {
+        uint face = threadId / 4;
+        uint corner = threadId % 4;
+        uint cIdx = s_occluderFaceIdx[face][corner];
+        float3 worldPos = v.center + s_occluderCubeCorners[cIdx] * shrunkHalf;
+
+        OccluderVSOut o;
+        o.pos = mul(g_ViewProj, float4(worldPos, 1.0));
+        o.color = color;
+        o.norm = s_occluderFaceNormal[face];
+        verts[threadId] = o;
+    }
+
+    if (threadId < 12)
+    {
+        uint face = threadId / 2;
+        uint vBase = face * 4;
+        tris[threadId] = (threadId % 2 == 0)
+            ? uint3(vBase + 0, vBase + 1, vBase + 2)
+            : uint3(vBase + 1, vBase + 3, vBase + 2);
+    }
+}
+
+float4 occluderPS(OccluderVSOut i) : SV_Target0
+{
+    float3 lightDir = normalize(float3(0.5, 0.8, 0.6));
+    float ndl = abs(dot(normalize(i.norm), lightDir));
+    float lighting = 0.35 + 0.65 * ndl;
+    return float4(i.color * lighting, 1.0);
 }
 

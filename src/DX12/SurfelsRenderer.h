@@ -1,11 +1,15 @@
+// SurfelsRenderer.h
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// GPU-side rendering for the sample: a bare Cauldron render loop (device/swapchain
+// are owned by FrameworkWindows) that draws a procedural, instanced point-splat
+// cloud or dynamic streamed wavelet surfels via DirectX 12 Mesh Shaders.
 #pragma once
 #include "stdafx.h"
 #include "base/Texture.h"
 #include "Wavelet/WaveletTypes.h"
 
-// GPU-side rendering for the sample: a bare Cauldron render loop (device/swapchain
-// are owned by FrameworkWindows) that draws a procedural, instanced point-splat
-// cloud or dynamic streamed wavelet surfels via DirectX 12 Mesh Shaders.
 class SurfelsRenderer
 {
 public:

@@ -1,3 +1,11 @@
+// StreamPackager.h
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Reads and writes the .sflw binary stream container + companion .json manifest: runs
+// each chunk through the wavelet/quantize/shuffle/compress pipeline on export, and
+// restores the full multi-LOD chunk hierarchy (plus any baked occlusion volume) on import.
+
 #pragma once
 #include <fstream>
 #include <sstream>

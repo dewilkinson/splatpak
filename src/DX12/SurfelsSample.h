@@ -1,10 +1,14 @@
+// SurfelsSample.h
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// The 'application' shell: window/input handling and per-frame state, delegating
+// all GPU work to SurfelsRenderer. Mirrors the standard Cauldron sample split
+// (see AMD's GLTFSample / FidelityFX-CAS sample apps) minus scene loading.
 #pragma once
 #include "SurfelsRenderer.h"
 #include "Wavelet/StreamingManager.h"
 
-// The 'application' shell: window/input handling and per-frame state, delegating
-// all GPU work to SurfelsRenderer. Mirrors the standard Cauldron sample split
-// (see AMD's GLTFSample / FidelityFX-CAS sample apps) minus scene loading.
 class SurfelsSample : public CAULDRON_DX12::FrameworkWindows
 {
 public:

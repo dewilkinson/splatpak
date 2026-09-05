@@ -1,3 +1,12 @@
+// PreprocessApp.h
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// The SurfelsPreprocess app shell: owns the whole offline preprocessing pipeline (load ->
+// octree chunk -> wavelet decompose -> quantize -> export) plus the runtime streaming
+// simulation and every ImGui panel. PreprocessRenderer handles the actual GPU work; this
+// class is everything else -- UI, file I/O, and the streaming/decay/silhouette simulation.
+
 #pragma once
 #include "../../src/DX12/stdafx.h"
 #include "PreprocessRenderer.h"
@@ -129,6 +138,17 @@ namespace Surfels
         // Configurable via config.json/surfels_config.ini ("startup_dataset") so a different default
         // can be swapped in without recompiling. Tried as-is and at a few relative CWD depths.
         std::string m_startupDatasetPath = "assets/cthulu/cthulu.sflw";
+
+        // Interior Occlusion Volume: solid depth-writing cubes baked at preprocessing time so far-side
+        // surfels can't show through gaps in the near side. Optional and disabled by default.
+        bool  m_generateOcclusionVolume   = false; // Preprocessor: bake a volume for this dataset on export
+        int   m_occlusionVoxelResolution  = 24;    // Preprocessor: voxel grid divisions along the model's longest axis
+        float m_occlusionBakedShrink      = 0.85f; // Preprocessor: extra shrink baked into the file, on top of the guaranteed 1-voxel erosion against the surface shell
+        std::vector<OcclusionVoxelGPU> m_occlusionVoxels; // Baked result -- from BuildOcclusionVolume() or loaded from an .sflw's package
+        bool  m_enableOcclusionCulling    = false; // Viewer: depth-test splats against the occlusion volume (disabled by default)
+        float m_occlusionRuntimeShrink    = 1.0f;  // Viewer: live/interactive shrink on top of the baked shrink above
+        bool  m_showOcclusionVolumeOnly   = false; // Viewer: debug view -- render only the occluder geometry
+        void  BuildOcclusionVolume();
 
         float m_yaw      = 0.6f;
         float m_pitch    = 0.35f;

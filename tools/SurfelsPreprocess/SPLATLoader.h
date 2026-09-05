@@ -1,3 +1,11 @@
+// SPLATLoader.h
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Reads and writes the compact 32-byte-per-splat binary ".splat" format (a fixed-layout
+// alternative to .ply for 3D Gaussian Splatting data): position, scale, RGBA8 color,
+// and an 8-bit-quantized orientation quaternion.
+
 #pragma once
 #include <fstream>
 #include <vector>
@@ -11,6 +19,14 @@ namespace Surfels
     class SPLATLoader
     {
     public:
+        // 8-bit quaternion quantization midpoint/scale: stored byte = round(component * kQuatQuantScale + kQuatQuantBias)
+        static constexpr float kQuatQuantScale = 128.0f;
+        static constexpr float kQuatQuantBias  = 128.0f;
+
+        // Effective splat radius is clamped to this range after averaging the three Gaussian scale axes.
+        static constexpr float kMinSplatRadius = 0.005f;
+        static constexpr float kMaxSplatRadius = 1.0f;
+
         #pragma pack(push, 1)
         struct SplatRaw
         {
@@ -60,7 +76,7 @@ namespace Surfels
                 float fx = rawSplats[0].pos[0];
                 float fy = rawSplats[0].pos[1];
                 float fz = rawSplats[0].pos[2];
-                if (std::abs(fx) > 10000.0f || std::abs(fy) > 10000.0f || std::abs(fz) > 10000.0f)
+                if (std::abs(fx) > kGeospatialOffsetThreshold || std::abs(fy) > kGeospatialOffsetThreshold || std::abs(fz) > kGeospatialOffsetThreshold)
                 {
                     originOut[0] = fx;
                     originOut[1] = fy;
@@ -85,10 +101,10 @@ namespace Surfels
 
                 // 3. Normal Vector from Quaternion Rotation
                 // Unquantize quaternion from [0..255] back to [-1.0..1.0]
-                float qr = (raw.rot[0] - 128.0f) / 128.0f;
-                float qi = (raw.rot[1] - 128.0f) / 128.0f;
-                float qj = (raw.rot[2] - 128.0f) / 128.0f;
-                float qk = (raw.rot[3] - 128.0f) / 128.0f;
+                float qr = (raw.rot[0] - kQuatQuantBias) / kQuatQuantScale;
+                float qi = (raw.rot[1] - kQuatQuantBias) / kQuatQuantScale;
+                float qj = (raw.rot[2] - kQuatQuantBias) / kQuatQuantScale;
+                float qk = (raw.rot[3] - kQuatQuantBias) / kQuatQuantScale;
 
                 float qLen = std::sqrt(qr * qr + qi * qi + qj * qj + qk * qk);
                 if (qLen > 1e-6f)
@@ -118,7 +134,7 @@ namespace Surfels
 
                 // 4. Effective splat radius (average of major scale axes)
                 float avgScale = (std::abs(raw.scale[0]) + std::abs(raw.scale[1]) + std::abs(raw.scale[2])) / 3.0f;
-                v.radius = std::max(0.005f, std::min(1.0f, avgScale));
+                v.radius = std::max(kMinSplatRadius, std::min(kMaxSplatRadius, avgScale));
 
                 outSurfels[i] = v;
             }
@@ -170,10 +186,10 @@ namespace Surfels
                     qw = 1.0f; qx = 0.0f; qy = 0.0f; qz = 0.0f;
                 }
 
-                r.rot[0] = (uint8_t)std::max(0, std::min(255, (int)std::round(qw * 128.0f + 128.0f)));
-                r.rot[1] = (uint8_t)std::max(0, std::min(255, (int)std::round(qx * 128.0f + 128.0f)));
-                r.rot[2] = (uint8_t)std::max(0, std::min(255, (int)std::round(qy * 128.0f + 128.0f)));
-                r.rot[3] = (uint8_t)std::max(0, std::min(255, (int)std::round(qz * 128.0f + 128.0f)));
+                r.rot[0] = (uint8_t)std::max(0, std::min(255, (int)std::round(qw * kQuatQuantScale + kQuatQuantBias)));
+                r.rot[1] = (uint8_t)std::max(0, std::min(255, (int)std::round(qx * kQuatQuantScale + kQuatQuantBias)));
+                r.rot[2] = (uint8_t)std::max(0, std::min(255, (int)std::round(qy * kQuatQuantScale + kQuatQuantBias)));
+                r.rot[3] = (uint8_t)std::max(0, std::min(255, (int)std::round(qz * kQuatQuantScale + kQuatQuantBias)));
 
                 buffer[i] = r;
             }

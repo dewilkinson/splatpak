@@ -1,5 +1,10 @@
 // BuildIndirectArgsCS.hlsl
-// GPU Compute Shader to generate D3D12_DISPATCH_MESH_ARGUMENTS directly in VRAM
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Tiny compute shader that builds D3D12_DISPATCH_MESH_ARGUMENTS directly in VRAM from a
+// GPU-written visible-surfel counter, so ExecuteIndirect can dispatch the mesh shader
+// without a CPU round-trip.
 
 RWByteAddressBuffer g_CounterBuffer : register(u0);      // Offset 0: visibleCount
 RWByteAddressBuffer g_IndirectArgsBuffer : register(u1); // Offset 0: ThreadGroupCountX, Y, Z (12 bytes)

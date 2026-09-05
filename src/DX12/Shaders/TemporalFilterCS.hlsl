@@ -1,5 +1,8 @@
 // =============================================================================
 // TemporalFilterCS.hlsl
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
 // High-Performance Temporal Accumulation & Dither Transition Resolver (TAA)
 // Smooths stochastic Bayer dither patterns into seamless alpha dissolves
 // and eliminates surfel geometric edge shimmering via sub-pixel reprojection.

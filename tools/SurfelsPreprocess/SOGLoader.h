@@ -1,3 +1,13 @@
+// SOGLoader.h
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Reads PlayCanvas ".sog" (Spatially Ordered Gaussians) packages: a ZIP container of a
+// meta.json descriptor plus several WebP-encoded texture channels (position/quaternion/
+// scale/color, each one Gaussian per pixel). Includes a small self-contained ZIP/DEFLATE
+// decompressor (RFC 1951/1950) since the format is just a standard ZIP archive, and uses
+// Windows Imaging Component (WIC) to decode the WebP textures themselves.
+
 #pragma once
 #include <fstream>
 #include <sstream>

@@ -1,3 +1,11 @@
+// SyntheticGenerator.h
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Built-in procedural benchmark scene generator (an urban street block: road, sidewalks,
+// building facades, trees) plus a minimal binary PLY exporter, used when no real dataset
+// is available or when running the synthetic point-count benchmark.
+
 #pragma once
 #include <vector>
 #include <cmath>
@@ -11,6 +19,8 @@ namespace Surfels
     class SyntheticGenerator
     {
     public:
+        static constexpr float k2Pi = 6.28318530718f;
+
         // Generates a synthetic urban city street scene with buildings, roads, sidewalks, and procedural details
         static std::vector<SurfelVertex> GenerateUrbanStreetScene(uint32_t targetPointCount = 500000)
         {
@@ -133,7 +143,7 @@ namespace Surfels
 
                 // Sphere distribution for canopy
                 float u = dist01(rng) * 2.0f - 1.0f;
-                float phi = dist01(rng) * 6.2831853f;
+                float phi = dist01(rng) * k2Pi;
                 float r = 1.8f + dist01(rng) * 0.4f;
                 float sq = std::sqrt(std::max(0.0f, 1.0f - u * u));
 

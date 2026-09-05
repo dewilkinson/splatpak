@@ -1,3 +1,12 @@
+// StreamingManager.h
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Runtime-side dataset loader for the Surfels_DX12 viewer: opens a .sflw + .json package,
+// keeps a per-(chunk, LOD) decompressed cache (with the two coarsest LODs always pinned),
+// and each frame turns the current LODSelector selection into a flat surfel buffer ready
+// for GPU upload.
+
 #pragma once
 #include <string>
 #include <vector>
@@ -13,6 +22,10 @@
 
 namespace Surfels
 {
+    // Telemetry's lodDistribution array only tracks this many levels -- plenty of headroom over the
+    // preprocessor's practical max (SurfelsPreprocess's own LOD slider tops out well below this).
+    static constexpr uint32_t kMaxTrackedLODLevels = 8;
+
     struct CachedChunkLOD
     {
         uint32_t chunkId;
@@ -26,7 +39,7 @@ namespace Surfels
         uint32_t totalChunksInDataset = 0;
         uint32_t activeChunksRendered = 0;
         uint32_t totalSurfelsRendered = 0;
-        uint32_t lodDistribution[8]   = {};
+        uint32_t lodDistribution[kMaxTrackedLODLevels] = {};
         float    residentMemoryMB     = 0.0f;
         float    streamingBandwidthKB = 0.0f;
         uint32_t cacheHits            = 0;
@@ -39,6 +52,8 @@ namespace Surfels
         StreamingManager() = default;
         ~StreamingManager() { Close(); }
 
+        // Opens a .sflw + .json package (searching a few relative paths under models/) and pins the
+        // two coarsest LOD levels of every chunk into the cache so a base silhouette is always ready.
         bool LoadDataset(const std::string& basepath)
         {
             Close();
@@ -126,6 +141,7 @@ namespace Surfels
             return true;
         }
 
+        // Releases the open file handle and drops the entire decompressed cache
         void Close()
         {
             if (m_sflwStream.is_open())
@@ -168,7 +184,7 @@ namespace Surfels
                     outActiveSurfels.insert(outActiveSurfels.end(), it->second.surfels.begin(), it->second.surfels.end());
                     m_telemetry.cacheHits++;
                     m_telemetry.activeChunksRendered++;
-                    if (targetLOD < 8) m_telemetry.lodDistribution[targetLOD]++;
+                    if (targetLOD < kMaxTrackedLODLevels) m_telemetry.lodDistribution[targetLOD]++;
                 }
                 else
                 {
@@ -184,7 +200,7 @@ namespace Surfels
                         outActiveSurfels.insert(outActiveSurfels.end(), loadedChunk.surfels.begin(), loadedChunk.surfels.end());
                         m_cache[key] = std::move(loadedChunk);
                         m_telemetry.activeChunksRendered++;
-                        if (targetLOD < 8) m_telemetry.lodDistribution[targetLOD]++;
+                        if (targetLOD < kMaxTrackedLODLevels) m_telemetry.lodDistribution[targetLOD]++;
                     }
                 }
             }
@@ -201,6 +217,7 @@ namespace Surfels
         }
 
     private:
+        // Seeks to and reads one chunk's LOD payload from the open .sflw stream, then decompresses it
         bool LoadChunkFromDisk(const ChunkManifest& chunk, uint32_t lodLevel, std::vector<PackedSurfelGPU>& outSurfels)
         {
             if (lodLevel >= chunk.lods.size()) return false;
@@ -221,6 +238,7 @@ namespace Surfels
             );
         }
 
+        // Minimal hand-rolled parser for this project's own .json manifest schema (not general JSON)
         bool ParseManifest(const std::string& jsonPath)
         {
             std::ifstream in(jsonPath);

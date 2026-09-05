@@ -1,4 +1,9 @@
-// Precompiled/shared header for the Surfels sample.
+// stdafx.h
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Precompiled/shared header for the Surfels sample: pulls in Windows, DirectXMath, and
+// the Cauldron framework base headers every DX12 source file in this project needs.
 #pragma once
 
 #define WIN32_LEAN_AND_MEAN

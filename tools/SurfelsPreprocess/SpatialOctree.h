@@ -1,3 +1,10 @@
+// SpatialOctree.h
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Spatial partitioning: chunks a raw point cloud into cubic octree cells (for streaming)
+// and into fixed-size Morton-ordered meshlet clusters (for the GPU chunked pipeline).
+
 #pragma once
 #include <vector>
 #include <cmath>
@@ -20,6 +27,14 @@ namespace Surfels
     class SpatialOctree
     {
     public:
+        // Auto-sizing knobs for PartitionIntoChunks when chunkSizeMeters <= 0 (see below)
+        static constexpr size_t kAutoTargetPointsPerChunk = 15000; // Sweet spot for GPU/CPU culling efficiency
+        static constexpr size_t kAutoMinChunkCount = 16;
+        static constexpr size_t kAutoMaxChunkCount = 512;
+        static constexpr int    kAutoMinGridRes = 2;
+        static constexpr int    kAutoMaxGridRes = 32;
+        static constexpr float  kMinChunkSizeMeters = 0.1f;
+
         // Expands 10-bit integer to 30-bit integer with 2 zero bits inserted between each bit (for 3D Morton code)
         static inline uint32_t Dilate10Bit(uint32_t x)
         {
@@ -73,13 +88,13 @@ namespace Surfels
             if (effectiveChunkSize <= 0.01f)
             {
                 size_t totalPoints = points.size();
-                size_t targetPointsPerChunk = 15000;
-                size_t targetChunkCount = std::max((size_t)16, std::min((size_t)512, (totalPoints + targetPointsPerChunk - 1) / targetPointsPerChunk));
+                size_t targetChunkCount = std::max(kAutoMinChunkCount, std::min(kAutoMaxChunkCount,
+                    (totalPoints + kAutoTargetPointsPerChunk - 1) / kAutoTargetPointsPerChunk));
                 int gridRes = (int)std::ceil(std::cbrt((double)targetChunkCount));
-                gridRes = std::max(2, std::min(32, gridRes));
+                gridRes = std::max(kAutoMinGridRes, std::min(kAutoMaxGridRes, gridRes));
                 effectiveChunkSize = maxDim / (float)gridRes;
             }
-            effectiveChunkSize = std::max(0.1f, effectiveChunkSize);
+            effectiveChunkSize = std::max(kMinChunkSizeMeters, effectiveChunkSize);
 
             // 2. Cluster points into discrete spatial grid cells
             struct VoxelKey

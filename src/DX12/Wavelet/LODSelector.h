@@ -1,3 +1,11 @@
+// LODSelector.h
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Screen-space-error LOD selection: given the active camera, picks the coarsest LOD
+// level per chunk whose projected geometric error still fits within a target pixel
+// budget, and sorts the result front-to-back for cache-friendly streaming priority.
+
 #pragma once
 #include <vector>
 #include <cmath>

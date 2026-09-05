@@ -1,3 +1,11 @@
+// PreprocessRenderer.h
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// GPU-side renderer for SurfelsPreprocess: owns every root signature, PSO, and GPU
+// buffer, and exposes a single State snapshot + OnRender() entry point that
+// PreprocessApp drives once per frame. See PreprocessRenderer.cpp for the implementation.
+
 #pragma once
 #include "../../src/DX12/stdafx.h"
 #include "base/Texture.h"
@@ -71,7 +79,12 @@ namespace Surfels
             float totalFrameTimeMs = 0.0f;
             float cpuSortTimeMs = 0.0f;
             float gpuSortTimeMs = 0.0f;
-            float gpuDispatchTimeMs = 0.0f;
+            float gpuDispatchTimeMs = 0.0f; // Whole draw-submission section (uploads + sort + prepass + occluder + main dispatch combined)
+            float uploadTimeMs = 0.0f;      // Surfel/chunk buffer upload submission (copy queue or direct queue fallback)
+            float silhouettePrepassTimeMs = 0.0f; // Item ID/depth prepass + GPU edge-extraction compute (only re-runs when the edge cache invalidates)
+            float occluderPassTimeMs = 0.0f;      // Interior occlusion volume draw (0 when disabled/no volume loaded)
+            float mainDispatchTimeMs = 0.0f;      // Final splat mesh shader dispatch only
+            float taaResolveTimeMs = 0.0f;        // Temporal filter compute dispatch + resolve blit (0 when TAA disabled)
             float uiDrawTimeMs = 0.0f;
             bool  wasSortedThisFrame = false;
             bool  isGPUSortActive = true;
@@ -93,6 +106,11 @@ namespace Surfels
         float GetSmoothGpuSortMs() const { return m_smoothGpuSortMs; }
         float GetSmoothDispatchMs() const { return m_smoothDispatchMs; }
         float GetSmoothUiMs() const { return m_smoothUiMs; }
+        float GetSmoothUploadMs() const { return m_smoothUploadMs; }
+        float GetSmoothSilhouettePrepassMs() const { return m_smoothSilhouettePrepassMs; }
+        float GetSmoothOccluderMs() const { return m_smoothOccluderMs; }
+        float GetSmoothMainDispatchMs() const { return m_smoothMainDispatchMs; }
+        float GetSmoothTaaMs() const { return m_smoothTaaMs; }
         const std::vector<uint32_t>& GetSilhouetteBitmask() const { return m_silhouetteBitmaskCPU; }
         uint32_t GetSilhouetteBitmaskChunkCount() const { return m_lastEdgeChunkCount; }
 
@@ -198,6 +216,11 @@ namespace Surfels
         float                      m_smoothGpuSortMs = 0.0f;
         float                      m_smoothDispatchMs = 0.0f;
         float                      m_smoothUiMs = 0.0f;
+        float                      m_smoothUploadMs = 0.0f;
+        float                      m_smoothSilhouettePrepassMs = 0.0f;
+        float                      m_smoothOccluderMs = 0.0f;
+        float                      m_smoothMainDispatchMs = 0.0f;
+        float                      m_smoothTaaMs = 0.0f;
         std::chrono::high_resolution_clock::time_point m_lastWallClockTime;
 
         ID3D12Resource*            m_pSurfelGpuOutBuffer = nullptr;

@@ -1,3 +1,11 @@
+// SurfelsSample.cpp
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Window/input/app-lifecycle shell for the Surfels_DX12 viewer: owns the ImGui control
+// panel and frame profiler, drives the per-frame AutoLOD selection + streaming update,
+// and delegates all actual GPU work to SurfelsRenderer.
+
 #include "stdafx.h"
 #include "SurfelsSample.h"
 #include "Wavelet/StreamingManager.h"
@@ -27,6 +35,7 @@ void SurfelsSample::OnParseCommandLine(LPSTR /*lpCmdLine*/, uint32_t* pWidth, ui
     m_stablePowerState = false;
 }
 
+// Boots the renderer and loads (or generates, if missing) the default streamed dataset
 void SurfelsSample::OnCreate()
 {
     InitDirectXCompiler();
@@ -54,6 +63,7 @@ void SurfelsSample::OnCreate()
     ImGUI_Init((void*)m_windowHwnd);
 }
 
+// Tears down the streaming manager, ImGui, and the renderer, in that order
 void SurfelsSample::OnDestroy()
 {
     m_streamingManager.Close();
@@ -103,6 +113,7 @@ void SurfelsSample::OnUpdateDisplay()
         m_pRenderer->OnUpdateDisplayDependentResources(&m_swapChain);
 }
 
+// Main control panel: render mode/orientation, splat sizing, streaming telemetry, and the About dialog
 void SurfelsSample::BuildUI()
 {
     ImGui::SetNextWindowPos(ImVec2(10, 10), ImGuiCond_FirstUseEver);
@@ -216,6 +227,7 @@ void SurfelsSample::BuildUI()
     }
 }
 
+// Detailed frame profiler window: CPU/GPU history graphs plus per-pass and per-stage breakdowns
 void SurfelsSample::BuildProfilerUI()
 {
     ImGui::SetNextWindowPos(ImVec2(360, 10), ImGuiCond_FirstUseEver);
@@ -548,6 +560,7 @@ void SurfelsSample::BuildProfilerUI()
     ImGui::End();
 }
 
+// Mouse-orbit/zoom camera, plus optional auto-rotate
 void SurfelsSample::UpdateCamera(const ImGuiIO& io)
 {
     if (!io.WantCaptureMouse)

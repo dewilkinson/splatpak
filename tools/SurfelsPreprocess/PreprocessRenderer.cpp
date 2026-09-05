@@ -1,3 +1,11 @@
+// PreprocessRenderer.cpp
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// The GPU heart of SurfelsPreprocess: root signatures, PSOs, and per-frame command
+// recording for the main mesh-shader splat pass, the GPU silhouette item-prepass, the
+// interior occlusion volume pass, the GPU bitonic depth sort, and TAA resolve.
+
 #include "PreprocessRenderer.h"
 #include <d3dx12.h>
 #include "Misc/Error.h"
@@ -27,6 +35,8 @@ namespace Surfels
         CD3DX12_PIPELINE_STATE_STREAM_SAMPLE_DESC           SampleDesc;
     };
 
+    // One-time setup: every root signature, PSO (splat/item-prepass/occluder/GPU-sort compute/TAA),
+    // and the dedicated copy queue used for async surfel/chunk uploads.
     void PreprocessRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
     {
         m_pDevice = pDevice;
@@ -408,6 +418,7 @@ namespace Surfels
         }
     }
 
+    // Releases every GPU resource/PSO/buffer created in OnCreate
     void PreprocessRenderer::OnDestroy()
     {
         FlushCopyQueue();
@@ -484,6 +495,8 @@ namespace Surfels
         m_resourceViewHeaps.OnDestroy();
     }
 
+    // Keeps the GPU surfel/chunk/sorted-index buffers current with pState, growing and re-uploading
+    // them only when the source data pointer, count, or camera-relative sort key actually changed.
     void PreprocessRenderer::UpdateSurfelBuffers(
         const State* pState,
         XMFLOAT3 eyePos,
@@ -1153,6 +1166,7 @@ namespace Surfels
         }
     }
 
+    // (Re)creates the depth buffer and every TAA/item-prepass texture at the new swapchain size
     void PreprocessRenderer::OnCreateWindowSizeDependentResources(SwapChain* pSwapChain, uint32_t width, uint32_t height)
     {
         m_width = width;
@@ -1226,6 +1240,7 @@ namespace Surfels
         m_temporalFirstFrame = true;
     }
 
+    // Releases the depth buffer and every TAA/item-prepass texture
     void PreprocessRenderer::OnDestroyWindowSizeDependentResources()
     {
         m_sceneColorBuffer.OnDestroy();
@@ -1238,6 +1253,8 @@ namespace Surfels
 
     void PreprocessRenderer::OnUpdateDisplayDependentResources(SwapChain* /*pSwapChain*/) {}
 
+    // The whole frame: upload surfel/chunk/occlusion buffers, run the silhouette prepass and GPU sort
+    // if needed, draw the occluder + main splat passes, then resolve TAA and draw ImGui on top.
     void PreprocessRenderer::OnRender(State* pState, SwapChain* pSwapChain)
     {
         static uint32_t s_frameCounter = 0;
@@ -1549,6 +1566,11 @@ namespace Surfels
         ID3D12Resource* pGpuOutRes = (pState->renderMode == 2) ? m_pRawSurfelGpuOutBuffer : m_pSurfelGpuOutBuffer;
         ID3D12Resource* pUploadRes = (pState->renderMode == 2) ? m_pRawSurfelBuffer : m_pSurfelBuffer;
         auto dispatchStart = std::chrono::high_resolution_clock::now();
+        m_metrics.uploadTimeMs = 0.0f;
+        m_metrics.silhouettePrepassTimeMs = 0.0f;
+        m_metrics.occluderPassTimeMs = 0.0f;
+        m_metrics.mainDispatchTimeMs = 0.0f;
+        m_metrics.taaResolveTimeMs = 0.0f;
 
         // Interior Occlusion Volume: solid depth-writing cubes drawn before the splat pass so far-side
         // surfels visible through gaps in the near side get discarded by the main pass's depth test
@@ -1558,6 +1580,8 @@ namespace Surfels
         {
             if (!pState->enableOcclusionCulling || pState->occlusionVoxelCount == 0 || m_pOcclusionVoxelBuffer == nullptr || m_pOccluderPSO == nullptr)
                 return;
+
+            auto occluderStart = std::chrono::high_resolution_clock::now();
 
             pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
             pCmdLst->SetPipelineState(m_pOccluderPSO);
@@ -1573,6 +1597,9 @@ namespace Surfels
             uint32_t dimX = std::min(pState->occlusionVoxelCount, 32768u);
             uint32_t dimY = (dimX > 0) ? ((pState->occlusionVoxelCount + dimX - 1) / dimX) : 1;
             occluderCmd6->DispatchMesh(dimX, dimY, 1);
+
+            auto occluderEnd = std::chrono::high_resolution_clock::now();
+            m_metrics.occluderPassTimeMs = std::chrono::duration<float, std::milli>(occluderEnd - occluderStart).count();
         };
         ID3D12PipelineState* pMainSplatPSO = (pState->enableOcclusionCulling && m_pPipelineStateOcclusionTest != nullptr)
             ? m_pPipelineStateOcclusionTest
@@ -1582,6 +1609,7 @@ namespace Surfels
         {
             if (m_needUploadToGpu || m_needUploadChunksToGpu)
             {
+                auto uploadStart = std::chrono::high_resolution_clock::now();
                 if (pState->useCopyQueue && m_pCopyQueue != nullptr && m_pCopyCmdList != nullptr && m_pCopyAllocator != nullptr)
                 {
                     // Ensure previous background copy execution has completed before resetting allocator
@@ -1676,6 +1704,9 @@ namespace Surfels
                 m_needUploadToGpu = false;
                 m_needUploadChunksToGpu = false;
                 m_needUploadChunkIndicesToGpu = false;
+
+                auto uploadEnd = std::chrono::high_resolution_clock::now();
+                m_metrics.uploadTimeMs = std::chrono::duration<float, std::milli>(uploadEnd - uploadStart).count();
             }
 
             bool useChunked = (pState->useChunkedPipeline && pState->chunkCount > 0 && m_pChunkGpuBuffer != nullptr && m_pSortedChunkIndicesGpuBuffer != nullptr);
@@ -1881,6 +1912,8 @@ namespace Surfels
 
                 if (!pState->showOcclusionVolumeOnly)
                 {
+                    auto mainDispatchStart = std::chrono::high_resolution_clock::now();
+
                     pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
                     pCmdLst->SetPipelineState(pMainSplatPSO);
                     pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
@@ -1894,6 +1927,9 @@ namespace Surfels
                     pCmdLst->QueryInterface(IID_PPV_ARGS(&cmdList6));
                     uint32_t asGroupCount = (chunkCount + AS_GROUP_SIZE - 1) / AS_GROUP_SIZE;
                     cmdList6->DispatchMesh(asGroupCount, 1, 1);
+
+                    auto mainDispatchEnd = std::chrono::high_resolution_clock::now();
+                    m_metrics.mainDispatchTimeMs += std::chrono::duration<float, std::milli>(mainDispatchEnd - mainDispatchStart).count();
                 }
             }
             // Execute Flat GPU LDS Key-Index Sorting Pipeline
@@ -2083,6 +2119,8 @@ namespace Surfels
 
             if (edgeNeedsRecalc)
             {
+                auto silhouettePrepassStart = std::chrono::high_resolution_clock::now();
+
                 if (bitmaskBytes > m_bitmaskCapacityBytes)
                 {
                     // Unlike every other resize path in this file, this one was releasing live GPU
@@ -2226,6 +2264,9 @@ namespace Surfels
                 pCmdLst->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
                 pCmdLst->RSSetViewports(1, &viewport);
                 pCmdLst->RSSetScissorRects(1, &scissor);
+
+                auto silhouettePrepassEnd = std::chrono::high_resolution_clock::now();
+                m_metrics.silhouettePrepassTimeMs = std::chrono::duration<float, std::milli>(silhouettePrepassEnd - silhouettePrepassStart).count();
             }
 
             DrawOccluderPass();
@@ -2233,6 +2274,8 @@ namespace Surfels
             // Draw Main Mesh Shader Pass
             if (!pState->showOcclusionVolumeOnly)
             {
+                auto mainDispatchStart2 = std::chrono::high_resolution_clock::now();
+
                 pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
                 pCmdLst->SetPipelineState(pMainSplatPSO);
                 pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
@@ -2255,6 +2298,9 @@ namespace Surfels
                 }
 
                 cmdList6->DispatchMesh(groupCount, 1, 1);
+
+                auto mainDispatchEnd2 = std::chrono::high_resolution_clock::now();
+                m_metrics.mainDispatchTimeMs += std::chrono::duration<float, std::milli>(mainDispatchEnd2 - mainDispatchStart2).count();
             }
         }
         auto dispatchEnd = std::chrono::high_resolution_clock::now();
@@ -2265,6 +2311,8 @@ namespace Surfels
         // -------------------------------------------------------------------------
         if (pState->enableTemporalFiltering && m_pTemporalPSO != nullptr && m_pTemporalRootSig != nullptr)
         {
+            auto taaStart = std::chrono::high_resolution_clock::now();
+
             // Transition resources for Temporal Filter compute pass
             D3D12_RESOURCE_BARRIER preTemporalBarriers[4] = {};
             preTemporalBarriers[0] = CD3DX12_RESOURCE_BARRIER::Transition(m_sceneColorBuffer.GetResource(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
@@ -2330,6 +2378,9 @@ namespace Surfels
 
             XMStoreFloat4x4(&m_prevViewProj, unjitteredViewProj);
             m_temporalFirstFrame = false;
+
+            auto taaEnd = std::chrono::high_resolution_clock::now();
+            m_metrics.taaResolveTimeMs = std::chrono::duration<float, std::milli>(taaEnd - taaStart).count();
         }
         else
         {
@@ -2394,5 +2445,19 @@ namespace Surfels
         }
         m_smoothDispatchMs = (m_smoothDispatchMs > 0.0001f) ? (m_smoothDispatchMs * 0.85f + m_metrics.gpuDispatchTimeMs * 0.15f) : m_metrics.gpuDispatchTimeMs;
         m_smoothUiMs = (m_smoothUiMs > 0.0001f) ? (m_smoothUiMs * 0.85f + m_metrics.uiDrawTimeMs * 0.15f) : m_metrics.uiDrawTimeMs;
+
+        // Upload and silhouette prepass are cached/sporadic (only re-run when dirty or the view/edge
+        // cache invalidates) -- only feed the EMA on the frames they actually ran, holding the last
+        // representative cost otherwise, same as m_smoothGpuSortMs above.
+        if (m_metrics.uploadTimeMs > 0.0001f)
+            m_smoothUploadMs = (m_smoothUploadMs > 0.0001f) ? (m_smoothUploadMs * 0.85f + m_metrics.uploadTimeMs * 0.15f) : m_metrics.uploadTimeMs;
+        if (m_metrics.silhouettePrepassTimeMs > 0.0001f)
+            m_smoothSilhouettePrepassMs = (m_smoothSilhouettePrepassMs > 0.0001f) ? (m_smoothSilhouettePrepassMs * 0.85f + m_metrics.silhouettePrepassTimeMs * 0.15f) : m_metrics.silhouettePrepassTimeMs;
+
+        // Occluder pass and main dispatch run every frame they're active, and TAA resolve runs every
+        // frame it's enabled -- plain EMA so they decay toward 0 when that stage turns off.
+        m_smoothOccluderMs = (m_smoothOccluderMs > 0.0001f) ? (m_smoothOccluderMs * 0.85f + m_metrics.occluderPassTimeMs * 0.15f) : m_metrics.occluderPassTimeMs;
+        m_smoothMainDispatchMs = (m_smoothMainDispatchMs > 0.0001f) ? (m_smoothMainDispatchMs * 0.85f + m_metrics.mainDispatchTimeMs * 0.15f) : m_metrics.mainDispatchTimeMs;
+        m_smoothTaaMs = (m_smoothTaaMs > 0.0001f) ? (m_smoothTaaMs * 0.85f + m_metrics.taaResolveTimeMs * 0.15f) : m_metrics.taaResolveTimeMs;
     }
 }

@@ -1,3 +1,11 @@
+// QualityMetrics.h
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Compares a compressed/quantized surfel set against its raw source to report geometric
+// and color fidelity (RMSE, PSNR, Hausdorff distance, SSIM, mean normal error), plus a
+// Turbo-colormap error heatmap generator for visualizing where quality loss is concentrated.
+
 #pragma once
 #include <vector>
 #include <cmath>
@@ -7,6 +15,12 @@
 
 namespace Surfels
 {
+    // ITU-R BT.601 luma weights, used by both ComputeQuality (SSIM) and any future luminance need.
+    static constexpr double kLumaWeightR = 0.299;
+    static constexpr double kLumaWeightG = 0.587;
+    static constexpr double kLumaWeightB = 0.114;
+    static constexpr double kPi = 3.14159265358979323846;
+
     struct QualityReport
     {
         double   geometricRmseMM     = 0.0; // Root Mean Square Error in mm
@@ -109,12 +123,12 @@ namespace Surfels
                 // 3. Normal Angular Error (degrees)
                 double dotN = (double)r.normal.x * c.normal.x + (double)r.normal.y * c.normal.y + (double)r.normal.z * c.normal.z;
                 dotN = std::max(-1.0, std::min(1.0, dotN));
-                double angleDeg = std::acos(dotN) * (180.0 / 3.14159265358979323846);
+                double angleDeg = std::acos(dotN) * (180.0 / kPi);
                 sumNormalAngleDeg += angleDeg;
 
                 // Luminance for SSIM (ITU-R BT.601)
-                double lRaw = 0.299 * r.color.x + 0.587 * r.color.y + 0.114 * r.color.z;
-                double lComp = 0.299 * c.color.x + 0.587 * c.color.y + 0.114 * c.color.z;
+                double lRaw = kLumaWeightR * r.color.x + kLumaWeightG * r.color.y + kLumaWeightB * r.color.z;
+                double lComp = kLumaWeightR * c.color.x + kLumaWeightG * c.color.y + kLumaWeightB * c.color.z;
                 meanRawY += lRaw;
                 meanCompY += lComp;
             }
@@ -130,8 +144,8 @@ namespace Surfels
             {
                 const auto& r = rawSurfels[i];
                 const auto& c = compSurfels[i];
-                double lRaw = 0.299 * r.color.x + 0.587 * r.color.y + 0.114 * r.color.z;
-                double lComp = 0.299 * c.color.x + 0.587 * c.color.y + 0.114 * c.color.z;
+                double lRaw = kLumaWeightR * r.color.x + kLumaWeightG * r.color.y + kLumaWeightB * r.color.z;
+                double lComp = kLumaWeightR * c.color.x + kLumaWeightG * c.color.y + kLumaWeightB * c.color.z;
 
                 double dr = lRaw - meanRawY;
                 double dc = lComp - meanCompY;
@@ -230,7 +244,7 @@ namespace Surfels
                 {
                     float dotN = r.normal.x * c.normal.x + r.normal.y * c.normal.y + r.normal.z * c.normal.z;
                     dotN = std::max(-1.0f, std::min(1.0f, dotN));
-                    float angleDeg = std::acos(dotN) * (180.0f / 3.14159265f);
+                    float angleDeg = std::acos(dotN) * (180.0f / (float)kPi);
                     t = angleDeg / 15.0f; // Clamped at 15 degrees
                 }
 

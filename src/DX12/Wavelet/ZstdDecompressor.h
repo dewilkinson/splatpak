@@ -1,3 +1,11 @@
+// ZstdDecompressor.h
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Runtime-side chunk decompressor: reverses ByteShuffle's shuffle+RLE codec back into a
+// PackedSurfelGPU array. Named for the format's eventual real entropy coder; today it
+// wraps the lightweight ByteShuffle RLE codec described in ByteShuffle.h.
+
 #pragma once
 #include <vector>
 #include <cstdint>

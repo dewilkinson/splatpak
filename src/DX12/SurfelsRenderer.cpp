@@ -1,3 +1,12 @@
+// SurfelsRenderer.cpp
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// GPU-side rendering for the Surfels_DX12 viewer: root signature/PSO setup, the
+// per-frame surfel buffer upload, GPU bitonic depth sort, and the mesh shader splat
+// dispatch itself. See PreprocessRenderer.cpp for the fancier preprocessor-side
+// renderer this one is the simpler cousin of.
+
 #include "stdafx.h"
 #include "SurfelsRenderer.h"
 #include "Misc/Error.h"
@@ -34,6 +43,7 @@ struct MeshShaderPipelineStateStream
     CD3DX12_PIPELINE_STATE_STREAM_SAMPLE_DESC           SampleDesc;
 };
 
+// One-time setup: descriptor heaps, root signature/PSOs (main splat + GPU sort compute), copy queue
 void SurfelsRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
 {
     m_pDevice = pDevice;
@@ -208,6 +218,7 @@ void SurfelsRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
     }
 }
 
+// Releases every GPU resource/PSO created in OnCreate
 void SurfelsRenderer::OnDestroy()
 {
     if (m_pCopyQueue && m_pCopyFence)
@@ -252,6 +263,7 @@ void SurfelsRenderer::OnDestroy()
     m_resourceViewHeaps.OnDestroy();
 }
 
+// (Re)creates the depth buffer at the new swapchain size
 void SurfelsRenderer::OnCreateWindowSizeDependentResources(SwapChain* /*pSwapChain*/, uint32_t width, uint32_t height)
 {
     m_width = width;
@@ -266,11 +278,13 @@ void SurfelsRenderer::OnDestroyWindowSizeDependentResources()
     m_depthBuffer.OnDestroy();
 }
 
+// Rebuilds the ImGui pipeline if the swapchain format changed (HDR toggle, etc.)
 void SurfelsRenderer::OnUpdateDisplayDependentResources(SwapChain* pSwapChain)
 {
     m_imGui.UpdatePipeline(pSwapChain->GetFormat());
 }
 
+// The whole frame: upload/sort surfels, dispatch the mesh shader splat pass, draw ImGui, present
 void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
 {
     // Throttle the CPU so it doesn't get more than (BackBufferCount - 1) frames

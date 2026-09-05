@@ -1,6 +1,10 @@
 // GPURadixSortCS.hlsl
-// High-Performance GPU Bitonic Depth Sort Compute Shader with LDS & Key-Index Pairs
-// DirectX 12 Compute Shader 5.1 / 6.0
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// High-performance GPU bitonic depth sort (LDS local sort + global merge stages, key-index
+// pairs) used to keep overlapping alpha-blended splats/chunks in correct back-to-front
+// order every frame without a CPU round-trip. Targets Compute Shader 5.1/6.0.
 
 cbuffer BitonicSortCB : register(b0)
 {

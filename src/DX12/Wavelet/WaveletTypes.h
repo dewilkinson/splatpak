@@ -1,3 +1,12 @@
+// WaveletTypes.h
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Shared data types for the wavelet streaming pipeline: the .sflw file format (magic/
+// version/header), GPU-packed surfel and meshlet-chunk structs, and the pack/unpack
+// helpers that convert between them. Included by every preprocessor and viewer file
+// that touches surfel or chunk data, on both the CPU and (conceptually) GPU side.
+
 #pragma once
 #include <cstdint>
 #include <cmath>
@@ -9,6 +18,11 @@
 namespace Surfels
 {
     using namespace DirectX;
+
+    // Shared by every raw point-cloud loader (PLYLoader, SPLATLoader): source coordinates farther than
+    // this from the origin trigger origin-shifting so downstream single-precision float math doesn't
+    // lose precision on real-world geospatial datasets (e.g. absolute UTM/ECEF coordinates).
+    static constexpr double kGeospatialOffsetThreshold = 10000.0;
 
     // Magic bytes for .sflw binary stream container ("SFLW" in ASCII)
     static constexpr uint32_t SFLW_MAGIC = 0x574C4653;
@@ -22,17 +36,23 @@ namespace Surfels
 
     // A single solid occluder cube: interior/enclosed geometry generated at preprocessing time so the
     // (alpha-blended, non-depth-writing) surfel splat pass can depth-test against it and avoid seeing
-    // through gaps in a sparse point cloud to surfels on the far side. halfSize already has the
-    // preprocessing-time "baked" shrink factor applied; the renderer additionally applies a live,
-    // interactive shrink multiplier on top at draw time (see SurfelsCB::occlusionShrink).
+    // through gaps in a sparse point cloud to surfels on the far side. Voxels are only ever emitted for
+    // cells that survive a 1-layer erosion against the model's outer surface shell (so the occluder never
+    // touches, let alone pokes through, the true surface from any view angle); halfSize on top of that
+    // already has the preprocessing-time "baked" shrink factor applied for extra leeway, and the renderer
+    // additionally applies a live, interactive shrink multiplier on top at draw time (see
+    // SurfelsCB::occlusionShrinkRuntime). packedColor is an RGB565-encoded bake of the average color of
+    // the nearest surfels reachable without crossing empty (exterior/visible) space -- see
+    // PreprocessApp::BuildOcclusionVolume.
     #pragma pack(push, 1)
     struct OcclusionVoxelGPU
     {
         XMFLOAT3 center;
         float    halfSize;
+        uint32_t packedColor; // RGB565, see Quantizer/UnpackColorRGB565
     };
     #pragma pack(pop)
-    static_assert(sizeof(OcclusionVoxelGPU) == 16, "OcclusionVoxelGPU must be exactly 16 bytes");
+    static_assert(sizeof(OcclusionVoxelGPU) == 20, "OcclusionVoxelGPU must be exactly 20 bytes");
 
     // Packed 8-byte GPU Surfel structure
     // Layout:

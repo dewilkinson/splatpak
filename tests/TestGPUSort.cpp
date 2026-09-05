@@ -1,4 +1,11 @@
-// tests/TestGPUSort.cpp - Standalone GPU Bitonic / Radix Depth Sort Verification Tool
+// TestGPUSort.cpp
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Standalone GPU bitonic/radix depth sort verification tool: runs GPURadixSortCS.hlsl
+// against known data on a raw D3D12 device (no Cauldron/app dependency) and checks the
+// result against a CPU reference sort.
+
 #define NOMINMAX
 #include <windows.h>
 #include <d3d12.h>

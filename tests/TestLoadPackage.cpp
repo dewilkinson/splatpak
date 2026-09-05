@@ -1,4 +1,11 @@
-﻿#include <iostream>
+﻿// TestLoadPackage.cpp
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Smoke test: loads a known .sflw package and prints its chunk/surfel counts, to sanity
+// check StreamPackager::LoadPackage without needing the full viewer or preprocessor app.
+
+#include <iostream>
 #include "../tools/SurfelsPreprocess/StreamPackager.h"
 
 int main()

@@ -1,6 +1,10 @@
 // SilhouetteEdgeExtractCS.hlsl
-// GPU Item Buffer & Depth Discontinuity Edge Inversion Compute Shader
-// DirectX 12 Compute Shader 6.0
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Reads the low-res item-ID/depth prepass (see itemMS/itemPS in Surfels.hlsl) and flags
+// every chunk touching a screen-space depth or chunk-ID discontinuity into a bitmask, so
+// the streaming simulation can bias those chunks toward the finest LOD first. CS 6.0.
 
 cbuffer EdgeExtractCB : register(b0)
 {

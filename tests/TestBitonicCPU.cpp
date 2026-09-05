@@ -1,4 +1,10 @@
-// tests/TestBitonicCPU.cpp
+// TestBitonicCPU.cpp
+// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SPDX-License-Identifier: Apache-2.0
+//
+// Standalone CPU reference implementation of the bitonic sort network used by
+// GPURadixSortCS.hlsl -- verifies the algorithm's correctness in isolation, without a GPU.
+
 #include <iostream>
 #include <vector>
 #include <random>

@@ -1,5 +1,7 @@
 # Surfels
 
+> Just want to use the app? See the [User Guide](USER_GUIDE.md) instead — this README covers the technical architecture.
+
 A GPU-driven DirectX 12 **mesh shader** renderer for massive surfel/point-cloud
 datasets — wavelet-based multi-resolution LOD streaming and GPU silhouette
 refinement, with geometry generated, culled, sorted, and cross-faded entirely
