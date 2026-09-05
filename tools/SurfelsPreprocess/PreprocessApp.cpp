@@ -136,6 +136,57 @@ namespace Surfels
         return out;
     }
 
+    // The repo root, i.e. the parent of the folder the executable lives in (always "bin/" in every
+    // launch configuration this project ships -- the launch scripts, Visual Studio's
+    // VS_DEBUGGER_WORKING_DIRECTORY, and a normal Explorer double-click all agree on that). Falls back
+    // to the current working directory if the executable's own path can't be read for some reason.
+    std::string PreprocessApp::GetProjectRootFolder() const
+    {
+        char exePath[MAX_PATH] = {};
+        if (GetModuleFileNameA(nullptr, exePath, MAX_PATH) > 0)
+        {
+            std::string exeDir = exePath;
+            size_t slash = exeDir.find_last_of("\/");
+            if (slash != std::string::npos)
+            {
+                exeDir = exeDir.substr(0, slash); // Strip the exe filename -> .../bin
+                size_t parentSlash = exeDir.find_last_of("\/");
+                if (parentSlash != std::string::npos)
+                {
+                    return exeDir.substr(0, parentSlash); // Strip "bin" -> project root
+                }
+            }
+        }
+        char cwd[MAX_PATH] = {};
+        GetCurrentDirectoryA(MAX_PATH, cwd);
+        return cwd;
+    }
+
+    // Open/Save dialogs start in whichever folder the user last browsed to (if it's still there),
+    // so re-opening the dialog picks up where they left off; otherwise the project root.
+    std::string PreprocessApp::GetDialogDefaultFolder() const
+    {
+        if (!m_lastDialogFolder.empty() && GetFileAttributesA(m_lastDialogFolder.c_str()) != INVALID_FILE_ATTRIBUTES)
+        {
+            return m_lastDialogFolder;
+        }
+        return GetProjectRootFolder();
+    }
+
+    // Called after a successful (non-cancelled) Open/Save dialog. If the user browsed to a different
+    // folder than the one currently remembered, updates it and writes config.json immediately (not
+    // deferred to app shutdown) so the choice survives even if the app is closed abnormally.
+    void PreprocessApp::RememberDialogFolder(const std::string& filePath)
+    {
+        if (filePath.empty()) return;
+        size_t slash = filePath.find_last_of("\/");
+        if (slash == std::string::npos) return;
+        std::string folder = filePath.substr(0, slash);
+        if (folder == m_lastDialogFolder) return;
+        m_lastDialogFolder = folder;
+        SaveConfigFile();
+    }
+
     // Reads config.json/surfels_config.ini for dev mode, the startup dataset path, and other app settings
     void PreprocessApp::LoadConfigFile()
     {
@@ -212,6 +263,33 @@ namespace Surfels
                         }
                     }
 
+                    // Last folder the user browsed to in an Open/Save dialog (JSON or INI) -- makes the
+                    // dialogs remember where the user left off across sessions instead of always
+                    // resetting to the project root. See RememberDialogFolder/GetDialogDefaultFolder.
+                    {
+                        size_t fPos = line.find("\"last_dialog_folder\":");
+                        size_t eqPos = std::string::npos;
+                        if (fPos != std::string::npos) eqPos = line.find(':', fPos);
+                        else if (line.find("last_dialog_folder=") != std::string::npos) eqPos = line.find('=');
+                        else if (line.find("LastDialogFolder=") != std::string::npos) eqPos = line.find('=');
+                        if (eqPos != std::string::npos)
+                        {
+                            size_t q1 = line.find('"', eqPos + 1);
+                            std::string val;
+                            if (q1 != std::string::npos)
+                            {
+                                size_t q2 = line.find('"', q1 + 1);
+                                if (q2 != std::string::npos) val = line.substr(q1 + 1, q2 - q1 - 1);
+                            }
+                            else
+                            {
+                                val = line.substr(eqPos + 1);
+                                while (!val.empty() && (val.back() == '\r' || val.back() == ' ')) val.pop_back();
+                            }
+                            if (!val.empty()) m_lastDialogFolder = val;
+                        }
+                    }
+
                     // Startup Dataset Path (JSON or INI) -- auto-loaded on launch, see OnCreate()
                     size_t sPos = line.find("\"startup_dataset\":");
                     if (sPos == std::string::npos) sPos = line.find("\"startup_path\":");
@@ -273,7 +351,8 @@ namespace Surfels
             out << "  \"default_chunk_size\": 16.0,\n";
             out << "  \"default_max_lods\": 4,\n";
             out << "  \"default_deadband_mm\": 3.0,\n";
-            out << "  \"occlusion_shave_bias\": " << m_occlusionShaveBiasCells << "\n";
+            out << "  \"occlusion_shave_bias\": " << m_occlusionShaveBiasCells << ",\n";
+            out << "  \"last_dialog_folder\": \"" << m_lastDialogFolder << "\"\n";
             out << "}\n";
             out.close();
         }
@@ -533,26 +612,14 @@ namespace Surfels
                 pFileOpen->SetDefaultExtension(wDef.c_str());
             }
 
-            // Point default folder to C:\github\datasets, datasets, or data
+            // Default folder: wherever the user last browsed to (if it still exists), else the
+            // project root -- see GetDialogDefaultFolder(); RememberDialogFolder() below updates it
+            // once the dialog returns, persisting to config.json so it survives future sessions.
             IShellItem* pDefaultFolder = nullptr;
             wchar_t fullDataPath[MAX_PATH] = L"";
-            GetFullPathNameW(L"C:\\github\\datasets", MAX_PATH, fullDataPath, NULL);
-            if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
-            {
-                GetFullPathNameW(L"datasets", MAX_PATH, fullDataPath, NULL);
-            }
-            if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
-            {
-                GetFullPathNameW(L"..\\datasets", MAX_PATH, fullDataPath, NULL);
-            }
-            if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
-            {
-                GetFullPathNameW(L"data", MAX_PATH, fullDataPath, NULL);
-            }
-            if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
-            {
-                GetFullPathNameW(L"..\\data", MAX_PATH, fullDataPath, NULL);
-            }
+            std::string defaultFolder = GetDialogDefaultFolder();
+            std::wstring wDefaultFolder(defaultFolder.begin(), defaultFolder.end());
+            GetFullPathNameW(wDefaultFolder.c_str(), MAX_PATH, fullDataPath, NULL);
             if (GetFileAttributesW(fullDataPath) != INVALID_FILE_ATTRIBUTES)
             {
                 if (SUCCEEDED(SHCreateItemFromParsingName(fullDataPath, NULL, IID_IShellItem, reinterpret_cast<void**>(&pDefaultFolder))))
@@ -612,6 +679,7 @@ namespace Surfels
             SetCurrentDirectoryA(currentDir);
         }
 
+        RememberDialogFolder(resultPath);
         return resultPath;
     }
 
@@ -673,25 +741,14 @@ namespace Surfels
                 pFileSave->SetTitle(wTitle.c_str());
             }
 
+            // Default folder: wherever the user last browsed to (if it still exists), else the
+            // project root -- see GetDialogDefaultFolder(); RememberDialogFolder() below updates it
+            // once the dialog returns, persisting to config.json so it survives future sessions.
             IShellItem* pDefaultFolder = nullptr;
             wchar_t fullDataPath[MAX_PATH] = L"";
-            GetFullPathNameW(L"C:\\github\\datasets", MAX_PATH, fullDataPath, NULL);
-            if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
-            {
-                GetFullPathNameW(L"datasets", MAX_PATH, fullDataPath, NULL);
-            }
-            if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
-            {
-                GetFullPathNameW(L"..\\datasets", MAX_PATH, fullDataPath, NULL);
-            }
-            if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
-            {
-                GetFullPathNameW(L"data", MAX_PATH, fullDataPath, NULL);
-            }
-            if (GetFileAttributesW(fullDataPath) == INVALID_FILE_ATTRIBUTES)
-            {
-                GetFullPathNameW(L"..\\data", MAX_PATH, fullDataPath, NULL);
-            }
+            std::string defaultFolder = GetDialogDefaultFolder();
+            std::wstring wDefaultFolder(defaultFolder.begin(), defaultFolder.end());
+            GetFullPathNameW(wDefaultFolder.c_str(), MAX_PATH, fullDataPath, NULL);
             if (GetFileAttributesW(fullDataPath) != INVALID_FILE_ATTRIBUTES)
             {
                 if (SUCCEEDED(SHCreateItemFromParsingName(fullDataPath, NULL, IID_IShellItem, reinterpret_cast<void**>(&pDefaultFolder))))
@@ -751,6 +808,7 @@ namespace Surfels
             SetCurrentDirectoryA(currentDir);
         }
 
+        RememberDialogFolder(resultPath);
         return resultPath;
     }
 
