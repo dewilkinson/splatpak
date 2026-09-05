@@ -1,9 +1,9 @@
-# SurfelsCore
+# bluesec-codec
 
 This directory holds the algorithmic core of Surfels: the lifting-wavelet LOD decomposition
 (`LiftingWavelet.h`/`.cpp`), the compression codec (`ByteShuffle.h`/`.cpp`), and the interior
 occlusion volume generator (`OcclusionVolume.h`/`.cpp`). It builds as a single static library,
-`SurfelsCore`, that `SplatLab`, `Surfels_DX12`, and the console test tools link against.
+`bluesec-codec`, that `SplatLab`, `Surfels_DX12`, and the console test tools link against.
 
 ## Licensing boundary
 
@@ -19,7 +19,7 @@ decision -- don't assume the top-level `LICENSE` file extends to it.
 Each module here is split into a public header (data structures and function
 declarations -- the API contract callers need) and a `.cpp` implementation (the actual
 algorithm). Only the headers are visible to anything that links against the compiled
-`SurfelsCore.lib`; the `.cpp` sources never need to leave this directory for the project to
+`bluesec-codec.lib`; the `.cpp` sources never need to leave this directory for the project to
 build and run. This is a source-distribution boundary, not an anti-reverse-engineering
 measure -- a shipped binary can still be disassembled by a sufficiently motivated party, DXIL
 shaders in particular ship as plain-text `.hlsl` next to every executable today (see

@@ -46,7 +46,7 @@ source_group("Shaders" FILES ${shaders})
 copyTargetCommand("${shaders}" ${CMAKE_HOME_DIRECTORY}/bin/ShaderLibDX copied_preprocess_shaders)
 
 add_executable(SplatLab WIN32 ${sources} ${shaders})
-target_link_libraries(SplatLab LINK_PUBLIC Cauldron_DX12 ImGUI amd_ags d3d12 dxgi SurfelsCore)
+target_link_libraries(SplatLab LINK_PUBLIC Cauldron_DX12 ImGUI amd_ags d3d12 dxgi bluesec-codec)
 add_dependencies(SplatLab copied_preprocess_shaders)
 
 set_target_properties(SplatLab PROPERTIES

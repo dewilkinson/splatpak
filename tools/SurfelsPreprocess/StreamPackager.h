@@ -16,8 +16,8 @@
 #include <vector>
 #include "SpatialOctree.h"
 #include "Quantizer.h"
-#include "../../libs/SurfelsCore/LiftingWavelet.h"
-#include "../../libs/SurfelsCore/ByteShuffle.h"
+#include "../../libs/bluesec-codec/LiftingWavelet.h"
+#include "../../libs/bluesec-codec/ByteShuffle.h"
 
 namespace Surfels
 {

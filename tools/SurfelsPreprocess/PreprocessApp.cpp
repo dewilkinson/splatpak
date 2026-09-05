@@ -7,7 +7,7 @@
 // PreprocessApp.h for the class overview and PreprocessRenderer.cpp for the GPU side.
 
 #include "PreprocessApp.h"
-#include "../../libs/SurfelsCore/OcclusionVolume.h"
+#include "../../libs/bluesec-codec/OcclusionVolume.h"
 #include <DirectXCollision.h>
 #include <iomanip>
 #include <sstream>
