@@ -326,6 +326,7 @@ namespace Surfels
         void   TriggerSilhouetteEdgeMorphTest();
 
         void  DrawLODResidencyEqualizer();
+        void  DrawOcclusionVolumeControls();
         void  RebuildHeatmapClusterCubes();
         void  DrawOctreeVisualizer();
     };

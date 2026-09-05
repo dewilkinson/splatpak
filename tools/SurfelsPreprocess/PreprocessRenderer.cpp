@@ -230,8 +230,12 @@ namespace Surfels
         // direct-dispatch (no AS stage) shape as the item prepass above.
         D3D12_SHADER_BYTECODE occluderMs = {};
         D3D12_SHADER_BYTECODE occluderPs = {};
-        CompileShaderFromFile("Surfels.hlsl", NULL, "occluderMS", "-T ms_6_5", &occluderMs);
-        CompileShaderFromFile("Surfels.hlsl", NULL, "occluderPS", "-T ps_6_5", &occluderPs);
+        bool occluderShadersOk = CompileShaderFromFile("Surfels.hlsl", NULL, "occluderMS", "-T ms_6_5", &occluderMs) && occluderMs.pShaderBytecode != nullptr;
+        occluderShadersOk = (CompileShaderFromFile("Surfels.hlsl", NULL, "occluderPS", "-T ps_6_5", &occluderPs) && occluderPs.pShaderBytecode != nullptr) && occluderShadersOk;
+        if (!occluderShadersOk)
+        {
+            LogTransitionTrace("PreprocessRenderer::OnCreate ERROR: Failed to compile occluderMS/occluderPS -- occlusion volume feature will be a silent no-op.");
+        }
 
         MeshShaderPipelineStateStream occluderStream = {};
         occluderStream.RootSignature = m_pRootSignature;
@@ -248,7 +252,11 @@ namespace Surfels
         D3D12_PIPELINE_STATE_STREAM_DESC occluderStreamDesc = {};
         occluderStreamDesc.SizeInBytes = sizeof(occluderStream);
         occluderStreamDesc.pPipelineStateSubobjectStream = &occluderStream;
-        device2->CreatePipelineState(&occluderStreamDesc, IID_PPV_ARGS(&m_pOccluderPSO));
+        HRESULT hrOccluderPSO = device2->CreatePipelineState(&occluderStreamDesc, IID_PPV_ARGS(&m_pOccluderPSO));
+        if (FAILED(hrOccluderPSO))
+        {
+            LogTransitionTrace("PreprocessRenderer::OnCreate ERROR: CreatePipelineState(occluder) failed hr=0x%08X -- occlusion volume feature will be a silent no-op.", (unsigned int)hrOccluderPSO);
+        }
 
         // Depth-test-only variant of the main splat pipeline: same mainAS/mainMS/mainPS as m_pPipelineState,
         // but tests (does not write) depth so splats behind the occluder volume above get discarded, while
@@ -267,7 +275,11 @@ namespace Surfels
         D3D12_PIPELINE_STATE_STREAM_DESC occlusionTestStreamDesc = {};
         occlusionTestStreamDesc.SizeInBytes = sizeof(occlusionTestStream);
         occlusionTestStreamDesc.pPipelineStateSubobjectStream = &occlusionTestStream;
-        device2->CreatePipelineState(&occlusionTestStreamDesc, IID_PPV_ARGS(&m_pPipelineStateOcclusionTest));
+        HRESULT hrOcclusionTestPSO = device2->CreatePipelineState(&occlusionTestStreamDesc, IID_PPV_ARGS(&m_pPipelineStateOcclusionTest));
+        if (FAILED(hrOcclusionTestPSO))
+        {
+            LogTransitionTrace("PreprocessRenderer::OnCreate ERROR: CreatePipelineState(occlusionTest) failed hr=0x%08X -- occlusion culling will silently do nothing on the main splat pass.", (unsigned int)hrOcclusionTestPSO);
+        }
 
         // Create Silhouette Edge Extraction and Clear Compute Shaders
         m_clearBitmaskCS.OnCreate(pDevice, &m_resourceViewHeaps, "SilhouetteEdgeExtractCS.hlsl", "clearBitmaskCS", 1, 0, 0, 0, 0);
@@ -1578,7 +1590,11 @@ namespace Surfels
         // it only needs viewProj/eye and the occlusion-specific fields added to that struct.
         auto DrawOccluderPass = [&]()
         {
-            if (!pState->enableOcclusionCulling || pState->occlusionVoxelCount == 0 || m_pOcclusionVoxelBuffer == nullptr || m_pOccluderPSO == nullptr)
+            // Drawn whenever culling is enabled OR the user just wants to look at the volume on its
+            // own -- "view only" must not require "enable culling" too, or the two together would draw
+            // neither the occluder (culling off) nor the splats (view-only skips them): a blank screen.
+            bool wantOccluderVisible = pState->enableOcclusionCulling || pState->showOcclusionVolumeOnly;
+            if (!wantOccluderVisible || pState->occlusionVoxelCount == 0 || m_pOcclusionVoxelBuffer == nullptr || m_pOccluderPSO == nullptr)
                 return;
 
             auto occluderStart = std::chrono::high_resolution_clock::now();

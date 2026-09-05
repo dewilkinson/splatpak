@@ -1120,6 +1120,18 @@ namespace Surfels
         UpdatePreviewSurfels();
         RebuildHeatmapClusterCubes();
 
+        // Keep the baked occlusion volume in sync with the checkbox/sliders on every pipeline update,
+        // same as everything else here -- so it's immediately visible/toggleable without needing to
+        // export and reload a package first (see ProcessAndExport, which now just uses this directly).
+        if (m_generateOcclusionVolume)
+        {
+            BuildOcclusionVolume();
+        }
+        else
+        {
+            m_occlusionVoxels.clear();
+        }
+
         m_pipelineNeedsUpdate = false;
         m_packageReadyToSave = true;
     }
@@ -1332,15 +1344,9 @@ namespace Surfels
         m_statusMessage = "Processing and exporting stream package to: " + outputPath + "...";
         float deadbandMeters = m_deadbandThresholdMM / 1000.0f;
 
-        if (m_generateOcclusionVolume)
-        {
-            BuildOcclusionVolume();
-        }
-        else
-        {
-            m_occlusionVoxels.clear();
-        }
-
+        // m_occlusionVoxels is already current -- RecomputeWaveletHierarchy ("Update Pipeline") rebuilds
+        // it from the checkbox/sliders, and "Save Compressed Package" is disabled while a pipeline
+        // update is still pending (see canSave in BuildUI), so it can't be stale here.
         if (StreamPackager::PackageDataset(outputPath, m_chunks, m_maxLODLevels, deadbandMeters, m_state.splatRadius, m_occlusionVoxels))
         {
             m_statusMessage = "Success! Created " + outputPath + ".sflw (" + std::to_string(m_compressedSizeMB) + " MB) and " + outputPath + ".json";
@@ -1951,8 +1957,12 @@ namespace Surfels
 
                 ImGui::Spacing();
                 ImGui::Separator();
-                ImGui::Checkbox("Generate Interior Occlusion Volume", &m_generateOcclusionVolume);
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bakes solid occluder cubes into the interior of the model on export, so the viewer can optionally depth-test against them to hide far-side surfels visible through gaps in a sparse near side. Disabled by default; re-run 'Update Pipeline' after changing.");
+                if (ImGui::Checkbox("Generate Interior Occlusion Volume", &m_generateOcclusionVolume))
+                {
+                    m_pipelineNeedsUpdate = true;
+                    m_packageReadyToSave = false;
+                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bakes solid occluder cubes into the interior of the model so the renderer can optionally depth-test against them to hide far-side surfels visible through gaps in a sparse near side. Disabled by default; click 'Update Pipeline' below to apply.");
                 if (m_generateOcclusionVolume)
                 {
                     if (ImGui::SliderInt("Voxel Resolution", &m_occlusionVoxelResolution, 8, 64))
@@ -1968,6 +1978,13 @@ namespace Surfels
                         m_packageReadyToSave = false;
                     }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Extra shrink applied to every occluder cube and saved into the file, on top of the guaranteed 1-voxel erosion against the model's surface shell. Lower values leave more leeway against poke-through.");
+                }
+
+                if (!m_occlusionVoxels.empty())
+                {
+                    ImGui::Spacing();
+                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Baked: %zu occluder cubes", m_occlusionVoxels.size());
+                    DrawOcclusionVolumeControls();
                 }
 
                 ImGui::Spacing();
@@ -2196,22 +2213,12 @@ namespace Surfels
                 }
 
                 // Interior Occlusion Volume (viewer controls) -- only relevant when the loaded model
-                // actually has a baked volume (see LoadSFLWFile/ProcessAndExport).
+                // actually has a baked volume (see LoadSFLWFile/RecomputeWaveletHierarchy).
                 if (!m_occlusionVoxels.empty())
                 {
                     if (ImGui::CollapsingHeader("Interior Occlusion Volume", ImGuiTreeNodeFlags_DefaultOpen))
                     {
-                        ImGui::Checkbox("Enable Occlusion Culling", &m_enableOcclusionCulling);
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Depth-tests splats against the baked interior occlusion volume (%zu cubes) so far-side surfels don't show through gaps in the near side. Disabled by default.", m_occlusionVoxels.size());
-
-                        if (m_enableOcclusionCulling)
-                        {
-                            ImGui::SliderFloat("Live Shrink", &m_occlusionRuntimeShrink, 0.1f, 1.0f, "%.2f");
-                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Interactive shrink applied on top of the shrink already baked into the file, to fine-tune poke-through in real time without re-exporting.");
-
-                            ImGui::Checkbox("View Occlusion Volume Only", &m_showOcclusionVolumeOnly);
-                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Debug view: renders only the occluder geometry, hiding the surfel splats entirely.");
-                        }
+                        DrawOcclusionVolumeControls();
                     }
                 }
 
@@ -3200,6 +3207,22 @@ namespace Surfels
         }
 
         ImGui::Spacing();
+    }
+
+    // Shared enable/view-only/shrink controls for the baked occlusion volume, drawn identically from
+    // both the Surfel Generator tab (right after baking) and the Renderer tab (while viewing). "View
+    // Occlusion Volume Only" is intentionally independent of "Enable Occlusion Culling" -- wanting to
+    // just look at the volume shouldn't require also turning on splat culling against it.
+    void PreprocessApp::DrawOcclusionVolumeControls()
+    {
+        ImGui::Checkbox("Enable Occlusion Culling", &m_enableOcclusionCulling);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Depth-tests splats against the baked interior occlusion volume (%zu cubes) so far-side surfels don't show through gaps in the near side. Disabled by default.", m_occlusionVoxels.size());
+
+        ImGui::Checkbox("View Occlusion Volume Only", &m_showOcclusionVolumeOnly);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Debug view: hides the surfel splats entirely and renders only the occluder geometry. Works regardless of 'Enable Occlusion Culling' above.");
+
+        ImGui::SliderFloat("Live Shrink", &m_occlusionRuntimeShrink, 0.1f, 1.0f, "%.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Interactive shrink applied on top of the shrink already baked into the file, to fine-tune poke-through in real time without re-exporting.");
     }
 
     // Voxelizes the current model into a solid interior occlusion volume: cells fully enclosed by the
