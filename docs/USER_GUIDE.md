@@ -1,65 +1,69 @@
-# Surfel Streaming Demo User Guide
+# SurfelLab User Guide
 
-This guide explains how to use the app — for the technical deep-dive see [README.md](../README.md).
+This guide describes how to operate the software. Readers seeking the technical architecture should consult [README.md](../README.md).
 
 ## Overview
 
-Surfels is two programs sharing one GPU-driven mesh-shader renderer:
+The primary application is **SurfelLab**, a single window that combines the preprocessor and the viewer. Its three tabs carry a dataset from raw point cloud to streamed render without leaving the program:
 
-- **SurfelsPreprocess** — the workbench. Load a point cloud, tune how it gets chunked and compressed, export a streamable package.
-- **Surfels_DX12** — the lightweight viewer. Loads a package and streams it, nothing else.
+1. **Surfel Generator** — loads a `.ply` or `.splat` file, exposes the chunking and compression parameters, and exports a `.sflw` package.
+2. **Renderer** — displays the current dataset, or any previously exported package, using the GPU-driven mesh-shader renderer, with level-of-detail controls and the interior occlusion volume.
+3. **Streaming** — simulates progressive delivery over a constrained connection and visualises which detail levels are resident.
+
+SurfelLab is the recommended entry point, and every section of this guide describes it.
 
 ```mermaid
 flowchart LR
-    A["Raw model<br/>.ply / .splat / .sog"] --> B["Octree chunking"]
+    A["Raw model<br/>.ply / .splat"] --> B["Octree chunking"]
     B --> C["Wavelet decompose<br/>(LOD pyramid)"]
     C --> D["Quantize + compress"]
-    D --> E[".sflw + .json<br/>package"]
-    E --> F["Viewer<br/>(streams it in)"]
+    D --> E[".sflw package<br/>(single file)"]
+    E --> F["Renderer / Streaming tabs<br/>(streams it in)"]
 ```
 
-## Getting started
+### Standalone versions
 
-**Just want to run it?** Grab the latest build from the [Releases page](../../../releases) — unzip and run `SurfelsPreprocess.exe`. No install, no GPU driver hoops beyond a DX12 Ultimate–class card (RTX 20-series+, RDNA2+).
+The same renderer is also available as separate components for situations in which only one half is required:
 
-**Building from source?** See the Building section in [README.md](../README.md) — short version: `cmake .. -G "Visual Studio 17 2022" -A x64` and open the solution.
+- **Surfels_DX12** is the standalone viewer. It contains no preprocessing interface. On launch it loads the `scene.sflw` package located beside the executable (or in a `models/` folder nearby) and streams it; if no package is present, it generates a synthetic benchmark package on first run. It is intended for viewer-only distributions and for observing the runtime in isolation. The script `bin/launch.cmd` starts it.
+- **The preprocessor on its own.** SurfelLab accepts a file path on its command line. Dropping a point cloud onto `SurfelLab.exe` (or onto `bin/launch_surfellab.cmd`) opens it directly in the Surfel Generator tab. A package exported from there may be copied beside `Surfels_DX12.exe` as `scene.sflw`, after which the standalone viewer will load it.
 
-On first launch the app auto-loads a built-in Cthulhu bust so you're never staring at an empty window.
+Both programs share one code base for the renderer and the streaming manager, so the image shown in SurfelLab's Renderer tab is the image the standalone viewer produces.
 
-## The Preprocessor Tab: Convert point clouds into Surfel Streaming Format (.sflw)
+## Getting Started
 
-Tab **1. Surfel Generator**:
+**Running a release build.** Download the latest build from the [Releases page](../../../releases), extract it, and run `SurfelLab.exe`. No installation is required. The only hardware requirement is a DirectX 12 Ultimate–class GPU (NVIDIA RTX 20-series or newer, AMD RDNA2 or newer).
 
-1. **Open Raw Point Cloud** — pick a `.ply`, `.splat`, or `.sog` file. Or click **Generate Synthetic Benchmark** if you just want something to poke at.
-2. Tune the sliders:
-   - **Octree Chunk (m)** — how big each spatial chunk is. Smaller = finer streaming granularity, more chunks.
-   - **Max Wavelet LODs** — how many detail levels to build (more = smoother distance falloff, longer processing).
-   - **Deadband Zero (mm)** — how aggressively near-flat detail gets thrown away. Higher = smaller files, blurrier close-ups.
-   - **Generate Interior Occlusion Volume** — bakes a closed, coloured voxel proxy of the whole model (the surface shell plus everything it encloses) so you can't see clean through it from certain angles. On by default; **Voxel Resolution** controls how finely it follows the surface.
-3. **Update Pipeline**, then **Save Compressed Package (.sflw)...** once you're happy.
+**Building from source.** The Building section of [README.md](../README.md) gives the full procedure. In brief, the user runs `cmake .. -G "Visual Studio 18 2026" -A x64` from a `build/` directory and opens the generated solution. SurfelLab is the default startup project; Surfels_DX12 is available in the same solution for those who require the standalone viewer.
 
-That's it — you now have a `.sflw` + `.json` pair you can hand to the viewer or reload later.
+On first launch the application automatically loads a bundled Cthulhu bust, so the window is never empty.
 
-## The Renderer Tab: Stream and Render a .sflw model
+## The Surfel Generator Tab: Converting Point Clouds to Surfel Streaming Format (.sflw)
 
-Tab **2. Renderer** is where you actually look at things. A few controls worth knowing:
+Tab **1. Surfel Generator** provides the following workflow:
 
-- **Auto Distance LOD** — the default. The camera distance drives which detail level shows; walk up close and it refines automatically.
-- **Dithered LOD Transitions** — smooths the pop between levels into a soft dissolve instead of a hard swap.
-- **GPU Silhouette Edge Refinement** — keeps outlines crisp even when the rest of the model is coarse. This is the trick that makes distant objects still look sharp around their edges.
-- **Splat Radius Scale** — bigger splats fill gaps in sparse data, but can look blobby up close. Start at 1.0x.
+The output is a single `.sflw` file. It may be inspected in the Renderer tab, reloaded later, or placed beside the standalone viewer.
 
-If you baked an occlusion volume, an **Interior Occlusion Volume** section appears here with its own enable checkbox (off by default) and a **Live Shrink** slider. The volume's outer cubes contain the surface itself, so shrink shaves the outer skin off the whole solid by the given number of voxel cells — as one body, never breaking up into gapped cubes — until the proxy sits just beneath the surfels. Raise it if cubes poke through, lower it if far-side surfels leak in. **View Occlusion Volume Only** shows just the baked solid so you can sanity-check it against the model.
+## The Renderer Tab: Streaming and Rendering a .sflw Model
 
-## The Streaming tab: Network streaming simulator
+Tab **2. Renderer** is where the model is examined. The most useful controls are:
 
-Tab **3. Streaming** simulates progressive delivery over a constrained connection — handy for demos and for stress-testing the LOD system.
+- **Auto Distance LOD** — the default mode. Camera distance selects the detail level per chunk, so the model refines automatically as the camera approaches.
+- **Dithered LOD Transitions** — replaces the abrupt switch between levels with a soft dissolve.
+- **GPU Silhouette Edge Refinement** — keeps outlines crisp even while the interior of the model is coarse. This is the mechanism that allows distant objects to retain sharp edges.
+- **Splat Radius Scale** — larger splats fill gaps in sparse data but appear blobby at close range. A value of 1.0× is the recommended starting point.
 
-- **Network Profiles** — one-click 3G / 4G / 5G bandwidth presets, or drag the slider yourself.
-- **Decay Rate** — how fast unused detail drains back out of memory when you're not looking at it. 0 is no decay; 10 drains every evictable level in about 3 seconds on any bandwidth setting, and 5 takes twice as long. Hover the slider for the implied drain time.
-- **Greedy vs Conservative** — Greedy keeps pre-fetching everything in the background; Conservative only pulls what's actually visible.
+When a package contains an occlusion volume, an **Interior Occlusion Volume** section appears with an **Enable Occlusion Culling** checkbox. Enabling generation on the Surfel Generator tab, or moving its Shave slider, enables the checkbox automatically, so the volume is visible as soon as it exists. **View Occlusion Volume Only** displays the blocky solid alone so that it can be compared against the model. The shape of the volume, including its resolution and shave amount, is fixed when it is baked on the Surfel Generator tab; the Renderer tab offers no control that would alter it.
 
-The **LOD Residency** panel (right side) shows exactly what's resident, mid-transition, or silhouette-locked at each level — green bars filling up is streaming-in-progress, made visible.
+## The Streaming Tab: Network Streaming Simulator
+
+Tab **3. Streaming** simulates progressive delivery over a constrained connection. It is useful both for demonstrations and for stress-testing the level-of-detail system.
+
+- **Network Profiles** — one-click 3G, 4G, and 5G bandwidth presets, or a slider for arbitrary values. Streaming is unthrottled by default, so the model loads at full speed until a profile is selected.
+- **Decay Rate** — the speed at which unused detail drains out of memory when it is not in view. A value of 0 disables decay; 10 drains every evictable level in approximately three seconds regardless of bandwidth, and 5 takes twice as long. Hovering over the slider shows the implied drain time.
+- **Greedy vs Conservative** — Greedy continues to pre-fetch everything in the background; Conservative fetches only what is currently visible.
+
+The **LOD Residency** panel on the right shows precisely which chunks are resident, in transition, or silhouette-locked at each level. Green bars filling from left to right are streaming in progress, made visible.
 
 ```mermaid
 flowchart TD
@@ -74,34 +78,34 @@ flowchart TD
 
 ## The Performance Statistics Panel
 
-Top to bottom, roughly in "how much should I care right now" order:
+The panel is ordered, top to bottom, roughly by how often each section is consulted:
 
-1. **Real-Time Performance & Stage Timings** — FPS and a per-stage breakdown (upload, sort, silhouette prepass, occlusion pass, main dispatch, TAA). If something's slow, this tells you which stage.
-2. **4-Tier Compression Results** — how much smaller your package got and why.
-3. **LOD Residency** — see above.
-4. **Wavelet Multi-Resolution Pyramid** — click any row to jump straight to that LOD for inspection.
-5. **Input Model Metrics / Geometry Optimizations & Culling Stats / Spatial Partitioning** — the detail-oriented stuff, safe to ignore day-to-day.
+1. **Real-Time Performance & Stage Timings** — frame rate and a per-stage breakdown (upload, sort, silhouette prepass, occlusion pass, main dispatch, TAA). When performance drops, this section identifies the responsible stage.
+2. **4-Tier Compression Results** — the size reduction achieved by the package and its causes.
+3. **LOD Residency** — described above.
+4. **Wavelet Multi-Resolution Pyramid** — clicking any row jumps directly to that level for inspection.
+5. **Input Model Metrics / Geometry Optimizations & Culling Stats / Spatial Partitioning** — detailed diagnostics that are safe to ignore in ordinary use.
 
-## Common gotchas
+## Common Issues
 
-- **"My model only shows one LOD level"** — you probably loaded a `.sflw` packaged by an older version, or `Max Wavelet LODs` was set to 1. Re-export with more levels.
-- **Streaming looks like a progress bar filling left-to-right instead of a patchwork** — that's the priority queue working correctly; edges and nearby chunks should still win the race even in that pattern. If it looks purely sequential/blocky, check that **Prioritize View Frustum & Proximity** is on.
-- **Decay never seems to finish** — Decay Rate 10 empties every evictable level in about 3 seconds regardless of bandwidth, so if levels are still resident, they're probably pinned: the two coarsest levels never drain, and silhouette chunks in view are locked while Silhouette LOD 0 is on.
-- **Edges look blocky when zoomed in close** — bump **Silhouette LOD Bias** or check that GPU Silhouette Edge Refinement is on.
+- **The model shows only one LOD level.** The package was probably produced by an older version, or **Max Wavelet LODs** was set to 1. Re-exporting with more levels resolves this.
+- **Streaming resembles a progress bar filling left to right rather than a patchwork.** This is the priority queue behaving correctly; edges and nearby chunks should still complete first even in that pattern. If loading appears purely sequential, the user should confirm that **Prioritize View Frustum & Proximity** is enabled.
+- **Decay never seems to finish.** A Decay Rate of 10 empties every evictable level in about three seconds regardless of bandwidth. Levels that remain resident are therefore pinned: the two coarsest levels never drain, and silhouette chunks in view are locked while Silhouette LOD 0 is enabled.
+- **Edges appear blocky at close range.** Raising **Silhouette LOD Bias**, or confirming that GPU Silhouette Edge Refinement is enabled, corrects this.
 
 ## Glossary
 
-- **Chunk** — a spatial cube of surfels, the unit of streaming.
-- **Surfel** — a colored, oriented disc/point standing in for a tiny patch of surface (like a pixel, but 3D).
-- **LOD (Level of Detail)** — a coarser/finer version of the same chunk; the wavelet pyramid has several.
-- **Silhouette chunk** — a chunk currently on the model's outline from the camera's point of view; gets refined first.
-- **Decay** — the simulated cache eviction that drains unused detail back out to free memory.
+- **Chunk** — a spatial cube of surfels; the unit of streaming.
+- **Surfel** — a coloured, oriented disc or point standing in for a small patch of surface; the three-dimensional analogue of a pixel.
+- **LOD (Level of Detail)** — a coarser or finer version of the same chunk. The wavelet pyramid holds several.
+- **Silhouette chunk** — a chunk that lies on the model's outline from the camera's point of view. Such chunks are refined first.
+- **Decay** — the simulated cache eviction that drains unused detail out of memory.
 
 ## Appendix: Lifting Wavelet Compression
 
-Each coarser level isn't just "every other point deleted" — it's built with a **second-generation lifting wavelet**, the same family of technique used in JPEG2000. The short version: it throws away detail *intelligently*, keeping the overall shape solid even after several rounds of halving.
+Each coarser level is not simply the finer level with every other point removed. It is built with a **second-generation lifting wavelet**, the same family of technique used in JPEG 2000. In short, the method discards detail selectively, preserving the overall shape even after several rounds of halving.
 
-For every pair of neighboring points at a level:
+For every pair of neighbouring points at a level:
 
 ```mermaid
 flowchart TD
@@ -115,11 +119,11 @@ flowchart TD
     Update --> LN1["Level N−1<br/>(half as many points, still shaped right)"]
 ```
 
-Two things make this better than naive decimation:
+Two properties make this superior to naive decimation:
 
-- **Predict, don't delete.** The "odd" point isn't just thrown away — the gap between where it *should* be (predicted from neighbors) and where it *actually* is becomes the "detail" coefficient. Flat, boring areas predict almost perfectly, so their detail is tiny.
-- **Deadband sparsification.** Any detail coefficient below the `Deadband Zero (mm)` threshold gets zeroed outright. On a mostly-flat surface (a wall, a road, a torso) that's most of them — which is exactly why the compression ratio you see in the Compression Results panel looks so good.
+- **Prediction rather than deletion.** The "odd" point is not merely discarded. The difference between its predicted position (from its neighbours) and its actual position becomes a detail coefficient. Flat regions predict almost perfectly, so their detail coefficients are tiny.
+- **Deadband sparsification.** Any detail coefficient smaller than the `Deadband Zero (mm)` threshold is set to zero outright. On a largely flat surface (a wall, a road, a torso) this applies to most coefficients, which is precisely why the compression ratio reported in the Compression Results panel is so favourable.
 
-The "update" step also folds the surviving detail back into the coarser point so it doesn't drift — and it re-averages normal/color and scales the splat radius up by `√2` per halving, so a coarse point still covers the same physical area its two children used to.
+The "update" step also folds the surviving detail back into the coarser point so that it does not drift. It re-averages normal and colour, and scales the splat radius by √2 per halving, so that a coarse point still covers the same physical area that its two children covered.
 
-This repeats level by level until you hit `Max Wavelet LODs` or there just aren't enough points left to keep splitting.
+The process repeats level by level until `Max Wavelet LODs` is reached or too few points remain to split further.

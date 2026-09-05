@@ -4,7 +4,7 @@
 //
 // Standalone command-line tool: loads a .ply point cloud, partitions it into octree
 // chunks, and packages it to .sflw -- a minimal end-to-end pipeline smoke test that
-// doesn't need the full SurfelsPreprocess GUI app.
+// doesn't need the full SurfelLab GUI app.
 
 #include <iostream>
 #include <vector>
@@ -52,6 +52,6 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    std::cout << "Successfully generated " << outputBase << ".sflw and " << outputBase << ".json!" << std::endl;
+    std::cout << "Successfully generated " << outputBase << ".sflw!" << std::endl;
     return 0;
 }

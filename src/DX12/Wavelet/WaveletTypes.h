@@ -13,6 +13,10 @@
 #include <algorithm>
 #include <string>
 #include <vector>
+#include <fstream>
+#include <istream>
+#include <cstdio>
+#include <cstring>
 #include <DirectXMath.h>
 
 namespace Surfels
@@ -26,33 +30,41 @@ namespace Surfels
 
     // Magic bytes for .sflw binary stream container ("SFLW" in ASCII)
     static constexpr uint32_t SFLW_MAGIC = 0x574C4653;
-    static constexpr uint32_t SFLW_VERSION = 3; // v2 adds SFLWFileHeader::splatRadius (appended at the
+    static constexpr uint32_t SFLW_VERSION = 4; // v2 adds SFLWFileHeader::splatRadius (appended at the
                                                  // struct's end so v1 files still read correctly -- see
                                                  // the version check in StreamPackager::LoadPackage).
                                                  // v3 adds an optional occlusion voxel array, appended
                                                  // after all chunk LOD data; occlusionVoxelCount/Offset
                                                  // are 0 on v1/v2 files and on v3 files that simply chose
-                                                 // not to generate one.
+                                                 // not to bake one.
+                                                 // v4 folds the chunk manifest (previously a companion
+                                                 // .json file) into the .sflw itself as a binary table at
+                                                 // SFLWFileHeader::manifestOffset, so a package is a
+                                                 // single self-contained file. v1-v3 files still load via
+                                                 // their companion .json (see ParseLegacyJsonManifest).
 
-    // A single solid occluder cube: interior/enclosed geometry generated at preprocessing time so the
-    // (alpha-blended, non-depth-writing) surfel splat pass can depth-test against it and avoid seeing
-    // through gaps in a sparse point cloud to surfels on the far side. The volume is a closed voxel
-    // proxy of the whole model: one cube per grid cell that is not reachable from outside the model
-    // without crossing a surfel-occupied cell -- i.e. the surfel-occupied surface shell itself plus
-    // everything it encloses. halfSize is always exactly half the grid cell size, so adjacent cubes share
-    // faces and the volume is watertight. Because shell cubes contain the surface, the renderer shrinks
-    // the volume at draw time by pulling only its EXPOSED faces (those bordering a non-cube cell) inward
-    // by a fraction of a cell (SurfelsCB::occlusionShrinkCells) so the proxy sits just beneath the
-    // surfels -- shaving the outer skin off the solid rather than shrinking each cube about its own
-    // centre, which would open seams between neighbours. A cube whose opposing exposed faces would
-    // cross (a one-cell-thick shell) is clamped to a thin slab through the cell centre rather than
-    // removed, so hollow/open scans keep a closed shell. packedColor holds an RGB565 bake of the
-    // average colour of the nearest surfels
-    // reachable without crossing empty (exterior) space in its low 16 bits, and the 6-bit exposed-face
-    // mask (bit 16 + face, faces ordered -Z,+Z,-X,+X,-Y,+Y) in bits 16..21 -- a mask of 0 (files baked
-    // before the mask existed) is treated by the shader as "all faces exposed". See
-    // PreprocessApp::BuildOcclusionVolume.
     #pragma pack(push, 1)
+    // One baked occluder block of the interior occlusion volume (see PreprocessApp::BuildOcclusionVolume).
+    // The volume is a closed voxel solid -- every fine grid cell that cannot be reached from outside the
+    // model without crossing a surfel-occupied cell (the surfel-occupied shell plus everything it
+    // encloses) -- eroded by a baked number of cell layers so it sits just inside the surfel shell, and
+    // then stored as an adaptive octree: runs of 2x2x2 solid blocks are merged into one larger cube,
+    // recursively, so the finest cubes hug the surface while the interior is covered by a few big ones.
+    // Blocks with no exposed face at all are dropped outright, since a closed occluder only needs its
+    // skin. halfSize is therefore half of (cellSize * 2^level), and faces of neighbouring blocks of
+    // different sizes still tile exactly because every block is grid-aligned to its own size.
+    //
+    // packedColor layout:
+    //   bits  0..15  RGB565 bake of the mean surfel colour over a wide box of surface around the block
+    //                (half-width ~1.5x its depth below the surface), i.e. the local albedo of the cap of
+    //                surface facing it rather than one nearest patch (see Quantizer/UnpackColorRGB565).
+    //   bits 16..21  exposed-face mask, one bit per face in -Z,+Z,-X,+X,-Y,+Y order: set when any fine
+    //                cell across that face is not solid, i.e. some part of the face is visible.
+    //   bit  22      mask-valid flag. Set by every current bake. Clear on legacy files baked before the
+    //                mask existed, which the shader treats as "all six faces exposed".
+    //
+    // There is deliberately no live shrink/shave at draw time: the erosion is baked, because the volume
+    // travels inside the .sflw and the viewer should show exactly what was packaged.
     struct OcclusionVoxelGPU
     {
         XMFLOAT3 center;
@@ -153,7 +165,167 @@ namespace Surfels
                                // StreamPackager::LoadPackage, which falls back to 1.0f otherwise.
         uint32_t occlusionVoxelCount;  // v3+ only -- 0 (and occlusionVoxelOffset unset/ignored) on v1/v2
         uint64_t occlusionVoxelOffset; // files, or on a v3 file that chose not to generate a volume.
+        uint64_t manifestOffset;       // v4+ only -- absolute byte offset of the embedded chunk manifest
+                                       // table (see ChunkManifestRecord). 0 / unset on v1-v3 files, which
+                                       // keep their manifest in a companion .json instead.
     };
+
+    // On-disk form of one ChunkManifest entry in a v4+ .sflw's embedded manifest table. The table
+    // lives at SFLWFileHeader::manifestOffset and holds SFLWFileHeader::numChunks entries, each a
+    // ChunkManifestRecord immediately followed by numLODs ChunkLODHeader records.
+    struct ChunkManifestRecord
+    {
+        uint32_t chunkId;
+        XMFLOAT3 aabbMin;
+        XMFLOAT3 aabbMax;
+        XMFLOAT3 center;
+        float    boundingRadius;
+        uint32_t numLODs;
+    };
+
+    // Reads the v4+ embedded manifest table out of an already-open .sflw stream. Leaves the stream
+    // position wherever the table ended; callers seek by absolute offset for everything else anyway.
+    inline bool ReadEmbeddedManifest(std::istream& in, const SFLWFileHeader& header, std::vector<ChunkManifest>& outChunks)
+    {
+        outChunks.clear();
+        if (header.version < 4 || header.manifestOffset == 0) return false;
+
+        in.seekg((std::streamoff)header.manifestOffset, std::ios::beg);
+        if (!in.good()) return false;
+
+        outChunks.reserve(header.numChunks);
+        for (uint32_t c = 0; c < header.numChunks; c++)
+        {
+            ChunkManifestRecord rec = {};
+            in.read(reinterpret_cast<char*>(&rec), sizeof(rec));
+            if (!in.good()) { outChunks.clear(); return false; }
+
+            ChunkManifest cm = {};
+            cm.chunkId        = rec.chunkId;
+            cm.aabbMin        = rec.aabbMin;
+            cm.aabbMax        = rec.aabbMax;
+            cm.center         = rec.center;
+            cm.boundingRadius = rec.boundingRadius;
+            cm.numLODs        = rec.numLODs;
+            cm.lods.resize(rec.numLODs);
+            if (rec.numLODs > 0)
+            {
+                in.read(reinterpret_cast<char*>(cm.lods.data()), sizeof(ChunkLODHeader) * rec.numLODs);
+                if (!in.good()) { outChunks.clear(); return false; }
+            }
+            outChunks.push_back(std::move(cm));
+        }
+        return true;
+    }
+
+    // Parses the companion .json manifest that v1-v3 packages shipped alongside their .sflw. Only
+    // needed to keep those older files loadable; v4+ packages embed the manifest (ReadEmbeddedManifest).
+    // Deliberately a minimal scanner for the exact schema StreamPackager used to write, not a general
+    // JSON parser.
+    inline bool ParseLegacyJsonManifest(const std::string& jsonPath, std::vector<ChunkManifest>& outChunks)
+    {
+        outChunks.clear();
+
+        std::ifstream in(jsonPath);
+        if (!in.is_open()) return false;
+        std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
+        in.close();
+
+        size_t pos = content.find("\"chunks\":");
+        if (pos == std::string::npos) return false;
+
+        auto readVec3 = [&](const char* key, size_t from, size_t limit, XMFLOAT3& out)
+        {
+            size_t at = content.find(key, from);
+            if (at == std::string::npos || at >= limit) return;
+            const char* p = strchr(content.c_str() + at, '[');
+            if (p) sscanf_s(p, "[%f, %f, %f]", &out.x, &out.y, &out.z);
+        };
+
+        while ((pos = content.find("\"id\":", pos)) != std::string::npos)
+        {
+            // Each chunk object is short; bound the field searches so a missing key can't pick up the
+            // next chunk's value.
+            size_t objLimit = pos + 400;
+
+            ChunkManifest cm = {};
+            sscanf_s(content.c_str() + pos, "\"id\": %u", &cm.chunkId);
+            readVec3("\"bounds_min\":", pos, objLimit, cm.aabbMin);
+            readVec3("\"bounds_max\":", pos, objLimit, cm.aabbMax);
+            readVec3("\"center\":",     pos, objLimit, cm.center);
+
+            size_t radPos = content.find("\"radius\":", pos);
+            if (radPos != std::string::npos && radPos < objLimit)
+                sscanf_s(content.c_str() + radPos, "\"radius\": %f", &cm.boundingRadius);
+
+            size_t lodsPos = content.find("\"lods\":", pos);
+            size_t lodsEnd = (lodsPos != std::string::npos) ? content.find("]", lodsPos) : std::string::npos;
+            if (lodsPos != std::string::npos && lodsPos < objLimit && lodsEnd != std::string::npos)
+            {
+                size_t curLod = lodsPos;
+                while (true)
+                {
+                    size_t lvlPos = content.find("\"level\":", curLod);
+                    if (lvlPos == std::string::npos || lvlPos >= lodsEnd) break;
+
+                    ChunkLODHeader lh = {};
+                    auto readU32 = [&](const char* key, uint32_t& out)
+                    {
+                        size_t at = content.find(key, lvlPos);
+                        if (at != std::string::npos && at < lodsEnd)
+                        {
+                            std::string fmt = std::string(key) + " %u";
+                            sscanf_s(content.c_str() + at, fmt.c_str(), &out);
+                        }
+                    };
+                    readU32("\"level\":",            lh.lodLevel);
+                    readU32("\"count\":",            lh.surfelCount);
+                    readU32("\"raw_bytes\":",        lh.uncompressedByteSize);
+                    readU32("\"compressed_bytes\":", lh.compressedByteSize);
+
+                    size_t offPos = content.find("\"offset\":", lvlPos);
+                    if (offPos != std::string::npos && offPos < lodsEnd)
+                        sscanf_s(content.c_str() + offPos, "\"offset\": %llu", &lh.fileOffset);
+
+                    size_t errPos = content.find("\"error\":", lvlPos);
+                    if (errPos != std::string::npos && errPos < lodsEnd)
+                        sscanf_s(content.c_str() + errPos, "\"error\": %f", &lh.geometricError);
+
+                    cm.lods.push_back(lh);
+
+                    size_t nextObj = content.find("}", lvlPos);
+                    if (nextObj == std::string::npos || nextObj >= lodsEnd) break;
+                    curLod = nextObj + 1;
+                }
+                pos = lodsEnd + 1;
+            }
+            else
+            {
+                pos += 10;
+            }
+
+            cm.numLODs = (uint32_t)cm.lods.size();
+            outChunks.push_back(std::move(cm));
+        }
+
+        return !outChunks.empty();
+    }
+
+    // Given any of "<base>", "<base>.sflw", or a legacy "<base>.json", returns the .sflw path and the
+    // legacy companion .json path (only consulted for v1-v3 files).
+    inline void ResolvePackagePaths(const std::string& inputPath, std::string& outSflwPath, std::string& outJsonPath)
+    {
+        std::string lowerPath = inputPath;
+        std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::tolower);
+        std::string base = inputPath;
+        if (lowerPath.size() >= 5 && (lowerPath.compare(lowerPath.size() - 5, 5, ".sflw") == 0 ||
+                                      lowerPath.compare(lowerPath.size() - 5, 5, ".json") == 0))
+        {
+            base = inputPath.substr(0, inputPath.size() - 5);
+        }
+        outSflwPath = base + ".sflw";
+        outJsonPath = base + ".json";
+    }
 
     // =========================================================================
     // Encoding & Quantization Helper Functions

@@ -49,10 +49,11 @@ struct MeshletChunk
 struct OcclusionVoxel
 {
     float3 center;
-    float  halfSize;    // Always half a grid cell -- adjacent cubes share faces
+    float  halfSize;    // Half of (cellSize * 2^level): blocks are grid-aligned to their own size, so neighbours tile exactly
     uint   packedColor; // Bits 0..15: RGB565 (see UnpackColorRGB565); bits 16..21: exposed-face mask,
-                        // one bit per face in s_occluderFaceIdx order (-Z,+Z,-X,+X,-Y,+Y). 0 = legacy
-                        // file with no mask, treated as all faces exposed.
+                        // one bit per face in s_occluderFaceIdx order (-Z,+Z,-X,+X,-Y,+Y); bit 22: mask
+                        // valid (clear on legacy files, which are treated as all faces exposed). See
+                        // OcclusionVoxelGPU in WaveletTypes.h.
 };
 
 StructuredBuffer<PackedSurfel>  g_SurfelBuffer       : register(t0);
@@ -86,7 +87,6 @@ cbuffer SurfelsCB : register(b0)
     uint     g_ShowOnlyLocked;
     uint     g_ShowChunkStream;
     uint     g_EnableOcclusionCulling;
-    float    g_OcclusionShrinkCells; // Live shrink: exposed occluder faces are pulled inward by this many cells
     uint     g_ShowOcclusionVolumeOnly;
     uint     g_OcclusionVoxelCount;
 };
@@ -798,15 +798,12 @@ uint itemPS(ItemVSOut i) : SV_Target0
 // far-side surfels visible through gaps in a sparse near side. One threadgroup
 // per voxel, direct-dispatched with no amplification shader stage (like itemMS).
 //
-// Only the cube's EXPOSED faces (those bordering a non-cube cell, per the mask baked
-// into packedColor) are emitted -- faces shared with a neighbouring cube are never
-// visible. The live shrink (g_OcclusionShrinkCells) shaves the outer skin off the
-// whole volume by pulling every exposed face inward by that many cells while leaving
-// shared faces untouched, so the solid shrinks as one watertight body instead of
-// each cube shrinking about its own centre and opening seams between neighbours. A
-// cube whose opposing exposed faces would cross (a one-cell-thick shell shaved from
-// both sides) is clamped to a thin slab through the cell centre rather than removed,
-// so hollow/open scans keep a closed occluder shell at any shrink setting.
+// The volume is an adaptive octree of grid-aligned cubes (see OcclusionVoxelGPU): fine
+// cubes along the surface, larger merged cubes inside, all tiling exactly. Its erosion
+// ("shave") is baked at preprocessing time, so there is nothing to tune here -- the
+// viewer draws precisely what was packaged. Only a cube's EXPOSED faces (those with
+// some non-solid fine cell across them, per the mask baked into packedColor) are
+// emitted; fully buried faces are never visible and are skipped.
 // =========================================================================
 
 struct OccluderVSOut
@@ -837,9 +834,9 @@ static const float3 s_occluderFaceNormal[6] = {
     float3(0,0,-1), float3(0,0,1), float3(-1,0,0), float3(1,0,0), float3(0,-1,0), float3(0,1,0)
 };
 
-static const uint  OCCLUDER_FACE_MASK_SHIFT = 16;
-static const uint  OCCLUDER_FACE_MASK_ALL   = 0x3F;
-static const float OCCLUDER_MIN_HALF_EXTENT = 0.05; // In halfSize units: thinnest slab a shaved cube clamps to (5% of a cell)
+static const uint OCCLUDER_FACE_MASK_SHIFT = 16;
+static const uint OCCLUDER_FACE_MASK_ALL   = 0x3F;
+static const uint OCCLUDER_MASK_VALID_BIT  = 22;
 
 [outputtopology("triangle")]
 [numthreads(24, 1, 1)]
@@ -851,26 +848,14 @@ void occluderMS(
 )
 {
     // DXIL validation requires exactly one SetMeshOutputCounts call per invocation, so work out the
-    // final face count first (0 for an out-of-range index or a cube shaved away entirely), set it once,
-    // and only then bail out.
+    // final face count first (0 for an out-of-range index), set it once, and only then bail out.
     uint voxelIndex = groupId.y * 32768 + groupId.x;
     bool valid = voxelIndex < g_OcclusionVoxelCount;
 
     OcclusionVoxel v = g_OcclusionVoxelBuffer[valid ? voxelIndex : 0];
     uint exposed = (v.packedColor >> OCCLUDER_FACE_MASK_SHIFT) & OCCLUDER_FACE_MASK_ALL;
-    if (exposed == 0) exposed = OCCLUDER_FACE_MASK_ALL; // Legacy file baked before the mask existed
-
-    // Shave: pull each exposed face inward. Per axis, the low/high extents (in units of halfSize).
-    // Mask bits: 0:-Z 1:+Z 2:-X 3:+X 4:-Y 5:+Y  -> lo/hi per axis in (x, y, z) order.
-    float inset = max(0.0, g_OcclusionShrinkCells) * 2.0; // cells -> halfSize units (1 cell = 2 halfSizes)
-    float3 lo = float3(-1, -1, -1) + float3((exposed >> 2) & 1, (exposed >> 4) & 1, (exposed >> 0) & 1) * inset;
-    float3 hi = float3( 1,  1,  1) - float3((exposed >> 3) & 1, (exposed >> 5) & 1, (exposed >> 1) & 1) * inset;
-
-    // Opposing exposed faces that would cross: clamp to a thin slab about their midpoint instead.
-    float3 mid = (lo + hi) * 0.5;
-    bool3 crossed = lo + OCCLUDER_MIN_HALF_EXTENT * 2.0 > hi;
-    lo = crossed ? mid - OCCLUDER_MIN_HALF_EXTENT : lo;
-    hi = crossed ? mid + OCCLUDER_MIN_HALF_EXTENT : hi;
+    if (((v.packedColor >> OCCLUDER_MASK_VALID_BIT) & 1) == 0)
+        exposed = OCCLUDER_FACE_MASK_ALL; // Legacy file baked before the mask existed
 
     uint faceCount = valid ? countbits(exposed) : 0;
     SetMeshOutputCounts(faceCount * 4, faceCount * 2);
@@ -893,9 +878,7 @@ void occluderMS(
     if (slot < faceCount)
     {
         uint corner = threadId % 4;
-        float3 c = s_occluderCubeCorners[s_occluderFaceIdx[face][corner]];
-        float3 ext = float3(c.x < 0 ? lo.x : hi.x, c.y < 0 ? lo.y : hi.y, c.z < 0 ? lo.z : hi.z);
-        float3 worldPos = v.center + ext * v.halfSize;
+        float3 worldPos = v.center + s_occluderCubeCorners[s_occluderFaceIdx[face][corner]] * v.halfSize;
 
         OccluderVSOut o;
         o.pos = mul(g_ViewProj, float4(worldPos, 1.0));

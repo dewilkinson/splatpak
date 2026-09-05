@@ -2,11 +2,12 @@
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// Implements the SurfelsPreprocess app shell: file I/O, the wavelet preprocessing
+// Implements the SurfelLab app shell: file I/O, the wavelet preprocessing
 // pipeline, the streaming/decay/silhouette simulation, and every ImGui panel. See
 // PreprocessApp.h for the class overview and PreprocessRenderer.cpp for the GPU side.
 
 #include "PreprocessApp.h"
+#include "OcclusionVolume.h"
 #include <DirectXCollision.h>
 #include <iomanip>
 #include <sstream>
@@ -768,12 +769,12 @@ namespace Surfels
         // and LoadPackage already falls back to 1.0 (PreprocessRenderer::State's own default) in that case.
         m_state.splatRadius = m_loadedPackage.header.splatRadius;
 
-        // Restore the baked occlusion volume, if this package has one (v3+ only; empty otherwise --
-        // see StreamPackager::LoadPackage). The preprocessing-time controls (resolution/baked shrink)
-        // reflect whatever was baked in, but re-running BuildOcclusionVolume() would require the raw
-        // (unquantized) source point cloud, which loading a package doesn't reconstruct exactly.
+        // Start from the volume baked into the package (v3+ only; empty otherwise -- see
+        // StreamPackager::LoadPackage). It is regenerated from the decoded surfels further down, once
+        // they exist, so the on-screen volume always reflects the current generator; saving re-bakes.
         m_occlusionVoxels = m_loadedPackage.occlusionVoxels;
-        m_generateOcclusionVolume = !m_occlusionVoxels.empty();
+        m_occlusionVoxelsVersion++;
+        m_generateOcclusionVolume = true;
 
         // Collect all raw surfels from package
         m_rendererSurfels.clear();
@@ -866,6 +867,11 @@ namespace Surfels
         UpdatePreviewSurfels();
         RebuildHeatmapClusterCubes();
 
+        // Regenerate the occlusion volume from the decoded surfels with the current generator (the
+        // file's copy may predate it) and switch it on, so a freshly opened model shows its volume.
+        m_occlusionGrid.valid = false;
+        RefreshOcclusionVolume();
+
         // Setup active renderer state pointing to renderer's dedicated buffers
         m_state.pSurfels = m_rendererSurfels.data();
         m_state.pRawSurfels = m_rendererRawSurfels.data();
@@ -881,7 +887,8 @@ namespace Surfels
             m_pRenderer->FlushGPU();
         }
 
-        m_activeTab = 1; // Switch directly to Stream Renderer tab
+        // Stay on the Surfel Generator tab: it is the primary workflow and its live controls (shave,
+        // colour grade) act on the model just loaded. The Renderer tab is one click away.
 
         m_statusMessage = "Successfully loaded compressed model: " + filepath + " (" + std::to_string(m_rendererSurfels.size()) + " surfels across " + std::to_string(m_rendererMeshletChunks.size()) + " meshlets, " + std::to_string(m_compressedSizeMB) + " MB)";
         m_statusIsSuccess = true;
@@ -1031,6 +1038,7 @@ namespace Surfels
     void PreprocessApp::RecomputeWaveletHierarchy()
     {
         if (m_rawSurfels.empty()) return;
+        m_occlusionGrid.valid = false; // Points/AABB may change below; the cached voxelization is stale
 
         // 1. Compute Global AABB
         m_aabbMin = XMFLOAT3(1e9f, 1e9f, 1e9f);
@@ -1120,20 +1128,11 @@ namespace Surfels
         UpdatePreviewSurfels();
         RebuildHeatmapClusterCubes();
 
-        // Keep the baked occlusion volume in sync with the checkbox/sliders on every pipeline update,
-        // same as everything else here -- so it's immediately visible/toggleable without needing to
-        // export and reload a package first (see ProcessAndExport, which now just uses this directly).
-        if (m_generateOcclusionVolume)
-        {
-            BuildOcclusionVolume();
-        }
-        else
-        {
-            m_occlusionVoxels.clear();
-        }
+        // Keep the baked occlusion volume in sync with the checkbox/sliders on every pipeline update
+        // (the AABB and raw points it voxelizes may both have changed).
+        RefreshOcclusionVolume();
 
         m_pipelineNeedsUpdate = false;
-        m_packageReadyToSave = true;
     }
 
     // Pre-quantizes and pre-chunks every LOD level up front, for instant hitch-free LOD switching later
@@ -1336,7 +1335,7 @@ namespace Surfels
 
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
-    // Runs the full wavelet pipeline over m_chunks and writes the resulting .sflw + .json package
+    // Runs the full wavelet pipeline over m_chunks and writes the resulting single-file .sflw package
     void PreprocessApp::ProcessAndExport(const std::string& outputPath)
     {
         if (m_rawSurfels.empty()) return;
@@ -1344,15 +1343,13 @@ namespace Surfels
         m_statusMessage = "Processing and exporting stream package to: " + outputPath + "...";
         float deadbandMeters = m_deadbandThresholdMM / 1000.0f;
 
-        // m_occlusionVoxels is already current -- RecomputeWaveletHierarchy ("Update Pipeline") rebuilds
-        // it from the checkbox/sliders, and "Save Compressed Package" is disabled while a pipeline
-        // update is still pending (see canSave in BuildUI), so it can't be stale here.
+        // m_occlusionVoxels is already current: the occlusion sliders rebuild it live, and any pending
+        // chunking/wavelet change is applied the moment its slider is released (before a click on Save
+        // can land), so nothing exported here can be stale.
         if (StreamPackager::PackageDataset(outputPath, m_chunks, m_maxLODLevels, deadbandMeters, m_state.splatRadius, m_occlusionVoxels))
         {
-            m_statusMessage = "Success! Created " + outputPath + ".sflw (" + std::to_string(m_compressedSizeMB) + " MB) and " + outputPath + ".json";
+            m_statusMessage = "Success! Created " + outputPath + ".sflw (" + std::to_string(m_compressedSizeMB) + " MB)";
             m_statusIsSuccess = true;
-            m_packageReadyToSave = false;
-            m_pipelineNeedsUpdate = false;
         }
         else
         {
@@ -1778,9 +1775,8 @@ namespace Surfels
 
                 ImGui::Separator();
                 bool hasModel = !m_rawSurfels.empty();
-                bool canSave = m_packageReadyToSave && hasModel && !m_pipelineNeedsUpdate;
 
-                if (ImGui::MenuItem("Save Compressed Package (.sflw)...", "Ctrl+S", false, canSave))
+                if (ImGui::MenuItem("Save Compressed Package (.sflw)...", "Ctrl+S", false, hasModel))
                 {
                     m_pendingAction = PendingAction::ExportStream;
                 }
@@ -1887,37 +1883,15 @@ namespace Surfels
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Loads the configured benchmark dataset (default: %s) or generates synthetic points.", m_benchmarkDatasetPath.c_str());
 
-            bool canSave = m_packageReadyToSave && !m_rawSurfels.empty() && !m_pipelineNeedsUpdate;
-            bool canUpdate = m_pipelineNeedsUpdate && !m_isPipelineProcessing && !m_rawSurfels.empty();
-
             if (!m_rawSurfels.empty())
             {
                 ImGui::Spacing();
-                ImGui::TextColored(canSave ? ImVec4(0.3f, 1.0f, 0.5f, 1.0f) : ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Save Compressed Model:");
-                if (!canSave)
+                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.5f, 1.0f), "Save Compressed Model:");
+                if (ImGui::Button("Save Compressed Package (.sflw)...", ImVec2(-1, 28)))
                 {
-                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.2f, 0.2f, 0.4f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.2f, 0.2f, 0.4f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f, 0.2f, 0.2f, 0.4f));
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 0.5f));
-                    ImGui::Button("Save Compressed Package (.sflw)...", ImVec2(-1, 28));
-                    if (ImGui::IsItemHovered())
-                    {
-                        if (m_pipelineNeedsUpdate)
-                            ImGui::SetTooltip("Parameters have changed. Please click 'Update Pipeline' before saving.");
-                        else
-                            ImGui::SetTooltip("No unexported changes. Dataset is already saved.");
-                    }
-                    ImGui::PopStyleColor(4);
+                    m_pendingAction = PendingAction::ExportStream;
                 }
-                else
-                {
-                    if (ImGui::Button("Save Compressed Package (.sflw)...", ImVec2(-1, 28)))
-                    {
-                        m_pendingAction = PendingAction::ExportStream;
-                    }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Compresses and saves the multi-resolution dataset into a .sflw binary stream container + .json manifest.");
-                }
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Compresses and saves the multi-resolution dataset, with the current parameters and occlusion volume, into a single self-contained .sflw stream package.");
             }
 
             ImGui::Spacing();
@@ -1931,85 +1905,89 @@ namespace Surfels
             }
             else
             {
+                // Safety net: any path that brought points in without baking a volume gets one now, so a
+                // model never sits on screen without its occluder while generation is on.
+                if (m_generateOcclusionVolume && !m_occlusionGrid.valid)
+                {
+                    RefreshOcclusionVolume();
+                }
+
                 ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Preprocessor Parameters:");
 
+                // Every parameter is live. The chunking/wavelet ones re-run the whole pipeline over the
+                // raw point cloud, which is too heavy to do on every mouse-move of a drag, so they flag
+                // m_pipelineNeedsUpdate and the rebuild fires the moment the slider is let go (below).
                 float maxChunkSize = std::max(1.0f, std::max(m_extents.x, std::max(m_extents.y, m_extents.z)));
                 if (ImGui::SliderFloat("Octree Chunk (m)", &m_chunkSize, 0.05f, maxChunkSize, "%.2f meters"))
                 {
                     m_pipelineNeedsUpdate = true;
-                    m_packageReadyToSave = false;
                 }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Spatial octree voxel bounding box diameter for streaming chunk partitioning.");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Spatial octree voxel bounding box diameter for streaming chunk partitioning. Applied when the slider is released.");
 
                 if (ImGui::SliderInt("Max Wavelet LODs", &m_maxLODLevels, 1, 6))
                 {
                     m_pipelineNeedsUpdate = true;
-                    m_packageReadyToSave = false;
                 }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Maximum number of multi-resolution LOD decimation levels in the wavelet pyramid.");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Maximum number of multi-resolution LOD decimation levels in the wavelet pyramid. Applied when the slider is released.");
 
                 if (ImGui::SliderFloat("Deadband Zero (mm)", &m_deadbandThresholdMM, 0.0f, 50.0f, "%.1f mm"))
                 {
                     m_pipelineNeedsUpdate = true;
-                    m_packageReadyToSave = false;
                 }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Sparsification deadband: wavelet detail coefficients below this threshold are zeroed out.");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Sparsification deadband: wavelet detail coefficients below this threshold are zeroed out. Applied when the slider is released.");
+
+                if (m_pipelineNeedsUpdate && !ImGui::IsAnyItemActive())
+                {
+                    RecomputeWaveletHierarchy(); // Clears m_pipelineNeedsUpdate itself
+                }
+                else if (m_pipelineNeedsUpdate)
+                {
+                    ImGui::TextDisabled("Pipeline will re-run when the slider is released...");
+                }
 
                 ImGui::Spacing();
                 ImGui::Separator();
                 if (ImGui::Checkbox("Generate Interior Occlusion Volume", &m_generateOcclusionVolume))
                 {
-                    m_pipelineNeedsUpdate = true;
-                    m_packageReadyToSave = false;
+                    RefreshOcclusionVolume();
                 }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bakes solid occluder cubes into the interior of the model so the renderer can optionally depth-test against them to hide far-side surfels visible through gaps in a sparse near side. The volume is a closed voxel proxy of the whole model (surface shell plus everything it encloses). On by default; click 'Update Pipeline' below to apply.");
-                if (m_generateOcclusionVolume)
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bakes solid occluder cubes into the interior of the model so the renderer can depth-test against them to hide far-side surfels visible through gaps in a sparse near side. The volume is a closed voxel proxy of the whole model (surface shell plus everything it encloses). On by default; the sliders below rebuild it live.");
+                // Always shown (not gated on the checkbox or on a volume existing) so the controls are
+                // never hidden by a transient empty result; the checkbox decides whether a move rebuilds
+                // or clears.
                 {
-                    if (ImGui::SliderInt("Voxel Resolution", &m_occlusionVoxelResolution, 8, 64))
+                    if (ImGui::SliderFloat("Shave", &m_occlusionShave, 0.0f, 10.0f, "%.1f"))
                     {
-                        m_pipelineNeedsUpdate = true;
-                        m_packageReadyToSave = false;
+                        RefreshOcclusionVolume();
                     }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Voxel grid divisions along the model's longest axis. Higher values follow the surface and interior cavities more closely (and keep thinner features) but generate more occluder cubes.");
-                }
-
-                if (!m_occlusionVoxels.empty())
-                {
-                    ImGui::Spacing();
-                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Baked: %zu occluder cubes", m_occlusionVoxels.size());
-                    DrawOcclusionVolumeControls();
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Erodes the solid further inside the model. Cubes that would poke through the surfel surface are always removed first (see the count below), so 0 = the largest volume that stays inside the model. 10 = every part shaved down to its own centre line, leaving only a thin core along the model's length. The cut is proportional to local thickness, so thin and thick parts shrink together. Rebuilds live; baked into the package.");
+                    // Colour grade of the baked colour. Applied when each block's colour is packed, so it
+                    // ships in the .sflw like the shape does; rebuilds live off the cached grid.
+                    bool gradeChanged = false;
+                    gradeChanged |= ImGui::SliderFloat("Hue Shift", &m_occlusionHueShift, -180.0f, 180.0f, "%.0f deg");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rotates the hue of every occluder block by this many degrees around the colour wheel. 0 = as sampled from the surfels.");
+                    gradeChanged |= ImGui::SliderFloat("Saturation", &m_occlusionSaturation, 0.0f, 2.0f, "%.2fx");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Scales colour saturation. 0 = greyscale, 1 = as sampled, above 1 = more vivid.");
+                    gradeChanged |= ImGui::SliderFloat("Brightness", &m_occlusionBrightness, 0.0f, 2.0f, "%.2fx");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Scales brightness (HSV value). Below 1 darkens the volume into shadow, above 1 lightens it. Baked into the package.");
+                    if (gradeChanged)
+                    {
+                        RefreshOcclusionVolume();
+                    }
+                    if (m_occlusionGrid.valid)
+                    {
+                        ImGui::TextDisabled("Auto resolution: %d cells along the longest axis (%.3f m per cell)", m_occlusionGrid.resolution, m_occlusionGrid.cellSize);
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Cubes whose corners fall outside the surfel surface (tested against the centroid and mean normal of the neighbouring surfels). Always removed, at any shave, so the volume never clips outside the model.");
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Chosen from the point density so a few points span every surface cell, then coarsened if the shell would leak. Interior blocks are merged into larger cubes automatically.");
+                    }
                 }
 
                 ImGui::Spacing();
-
-                if (!canUpdate)
-                {
-                    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.2f, 0.2f, 0.2f, 0.4f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.2f, 0.2f, 0.2f, 0.4f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.2f, 0.2f, 0.2f, 0.4f));
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.5f, 0.5f, 0.5f, 0.5f));
-                    ImGui::Button("Update Pipeline", ImVec2(-1, 26));
-                    if (ImGui::IsItemHovered())
-                    {
-                        if (m_isPipelineProcessing)
-                            ImGui::SetTooltip("Pipeline execution in progress...");
-                        else
-                            ImGui::SetTooltip("Pipeline is up to date with current parameters. Adjust a slider above to re-enable.");
-                    }
-                    ImGui::PopStyleColor(4);
-                }
-                else
-                {
-                    if (ImGui::Button("Update Pipeline", ImVec2(-1, 26)))
-                    {
-                        m_isPipelineProcessing = true;
-                        RecomputeWaveletHierarchy();
-                        m_isPipelineProcessing = false;
-                        m_pipelineNeedsUpdate = false;
-                        m_packageReadyToSave = true;
-                    }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Recomputes spatial octree chunking, lifting wavelet decimation, and 8-byte GPU packing with updated parameters.");
-                }
+                if (!m_occlusionVoxels.empty())
+                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Baked: %zu occluder cubes", m_occlusionVoxels.size());
+                else if (m_generateOcclusionVolume)
+                    ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "Baked: no cubes survived (point cloud too sparse/thin at this resolution)");
+                DrawOcclusionVolumeControls();
 
                 ImGui::Spacing();
                 ImGui::Separator();
@@ -3214,8 +3192,10 @@ namespace Surfels
         ImGui::Spacing();
     }
 
-    // Shared enable/view-only/shrink controls for the baked occlusion volume, drawn identically from
-    // both the Surfel Generator tab (right after baking) and the Renderer tab (while viewing). "View
+    // Shared enable/view-only controls for the baked occlusion volume, drawn identically from both the
+    // Surfel Generator tab (right after baking) and the Renderer tab (while viewing). Shape parameters
+    // (resolution, shave) live only on the Surfel Generator tab: the volume is baked into the .sflw, so
+    // the viewer shows exactly what was packaged and offers nothing that would change it. "View
     // Occlusion Volume Only" is intentionally independent of "Enable Occlusion Culling" -- wanting to
     // just look at the volume shouldn't require also turning on splat culling against it.
     void PreprocessApp::DrawOcclusionVolumeControls()
@@ -3226,217 +3206,53 @@ namespace Surfels
         ImGui::Checkbox("View Occlusion Volume Only", &m_showOcclusionVolumeOnly);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Debug view: hides the surfel splats entirely and renders only the occluder geometry. Works regardless of 'Enable Occlusion Culling' above.");
 
-        ImGui::SliderFloat("Live Shrink (cells)", &m_occlusionShrinkCells, 0.0f, 1.0f, "%.2f");
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Shaves the outer skin off the occlusion volume at draw time: every exposed face of the solid is pulled inward by this many voxel cells (faces shared between cubes are left alone, so the volume stays watertight). The volume's outer cubes contain the surface itself, so raise this until the proxy sits just beneath the surfels and nothing pokes through. One-cell-thick shells clamp to a thin slab rather than vanishing.");
     }
 
-    // Voxelizes the current model into a closed solid occlusion volume -- a coarse voxel proxy of the
-    // entire model: every grid cell that cannot be reached from outside the model without crossing a
-    // surfel-occupied cell becomes a depth-writing occluder cube. That is the surfel-occupied surface
-    // shell itself plus everything it encloses, so thin features (one cell thick) are covered too, and
-    // the splat pass can discard far-side surfels visible through gaps in a sparse near side. Cubes
-    // are emitted at full cell size so neighbours share faces and the volume is watertight; each one
-    // records which of its 6 faces border a non-cube cell so the renderer can shave the outer skin
-    // inward at draw time (see OcclusionVoxelGPU) -- that live shrink is what keeps the proxy just
-    // beneath the surfels, since shell cubes necessarily contain surface points. Isolated single cells
-    // (no solid 6-neighbour) are dropped as noise. Each cube's color is baked from the nearest surfels
-    // cells), approximating the average color of surfels in its immediate vicinity without a full
-    // per-voxel visibility raycast.
-    void PreprocessApp::BuildOcclusionVolume()
+    // Thin wrappers over the header-only generator in OcclusionVolume.h, which holds the algorithm
+    // and its documentation; these just route app state in and the trace log out.
+    XMFLOAT3 PreprocessApp::GradeOcclusionColor(const XMFLOAT3& rgb) const
     {
-        m_occlusionVoxels.clear();
+        OcclusionVolume::ColorGrade grade{ m_occlusionHueShift, m_occlusionSaturation, m_occlusionBrightness };
+        return OcclusionVolume::GradeColor(grade, rgb);
+    }
 
-        const auto& sourcePoints = !m_rawSurfels.empty() ? m_rawSurfels : m_rendererRawSurfels;
-        if (sourcePoints.empty()) return;
-
-        XMFLOAT3 gMin = m_aabbMin;
-        XMFLOAT3 gMax = m_aabbMax;
-        XMFLOAT3 gExtent(
-            std::max(1e-4f, gMax.x - gMin.x),
-            std::max(1e-4f, gMax.y - gMin.y),
-            std::max(1e-4f, gMax.z - gMin.z));
-
-        float maxExtent = std::max(gExtent.x, std::max(gExtent.y, gExtent.z));
-        int res = std::max(4, m_occlusionVoxelResolution);
-        float cellSize = std::max(0.001f, maxExtent / (float)res);
-
-        int32_t rx = std::max(1, (int32_t)std::ceil(gExtent.x / cellSize));
-        int32_t ry = std::max(1, (int32_t)std::ceil(gExtent.y / cellSize));
-        int32_t rz = std::max(1, (int32_t)std::ceil(gExtent.z / cellSize));
-
-        // ring to seed from, regardless of whether the model touches its own bounding box.
-        const int32_t pad = 1;
-        int32_t nx = rx + pad * 2, ny = ry + pad * 2, nz = rz + pad * 2;
-        auto cellIndex = [&](int32_t x, int32_t y, int32_t z) -> size_t
+    // Rebuilds the occlusion volume from the current checkbox/sliders, or clears it when generation is
+    // off. Called live from the Surfel Generator sliders (the bake is grid work over the raw points --
+    // fast enough to drag) and on every full pipeline recompute. A freshly baked volume is switched on
+    // straight away so the change is visible without also hunting for the Renderer-tab toggle.
+    void PreprocessApp::RefreshOcclusionVolume()
+    {
+        if (m_generateOcclusionVolume)
         {
-            return (size_t)x + (size_t)y * nx + (size_t)z * (size_t)nx * ny;
-        };
-        size_t totalCells = (size_t)nx * ny * nz;
-
-        // 1. Occupancy + running color sum per cell ("shell" = contains at least one surfel)
-        std::vector<uint8_t>   shell(totalCells, 0);
-        std::vector<XMFLOAT3>  colorSum(totalCells, XMFLOAT3(0.0f, 0.0f, 0.0f));
-        std::vector<uint32_t>  colorCount(totalCells, 0);
-
-        for (const auto& s : sourcePoints)
-        {
-            int32_t ix = pad + (int32_t)((s.position.x - gMin.x) / cellSize);
-            int32_t iy = pad + (int32_t)((s.position.y - gMin.y) / cellSize);
-            int32_t iz = pad + (int32_t)((s.position.z - gMin.z) / cellSize);
-            ix = std::max(pad, std::min(nx - pad - 1, ix));
-            iy = std::max(pad, std::min(ny - pad - 1, iy));
-            iz = std::max(pad, std::min(nz - pad - 1, iz));
-
-            size_t idx = cellIndex(ix, iy, iz);
-            shell[idx] = 1;
-            colorSum[idx].x += s.color.x;
-            colorSum[idx].y += s.color.y;
-            colorSum[idx].z += s.color.z;
-            colorCount[idx]++;
-        }
-
-        // crossing a shell cell) starting from the guaranteed-empty padding ring.
-        std::vector<uint8_t> exterior(totalCells, 0);
-        std::vector<size_t> floodQueue;
-        floodQueue.reserve(totalCells / 4);
-
-        auto tryMarkExterior = [&](int32_t x, int32_t y, int32_t z)
-        {
-            if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz) return;
-            size_t idx = cellIndex(x, y, z);
-            if (shell[idx] || exterior[idx]) return;
-            exterior[idx] = 1;
-            floodQueue.push_back(idx);
-        };
-
-        for (int32_t z = 0; z < nz; z++)
-            for (int32_t y = 0; y < ny; y++)
-                for (int32_t x = 0; x < nx; x++)
-                {
-                    if (x == 0 || y == 0 || z == 0 || x == nx - 1 || y == ny - 1 || z == nz - 1)
-                        tryMarkExterior(x, y, z);
-                }
-
-        for (size_t qi = 0; qi < floodQueue.size(); qi++)
-        {
-            size_t idx = floodQueue[qi];
-            int32_t z = (int32_t)(idx / ((size_t)nx * ny));
-            int32_t rem = (int32_t)(idx % ((size_t)nx * ny));
-            int32_t y = rem / nx;
-            int32_t x = rem % nx;
-            tryMarkExterior(x + 1, y, z); tryMarkExterior(x - 1, y, z);
-            tryMarkExterior(x, y + 1, z); tryMarkExterior(x, y - 1, z);
-            tryMarkExterior(x, y, z + 1); tryMarkExterior(x, y, z - 1);
-        }
-
-        // enclosed cavity. Isolated single solid cells (stray surfels with no solid neighbour) are
-        // dropped -- they can never be part of a shell and would just float as noise cubes.
-        std::vector<uint8_t> solid(totalCells, 0);
-        for (size_t idx = 0; idx < totalCells; idx++)
-            solid[idx] = exterior[idx] ? 0 : 1;
-
-        auto isSolidAt = [&](int32_t x, int32_t y, int32_t z) -> bool
-        {
-            if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz) return false;
-            return solid[cellIndex(x, y, z)] != 0;
-        };
-
-        for (int32_t z = 0; z < nz; z++)
-            for (int32_t y = 0; y < ny; y++)
-                for (int32_t x = 0; x < nx; x++)
-                {
-                    size_t idx = cellIndex(x, y, z);
-                    if (!solid[idx]) continue;
-                    bool hasSolidNeighbour =
-                        isSolidAt(x + 1, y, z) || isSolidAt(x - 1, y, z) ||
-                        isSolidAt(x, y + 1, z) || isSolidAt(x, y - 1, z) ||
-                        isSolidAt(x, y, z + 1) || isSolidAt(x, y, z - 1);
-                    if (!hasSolidNeighbour) solid[idx] = 2; // Mark for removal after the scan (don't disturb neighbours' tests)
-                }
-        for (size_t idx = 0; idx < totalCells; idx++)
-            if (solid[idx] == 2) solid[idx] = 0;
-
-        // 4. Propagate each shell cell's average color inward through solid space via multi-source BFS,
-        // so cells with no surfels of their own inherit the nearest reachable surfel color.
-        std::vector<uint8_t> colored(totalCells, 0);
-        std::vector<size_t> colorQueue;
-        colorQueue.reserve(totalCells / 4);
-        for (size_t idx = 0; idx < totalCells; idx++)
-        {
-            if (shell[idx] && colorCount[idx] > 0)
+            BuildOcclusionVolume();
+            if (!m_occlusionVoxels.empty())
             {
-                colored[idx] = 1;
-                colorQueue.push_back(idx);
+                m_enableOcclusionCulling = true;
             }
         }
-
-        for (size_t qi = 0; qi < colorQueue.size(); qi++)
+        else
         {
-            size_t idx = colorQueue[qi];
-            int32_t z = (int32_t)(idx / ((size_t)nx * ny));
-            int32_t rem = (int32_t)(idx % ((size_t)nx * ny));
-            int32_t y = rem / nx;
-            int32_t x = rem % nx;
-
-            auto spreadColor = [&](int32_t sx, int32_t sy, int32_t sz)
-            {
-                if (sx < 0 || sy < 0 || sz < 0 || sx >= nx || sy >= ny || sz >= nz) return;
-                size_t nIdx = cellIndex(sx, sy, sz);
-                if (colored[nIdx] || exterior[nIdx]) return;
-                colored[nIdx] = 1;
-                colorSum[nIdx] = colorSum[idx];     // Inherit the source cell's sum+count together so
-                colorCount[nIdx] = colorCount[idx]; // the averaged color below reproduces identically.
-                colorQueue.push_back(nIdx);
-            };
-            spreadColor(x + 1, y, z); spreadColor(x - 1, y, z);
-            spreadColor(x, y + 1, z); spreadColor(x, y - 1, z);
-            spreadColor(x, y, z + 1); spreadColor(x, y, z - 1);
+            m_occlusionVoxels.clear();
+            m_enableOcclusionCulling = false;
         }
+        m_occlusionVoxelsVersion++;
+    }
 
-        // 5. Emit one full-cell occluder cube per solid cell, tagged with which faces are exposed
-        // (border a non-solid cell). Face bit order matches the shader's s_occluderFaceIdx table.
-        const float halfSize = cellSize * 0.5f;
+    void PreprocessApp::BuildOcclusionGrid()
+    {
+        const auto& sourcePoints = !m_rawSurfels.empty() ? m_rawSurfels : m_rendererRawSurfels;
+        std::string trace;
+        OcclusionVolume::BuildGrid(sourcePoints, m_aabbMin, m_aabbMax, m_occlusionGrid, trace);
+        if (!trace.empty()) LogTransitionTrace("%s", trace.c_str());
+    }
 
-        m_occlusionVoxels.reserve(totalCells / 8);
-        for (int32_t z = 0; z < nz; z++)
-            for (int32_t y = 0; y < ny; y++)
-                for (int32_t x = 0; x < nx; x++)
-                {
-                    size_t idx = cellIndex(x, y, z);
-                    if (!solid[idx]) continue;
-
-                    uint32_t exposedFaces = 0;
-                    if (!isSolidAt(x, y, z - 1)) exposedFaces |= 1u << 0; // -Z
-                    if (!isSolidAt(x, y, z + 1)) exposedFaces |= 1u << 1; // +Z
-                    if (!isSolidAt(x - 1, y, z)) exposedFaces |= 1u << 2; // -X
-                    if (!isSolidAt(x + 1, y, z)) exposedFaces |= 1u << 3; // +X
-                    if (!isSolidAt(x, y - 1, z)) exposedFaces |= 1u << 4; // -Y
-                    if (!isSolidAt(x, y + 1, z)) exposedFaces |= 1u << 5; // +Y
-
-                    OcclusionVoxelGPU v = {};
-                    v.center = XMFLOAT3(
-                        gMin.x + ((float)(x - pad) + 0.5f) * cellSize,
-                        gMin.y + ((float)(y - pad) + 0.5f) * cellSize,
-                        gMin.z + ((float)(z - pad) + 0.5f) * cellSize);
-                    v.halfSize = halfSize;
-
-                    XMFLOAT3 avgColor(0.6f, 0.6f, 0.6f); // Neutral gray fallback if no color ever reached this cell
-                    if (colorCount[idx] > 0)
-                    {
-                        avgColor.x = colorSum[idx].x / (float)colorCount[idx];
-                        avgColor.y = colorSum[idx].y / (float)colorCount[idx];
-                        avgColor.z = colorSum[idx].z / (float)colorCount[idx];
-                    }
-                    uint32_t r5 = (uint32_t)std::clamp(avgColor.x * 31.0f, 0.0f, 31.0f);
-                    uint32_t g6 = (uint32_t)std::clamp(avgColor.y * 63.0f, 0.0f, 63.0f);
-                    uint32_t b5 = (uint32_t)std::clamp(avgColor.z * 31.0f, 0.0f, 31.0f);
-                    v.packedColor = (r5 << 11) | (g6 << 5) | b5 | (exposedFaces << 16);
-
-                    m_occlusionVoxels.push_back(v);
-                }
-
-        LogTransitionTrace("BuildOcclusionVolume: resolution=%d cellSize=%.3f grid=%dx%dx%d -> %zu occluder cubes",
-            res, cellSize, nx, ny, nz, m_occlusionVoxels.size());
+    void PreprocessApp::BuildOcclusionVolume()
+    {
+        if (!m_occlusionGrid.valid) BuildOcclusionGrid();
+        OcclusionVolume::ColorGrade grade{ m_occlusionHueShift, m_occlusionSaturation, m_occlusionBrightness };
+        std::string trace;
+        OcclusionVolume::Bake(m_occlusionGrid, m_occlusionShave, grade, m_occlusionVoxels, trace);
+        if (!trace.empty()) LogTransitionTrace("%s", trace.c_str());
     }
 
     // Voxelizes the loaded point cloud into a density heatmap for the cluster-cube visualizer
@@ -4144,8 +3960,8 @@ namespace Surfels
 
         m_state.pOcclusionVoxels = m_occlusionVoxels.empty() ? nullptr : m_occlusionVoxels.data();
         m_state.occlusionVoxelCount = (uint32_t)m_occlusionVoxels.size();
+        m_state.occlusionVoxelVersion = m_occlusionVoxelsVersion;
         m_state.enableOcclusionCulling = m_enableOcclusionCulling;
-        m_state.occlusionShrinkCells = m_occlusionShrinkCells;
         m_state.showOcclusionVolumeOnly = m_showOcclusionVolumeOnly;
 
         if (m_deviceLost)
@@ -4208,7 +4024,7 @@ namespace Surfels
         Trace("%s\n", message.c_str());
 
         std::string dialogText = message + "\n\nThe application cannot recover from this and will now close.";
-        MessageBoxA(nullptr, dialogText.c_str(), "Surfels Preprocess - GPU Device Lost", MB_OK | MB_ICONERROR);
+        MessageBoxA(nullptr, dialogText.c_str(), "SurfelLab - GPU Device Lost", MB_OK | MB_ICONERROR);
         PostQuitMessage(0);
     }
 }

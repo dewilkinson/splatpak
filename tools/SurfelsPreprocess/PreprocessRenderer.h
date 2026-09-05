@@ -2,7 +2,7 @@
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// GPU-side renderer for SurfelsPreprocess: owns every root signature, PSO, and GPU
+// GPU-side renderer for SurfelLab: owns every root signature, PSO, and GPU
 // buffer, and exposes a single State snapshot + OnRender() entry point that
 // PreprocessApp drives once per frame. See PreprocessRenderer.cpp for the implementation.
 
@@ -68,8 +68,8 @@ namespace Surfels
             // surfels don't show through gaps in the near side. Disabled by default.
             const OcclusionVoxelGPU* pOcclusionVoxels  = nullptr;
             uint32_t                 occlusionVoxelCount = 0;
+            uint32_t                 occlusionVoxelVersion = 0; // Bumped on every rebuild so a same-size rebuild (e.g. colour-only) still re-uploads
             bool                     enableOcclusionCulling  = false; // Disabled by default
-            float                    occlusionShrinkCells    = 0.5f;  // Live shrink: how many grid cells each exposed face of the volume is pulled inward at draw time
             bool                     showOcclusionVolumeOnly = false; // Debug view: render only the occluder geometry
         };
 
@@ -153,7 +153,6 @@ namespace Surfels
                                                    // it in this exact slot keeps everything below it correctly
                                                    // byte-aligned with the shader's cbuffer layout.
             uint32_t   enableOcclusionCulling;
-            float      occlusionShrinkCells;
             uint32_t   showOcclusionVolumeOnly;
             uint32_t   occlusionVoxelCount;
         };
@@ -177,6 +176,7 @@ namespace Surfels
         uint32_t               m_occlusionVoxelBufferCapacityBytes = 0;
         const void*             m_lastOcclusionVoxelsPtr = nullptr;
         uint32_t                m_lastOcclusionVoxelCount = 0;
+        uint32_t                m_lastOcclusionVoxelVersion = 0;
 
         uint32_t m_width  = 0;
         uint32_t m_height = 0;

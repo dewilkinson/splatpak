@@ -2,7 +2,7 @@
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// Runtime-side dataset loader for the Surfels_DX12 viewer: opens a .sflw + .json package,
+// Runtime-side dataset loader for the Surfels_DX12 viewer: opens a .sflw package,
 // keeps a per-(chunk, LOD) decompressed cache (with the two coarsest LODs always pinned),
 // and each frame turns the current LODSelector selection into a flat surfel buffer ready
 // for GPU upload.
@@ -23,7 +23,7 @@
 namespace Surfels
 {
     // Telemetry's lodDistribution array only tracks this many levels -- plenty of headroom over the
-    // preprocessor's practical max (SurfelsPreprocess's own LOD slider tops out well below this).
+    // preprocessor's practical max (SurfelLab's own LOD slider tops out well below this).
     static constexpr uint32_t kMaxTrackedLODLevels = 8;
 
     struct CachedChunkLOD
@@ -52,8 +52,9 @@ namespace Surfels
         StreamingManager() = default;
         ~StreamingManager() { Close(); }
 
-        // Opens a .sflw + .json package (searching a few relative paths under models/) and pins the
-        // two coarsest LOD levels of every chunk into the cache so a base silhouette is always ready.
+        // Opens a .sflw package (searching a few relative paths under models/) and pins the two
+        // coarsest LOD levels of every chunk into the cache so a base silhouette is always ready.
+        // v4+ packages are a single file; a v1-v3 package needs its companion .json alongside.
         bool LoadDataset(const std::string& basepath)
         {
             Close();
@@ -66,33 +67,23 @@ namespace Surfels
                 "../../models/" + basepath
             };
 
-            bool manifestFound = false;
+            bool packageFound = false;
             for (const auto& sb : searchBases)
             {
                 std::string sflwTry = sb + ".sflw";
-                std::string jsonTry = sb + ".json";
-
-                std::ifstream test(jsonTry);
+                std::ifstream test(sflwTry, std::ios::binary);
                 if (test.is_open())
                 {
                     test.close();
                     m_sflwPath = sflwTry;
-                    m_jsonPath = jsonTry;
-                    manifestFound = true;
+                    packageFound = true;
                     break;
                 }
             }
 
-            if (!manifestFound)
+            if (!packageFound)
             {
                 m_sflwPath = basepath + ".sflw";
-                m_jsonPath = basepath + ".json";
-            }
-
-            if (!ParseManifest(m_jsonPath))
-            {
-                std::cerr << "Failed to parse manifest: " << m_jsonPath << std::endl;
-                return false;
             }
 
             m_sflwStream.open(m_sflwPath, std::ios::binary);
@@ -107,6 +98,17 @@ namespace Surfels
             if (m_header.magic != SFLW_MAGIC)
             {
                 std::cerr << "Invalid SFLW magic header\n";
+                return false;
+            }
+            if (m_header.version < 4)
+            {
+                m_header.manifestOffset = 0; // field didn't exist yet; holds misread payload bytes
+            }
+
+            if (!ParseManifest())
+            {
+                std::cerr << "Failed to read manifest for: " << m_sflwPath << std::endl;
+                Close();
                 return false;
             }
 
@@ -239,95 +241,23 @@ namespace Surfels
         }
 
         // Minimal hand-rolled parser for this project's own .json manifest schema (not general JSON)
-        bool ParseManifest(const std::string& jsonPath)
+        // Fills m_chunks from the open .sflw: the embedded manifest table on v4+ files, or the legacy
+        // companion .json for packages written before the manifest moved inside the container.
+        bool ParseManifest()
         {
-            std::ifstream in(jsonPath);
-            if (!in.is_open()) return false;
-
             m_chunks.clear();
-
-            std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-            in.close();
-
-            // Simple fast JSON parser for our specific manifest schema
-            size_t pos = content.find("\"chunks\":");
-            if (pos == std::string::npos) return false;
-
-            while ((pos = content.find("\"id\":", pos)) != std::string::npos)
+            if (m_header.version >= 4)
             {
-                ChunkManifest cm = {};
-                sscanf_s(content.c_str() + pos, "\"id\": %u,", &cm.chunkId);
-
-                size_t bminPos = content.find("\"bounds_min\": [", pos);
-                if (bminPos != std::string::npos)
-                {
-                    sscanf_s(content.c_str() + bminPos, "\"bounds_min\": [%f, %f, %f],", &cm.aabbMin.x, &cm.aabbMin.y, &cm.aabbMin.z);
-                }
-
-                size_t bmaxPos = content.find("\"bounds_max\": [", pos);
-                if (bmaxPos != std::string::npos)
-                {
-                    sscanf_s(content.c_str() + bmaxPos, "\"bounds_max\": [%f, %f, %f],", &cm.aabbMax.x, &cm.aabbMax.y, &cm.aabbMax.z);
-                }
-
-                size_t ctrPos = content.find("\"center\": [", pos);
-                if (ctrPos != std::string::npos)
-                {
-                    sscanf_s(content.c_str() + ctrPos, "\"center\": [%f, %f, %f],", &cm.center.x, &cm.center.y, &cm.center.z);
-                }
-
-                size_t radPos = content.find("\"radius\":", pos);
-                if (radPos != std::string::npos)
-                {
-                    sscanf_s(content.c_str() + radPos, "\"radius\": %f,", &cm.boundingRadius);
-                }
-
-                size_t lodsPos = content.find("\"lods\": [", pos);
-                size_t lodsEnd = content.find("]", lodsPos);
-                if (lodsPos != std::string::npos && lodsEnd != std::string::npos)
-                {
-                    size_t curLod = lodsPos;
-                    while ((curLod = content.find("{\"level\":", curLod)) != std::string::npos || (curLod = content.find("{ \"level\":", curLod)) != std::string::npos)
-                    {
-                        if (curLod > lodsEnd) break;
-                        ChunkLODHeader lh = {};
-                        sscanf_s(content.c_str() + curLod, "%*[^{]{%*[^0-9]%u%*[^0-9]%u%*[^0-9]%u%*[^0-9]%u%*[^0-9]%llu%*[^0-9]%f",
-                            &lh.lodLevel, &lh.surfelCount, &lh.uncompressedByteSize, &lh.compressedByteSize, &lh.fileOffset, &lh.geometricError);
-                        
-                        // Parse individual fields with robust fallback
-                        size_t lPos = content.find("\"level\":", curLod);
-                        if (lPos != std::string::npos && lPos < lodsEnd) sscanf_s(content.c_str() + lPos, "\"level\": %u", &lh.lodLevel);
-
-                        size_t cntPos = content.find("\"count\":", curLod);
-                        if (cntPos != std::string::npos && cntPos < lodsEnd) sscanf_s(content.c_str() + cntPos, "\"count\": %u", &lh.surfelCount);
-
-                        size_t rawPos = content.find("\"raw_bytes\":", curLod);
-                        if (rawPos != std::string::npos && rawPos < lodsEnd) sscanf_s(content.c_str() + rawPos, "\"raw_bytes\": %u", &lh.uncompressedByteSize);
-
-                        size_t cmpPos = content.find("\"compressed_bytes\":", curLod);
-                        if (cmpPos != std::string::npos && cmpPos < lodsEnd) sscanf_s(content.c_str() + cmpPos, "\"compressed_bytes\": %u", &lh.compressedByteSize);
-
-                        size_t offPos = content.find("\"offset\":", curLod);
-                        if (offPos != std::string::npos && offPos < lodsEnd) sscanf_s(content.c_str() + offPos, "\"offset\": %llu", &lh.fileOffset);
-
-                        size_t errPos = content.find("\"error\":", curLod);
-                        if (errPos != std::string::npos && errPos < lodsEnd) sscanf_s(content.c_str() + errPos, "\"error\": %f", &lh.geometricError);
-
-                        cm.lods.push_back(lh);
-                        curLod += 10;
-                    }
-                }
-
-                cm.numLODs = (uint32_t)cm.lods.size();
-                m_chunks.push_back(std::move(cm));
-                pos += 10;
+                return ReadEmbeddedManifest(m_sflwStream, m_header, m_chunks) && !m_chunks.empty();
             }
 
-            return !m_chunks.empty();
+            std::string legacyJson = m_sflwPath;
+            if (legacyJson.size() >= 5) legacyJson = legacyJson.substr(0, legacyJson.size() - 5);
+            legacyJson += ".json";
+            return ParseLegacyJsonManifest(legacyJson, m_chunks);
         }
 
         std::string m_sflwPath;
-        std::string m_jsonPath;
         std::ifstream m_sflwStream;
         std::mutex m_streamMutex;
 

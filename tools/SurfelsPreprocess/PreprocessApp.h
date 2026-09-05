@@ -2,12 +2,13 @@
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// The SurfelsPreprocess app shell: owns the whole offline preprocessing pipeline (load ->
+// The SurfelLab app shell: owns the whole offline preprocessing pipeline (load ->
 // octree chunk -> wavelet decompose -> quantize -> export) plus the runtime streaming
 // simulation and every ImGui panel. PreprocessRenderer handles the actual GPU work; this
 // class is everything else -- UI, file I/O, and the streaming/decay/silhouette simulation.
 
 #pragma once
+#include "OcclusionVolume.h"
 #include "../../src/DX12/stdafx.h"
 #include "PreprocessRenderer.h"
 #include "SyntheticGenerator.h"
@@ -117,9 +118,7 @@ namespace Surfels
 
         int   m_activeTab               = 0;   // 0 = Preprocessor Studio, 1 = Stream Renderer
         bool  m_showPreprocessorPane    = true;// Toggle preprocessor pane visibility to reduce clutter in viewer mode
-        bool  m_pipelineNeedsUpdate     = false;// True when sliders/parameters change
-        bool  m_isPipelineProcessing    = false;// True while pipeline execution is in progress
-        bool  m_packageReadyToSave      = false;// True when pipeline processing has completed and is ready for export
+        bool  m_pipelineNeedsUpdate     = false;// A chunking/wavelet parameter changed; the pipeline re-runs as soon as the slider is released
         int   m_selectedPreviewLOD      = 0;
         int   m_maxPreviewLODs          = 4;
         float m_chunkSize               = 16.0f;
@@ -142,12 +141,22 @@ namespace Surfels
         // Interior Occlusion Volume: solid depth-writing cubes baked at preprocessing time so far-side
         // surfels can't show through gaps in the near side. Optional and disabled by default.
         bool  m_generateOcclusionVolume   = true;  // Preprocessor: bake a volume for this dataset on export (on by default)
-        int   m_occlusionVoxelResolution  = 24;    // Preprocessor: voxel grid divisions along the model's longest axis
+        float m_occlusionHueShift         = 0.0f;  // Preprocessor: baked colour grade of the volume -- hue rotation in degrees (-180..180)
+        float m_occlusionSaturation       = 1.0f;  // Preprocessor: baked colour grade -- saturation multiplier (0 = greyscale, 1 = as sampled)
+        float m_occlusionBrightness       = 0.05f; // Preprocessor: baked colour grade -- value/brightness multiplier (1 = as sampled; default keeps the volume as a dark shadow interior)
+        XMFLOAT3 GradeOcclusionColor(const XMFLOAT3& rgb) const; // Applies the three sliders above
+
+        // Cached voxelization of the current raw points, shared by every shave value so dragging the
+        // shave/colour sliders only re-runs the (cheap) erosion + octree stage. Invalidated by
+        // RecomputeWaveletHierarchy; see OcclusionVolume.h.
+        OcclusionVolume::Grid m_occlusionGrid;
+        void  BuildOcclusionGrid();
+        uint32_t m_occlusionVoxelsVersion = 0;   // Incremented whenever m_occlusionVoxels is rebuilt or cleared (renderer re-upload trigger)
         std::vector<OcclusionVoxelGPU> m_occlusionVoxels; // Baked result -- from BuildOcclusionVolume() or loaded from an .sflw's package
         bool  m_enableOcclusionCulling    = false; // Viewer: depth-test splats against the occlusion volume (disabled by default)
-        float m_occlusionShrinkCells      = 0.5f;  // Viewer: live shrink -- how far (in grid cells) the volume's exposed outer faces are pulled inward at draw time (0.5 = to the cell centre)
         bool  m_showOcclusionVolumeOnly   = false; // Viewer: debug view -- render only the occluder geometry
         void  BuildOcclusionVolume();
+        void  RefreshOcclusionVolume(); // Rebuild (or clear) from the current checkbox/sliders and make it visible
 
         float m_yaw      = 0.6f;
         float m_pitch    = 0.35f;
@@ -258,7 +267,7 @@ namespace Surfels
         bool   m_enableDitheredTransitions  = true;   // Stochastic screen-space Bayer dithering for smooth LOD transitions
         float  m_ditherTransitionDurationSec= 0.20f;  // Transition dissolve duration in seconds
         bool   m_enableStreamingSimulation  = true;  // Hierarchical streaming simulation & LOD refinement
-        bool   m_unthrottledBandwidth       = false; // Full uncapped bandwidth (removes throttle cap)
+        bool   m_unthrottledBandwidth       = true;  // Full uncapped bandwidth (removes throttle cap) -- the default; pick a network profile to throttle
         bool   m_prioritizeFrustumAndProximity = true; // Stream view frustum & close proximity chunks first
         float  m_bandwidthThrottleMBps      = 10.0f;  // Simulated bandwidth in MB/s
         float  m_ringBufferCapacityMB       = 64.0f;  // GPU Ring Buffer capacity limit in MB

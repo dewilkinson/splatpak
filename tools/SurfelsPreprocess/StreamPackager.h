@@ -2,9 +2,11 @@
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// Reads and writes the .sflw binary stream container + companion .json manifest: runs
+// Reads and writes the self-contained .sflw binary stream container (header, per-chunk
+// LOD payloads, optional occlusion volume, and an embedded chunk manifest table): runs
 // each chunk through the wavelet/quantize/shuffle/compress pipeline on export, and
 // restores the full multi-LOD chunk hierarchy (plus any baked occlusion volume) on import.
+// Packages written before v4 kept their manifest in a companion .json; those still load.
 
 #pragma once
 #include <fstream>
@@ -31,7 +33,6 @@ namespace Surfels
             const std::vector<OcclusionVoxelGPU>& occlusionVoxels = {})
         {
             std::string sflwPath = outputBasepath + ".sflw";
-            std::string jsonPath = outputBasepath + ".json";
 
             std::ofstream sflwOut(sflwPath, std::ios::binary);
             if (!sflwOut.is_open())
@@ -132,9 +133,8 @@ namespace Surfels
                 chunkManifests.push_back(std::move(cm));
             }
 
-            // Occlusion voxels (v3+, optional) go after all chunk LOD data. Written last since their
-            // count/offset weren't known when the header placeholder above was first written -- patch
-            // the header in place now that we know them.
+            // Occlusion voxels (v3+, optional) go after all chunk LOD data. Written after the payloads
+            // since their count/offset weren't known when the header placeholder above was first written.
             header.occlusionVoxelCount = (uint32_t)occlusionVoxels.size();
             if (!occlusionVoxels.empty())
             {
@@ -147,58 +147,37 @@ namespace Surfels
                 header.occlusionVoxelOffset = 0;
             }
 
+            // Embedded manifest table (v4+) goes last: one ChunkManifestRecord per chunk, each followed
+            // by its ChunkLODHeader array. Every LOD payload offset is already absolute, so the manifest
+            // can sit anywhere; the end of the file keeps the payload region contiguous.
+            header.manifestOffset = (uint64_t)sflwOut.tellp();
+            for (const auto& c : chunkManifests)
+            {
+                ChunkManifestRecord rec = {};
+                rec.chunkId        = c.chunkId;
+                rec.aabbMin        = c.aabbMin;
+                rec.aabbMax        = c.aabbMax;
+                rec.center         = c.center;
+                rec.boundingRadius = c.boundingRadius;
+                rec.numLODs        = (uint32_t)c.lods.size();
+                sflwOut.write(reinterpret_cast<const char*>(&rec), sizeof(rec));
+                if (!c.lods.empty())
+                {
+                    sflwOut.write(reinterpret_cast<const char*>(c.lods.data()), sizeof(ChunkLODHeader) * c.lods.size());
+                }
+            }
+
+            // Patch the header in place now that every offset is known.
             sflwOut.seekp(0, std::ios::beg);
             sflwOut.write(reinterpret_cast<const char*>(&header), sizeof(SFLWFileHeader));
             sflwOut.seekp(0, std::ios::end);
 
             sflwOut.close();
-
-            // Write manifest.json
-            std::ofstream jsonOut(jsonPath);
-            if (!jsonOut.is_open()) return false;
-
-            jsonOut << "{\n";
-            jsonOut << "  \"version\": " << SFLW_VERSION << ",\n";
-            jsonOut << "  \"total_surfels_lod0\": " << totalSurfelsLOD0 << ",\n";
-            jsonOut << "  \"num_chunks\": " << chunkManifests.size() << ",\n";
-            jsonOut << "  \"max_lods\": " << maxLODs << ",\n";
-            jsonOut << "  \"bounds_min\": [" << gMin.x << ", " << gMin.y << ", " << gMin.z << "],\n";
-            jsonOut << "  \"bounds_max\": [" << gMax.x << ", " << gMax.y << ", " << gMax.z << "],\n";
-            jsonOut << "  \"chunks\": [\n";
-
-            for (size_t i = 0; i < chunkManifests.size(); i++)
+            if (!sflwOut.good())
             {
-                const auto& c = chunkManifests[i];
-                jsonOut << "    {\n";
-                jsonOut << "      \"id\": " << c.chunkId << ",\n";
-                jsonOut << "      \"bounds_min\": [" << c.aabbMin.x << ", " << c.aabbMin.y << ", " << c.aabbMin.z << "],\n";
-                jsonOut << "      \"bounds_max\": [" << c.aabbMax.x << ", " << c.aabbMax.y << ", " << c.aabbMax.z << "],\n";
-                jsonOut << "      \"center\": [" << c.center.x << ", " << c.center.y << ", " << c.center.z << "],\n";
-                jsonOut << "      \"radius\": " << c.boundingRadius << ",\n";
-                jsonOut << "      \"lods\": [\n";
-
-                for (size_t j = 0; j < c.lods.size(); j++)
-                {
-                    const auto& l = c.lods[j];
-                    jsonOut << "        { \"level\": " << l.lodLevel
-                            << ", \"count\": " << l.surfelCount
-                            << ", \"raw_bytes\": " << l.uncompressedByteSize
-                            << ", \"compressed_bytes\": " << l.compressedByteSize
-                            << ", \"offset\": " << l.fileOffset
-                            << ", \"error\": " << l.geometricError << " }";
-                    if (j + 1 < c.lods.size()) jsonOut << ",";
-                    jsonOut << "\n";
-                }
-
-                jsonOut << "      ]\n";
-                jsonOut << "    }";
-                if (i + 1 < chunkManifests.size()) jsonOut << ",";
-                jsonOut << "\n";
+                std::cerr << "Failed while writing " << sflwPath << std::endl;
+                return false;
             }
-
-            jsonOut << "  ]\n";
-            jsonOut << "}\n";
-            jsonOut.close();
 
             std::cout << "Successfully packaged " << totalSurfelsLOD0 << " surfels across " << chunks.size() << " chunks.\n";
             std::cout << "Uncompressed packed size: " << (totalRawBytes / 1024.0 / 1024.0) << " MB\n";
@@ -221,26 +200,8 @@ namespace Surfels
 
         static bool LoadPackage(const std::string& inputPath, SFLWPackageData& outPackage)
         {
-            std::string sflwPath = inputPath;
-            std::string jsonPath = inputPath;
-
-            std::string lowerPath = inputPath;
-            std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::tolower);
-            if (lowerPath.size() >= 5 && lowerPath.substr(lowerPath.size() - 5) == ".sflw")
-            {
-                sflwPath = inputPath;
-                jsonPath = inputPath.substr(0, inputPath.size() - 5) + ".json";
-            }
-            else if (lowerPath.size() >= 5 && lowerPath.substr(lowerPath.size() - 5) == ".json")
-            {
-                jsonPath = inputPath;
-                sflwPath = inputPath.substr(0, inputPath.size() - 5) + ".sflw";
-            }
-            else
-            {
-                sflwPath = inputPath + ".sflw";
-                jsonPath = inputPath + ".json";
-            }
+            std::string sflwPath, jsonPath;
+            ResolvePackagePaths(inputPath, sflwPath, jsonPath);
 
             std::ifstream sflwIn(sflwPath, std::ios::binary);
             if (!sflwIn.is_open())
@@ -274,107 +235,26 @@ namespace Surfels
                 outPackage.header.occlusionVoxelOffset = 0;
             }
 
-            std::ifstream jsonIn(jsonPath);
-            if (!jsonIn.is_open())
+            // manifestOffset was appended in version 4; same reasoning again.
+            if (outPackage.header.version < 4)
             {
-                std::cerr << "Failed to open companion .json manifest: " << jsonPath << std::endl;
-                return false;
+                outPackage.header.manifestOffset = 0;
             }
 
-            std::string content((std::istreambuf_iterator<char>(jsonIn)), std::istreambuf_iterator<char>());
-            jsonIn.close();
-
-            outPackage.chunkManifests.clear();
-            size_t pos = content.find("\"chunks\":");
-            if (pos == std::string::npos) return false;
-
-            while ((pos = content.find("\"id\":", pos)) != std::string::npos)
+            // v4+ packages carry their chunk manifest inside the .sflw; older ones kept it in a
+            // companion .json next to the file.
+            if (outPackage.header.version >= 4)
             {
-                ChunkManifest cm = {};
-                sscanf_s(content.c_str() + pos, "\"id\": %u", &cm.chunkId);
-
-                size_t bminPos = content.find("\"bounds_min\":", pos);
-                if (bminPos != std::string::npos && bminPos < pos + 400)
+                if (!ReadEmbeddedManifest(sflwIn, outPackage.header, outPackage.chunkManifests))
                 {
-                    const char* p = strchr(content.c_str() + bminPos, '[');
-                    if (p) sscanf_s(p, "[%f, %f, %f]", &cm.aabbMin.x, &cm.aabbMin.y, &cm.aabbMin.z);
+                    std::cerr << "Failed to read embedded manifest in " << sflwPath << std::endl;
+                    return false;
                 }
-
-                size_t bmaxPos = content.find("\"bounds_max\":", pos);
-                if (bmaxPos != std::string::npos && bmaxPos < pos + 400)
-                {
-                    const char* p = strchr(content.c_str() + bmaxPos, '[');
-                    if (p) sscanf_s(p, "[%f, %f, %f]", &cm.aabbMax.x, &cm.aabbMax.y, &cm.aabbMax.z);
-                }
-
-                size_t ctrPos = content.find("\"center\":", pos);
-                if (ctrPos != std::string::npos && ctrPos < pos + 400)
-                {
-                    const char* p = strchr(content.c_str() + ctrPos, '[');
-                    if (p) sscanf_s(p, "[%f, %f, %f]", &cm.center.x, &cm.center.y, &cm.center.z);
-                }
-
-                size_t radPos = content.find("\"radius\":", pos);
-                if (radPos != std::string::npos && radPos < pos + 400)
-                {
-                    sscanf_s(content.c_str() + radPos, "\"radius\": %f", &cm.boundingRadius);
-                }
-
-                size_t lodsPos = content.find("\"lods\":", pos);
-                if (lodsPos != std::string::npos && lodsPos < pos + 400)
-                {
-                    size_t lodsEnd = content.find("]", lodsPos);
-                    if (lodsEnd != std::string::npos)
-                    {
-                        size_t curLod = lodsPos;
-                        while (curLod < lodsEnd)
-                        {
-                            size_t lvlPos = content.find("\"level\":", curLod);
-                            if (lvlPos == std::string::npos || lvlPos >= lodsEnd) break;
-
-                            ChunkLODHeader lh = {};
-                            sscanf_s(content.c_str() + lvlPos, "\"level\": %u", &lh.lodLevel);
-
-                            size_t cntPos = content.find("\"count\":", lvlPos);
-                            if (cntPos != std::string::npos && cntPos < lodsEnd)
-                                sscanf_s(content.c_str() + cntPos, "\"count\": %u", &lh.surfelCount);
-
-                            size_t rawPos = content.find("\"raw_bytes\":", lvlPos);
-                            if (rawPos != std::string::npos && rawPos < lodsEnd)
-                                sscanf_s(content.c_str() + rawPos, "\"raw_bytes\": %u", &lh.uncompressedByteSize);
-
-                            size_t cmpPos = content.find("\"compressed_bytes\":", lvlPos);
-                            if (cmpPos != std::string::npos && cmpPos < lodsEnd)
-                                sscanf_s(content.c_str() + cmpPos, "\"compressed_bytes\": %u", &lh.compressedByteSize);
-
-                            size_t offPos = content.find("\"offset\":", lvlPos);
-                            if (offPos != std::string::npos && offPos < lodsEnd)
-                                sscanf_s(content.c_str() + offPos, "\"offset\": %llu", &lh.fileOffset);
-
-                            size_t errPos = content.find("\"error\":", lvlPos);
-                            if (errPos != std::string::npos && errPos < lodsEnd)
-                                sscanf_s(content.c_str() + errPos, "\"error\": %f", &lh.geometricError);
-
-                            cm.lods.push_back(lh);
-
-                            size_t nextObj = content.find("}", lvlPos);
-                            if (nextObj == std::string::npos || nextObj >= lodsEnd) break;
-                            curLod = nextObj + 1;
-                        }
-                        pos = lodsEnd + 1;
-                    }
-                    else
-                    {
-                        pos += 10;
-                    }
-                }
-                else
-                {
-                    pos += 10;
-                }
-
-                cm.numLODs = (uint32_t)cm.lods.size();
-                outPackage.chunkManifests.push_back(std::move(cm));
+            }
+            else if (!ParseLegacyJsonManifest(jsonPath, outPackage.chunkManifests))
+            {
+                std::cerr << "Failed to open/parse companion .json manifest for pre-v4 package: " << jsonPath << std::endl;
+                return false;
             }
 
             outPackage.chunkLOD0Surfels.resize(outPackage.chunkManifests.size());

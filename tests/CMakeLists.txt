@@ -49,3 +49,12 @@ set_target_properties(TestGeometryCull PROPERTIES
 )
 
 
+
+add_executable(TestOcclusionVolume ${CMAKE_CURRENT_SOURCE_DIR}/TestOcclusionVolume.cpp)
+set_target_properties(TestOcclusionVolume PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    FOLDER "Tests"
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_HOME_DIRECTORY}"
+    DEBUG_POSTFIX "d"
+)

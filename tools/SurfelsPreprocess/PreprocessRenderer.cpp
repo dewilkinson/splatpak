@@ -2,7 +2,7 @@
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// The GPU heart of SurfelsPreprocess: root signatures, PSOs, and per-frame command
+// The GPU heart of SurfelLab: root signatures, PSOs, and per-frame command
 // recording for the main mesh-shader splat pass, the GPU silhouette item-prepass, the
 // interior occlusion volume pass, the GPU bitonic depth sort, and TAA resolve.
 
@@ -46,7 +46,7 @@ namespace Surfels
             HRESULT hr = pDevice->GetDevice()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &options7, sizeof(options7));
             if (FAILED(hr) || options7.MeshShaderTier == D3D12_MESH_SHADER_TIER_NOT_SUPPORTED)
             {
-                MessageBoxA(NULL, "Mesh Shaders are not supported on this GPU.", "SurfelsPreprocess", MB_ICONERROR);
+                MessageBoxA(NULL, "Mesh Shaders are not supported on this GPU.", "SurfelLab", MB_ICONERROR);
                 exit(1);
             }
         }
@@ -384,11 +384,17 @@ namespace Surfels
     // directly as an SRV rather than a default-heap buffer kept current via the copy queue.
     void PreprocessRenderer::UpdateOcclusionVoxelBuffer(const State* pState)
     {
-        if (pState->pOcclusionVoxels == m_lastOcclusionVoxelsPtr && pState->occlusionVoxelCount == m_lastOcclusionVoxelCount)
+        // The vector keeps its capacity across rebuilds, so a rebuild that produces the same block
+        // count (a colour grade, say) leaves pointer and count unchanged -- the version counter is what
+        // actually says "new data".
+        if (pState->pOcclusionVoxels == m_lastOcclusionVoxelsPtr &&
+            pState->occlusionVoxelCount == m_lastOcclusionVoxelCount &&
+            pState->occlusionVoxelVersion == m_lastOcclusionVoxelVersion)
             return;
 
         m_lastOcclusionVoxelsPtr = pState->pOcclusionVoxels;
         m_lastOcclusionVoxelCount = pState->occlusionVoxelCount;
+        m_lastOcclusionVoxelVersion = pState->occlusionVoxelVersion;
 
         if (pState->occlusionVoxelCount == 0 || pState->pOcclusionVoxels == nullptr)
         {
@@ -1570,7 +1576,6 @@ namespace Surfels
         pCB->showOnlyLocked = pState->showOnlyLockedChunks ? 1 : 0;
         pCB->showChunkStream = pState->showChunkStream ? 1 : 0;
         pCB->enableOcclusionCulling = (pState->enableOcclusionCulling && pState->occlusionVoxelCount > 0 && m_pOcclusionVoxelBuffer != nullptr) ? 1 : 0;
-        pCB->occlusionShrinkCells = pState->occlusionShrinkCells;
         pCB->showOcclusionVolumeOnly = pState->showOcclusionVolumeOnly ? 1 : 0;
         pCB->occlusionVoxelCount = pState->occlusionVoxelCount;
 
