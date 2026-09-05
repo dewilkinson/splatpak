@@ -73,6 +73,20 @@ The solution is organized into Solution Explorer folders:
 
 6. **ThirdParty/Cauldron** — every vendored Cauldron target, swept into one folder.
 
+### Public repository
+
+`https://github.com/dewilkinson/splatlab` is a public mirror of this repository with
+`bluesec-codec`'s proprietary implementation replaced by an open stand-in (see that
+library's own README for exactly what differs) — the algorithm never appears anywhere in
+its git history, not just at the current tip. It's generated, not hand-maintained: run
+`python scripts/sync-public-repo.py` from a clean working tree to rebuild it from the
+current state of this repo (strips the proprietary paths from every commit, drops in the
+open stand-in, swaps a couple of private-repo-specific README passages, builds the result,
+regenerates the bundled example packages so they're readable by the open codec, runs the
+stress test, and pushes). Pass `--no-push` to inspect the result first. The script's own
+header comment documents each step and the config that needs updating if a proprietary
+module is ever renamed or moved again.
+
 ### Package format (`.sflw`)
 
 A package is a single self-contained binary file (format version 5):
