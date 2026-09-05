@@ -31,7 +31,8 @@ namespace Surfels
             float deadbandThreshold = 0.003f,
             float splatRadius = 1.0f,
             const std::vector<OcclusionVoxelGPU>& occlusionVoxels = {},
-            uint64_t sourceFileBytes = 0)
+            uint64_t sourceFileBytes = 0,
+            const OcclusionMipTable* pOcclusionMips = nullptr) // Mip layout of occlusionVoxels; nullptr = one mip covering the array
         {
             std::string sflwPath = outputBasepath + ".sflw";
 
@@ -148,6 +149,23 @@ namespace Surfels
             {
                 header.occlusionVoxelOffset = 0;
             }
+            // Mip table (v6+): how the voxel array above splits into its nested mips (mip 0 first). A caller
+            // that never asked for mips, or handed a table that does not add up to the array, gets a
+            // one-mip table covering the whole array -- exactly what every pre-v6 package implicitly was.
+            {
+                OcclusionMipTable mips;
+                if (pOcclusionMips != nullptr && pOcclusionMips->mipCount > 0 && pOcclusionMips->mipCount <= kMaxOcclusionMips
+                    && pOcclusionMips->TotalBlocks() == (uint32_t)occlusionVoxels.size())
+                    mips = *pOcclusionMips;
+                else
+                    mips = OcclusionMipTable::SingleLevel(occlusionVoxels.data(), (uint32_t)occlusionVoxels.size());
+                header.occlusionMipCount = mips.mipCount;
+                for (uint32_t k = 0; k < kMaxOcclusionMips; k++)
+                {
+                    header.occlusionMipBlockCount[k] = mips.blockCount[k];
+                    header.occlusionMipCellSize[k]   = mips.cellSize[k];
+                }
+            }
 
             // Embedded manifest table (v4+) goes last: one ChunkManifestRecord per chunk, each followed
             // by its ChunkLODHeader array. Every LOD payload offset is already absolute, so the manifest
@@ -196,6 +214,7 @@ namespace Surfels
             std::vector<std::vector<PackedSurfelGPU>> chunkLOD0Surfels; // kept for existing callers (== chunkLODSurfels[c][0])
             std::vector<std::vector<std::vector<PackedSurfelGPU>>> chunkLODSurfels; // [chunkIndex][lodLevelIndex] -> surfels
             std::vector<OcclusionVoxelGPU> occlusionVoxels; // v3+ only; empty on older files or files with no volume baked
+            OcclusionMipTable occlusionMips;                // Mip layout of occlusionVoxels (v6+); a pre-v6 volume is presented as one mip
             uint64_t totalSurfels = 0;
             size_t totalCompressedBytes = 0;
         };
@@ -304,13 +323,40 @@ namespace Surfels
                 outPackage.chunkLOD0Surfels[c] = outPackage.chunkLODSurfels[c][0];
             }
 
+            // The occlusion mip table was appended in version 6; on older files those fields hold
+            // misinterpreted bytes (same reasoning as splatRadius above), so zero them and let the
+            // whole voxel array be presented as a single mip below.
+            if (outPackage.header.version < 6)
+            {
+                outPackage.header.occlusionMipCount = 0;
+                for (uint32_t k = 0; k < kMaxOcclusionMips; k++)
+                {
+                    outPackage.header.occlusionMipBlockCount[k] = 0;
+                    outPackage.header.occlusionMipCellSize[k]   = 0.0f;
+                }
+            }
+
             outPackage.occlusionVoxels.clear();
+            outPackage.occlusionMips = OcclusionMipTable{};
             if (outPackage.header.occlusionVoxelCount > 0)
             {
                 outPackage.occlusionVoxels.resize(outPackage.header.occlusionVoxelCount);
                 sflwIn.seekg(outPackage.header.occlusionVoxelOffset, std::ios::beg);
                 sflwIn.read(reinterpret_cast<char*>(outPackage.occlusionVoxels.data()),
                     outPackage.header.occlusionVoxelCount * sizeof(OcclusionVoxelGPU));
+
+                // v6+ carries the mip layout; a pre-v6 file, or a table that does not add up to the
+                // array, is treated as one mip covering everything (which renders exactly as before).
+                OcclusionMipTable mips;
+                mips.mipCount = (outPackage.header.occlusionMipCount <= kMaxOcclusionMips) ? outPackage.header.occlusionMipCount : kMaxOcclusionMips;
+                for (uint32_t k = 0; k < mips.mipCount; k++)
+                {
+                    mips.blockCount[k] = outPackage.header.occlusionMipBlockCount[k];
+                    mips.cellSize[k]   = outPackage.header.occlusionMipCellSize[k];
+                }
+                if (mips.mipCount == 0 || mips.TotalBlocks() != outPackage.header.occlusionVoxelCount)
+                    mips = OcclusionMipTable::SingleLevel(outPackage.occlusionVoxels.data(), outPackage.header.occlusionVoxelCount);
+                outPackage.occlusionMips = mips;
             }
 
             sflwIn.close();

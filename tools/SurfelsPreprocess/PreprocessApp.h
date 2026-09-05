@@ -161,6 +161,8 @@ namespace Surfels
         uint32_t m_occlusionVoxelsVersion = 0;   // Incremented whenever m_occlusionVoxels is rebuilt or cleared (renderer re-upload trigger)
         uint32_t m_occlusionSafetyNetVersion = UINT32_MAX; // m_occlusionVoxelsVersion right after the Surfel Generator tab's fallback bake last fired (see BuildUI): equal = already tried for this volume state
         std::vector<OcclusionVoxelGPU> m_occlusionVoxels; // Baked result -- from BuildOcclusionVolume() or loaded from an .sflw's package
+        OcclusionMipTable m_occlusionMips;       // Mip layout of m_occlusionVoxels (see OcclusionMipTable): from Bake, or the loaded package's header
+        int   m_occlusionMipOverride = -1;       // Viewer: -1 = renderer picks the mip from projected cell size; 0.. = force that mip (debug / side-by-side compare)
         bool  m_enableOcclusionCulling    = true;  // Viewer: "Show Occlusion Volume" -- draw the volume and depth-test splats against it (on by default)
         bool  m_showOcclusionVolumeOnly   = false; // Viewer: debug view -- render only the occluder geometry
         void  BuildOcclusionVolume();

@@ -30,7 +30,7 @@ namespace Surfels
 
     // Magic bytes for .sflw binary stream container ("SFLW" in ASCII)
     static constexpr uint32_t SFLW_MAGIC = 0x574C4653;
-    static constexpr uint32_t SFLW_VERSION = 5; // v2 adds SFLWFileHeader::splatRadius (appended at the
+    static constexpr uint32_t SFLW_VERSION = 6; // v2 adds SFLWFileHeader::splatRadius (appended at the
                                                  // struct's end so v1 files still read correctly -- see
                                                  // the version check in StreamPackager::LoadPackage).
                                                  // v3 adds an optional occlusion voxel array, appended
@@ -46,6 +46,19 @@ namespace Surfels
                                                  // input file (.ply/.splat) the package was built from,
                                                  // so the compression ratio shown is always that file
                                                  // against this one. 0 on v1-v4 files or when unknown.
+                                                 // v6 adds the occlusion volume mip table (occlusionMipCount,
+                                                 // occlusionMipBlockCount[], occlusionMipCellSize[]): the
+                                                 // voxel array now holds a nested chain of volumes, mip 0
+                                                 // (the finest, exactly what v3-v5 stored) first, followed
+                                                 // by progressively coarser conservative downsamples. A v5
+                                                 // reader draws the whole array and still sees a correct
+                                                 // volume, because every coarser mip lies strictly inside
+                                                 // mip 0's skin (see OcclusionMipTable).
+
+    // Upper bound on the occlusion volume mip chain: mip 0 plus up to three coarser levels. Blocks fall
+    // by roughly 4x per level (the skin is a surface), so the whole chain costs about a third more than
+    // mip 0 alone, and a fourth coarsening would be too blobby to hug any surface usefully.
+    static constexpr uint32_t kMaxOcclusionMips = 4;
 
     #pragma pack(push, 1)
     // One baked occluder block of the interior occlusion volume (see PreprocessApp::BuildOcclusionVolume).
@@ -77,6 +90,46 @@ namespace Surfels
     };
     #pragma pack(pop)
     static_assert(sizeof(OcclusionVoxelGPU) == 20, "OcclusionVoxelGPU must be exactly 20 bytes");
+
+    // Layout of the occlusion volume mip chain inside one OcclusionVoxelGPU array (v6+ packages, and the
+    // in-memory result of OcclusionVolume::Bake). Mip 0 is the finest volume -- the level-0 skin, sitting
+    // one below it and can never protrude, and its exposed-face masks are recomputed against its own
+    // solid. The renderer draws exactly ONE mip per frame, chosen so a cell still covers a few pixels at
+    // the model's nearest point (see PreprocessRenderer): at distance the fine skin is sub-pixel work and,
+    // worse, too tight for the big coarse-LOD splats it is paired with (a tangent disc sags below a
+    // curved surface by ~r^2 / 2R, and gets clipped once that exceeds the skin's erosion margin), so the
+    // cube size and the erosion margin grow together with the surfel LOD in view.
+    //
+    // The blocks of all mips are stored back to back, mip 0 first, so a pre-v6 reader that draws the
+    // whole array still renders correctly (the coarser mips are hidden inside mip 0's skin).
+    struct OcclusionMipTable
+    {
+        uint32_t mipCount = 0;                          // 0 = no volume; 1 = level-0 only (what v3-v5 packages hold)
+        uint32_t blockCount[kMaxOcclusionMips] = {};    // Blocks per mip, in array order (mip 0 first)
+        float    cellSize[kMaxOcclusionMips] = {};      // Finest cube edge of each mip; cellSize[k] = cellSize[0] * 2^k
+
+        uint32_t FirstBlock(uint32_t mip) const
+        {
+            uint32_t first = 0;
+            for (uint32_t k = 0; k < mip && k < kMaxOcclusionMips; k++) first += blockCount[k];
+            return first;
+        }
+        uint32_t TotalBlocks() const { return FirstBlock(kMaxOcclusionMips); }
+
+        // A table describing a plain single-level array (legacy packages, or any caller that never
+        // asked for mips): one mip holding every block, its cell size read off the smallest block.
+        static OcclusionMipTable SingleLevel(const OcclusionVoxelGPU* blocks, uint32_t count)
+        {
+            OcclusionMipTable t;
+            if (count == 0 || blocks == nullptr) return t;
+            float minHalf = blocks[0].halfSize;
+            for (uint32_t i = 1; i < count; i++) minHalf = (blocks[i].halfSize < minHalf) ? blocks[i].halfSize : minHalf;
+            t.mipCount = 1;
+            t.blockCount[0] = count;
+            t.cellSize[0] = minHalf * 2.0f;
+            return t;
+        }
+    };
 
     // Packed 8-byte GPU Surfel structure
     // Layout:
@@ -174,6 +227,11 @@ namespace Surfels
                                        // keep their manifest in a companion .json instead.
         uint64_t sourceFileBytes;      // v5+ only -- byte size of the original input file this package was
                                        // built from (0 = unknown). Compression ratio = this / package size.
+        uint32_t occlusionMipCount;    // v6+ only -- occlusion volume mips stored back to back in the voxel
+                                       // array (mip 0 first); see OcclusionMipTable. On v3-v5 files the whole
+                                       // array is one mip (StreamPackager::LoadPackage synthesizes the table).
+        uint32_t occlusionMipBlockCount[kMaxOcclusionMips]; // v6+ only -- blocks per mip; sums to occlusionVoxelCount
+        float    occlusionMipCellSize[kMaxOcclusionMips];   // v6+ only -- finest cube edge of each mip
     };
 
     // On-disk form of one ChunkManifest entry in a v4+ .sflw's embedded manifest table. The table

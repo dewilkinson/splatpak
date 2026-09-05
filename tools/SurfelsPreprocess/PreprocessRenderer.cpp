@@ -379,6 +379,68 @@ namespace Surfels
         }
     }
 
+    // Chooses the occlusion volume mip drawn this frame: ONE mip for the whole volume, by screen-space
+    // cell size. The rule is the finest mip whose cell still projects to at least
+    // State::occlusionMipMinCellPixels at the model's nearest point to the eye -- any finer and the
+    // cubes are sub-pixel rasterization work that is also too tight for the big coarse-LOD splats in
+    // view (a tangent disc sags below a curved surface by ~r^2 / 2R and gets clipped once that exceeds
+    // the skin's erosion margin), any coarser and the volume stops hugging the surface at a size the
+    // screen can still resolve. About 15% hysteresis on the switch in either direction keeps a camera
+    // hovering near a threshold from flickering between mips.
+    //
+    // Deliberately NOT tied to the per-chunk surfel LOD: the volume is global, these are single-object
+    // scans, and mixing mips per chunk would open seams where a coarse block's buried face meets a
+    // neighbouring chunk that eroded that cell away. A screen-space rule also sidesteps the mismatch
+    // between cube size (doubles per mip) and surfel spacing (~1.4x per decimation level).
+    uint32_t PreprocessRenderer::SelectOcclusionMip(const State* pState, const OcclusionMipTable& mips, const XMFLOAT3& eyePos)
+    {
+        if (mips.mipCount == 0)
+        {
+            m_activeOcclusionMip = 0;
+            m_activeOcclusionMipCellPixels = 0.0f;
+            return 0;
+        }
+
+        // Distance from the eye to the nearest point of the model's bounds (0 inside; never closer than
+        // the near plane, so a camera inside the model sees the finest mip).
+        const XMFLOAT3& mn = pState->aabbMin;
+        const XMFLOAT3 mx(mn.x + pState->aabbExtents.x, mn.y + pState->aabbExtents.y, mn.z + pState->aabbExtents.z);
+        const float ddx = std::max(0.0f, std::max(mn.x - eyePos.x, eyePos.x - mx.x));
+        const float ddy = std::max(0.0f, std::max(mn.y - eyePos.y, eyePos.y - mx.y));
+        const float ddz = std::max(0.0f, std::max(mn.z - eyePos.z, eyePos.z - mx.z));
+        const float dist = std::max(0.1f, sqrtf(ddx * ddx + ddy * ddy + ddz * ddz));
+
+        // Pixels covered by one metre at that distance: viewport height over the frustum's visible height
+        // there (vertical FOV is XM_PIDIV4 in every projection this renderer builds).
+        const float pixelsPerMetre = (float)std::max(1u, m_height) / (2.0f * dist * tanf(XM_PIDIV4 * 0.5f));
+        auto cellPixels = [&](uint32_t k) -> float { return mips.cellSize[k] * pixelsPerMetre; };
+
+        uint32_t mip = std::min(m_activeOcclusionMip, mips.mipCount - 1);
+        if (pState->occlusionMipOverride >= 0)
+        {
+            mip = std::min((uint32_t)pState->occlusionMipOverride, mips.mipCount - 1);
+        }
+        else
+        {
+            const float threshold = std::max(0.5f, pState->occlusionMipMinCellPixels);
+            const float hysteresis = 1.15f;
+            // Coarsen while the current mip's cell has become clearly sub-threshold ...
+            while (mip + 1 < mips.mipCount && cellPixels(mip) < threshold / hysteresis) mip++;
+            // ... and refine while the next finer mip's cell would be clearly resolvable.
+            while (mip > 0 && cellPixels(mip - 1) >= threshold * hysteresis) mip--;
+        }
+
+        if (mip != m_activeOcclusionMip)
+        {
+            LogTransitionTrace("PreprocessRenderer: occlusion volume mip %u -> %u (%u blocks, cell %.4f m = %.1f px at %.2f m%s)",
+                m_activeOcclusionMip, mip, mips.blockCount[mip], mips.cellSize[mip], cellPixels(mip), dist,
+                pState->occlusionMipOverride >= 0 ? ", forced" : "");
+        }
+        m_activeOcclusionMip = mip;
+        m_activeOcclusionMipCellPixels = cellPixels(mip);
+        return mip;
+    }
+
     // Occlusion voxel data only changes when a new dataset is loaded/exported, unlike the surfel/chunk
     // buffers which churn every frame -- so unlike those, this is a plain upload-heap resource read
     // directly as an SRV rather than a default-heap buffer kept current via the copy queue.
@@ -1577,7 +1639,20 @@ namespace Surfels
         pCB->showChunkStream = pState->showChunkStream ? 1 : 0;
         pCB->enableOcclusionCulling = (pState->enableOcclusionCulling && pState->occlusionVoxelCount > 0 && m_pOcclusionVoxelBuffer != nullptr) ? 1 : 0;
         pCB->showOcclusionVolumeOnly = pState->showOcclusionVolumeOnly ? 1 : 0;
-        pCB->occlusionVoxelCount = pState->occlusionVoxelCount;
+
+        // Interior occlusion volume: the voxel buffer holds the whole mip chain, but only ONE mip is drawn
+        // per frame (see SelectOcclusionMip). Hand the shader that mip's block range. A volume with no
+        // table (a pre-v6 package, or a table that does not add up) is one mip covering the array.
+        uint32_t occluderBlockCount = 0;
+        {
+            OcclusionMipTable mips = pState->occlusionMips;
+            if (mips.mipCount == 0 || mips.mipCount > kMaxOcclusionMips || mips.TotalBlocks() != pState->occlusionVoxelCount)
+                mips = OcclusionMipTable::SingleLevel(pState->pOcclusionVoxels, pState->occlusionVoxelCount);
+            const uint32_t mip = SelectOcclusionMip(pState, mips, eyePos);
+            pCB->occlusionVoxelFirst = mips.FirstBlock(mip);
+            pCB->occlusionVoxelCount = (mip < mips.mipCount) ? mips.blockCount[mip] : 0;
+            occluderBlockCount = pCB->occlusionVoxelCount;
+        }
 
         ID3D12Resource* pGpuRes = (pState->renderMode == 2) ? m_pRawSurfelGpuBuffer : m_pSurfelGpuBuffer;
         ID3D12Resource* pGpuOutRes = (pState->renderMode == 2) ? m_pRawSurfelGpuOutBuffer : m_pSurfelGpuOutBuffer;
@@ -1599,7 +1674,7 @@ namespace Surfels
             // own -- "view only" must not require "enable culling" too, or the two together would draw
             // neither the occluder (culling off) nor the splats (view-only skips them): a blank screen.
             bool wantOccluderVisible = pState->enableOcclusionCulling || pState->showOcclusionVolumeOnly;
-            if (!wantOccluderVisible || pState->occlusionVoxelCount == 0 || m_pOcclusionVoxelBuffer == nullptr || m_pOccluderPSO == nullptr)
+            if (!wantOccluderVisible || pState->occlusionVoxelCount == 0 || occluderBlockCount == 0 || m_pOcclusionVoxelBuffer == nullptr || m_pOccluderPSO == nullptr)
                 return;
 
             auto occluderStart = std::chrono::high_resolution_clock::now();
@@ -1615,8 +1690,9 @@ namespace Surfels
 
             Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> occluderCmd6;
             pCmdLst->QueryInterface(IID_PPV_ARGS(&occluderCmd6));
-            uint32_t dimX = std::min(pState->occlusionVoxelCount, 32768u);
-            uint32_t dimY = (dimX > 0) ? ((pState->occlusionVoxelCount + dimX - 1) / dimX) : 1;
+            // One threadgroup per block of the selected mip only (the shader offsets by g_OcclusionVoxelFirst).
+            uint32_t dimX = std::min(occluderBlockCount, 32768u);
+            uint32_t dimY = (dimX > 0) ? ((occluderBlockCount + dimX - 1) / dimX) : 1;
             occluderCmd6->DispatchMesh(dimX, dimY, 1);
 
             auto occluderEnd = std::chrono::high_resolution_clock::now();

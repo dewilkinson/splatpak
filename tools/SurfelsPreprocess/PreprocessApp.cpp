@@ -842,9 +842,9 @@ namespace Surfels
             LogTransitionTrace("LoadSFLWFile: LoadPackage failed for '%s'", filepath.c_str());
             return false;
         }
-        LogTransitionTrace("LoadSFLWFile: '%s' v%u: %zu chunks, %llu LOD0 surfels, %zu baked occluder blocks, source %llu bytes",
+        LogTransitionTrace("LoadSFLWFile: '%s' v%u: %zu chunks, %llu LOD0 surfels, %zu baked occluder blocks in %u mips, source %llu bytes",
             filepath.c_str(), m_loadedPackage.header.version, m_loadedPackage.chunkManifests.size(),
-            (unsigned long long)m_loadedPackage.totalSurfels, m_loadedPackage.occlusionVoxels.size(),
+            (unsigned long long)m_loadedPackage.totalSurfels, m_loadedPackage.occlusionVoxels.size(), m_loadedPackage.occlusionMips.mipCount,
             (unsigned long long)m_loadedPackage.header.sourceFileBytes);
 
         m_loadedFilePath = filepath;
@@ -885,6 +885,7 @@ namespace Surfels
         // fall back to generating one here if the package genuinely didn't ship with one (see further
         // down, after the reconstructed surfels exist).
         m_occlusionVoxels = m_loadedPackage.occlusionVoxels;
+        m_occlusionMips = m_loadedPackage.occlusionMips; // One mip on pre-v6 packages (see StreamPackager::LoadPackage)
         m_occlusionVoxelsVersion++;
         m_generateOcclusionVolume = true;
 
@@ -1493,7 +1494,7 @@ namespace Surfels
         // m_occlusionVoxels is already current: the occlusion sliders rebuild it live, and any pending
         // chunking/wavelet change is applied the moment its slider is released (before a click on Save
         // can land), so nothing exported here can be stale.
-        if (StreamPackager::PackageDataset(outputPath, m_chunks, m_maxLODLevels, deadbandMeters, m_state.splatRadius, m_occlusionVoxels, m_sourceFileBytes))
+        if (StreamPackager::PackageDataset(outputPath, m_chunks, m_maxLODLevels, deadbandMeters, m_state.splatRadius, m_occlusionVoxels, m_sourceFileBytes, &m_occlusionMips))
         {
             std::ifstream pkg(outputPath + ".sflw", std::ios::ate | std::ios::binary);
             if (pkg.is_open())
@@ -2150,7 +2151,12 @@ namespace Surfels
 
                 ImGui::Spacing();
                 if (!m_occlusionVoxels.empty())
-                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Baked: %zu occluder cubes", m_occlusionVoxels.size());
+                {
+                    std::string chain;
+                    for (uint32_t k = 0; k < m_occlusionMips.mipCount; k++)
+                        chain += (k ? " / " : "") + std::to_string(m_occlusionMips.blockCount[k]);
+                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Baked: %zu occluder cubes in %u mips (%s)", m_occlusionVoxels.size(), m_occlusionMips.mipCount, chain.c_str());
+                }
                 else if (m_generateOcclusionVolume)
                     ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "Baked: no cubes survived (point cloud too sparse/thin at this resolution)");
                 DrawOcclusionVolumeControls();
@@ -2699,7 +2705,7 @@ namespace Surfels
 
             if (m_enableOcclusionCulling)
             {
-                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "  • Occlusion Volume Pass:            %.2f ms", m_pRenderer->GetSmoothOccluderMs());
+                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "  • Occlusion Volume Pass:            %.2f ms  (mip %u of %u)", m_pRenderer->GetSmoothOccluderMs(), m_pRenderer->GetActiveOcclusionMip(), m_occlusionMips.mipCount);
             }
 
             ImGui::Text("  • Main Splat Mesh Shader Dispatch:  %.2f ms", m_pRenderer->GetSmoothMainDispatchMs());
@@ -3362,6 +3368,30 @@ namespace Surfels
         ImGui::Checkbox("View Occlusion Volume Only", &m_showOcclusionVolumeOnly);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Debug view: hides the surfel splats entirely and renders only the occluder geometry. Works regardless of 'Show Occlusion Volume' above.");
 
+        // Mip chain (v6+ packages): which level the renderer is drawing, with a manual override for
+        // comparing levels. Automatic selection is by projected cell size (see
+        // PreprocessRenderer::SelectOcclusionMip), never by per-chunk surfel LOD.
+        if (m_occlusionMips.mipCount > 1)
+        {
+            const uint32_t activeMip = m_pRenderer ? m_pRenderer->GetActiveOcclusionMip() : 0;
+            const float activePixels = m_pRenderer ? m_pRenderer->GetOcclusionMipCellPixels() : 0.0f;
+            char preview[128];
+            if (m_occlusionMipOverride < 0)
+                snprintf(preview, sizeof(preview), "Auto: mip %u (%.1f px per cell)", activeMip, activePixels);
+            else
+                snprintf(preview, sizeof(preview), "Mip %d (forced, %.1f px per cell)", m_occlusionMipOverride, activePixels);
+            if (ImGui::BeginCombo("Occlusion Volume Mip", preview))
+            {
+                if (ImGui::Selectable("Auto (finest mip whose cell covers >= 2.5 px)", m_occlusionMipOverride < 0)) m_occlusionMipOverride = -1;
+                for (uint32_t k = 0; k < m_occlusionMips.mipCount; k++)
+                {
+                    char label[128];
+                    snprintf(label, sizeof(label), "Mip %u: %u blocks, %.3f m cells", k, m_occlusionMips.blockCount[k], m_occlusionMips.cellSize[k]);
+                    if (ImGui::Selectable(label, m_occlusionMipOverride == (int)k)) m_occlusionMipOverride = (int)k;
+                }
+                ImGui::EndCombo();
+            }
+        }
     }
 
     // Thin wrappers over the header-only generator in OcclusionVolume.h, which holds the algorithm
@@ -3389,6 +3419,7 @@ namespace Surfels
         else
         {
             m_occlusionVoxels.clear();
+            m_occlusionMips = OcclusionMipTable{};
             m_enableOcclusionCulling = false;
         }
         m_occlusionVoxelsVersion++;
@@ -3407,7 +3438,7 @@ namespace Surfels
         if (!m_occlusionGrid.valid) BuildOcclusionGrid();
         OcclusionVolume::ColorGrade grade{ m_occlusionHueShift, m_occlusionSaturation, m_occlusionBrightness };
         std::string trace;
-        OcclusionVolume::Bake(m_occlusionGrid, m_occlusionShave, grade, m_occlusionVoxels, trace);
+        OcclusionVolume::Bake(m_occlusionGrid, m_occlusionShave, grade, m_occlusionVoxels, m_occlusionMips, trace);
         if (!trace.empty()) LogTransitionTrace("%s", trace.c_str());
     }
 
@@ -4119,6 +4150,9 @@ namespace Surfels
         m_state.occlusionVoxelVersion = m_occlusionVoxelsVersion;
         m_state.enableOcclusionCulling = m_enableOcclusionCulling;
         m_state.showOcclusionVolumeOnly = m_showOcclusionVolumeOnly;
+        if (m_occlusionMipOverride >= (int)m_occlusionMips.mipCount) m_occlusionMipOverride = -1; // A rebake/reload with fewer mips drops back to Auto
+        m_state.occlusionMips = m_occlusionMips;
+        m_state.occlusionMipOverride = m_occlusionMipOverride;
 
         if (m_deviceLost)
         {

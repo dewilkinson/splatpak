@@ -88,7 +88,8 @@ cbuffer SurfelsCB : register(b0)
     uint     g_ShowChunkStream;
     uint     g_EnableOcclusionCulling;
     uint     g_ShowOcclusionVolumeOnly;
-    uint     g_OcclusionVoxelCount;
+    uint     g_OcclusionVoxelCount; // Blocks in the occlusion volume mip drawn this frame
+    uint     g_OcclusionVoxelFirst; // Index of that mip's first block in g_OcclusionVoxelBuffer
 };
 
 struct ChunkPayload
@@ -804,6 +805,11 @@ uint itemPS(ItemVSOut i) : SV_Target0
 // viewer draws precisely what was packaged. Only a cube's EXPOSED faces (those with
 // some non-solid fine cell across them, per the mask baked into packedColor) are
 // emitted; fully buried faces are never visible and are skipped.
+//
+// g_OcclusionVoxelBuffer holds the volume's whole mip chain back to back (mip 0, the
+// OcclusionMipTable). The CPU picks ONE mip per frame from the projected cell size at
+// the model's nearest point and passes its block range as g_OcclusionVoxelFirst /
+// g_OcclusionVoxelCount, so only that mip is dispatched and rasterized.
 // =========================================================================
 
 struct OccluderVSOut
@@ -852,7 +858,7 @@ void occluderMS(
     uint voxelIndex = groupId.y * 32768 + groupId.x;
     bool valid = voxelIndex < g_OcclusionVoxelCount;
 
-    OcclusionVoxel v = g_OcclusionVoxelBuffer[valid ? voxelIndex : 0];
+    OcclusionVoxel v = g_OcclusionVoxelBuffer[valid ? (g_OcclusionVoxelFirst + voxelIndex) : 0];
     uint exposed = (v.packedColor >> OCCLUDER_FACE_MASK_SHIFT) & OCCLUDER_FACE_MASK_ALL;
     if (((v.packedColor >> OCCLUDER_MASK_VALID_BIT) & 1) == 0)
         exposed = OCCLUDER_FACE_MASK_ALL; // Legacy file baked before the mask existed

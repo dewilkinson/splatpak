@@ -71,6 +71,9 @@ namespace Surfels
             uint32_t                 occlusionVoxelVersion = 0; // Bumped on every rebuild so a same-size rebuild (e.g. colour-only) still re-uploads
             bool                     enableOcclusionCulling  = false; // Disabled by default
             bool                     showOcclusionVolumeOnly = false; // Debug view: render only the occluder geometry
+            OcclusionMipTable        occlusionMips;                   // Mip layout of pOcclusionVoxels (see OcclusionMipTable); mipCount 0 = the array is one mip
+            int32_t                  occlusionMipOverride = -1;       // -1 = pick the mip automatically from projected cell size; 0..mipCount-1 = force that mip (debug/compare)
+            float                    occlusionMipMinCellPixels = 2.5f; // Auto rule: finest mip whose cell still covers at least this many pixels at the model's nearest point
         };
 
         struct FrameTimingMetrics
@@ -109,6 +112,8 @@ namespace Surfels
         float GetSmoothUploadMs() const { return m_smoothUploadMs; }
         float GetSmoothSilhouettePrepassMs() const { return m_smoothSilhouettePrepassMs; }
         float GetSmoothOccluderMs() const { return m_smoothOccluderMs; }
+        uint32_t GetActiveOcclusionMip() const { return m_activeOcclusionMip; }             // Mip of the occlusion volume drawn last frame (see SelectOcclusionMip)
+        float    GetOcclusionMipCellPixels() const { return m_activeOcclusionMipCellPixels; } // Screen-space size of that mip's cell at the model's nearest point
         float GetSmoothMainDispatchMs() const { return m_smoothMainDispatchMs; }
         float GetSmoothTaaMs() const { return m_smoothTaaMs; }
         const std::vector<uint32_t>& GetSilhouetteBitmask() const { return m_silhouetteBitmaskCPU; }
@@ -154,7 +159,8 @@ namespace Surfels
                                                    // byte-aligned with the shader's cbuffer layout.
             uint32_t   enableOcclusionCulling;
             uint32_t   showOcclusionVolumeOnly;
-            uint32_t   occlusionVoxelCount;
+            uint32_t   occlusionVoxelCount;   // Blocks in the occlusion volume mip drawn this frame
+            uint32_t   occlusionVoxelFirst;   // Index of that mip's first block in the voxel buffer
         };
 
         CAULDRON_DX12::Device* m_pDevice = nullptr;
@@ -171,6 +177,9 @@ namespace Surfels
         ID3D12PipelineState* m_pOccluderPSO = nullptr; // Solid depth-writing interior occlusion volume cubes (occluderMS/occluderPS)
 
         void UpdateOcclusionVoxelBuffer(const State* pState);
+        uint32_t SelectOcclusionMip(const State* pState, const OcclusionMipTable& mips, const XMFLOAT3& eyePos);
+        uint32_t m_activeOcclusionMip = 0;             // Mip chosen last frame; the hysteresis in SelectOcclusionMip works from it
+        float    m_activeOcclusionMipCellPixels = 0.0f;
         ID3D12Resource*      m_pOcclusionVoxelBuffer = nullptr; // Upload-heap resource read directly as an SRV -- small & infrequently updated, doesn't need the default-heap/copy-queue machinery used for chunks/surfels
         uint8_t*              m_pOcclusionVoxelBufferMapped = nullptr;
         uint32_t               m_occlusionVoxelBufferCapacityBytes = 0;

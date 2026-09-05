@@ -32,7 +32,10 @@ int main(int argc, char** argv)
     for (const auto& c : pkg.chunkLOD0Surfels) packed.insert(packed.end(), c.begin(), c.end());
     auto points = Surfels::Quantizer::UnquantizeSurfels(packed, pkg.header.globalBoundsMin, pkg.header.globalBoundsMax);
     std::cout << "Loaded " << points.size() << " LOD0 surfels from " << pkg.chunkManifests.size() << " chunks; package volume had "
-              << pkg.occlusionVoxels.size() << " cubes" << std::endl;
+              << pkg.occlusionVoxels.size() << " cubes in " << pkg.occlusionMips.mipCount << " mips (";
+    for (uint32_t k = 0; k < pkg.occlusionMips.mipCount; k++)
+        std::cout << (k ? " / " : "") << pkg.occlusionMips.blockCount[k] << " @ " << pkg.occlusionMips.cellSize[k] << " m";
+    std::cout << ")" << std::endl;
 
     Surfels::OcclusionVolume::Grid grid;
     std::string trace;
@@ -43,8 +46,9 @@ int main(int argc, char** argv)
     for (float s : shaves)
     {
         std::vector<Surfels::OcclusionVoxelGPU> out;
+        Surfels::OcclusionMipTable mips;
         std::string t;
-        Surfels::OcclusionVolume::Bake(grid, s, Surfels::OcclusionVolume::ColorGrade{}, out, t);
+        Surfels::OcclusionVolume::Bake(grid, s, Surfels::OcclusionVolume::ColorGrade{}, out, mips, t);
         std::cout << t;
     }
     return 0;

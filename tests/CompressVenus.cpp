@@ -62,17 +62,18 @@ int main(int argc, char** argv)
     std::cout << "Baking occlusion volume (shave " << shave << ")..." << std::endl;
     Surfels::OcclusionVolume::Grid grid;
     std::vector<Surfels::OcclusionVoxelGPU> occlusion;
+    Surfels::OcclusionMipTable occlusionMips;
     {
         std::string trace;
         Surfels::OcclusionVolume::BuildGrid(surfels, minP, maxP, grid, trace);
-        Surfels::OcclusionVolume::Bake(grid, shave, Surfels::OcclusionVolume::ColorGrade{}, occlusion, trace);
+        Surfels::OcclusionVolume::Bake(grid, shave, Surfels::OcclusionVolume::ColorGrade{}, occlusion, occlusionMips, trace);
         std::cout << trace;
     }
 
     auto chunks = Surfels::SpatialOctree::PartitionIntoChunks(surfels, chunkSize);
     std::cout << "Partitioned into " << chunks.size() << " chunks. Packaging to " << outputBase << ".sflw..." << std::endl;
 
-    if (!Surfels::StreamPackager::PackageDataset(outputBase, chunks, maxLODs, deadbandMeters, splatRadius, occlusion, sourceFileBytes))
+    if (!Surfels::StreamPackager::PackageDataset(outputBase, chunks, maxLODs, deadbandMeters, splatRadius, occlusion, sourceFileBytes, &occlusionMips))
     {
         std::cerr << "Failed to package dataset" << std::endl;
         return 1;
@@ -82,6 +83,9 @@ int main(int argc, char** argv)
     uint64_t packageBytes = out.is_open() ? (uint64_t)out.tellg() : 0;
     std::cout << "Successfully generated " << outputBase << ".sflw: " << packageBytes / (1024.0 * 1024.0) << " MB, "
               << (packageBytes > 0 ? (double)sourceFileBytes / (double)packageBytes : 0.0) << "x vs source, "
-              << occlusion.size() << " occluder blocks" << std::endl;
+              << occlusion.size() << " occluder blocks in " << occlusionMips.mipCount << " mips (";
+    for (uint32_t k = 0; k < occlusionMips.mipCount; k++)
+        std::cout << (k ? " / " : "") << occlusionMips.blockCount[k];
+    std::cout << ")" << std::endl;
     return 0;
 }
