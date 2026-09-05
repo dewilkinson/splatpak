@@ -2985,6 +2985,9 @@ namespace Surfels
         ImGui::TextColored(statusColor, "%s", m_statusMessage.c_str());
         ImGui::End();
 
+        // 4b. Active render-mode banner over the viewport
+        DrawRenderModeBanner(leftPanelWidth, rightPanelWidth);
+
         // 5. About Dialog Window
         if (m_showAboutDialog)
         {
@@ -3354,6 +3357,70 @@ namespace Surfels
         }
 
         ImGui::Spacing();
+    }
+
+    // Overlay listing every toggle that currently alters what the viewport shows -- debug views, isolation
+    // modes, frozen state, forced levels -- as "[X Mode Enabled]" lines, one per row, each in its own
+    // colour, anchored at the top-left of the viewport next to the control panel. Its purpose is purely
+    // to stop a user from reading a deliberately altered picture (surfels hidden, a stale culling
+    // frustum, lavender-tinted chunks, a frozen stream) as a rendering bug: whenever the model looks
+    // wrong, the reason is written on the screen. Draws nothing when no such mode is active. Ordinary
+    // quality/performance settings (TAA, dithering, cone culling, the occlusion volume itself) are not
+    // listed -- they are the normal picture, not a departure from it.
+    void PreprocessApp::DrawRenderModeBanner(float leftPanelWidth, float rightPanelWidth)
+    {
+        struct ModeLine { char text[96]; ImVec4 color; };
+        ModeLine lines[16];
+        int count = 0;
+        auto add = [&](const ImVec4& color, const char* fmt, ...)
+        {
+            if (count >= (int)(sizeof(lines) / sizeof(lines[0]))) return;
+            va_list args;
+            va_start(args, fmt);
+            vsnprintf(lines[count].text, sizeof(lines[count].text), fmt, args);
+            va_end(args);
+            lines[count].color = color;
+            count++;
+        };
+
+        // Order: the modes that hide or replace the model first, then tints/overlays, then frozen/forced state.
+        if (m_showOcclusionVolumeOnly)     add(ImVec4(1.00f, 0.90f, 0.20f, 1.0f), "[View Occlusion Volume Only Mode Enabled]");
+        if (m_showOnlyLockedChunks)        add(ImVec4(1.00f, 0.60f, 0.20f, 1.0f), "[Show ONLY Locked Chunks Mode Enabled]");
+        if (m_highlightSilhouetteChunks)   add(ImVec4(0.78f, 0.68f, 1.00f, 1.0f), "[Highlight Edge Chunks Mode Enabled]");
+        if (m_showClusterHeatmap)          add(ImVec4(1.00f, 0.45f, 0.35f, 1.0f), "[Density Heatmap Cluster Cubes Mode Enabled]");
+        if (m_showHeatmapWireframe)        add(ImVec4(0.92f, 0.82f, 0.60f, 1.0f), "[Cube Outlines Mode Enabled]");
+        if (m_showOctreeVisualizer)        add(ImVec4(1.00f, 0.75f, 0.20f, 1.0f), "[Macro Clusters Mode Enabled]");
+        if (m_showGlobalBounds)            add(ImVec4(0.40f, 0.60f, 1.00f, 1.0f), "[Global Model Bounds Mode Enabled]");
+        if (m_showCulledChunks)            add(ImVec4(0.80f, 0.80f, 0.80f, 1.0f), "[Show Culled Chunks Mode Enabled]");
+        if (m_detachCamera)                add(ImVec4(0.30f, 0.90f, 1.00f, 1.0f), "[Detached Culling Camera Mode Enabled]");
+        if (m_freezeRenderingAndMemory)    add(ImVec4(0.55f, 0.75f, 1.00f, 1.0f), "[Freeze Rendering & Memory Mode Enabled]");
+        if (!m_autoLOD)                    add(ImVec4(0.50f, 1.00f, 0.50f, 1.0f), "[Manual LOD %d Mode Enabled]", m_selectedPreviewLOD);
+        if (m_occlusionMipOverride >= 0)   add(ImVec4(1.00f, 0.55f, 0.80f, 1.0f), "[Occlusion Volume Mip %d Forced Mode Enabled]", m_occlusionMipOverride);
+        if (count == 0) return;
+
+        // Top-left of the viewport: just right of the left panel, below the menu bar, never under the
+        // right panel.
+        const float x = 10.0f + leftPanelWidth + 10.0f;
+        const float y = 36.0f;
+        if (x > (float)m_Width - rightPanelWidth - 40.0f) return; // No viewport strip to draw into at this window size
+
+        ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.45f)); // Dark backing so the text stays readable over any model colour
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
+        const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_AlwaysAutoResize |
+            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing;
+        if (ImGui::Begin("##RenderModeBanner", nullptr, flags))
+        {
+            for (int i = 0; i < count; i++)
+            {
+                ImGui::TextColored(lines[i].color, "%s", lines[i].text);
+            }
+        }
+        ImGui::End();
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor();
     }
 
     // Shared enable/view-only controls for the baked occlusion volume, drawn identically from both the

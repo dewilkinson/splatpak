@@ -46,6 +46,8 @@ The output is a single `.sflw` file. It may be inspected in the Renderer tab, re
 
 ## The Renderer Tab: Streaming and Rendering a .sflw Model
 
+Whenever a toggle that alters what the viewport shows is active (a debug view such as **View Occlusion Volume Only**, an isolation mode such as **Show ONLY Locked Chunks**, a tint or overlay such as **Highlight Edge Chunks** or the heatmap cubes, a detached culling camera, frozen rendering, a manually selected LOD level, or a forced occlusion mip), a banner at the top-left of the viewport lists each one as **[X Mode Enabled]**, one per row in its own colour. If the model looks wrong, read the banner first: it names the toggle responsible, and switching that toggle off restores the normal picture.
+
 Tab **2. Renderer** is where the model is examined. The most useful controls are:
 
 - **Auto Distance LOD** — the default mode. Camera distance selects the detail level per chunk, so the model refines automatically as the camera approaches.
