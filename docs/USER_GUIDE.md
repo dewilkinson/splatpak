@@ -53,7 +53,7 @@ Tab **2. Renderer** is where the model is examined. The most useful controls are
 - **GPU Silhouette Edge Refinement** — keeps outlines crisp even while the interior of the model is coarse. This is the mechanism that allows distant objects to retain sharp edges.
 - **Splat Radius Scale** — larger splats fill gaps in sparse data but appear blobby at close range. A value of 1.0× is the recommended starting point.
 
-When a package contains an occlusion volume, an **Interior Occlusion Volume** section appears with an **Enable Occlusion Culling** checkbox. Enabling generation on the Surfel Generator tab, or moving its Shave slider, enables the checkbox automatically, so the volume is visible as soon as it exists. **View Occlusion Volume Only** displays the blocky solid alone so that it can be compared against the model. The shape of the volume, including its resolution and shave amount, is fixed when it is baked on the Surfel Generator tab; the Renderer tab offers no control that would alter it.
+The **Interior Occlusion Volume** section has a **Show Occlusion Volume** checkbox, on by default, which draws the volume and depth-tests the surfels against it. Enabling generation on the Surfel Generator tab, or moving its Shave slider, also switches it on, so the volume is visible as soon as it exists. **View Occlusion Volume Only** displays the blocky solid alone so that it can be compared against the model. The shape and colour of the volume are fixed when it is baked on the Surfel Generator tab; the Renderer tab offers no control that would alter them, and a note beneath the checkboxes directs the user back to the Surfel Generator tab for the Shave and colour sliders.
 
 ## The Streaming Tab: Network Streaming Simulator
 

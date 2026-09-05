@@ -32,7 +32,7 @@ namespace Surfels
             float    time        = 0.0f;
 
             uint32_t renderMode  = 1; // 0 = Sphere, 1 = Quantized (8-byte), 2 = Raw Float32
-            uint32_t orientMode  = 1; // 1 = Camera-Facing Billboards (standard)
+            uint32_t orientMode  = 0; // 0 = Normal-Oriented Tangent Discs (standard default; 1 = Camera-Facing Billboards)
             XMFLOAT3 aabbMin     = { -40.0f, -2.0f, -80.0f };
             XMFLOAT3 aabbExtents = { 80.0f, 30.0f, 160.0f };
 

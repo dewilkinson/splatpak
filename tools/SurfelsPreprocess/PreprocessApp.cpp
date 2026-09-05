@@ -97,26 +97,54 @@ namespace Surfels
         *pWidth = 1440;
         *pHeight = 900;
 
+        // The command line is one file path (drag-and-drop onto the exe, or the launch script's %*),
+        // which Windows quotes when it contains spaces. Strip the quotes and surrounding whitespace so
+        // the path opens as-is.
         if (lpCmdLine && strlen(lpCmdLine) > 0)
         {
-            strncpy_s(m_inputPathBuf, sizeof(m_inputPathBuf), lpCmdLine, _TRUNCATE);
+            std::string arg = lpCmdLine;
+            while (!arg.empty() && (arg.back() == ' ' || arg.back() == '\t' || arg.back() == '\r' || arg.back() == '\n' || arg.back() == '"')) arg.pop_back();
+            while (!arg.empty() && (arg.front() == ' ' || arg.front() == '\t' || arg.front() == '"')) arg.erase(arg.begin());
+            strncpy_s(m_inputPathBuf, sizeof(m_inputPathBuf), arg.c_str(), _TRUNCATE);
         }
+    }
+
+    // Places to look for a file given relative to the repo layout (e.g. "assets/cthulu/cthulu.sflw" or
+    // "config.json"): relative to the working directory at a few depths, then relative to the folder
+    // the executable lives in (bin/) at the same depths. The working directory depends on how the app
+    // was launched -- bin/ from the launch scripts, the repo root or a build sub-folder from Visual
+    // Studio, anywhere at all from a shortcut -- so the executable's own location is the one anchor
+    // that is always right. Absolute paths are returned as-is.
+    std::vector<std::string> PreprocessApp::ResolveRelativeCandidates(const std::string& relativePath) const
+    {
+        std::vector<std::string> out;
+        if (relativePath.empty()) return out;
+        bool absolute = relativePath.size() > 1 && (relativePath[1] == ':' || relativePath[0] == '\\' || relativePath[0] == '/');
+        if (absolute) { out.push_back(relativePath); return out; }
+
+        const char* ups[] = { "", "../", "../../", "../../../" };
+        for (const char* up : ups) out.push_back(std::string(up) + relativePath);
+
+        char exePath[MAX_PATH] = {};
+        if (GetModuleFileNameA(nullptr, exePath, MAX_PATH) > 0)
+        {
+            std::string exeDir = exePath;
+            size_t slash = exeDir.find_last_of("\\/");
+            exeDir = (slash == std::string::npos) ? "." : exeDir.substr(0, slash);
+            for (const char* up : ups) out.push_back(exeDir + "/" + up + relativePath);
+        }
+        return out;
     }
 
     // Reads config.json/surfels_config.ini for dev mode, the startup dataset path, and other app settings
     void PreprocessApp::LoadConfigFile()
     {
-        const char* configPaths[] = {
-            "config.json",
-            "../config.json",
-            "surfels_config.ini",
-            "../surfels_config.ini",
-            "config.ini",
-            "../config.ini"
-        };
+        std::vector<std::string> configPaths;
+        for (const char* name : { "config.json", "surfels_config.ini", "config.ini" })
+            for (const auto& c : ResolveRelativeCandidates(name)) configPaths.push_back(c);
 
         bool foundAny = false;
-        for (const char* path : configPaths)
+        for (const std::string& path : configPaths)
         {
             std::ifstream file(path);
             if (file.is_open())
@@ -305,35 +333,36 @@ namespace Surfels
         // normally, the repo root, or a build-output subdirectory when launched via the VS debugger).
         if (strlen(m_inputPathBuf) > 0)
         {
-            LoadFile(m_inputPathBuf);
+            LogTransitionTrace("Startup: loading command-line dataset '%s'", m_inputPathBuf);
+            if (!LoadFile(m_inputPathBuf))
+            {
+                LogTransitionTrace("Startup: command-line load failed: %s", m_statusMessage.c_str());
+            }
         }
         else
         {
-            std::vector<std::string> startupPaths = {
-                m_startupDatasetPath,
-                "../" + m_startupDatasetPath,
-                "../../" + m_startupDatasetPath,
-                "../../../" + m_startupDatasetPath,
-            };
+            std::vector<std::string> startupPaths = ResolveRelativeCandidates(m_startupDatasetPath);
 
             bool loaded = false;
             for (const auto& path : startupPaths)
             {
-                if (path.empty()) continue;
                 std::ifstream check(path, std::ios::binary);
-                if (check.good())
+                if (!check.good()) continue;
+                check.close();
+                LogTransitionTrace("Startup: loading dataset '%s'", path.c_str());
+                if (LoadFile(path))
                 {
-                    check.close();
-                    if (LoadFile(path))
-                    {
-                        loaded = true;
-                        break;
-                    }
+                    loaded = true;
+                    break;
                 }
+                LogTransitionTrace("Startup: load failed for '%s': %s", path.c_str(), m_statusMessage.c_str());
             }
 
             if (!loaded)
             {
+                char cwd[MAX_PATH] = {};
+                GetCurrentDirectoryA(MAX_PATH, cwd);
+                LogTransitionTrace("Startup: no dataset loaded -- '%s' not found relative to cwd '%s' or the executable", m_startupDatasetPath.c_str(), cwd);
                 m_statusMessage = "Ready. Use File -> Open to load a .ply or .splat dataset.";
                 m_statusIsSuccess = true;
             }
@@ -752,8 +781,13 @@ namespace Surfels
         {
             m_statusMessage = "Failed to load compressed package: " + filepath;
             m_statusIsSuccess = false;
+            LogTransitionTrace("LoadSFLWFile: LoadPackage failed for '%s'", filepath.c_str());
             return false;
         }
+        LogTransitionTrace("LoadSFLWFile: '%s' v%u: %zu chunks, %llu LOD0 surfels, %zu baked occluder blocks, source %llu bytes",
+            filepath.c_str(), m_loadedPackage.header.version, m_loadedPackage.chunkManifests.size(),
+            (unsigned long long)m_loadedPackage.totalSurfels, m_loadedPackage.occlusionVoxels.size(),
+            (unsigned long long)m_loadedPackage.header.sourceFileBytes);
 
         m_loadedFilePath = filepath;
         m_rendererSourceDescription = filepath;
@@ -783,10 +817,15 @@ namespace Surfels
         // StreamPackager::PackageDataset/LoadPackage). Packages older than SFLW v2 didn't store this,
         // and LoadPackage already falls back to 1.0 (PreprocessRenderer::State's own default) in that case.
         m_state.splatRadius = m_loadedPackage.header.splatRadius;
+        m_state.orientMode = 0; // Default to Normal-Oriented Surface Tangent Discs, same as a raw PLY/SPLAT load
 
         // Start from the volume baked into the package (v3+ only; empty otherwise -- see
-        // StreamPackager::LoadPackage). It is regenerated from the decoded surfels further down, once
-        // they exist, so the on-screen volume always reflects the current generator; saving re-bakes.
+        // StreamPackager::LoadPackage). A baked volume was built from the ORIGINAL raw point cloud, which
+        // is strictly better data than anything reconstructable here (the .sflw round-trip through
+        // 8-byte quantization is lossy -- Venus's dense-interior splats visibly regressed the first time
+        // this unconditionally rebuilt on every load). So keep the baked cubes as-is when present; only
+        // fall back to generating one here if the package genuinely didn't ship with one (see further
+        // down, after the reconstructed surfels exist).
         m_occlusionVoxels = m_loadedPackage.occlusionVoxels;
         m_occlusionVoxelsVersion++;
         m_generateOcclusionVolume = true;
@@ -892,10 +931,20 @@ namespace Surfels
         UpdatePreviewSurfels();
         RebuildHeatmapClusterCubes();
 
-        // Regenerate the occlusion volume from the decoded surfels with the current generator (the
-        // file's copy may predate it) and switch it on, so a freshly opened model shows its volume.
+        // Only bake a volume here when the package didn't already ship with one (an older file, or one
+        // exported with generation off) -- see the comment above where m_occlusionVoxels is restored.
+        // The cached grid is invalidated either way, so the FIRST time the user touches Shave/Hue/
+        // Saturation/Brightness after a load, it rebuilds from these reconstructed points -- a known,
+        // accepted trade-off, since packages don't retain the original unquantized cloud.
         m_occlusionGrid.valid = false;
-        RefreshOcclusionVolume();
+        if (m_occlusionVoxels.empty())
+        {
+            RefreshOcclusionVolume();
+        }
+        else
+        {
+            m_enableOcclusionCulling = true; // Show Occlusion Volume: on by default whenever one exists
+        }
 
         // Setup active renderer state pointing to renderer's dedicated buffers
         m_state.pSurfels = m_rendererSurfels.data();
@@ -1951,9 +2000,14 @@ namespace Surfels
             }
             else
             {
-                // Safety net: any path that brought points in without baking a volume gets one now, so a
-                // model never sits on screen without its occluder while generation is on.
-                if (m_generateOcclusionVolume && !m_occlusionGrid.valid)
+                // Safety net: any path that brought points in with generation on but NO cubes at all (an
+                // empty scene, or a legacy/failed bake) gets one now, so a model never sits on screen
+                // without its occluder. Deliberately does NOT fire just because the cached grid is
+                // invalid: a package load leaves the grid invalid on purpose whenever it already shipped
+                // a good baked volume (see LoadSFLWFile), and rebuilding here from the reconstructed
+                // points would silently replace it with an inferior one before the user ever touches a
+                // slider -- exactly the Venus regression this comment used to cause.
+                if (m_generateOcclusionVolume && !m_occlusionGrid.valid && m_occlusionVoxels.empty())
                 {
                     RefreshOcclusionVolume();
                 }
@@ -2125,11 +2179,11 @@ namespace Surfels
                     }
 
                     ImGui::Separator();
-                    if (ImGui::Checkbox("Highlight Edge Chunks (Lavender)", &m_highlightSilhouetteChunks))
+                    if (ImGui::Checkbox("Highlight Edge Chunks", &m_highlightSilhouetteChunks))
                     {
                         m_streamStateDirty = true;
                     }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Visualizer toggle: highlights active silhouette edge chunks in bright lavender.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Visualizer toggle: highlights the active silhouette edge chunks.");
 
                     if (ImGui::Checkbox("Show ONLY Locked Chunks (Transition / Edge)", &m_showOnlyLockedChunks))
                     {
@@ -2201,20 +2255,6 @@ namespace Surfels
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Unloads and immediately refreshes ONLY the silhouette edge chunks without touching or waving the rest of the model.");
                     }
 
-                    if (ImGui::Checkbox("Show Chunk Stream (Orange Wave)", &m_showChunkStream))
-                    {
-                        m_streamStateDirty = true;
-                    }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Visualizes newly arrived chunks as a creeping 10% orange wave sweep with a bright glowing leading edge as chunks stream in over the model body.");
-
-                    if (m_showChunkStream)
-                    {
-                        if (ImGui::SliderFloat("Chunk Stream Fade Time", &m_chunkStreamDuration, 0.5f, 6.0f, "%.1fs"))
-                        {
-                            m_streamStateDirty = true;
-                        }
-                    }
-
                     ImGui::Separator();
                     if (ImGui::Button("Validate Buffer & LOD Integrity", ImVec2(-1, 26)))
                     {
@@ -2235,7 +2275,10 @@ namespace Surfels
                 {
                     if (ImGui::CollapsingHeader("Interior Occlusion Volume", ImGuiTreeNodeFlags_DefaultOpen))
                     {
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The baked occluder solid packaged with this model (%zu cubes). Its shape and colour are fixed here; to change the shave, hue, saturation or brightness, use the Interior Occlusion Volume controls on the 1. Surfel Generator tab and re-save the package.", m_occlusionVoxels.size());
                         DrawOcclusionVolumeControls();
+                        ImGui::TextDisabled("Shape and colour are baked: adjust them on the Surfel Generator tab.");
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Switch to 1. Surfel Generator for the Shave, Hue Shift, Saturation and Brightness sliders, then Save Compressed Package to bake the result into the .sflw.");
                     }
                 }
 
@@ -2621,7 +2664,8 @@ namespace Surfels
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 4 Bitstream Codec: Byte-plane Run-Length Entropy & Zstandard lossless stream compression on transposed 8-byte channels.");
 
             ImGui::Separator();
-            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "TOTAL COMPRESSION:    %.2fx (%.2f MB -> %.2f MB)", m_compressionRatio, m_rawFileSizeMB, m_compressedSizeMB);
+            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "TOTAL COMPRESSION:    %.2fx (%.2f MB -> %.2f MB)", tier2Reduction, m_rawFileSizeMB, tier2MB);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pinned to the Tier 2 (8-byte GPU quantization) ratio: this is the reduction every surfel gets just from the fixed-size packed format, independent of how well the RLE/entropy codec happens to compress a given model's byte patterns.");
         }
 
         // LOD Residency Equalizer
@@ -2631,7 +2675,7 @@ namespace Surfels
             ImGui::SetTooltip(
                 "Shows how much of each LOD level is currently resident in the simulated ring buffer\n"
                 "(green), locked mid-transition (orange), or protected as an active silhouette edge\n"
-                "(lavender). Chunks stream in as the camera needs finer detail and drain out (via the\n"
+                "(highlighted). Chunks stream in as the camera needs finer detail and drain out (via the\n"
                 "Decay control below) when no longer needed.\n\n"
                 "The fill rate is controlled by the Network Profiles / Bandwidth Throttle options on the\n"
                 "Streaming tab -- lower bandwidth means slower fill. The drain rate is controlled only by\n"
@@ -3155,7 +3199,7 @@ namespace Surfels
         ImGui::Dummy(ImVec2(8.0f, 0.0f));
         ImGui::SameLine();
 
-        // 3. Silhouette Lock (Lavender square + "Silhouette Lock") - Always shown
+        // 3. Silhouette Lock (highlight square + "Silhouette Lock") - Always shown
         legP = ImGui::GetCursorScreenPos();
         drawList->AddRectFilled(ImVec2(legP.x, legP.y + 3.5f), ImVec2(legP.x + sqSize, legP.y + 3.5f + sqSize), IM_COL32(185, 145, 245, 255), 1.0f);
         drawList->AddRect(ImVec2(legP.x, legP.y + 3.5f), ImVec2(legP.x + sqSize, legP.y + 3.5f + sqSize), IM_COL32(220, 190, 255, 255), 1.0f);
@@ -3242,15 +3286,15 @@ namespace Surfels
     // Surfel Generator tab (right after baking) and the Renderer tab (while viewing). Shape parameters
     // (resolution, shave) live only on the Surfel Generator tab: the volume is baked into the .sflw, so
     // the viewer shows exactly what was packaged and offers nothing that would change it. "View
-    // Occlusion Volume Only" is intentionally independent of "Enable Occlusion Culling" -- wanting to
+    // Occlusion Volume Only" is intentionally independent of "Show Occlusion Volume" -- wanting to
     // just look at the volume shouldn't require also turning on splat culling against it.
     void PreprocessApp::DrawOcclusionVolumeControls()
     {
-        ImGui::Checkbox("Enable Occlusion Culling", &m_enableOcclusionCulling);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Depth-tests splats against the baked interior occlusion volume (%zu cubes) so far-side surfels don't show through gaps in the near side. Disabled by default.", m_occlusionVoxels.size());
+        ImGui::Checkbox("Show Occlusion Volume", &m_enableOcclusionCulling);
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Draws the baked interior occlusion volume (%zu cubes) and depth-tests the splats against it, so far-side surfels don't show through gaps in the near side. On by default.", m_occlusionVoxels.size());
 
         ImGui::Checkbox("View Occlusion Volume Only", &m_showOcclusionVolumeOnly);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Debug view: hides the surfel splats entirely and renders only the occluder geometry. Works regardless of 'Enable Occlusion Culling' above.");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Debug view: hides the surfel splats entirely and renders only the occluder geometry. Works regardless of 'Show Occlusion Volume' above.");
 
     }
 

@@ -49,7 +49,8 @@ namespace Surfels
         void ProcessAndExport(const std::string& outputPath);
         void CloseDataset();
 
-        void LoadConfigFile();
+        void  LoadConfigFile();
+        std::vector<std::string> ResolveRelativeCandidates(const std::string& relativePath) const; // cwd- and exe-relative places to look for a repo file
         void SaveConfigFile();
 
     private:
@@ -155,7 +156,7 @@ namespace Surfels
         void  BuildOcclusionGrid();
         uint32_t m_occlusionVoxelsVersion = 0;   // Incremented whenever m_occlusionVoxels is rebuilt or cleared (renderer re-upload trigger)
         std::vector<OcclusionVoxelGPU> m_occlusionVoxels; // Baked result -- from BuildOcclusionVolume() or loaded from an .sflw's package
-        bool  m_enableOcclusionCulling    = false; // Viewer: depth-test splats against the occlusion volume (disabled by default)
+        bool  m_enableOcclusionCulling    = true;  // Viewer: "Show Occlusion Volume" -- draw the volume and depth-test splats against it (on by default)
         bool  m_showOcclusionVolumeOnly   = false; // Viewer: debug view -- render only the occluder geometry
         void  BuildOcclusionVolume();
         void  RefreshOcclusionVolume(); // Rebuild (or clear) from the current checkbox/sliders and make it visible
@@ -291,7 +292,7 @@ namespace Surfels
         size_t m_evictedSurfelCount         = 0;      // Count of earlier slots evicted from GPU Ring Buffer
 
         // Show Chunk Stream: Creeping Wavefront & Dissolving Alpha Wake
-        bool   m_showChunkStream            = true;   // Show Chunk Stream: creeping lavender wavefront & dissolving alpha wake as chunks load
+        bool   m_showChunkStream            = false;  // Chunk-arrival wave sweep visualizer. No UI toggle any more; left off
         float  m_chunkStreamDuration        = 3.0f;   // Duration in seconds of advancing wave crest & trailing alpha dissipation
 
         // Silhouette Edge Focused Reconstruction & Dilation Morphing
