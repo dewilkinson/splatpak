@@ -36,20 +36,28 @@ namespace Surfels
 
     // A single solid occluder cube: interior/enclosed geometry generated at preprocessing time so the
     // (alpha-blended, non-depth-writing) surfel splat pass can depth-test against it and avoid seeing
-    // through gaps in a sparse point cloud to surfels on the far side. Voxels are only ever emitted for
-    // cells that survive a 1-layer erosion against the model's outer surface shell (so the occluder never
-    // touches, let alone pokes through, the true surface from any view angle); halfSize on top of that
-    // already has the preprocessing-time "baked" shrink factor applied for extra leeway, and the renderer
-    // additionally applies a live, interactive shrink multiplier on top at draw time (see
-    // SurfelsCB::occlusionShrinkRuntime). packedColor is an RGB565-encoded bake of the average color of
-    // the nearest surfels reachable without crossing empty (exterior/visible) space -- see
+    // through gaps in a sparse point cloud to surfels on the far side. The volume is a closed voxel
+    // proxy of the whole model: one cube per grid cell that is not reachable from outside the model
+    // without crossing a surfel-occupied cell -- i.e. the surfel-occupied surface shell itself plus
+    // everything it encloses. halfSize is always exactly half the grid cell size, so adjacent cubes share
+    // faces and the volume is watertight. Because shell cubes contain the surface, the renderer shrinks
+    // the volume at draw time by pulling only its EXPOSED faces (those bordering a non-cube cell) inward
+    // by a fraction of a cell (SurfelsCB::occlusionShrinkCells) so the proxy sits just beneath the
+    // surfels -- shaving the outer skin off the solid rather than shrinking each cube about its own
+    // centre, which would open seams between neighbours. A cube whose opposing exposed faces would
+    // cross (a one-cell-thick shell) is clamped to a thin slab through the cell centre rather than
+    // removed, so hollow/open scans keep a closed shell. packedColor holds an RGB565 bake of the
+    // average colour of the nearest surfels
+    // reachable without crossing empty (exterior) space in its low 16 bits, and the 6-bit exposed-face
+    // mask (bit 16 + face, faces ordered -Z,+Z,-X,+X,-Y,+Y) in bits 16..21 -- a mask of 0 (files baked
+    // before the mask existed) is treated by the shader as "all faces exposed". See
     // PreprocessApp::BuildOcclusionVolume.
     #pragma pack(push, 1)
     struct OcclusionVoxelGPU
     {
         XMFLOAT3 center;
         float    halfSize;
-        uint32_t packedColor; // RGB565, see Quantizer/UnpackColorRGB565
+        uint32_t packedColor; // Bits 0..15: RGB565 colour (see Quantizer/UnpackColorRGB565); bits 16..21: exposed-face mask
     };
     #pragma pack(pop)
     static_assert(sizeof(OcclusionVoxelGPU) == 20, "OcclusionVoxelGPU must be exactly 20 bytes");

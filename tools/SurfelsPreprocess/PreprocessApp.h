@@ -141,12 +141,11 @@ namespace Surfels
 
         // Interior Occlusion Volume: solid depth-writing cubes baked at preprocessing time so far-side
         // surfels can't show through gaps in the near side. Optional and disabled by default.
-        bool  m_generateOcclusionVolume   = false; // Preprocessor: bake a volume for this dataset on export
+        bool  m_generateOcclusionVolume   = true;  // Preprocessor: bake a volume for this dataset on export (on by default)
         int   m_occlusionVoxelResolution  = 24;    // Preprocessor: voxel grid divisions along the model's longest axis
-        float m_occlusionBakedShrink      = 0.85f; // Preprocessor: extra shrink baked into the file, on top of the guaranteed 1-voxel erosion against the surface shell
         std::vector<OcclusionVoxelGPU> m_occlusionVoxels; // Baked result -- from BuildOcclusionVolume() or loaded from an .sflw's package
         bool  m_enableOcclusionCulling    = false; // Viewer: depth-test splats against the occlusion volume (disabled by default)
-        float m_occlusionRuntimeShrink    = 1.0f;  // Viewer: live/interactive shrink on top of the baked shrink above
+        float m_occlusionShrinkCells      = 0.5f;  // Viewer: live shrink -- how far (in grid cells) the volume's exposed outer faces are pulled inward at draw time (0.5 = to the cell centre)
         bool  m_showOcclusionVolumeOnly   = false; // Viewer: debug view -- render only the occluder geometry
         void  BuildOcclusionVolume();
 
@@ -264,11 +263,16 @@ namespace Surfels
         float  m_bandwidthThrottleMBps      = 10.0f;  // Simulated bandwidth in MB/s
         float  m_ringBufferCapacityMB       = 64.0f;  // GPU Ring Buffer capacity limit in MB
         bool   m_enableStreamDecay          = false;  // Toggle cache decay on/off
-        float  m_streamDecayRate            = 5.00f;  // Decay rate (0.0 to 10.0) for memory reclamation. At 10.0 (max),
-                                                        // a full drain (everything but the two pinned coarsest levels)
-                                                        // is paced to complete within ~10 seconds regardless of
-                                                        // bandwidth -- see the decay budget calculation in
-                                                        // UpdateStreamingSimulation. Scales linearly below max.
+        float  m_streamDecayRate            = 5.00f;  // Decay rate (0.0 = no decay .. 10.0 = max) for memory reclamation.
+                                                        // At 10.0 a full drain (everything but the two pinned coarsest
+                                                        // levels) completes in kDecayFullDrainSecondsAtMaxRate on EVERY
+                                                        // bandwidth setting: the drain budget is a multiple of the
+                                                        // evictable byte total, not of the bandwidth, so the throttle
+                                                        // cancels out. Scales linearly below max (5.0 = twice as long).
+                                                        // See the decay budget calculation in UpdateStreamingSimulation.
+        static constexpr float kMaxDecayRate                    = 10.0f; // Slider maximum
+        static constexpr float kDecayFullDrainSecondsAtMaxRate  = 3.0f;  // Full-drain time at rate 10, independent of bandwidth
+        float  DecayFullDrainSeconds() const;                            // Implied full-drain time for the current slider value (0 when decay is off)
         bool   m_isStreamingPaused          = false;  // Pause/Resume packet streaming
         float  m_simulatedBytesDelivered    = 0.0f;   // Transferred bytes accumulator
         float  m_totalStreamBytes           = 0.0f;   // Total model transfer size

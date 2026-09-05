@@ -49,8 +49,10 @@ struct MeshletChunk
 struct OcclusionVoxel
 {
     float3 center;
-    float  halfSize;
-    uint   packedColor; // RGB565, see UnpackColorRGB565 below
+    float  halfSize;    // Always half a grid cell -- adjacent cubes share faces
+    uint   packedColor; // Bits 0..15: RGB565 (see UnpackColorRGB565); bits 16..21: exposed-face mask,
+                        // one bit per face in s_occluderFaceIdx order (-Z,+Z,-X,+X,-Y,+Y). 0 = legacy
+                        // file with no mask, treated as all faces exposed.
 };
 
 StructuredBuffer<PackedSurfel>  g_SurfelBuffer       : register(t0);
@@ -84,7 +86,7 @@ cbuffer SurfelsCB : register(b0)
     uint     g_ShowOnlyLocked;
     uint     g_ShowChunkStream;
     uint     g_EnableOcclusionCulling;
-    float    g_OcclusionShrinkRuntime;
+    float    g_OcclusionShrinkCells; // Live shrink: exposed occluder faces are pulled inward by this many cells
     uint     g_ShowOcclusionVolumeOnly;
     uint     g_OcclusionVoxelCount;
 };
@@ -795,6 +797,16 @@ uint itemPS(ItemVSOut i) : SV_Target0
 // BuildOcclusionVolume) so the splat pass can depth-test against them and discard
 // far-side surfels visible through gaps in a sparse near side. One threadgroup
 // per voxel, direct-dispatched with no amplification shader stage (like itemMS).
+//
+// Only the cube's EXPOSED faces (those bordering a non-cube cell, per the mask baked
+// into packedColor) are emitted -- faces shared with a neighbouring cube are never
+// visible. The live shrink (g_OcclusionShrinkCells) shaves the outer skin off the
+// whole volume by pulling every exposed face inward by that many cells while leaving
+// shared faces untouched, so the solid shrinks as one watertight body instead of
+// each cube shrinking about its own centre and opening seams between neighbours. A
+// cube whose opposing exposed faces would cross (a one-cell-thick shell shaved from
+// both sides) is clamped to a thin slab through the cell centre rather than removed,
+// so hollow/open scans keep a closed occluder shell at any shrink setting.
 // =========================================================================
 
 struct OccluderVSOut
@@ -810,7 +822,8 @@ static const float3 s_occluderCubeCorners[8] = {
 };
 
 // Index quads (per face) into s_occluderCubeCorners. Winding is not load-bearing since every PSO in
-// this file rasterizes with CullMode = NONE.
+// this file rasterizes with CullMode = NONE. Face order here defines the bit order of the exposed-face
+// mask in OcclusionVoxel::packedColor, so keep it in sync with PreprocessApp::BuildOcclusionVolume.
 static const uint s_occluderFaceIdx[6][4] = {
     { 0, 1, 2, 3 }, // -Z
     { 5, 4, 7, 6 }, // +Z
@@ -824,6 +837,10 @@ static const float3 s_occluderFaceNormal[6] = {
     float3(0,0,-1), float3(0,0,1), float3(-1,0,0), float3(1,0,0), float3(0,-1,0), float3(0,1,0)
 };
 
+static const uint  OCCLUDER_FACE_MASK_SHIFT = 16;
+static const uint  OCCLUDER_FACE_MASK_ALL   = 0x3F;
+static const float OCCLUDER_MIN_HALF_EXTENT = 0.05; // In halfSize units: thinnest slab a shaved cube clamps to (5% of a cell)
+
 [outputtopology("triangle")]
 [numthreads(24, 1, 1)]
 void occluderMS(
@@ -833,25 +850,52 @@ void occluderMS(
     out indices uint3 tris[12]
 )
 {
+    // DXIL validation requires exactly one SetMeshOutputCounts call per invocation, so work out the
+    // final face count first (0 for an out-of-range index or a cube shaved away entirely), set it once,
+    // and only then bail out.
     uint voxelIndex = groupId.y * 32768 + groupId.x;
-    if (voxelIndex >= g_OcclusionVoxelCount)
-    {
-        SetMeshOutputCounts(0, 0);
+    bool valid = voxelIndex < g_OcclusionVoxelCount;
+
+    OcclusionVoxel v = g_OcclusionVoxelBuffer[valid ? voxelIndex : 0];
+    uint exposed = (v.packedColor >> OCCLUDER_FACE_MASK_SHIFT) & OCCLUDER_FACE_MASK_ALL;
+    if (exposed == 0) exposed = OCCLUDER_FACE_MASK_ALL; // Legacy file baked before the mask existed
+
+    // Shave: pull each exposed face inward. Per axis, the low/high extents (in units of halfSize).
+    // Mask bits: 0:-Z 1:+Z 2:-X 3:+X 4:-Y 5:+Y  -> lo/hi per axis in (x, y, z) order.
+    float inset = max(0.0, g_OcclusionShrinkCells) * 2.0; // cells -> halfSize units (1 cell = 2 halfSizes)
+    float3 lo = float3(-1, -1, -1) + float3((exposed >> 2) & 1, (exposed >> 4) & 1, (exposed >> 0) & 1) * inset;
+    float3 hi = float3( 1,  1,  1) - float3((exposed >> 3) & 1, (exposed >> 5) & 1, (exposed >> 1) & 1) * inset;
+
+    // Opposing exposed faces that would cross: clamp to a thin slab about their midpoint instead.
+    float3 mid = (lo + hi) * 0.5;
+    bool3 crossed = lo + OCCLUDER_MIN_HALF_EXTENT * 2.0 > hi;
+    lo = crossed ? mid - OCCLUDER_MIN_HALF_EXTENT : lo;
+    hi = crossed ? mid + OCCLUDER_MIN_HALF_EXTENT : hi;
+
+    uint faceCount = valid ? countbits(exposed) : 0;
+    SetMeshOutputCounts(faceCount * 4, faceCount * 2);
+    if (faceCount == 0)
         return;
+
+    // Map this thread's output face slot (0..faceCount-1) to the n-th set bit of the mask.
+    uint slot = threadId / 4;
+    uint face = 0;
+    if (slot < faceCount)
+    {
+        uint remaining = exposed;
+        for (uint n = 0; n < slot; n++)
+            remaining &= remaining - 1; // Clear lowest set bit
+        face = firstbitlow(remaining);
     }
 
-    SetMeshOutputCounts(24, 12);
-
-    OcclusionVoxel v = g_OcclusionVoxelBuffer[voxelIndex];
-    float shrunkHalf = v.halfSize * max(0.0, g_OcclusionShrinkRuntime);
     float3 color = UnpackColorRGB565(v.packedColor);
 
-    if (threadId < 24)
+    if (slot < faceCount)
     {
-        uint face = threadId / 4;
         uint corner = threadId % 4;
-        uint cIdx = s_occluderFaceIdx[face][corner];
-        float3 worldPos = v.center + s_occluderCubeCorners[cIdx] * shrunkHalf;
+        float3 c = s_occluderCubeCorners[s_occluderFaceIdx[face][corner]];
+        float3 ext = float3(c.x < 0 ? lo.x : hi.x, c.y < 0 ? lo.y : hi.y, c.z < 0 ? lo.z : hi.z);
+        float3 worldPos = v.center + ext * v.halfSize;
 
         OccluderVSOut o;
         o.pos = mul(g_ViewProj, float4(worldPos, 1.0));
@@ -860,10 +904,10 @@ void occluderMS(
         verts[threadId] = o;
     }
 
-    if (threadId < 12)
+    if (threadId < faceCount * 2)
     {
-        uint face = threadId / 2;
-        uint vBase = face * 4;
+        uint triSlot = threadId / 2;
+        uint vBase = triSlot * 4;
         tris[threadId] = (threadId % 2 == 0)
             ? uint3(vBase + 0, vBase + 1, vBase + 2)
             : uint3(vBase + 1, vBase + 3, vBase + 2);

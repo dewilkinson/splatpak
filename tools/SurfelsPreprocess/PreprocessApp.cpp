@@ -1962,7 +1962,7 @@ namespace Surfels
                     m_pipelineNeedsUpdate = true;
                     m_packageReadyToSave = false;
                 }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bakes solid occluder cubes into the interior of the model so the renderer can optionally depth-test against them to hide far-side surfels visible through gaps in a sparse near side. Disabled by default; click 'Update Pipeline' below to apply.");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bakes solid occluder cubes into the interior of the model so the renderer can optionally depth-test against them to hide far-side surfels visible through gaps in a sparse near side. The volume is a closed voxel proxy of the whole model (surface shell plus everything it encloses). On by default; click 'Update Pipeline' below to apply.");
                 if (m_generateOcclusionVolume)
                 {
                     if (ImGui::SliderInt("Voxel Resolution", &m_occlusionVoxelResolution, 8, 64))
@@ -1970,14 +1970,7 @@ namespace Surfels
                         m_pipelineNeedsUpdate = true;
                         m_packageReadyToSave = false;
                     }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Voxel grid divisions along the model's longest axis. Higher values follow interior cavities more closely but generate more occluder cubes.");
-
-                    if (ImGui::SliderFloat("Baked Shrink", &m_occlusionBakedShrink, 0.5f, 1.0f, "%.2f"))
-                    {
-                        m_pipelineNeedsUpdate = true;
-                        m_packageReadyToSave = false;
-                    }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Extra shrink applied to every occluder cube and saved into the file, on top of the guaranteed 1-voxel erosion against the model's surface shell. Lower values leave more leeway against poke-through.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Voxel grid divisions along the model's longest axis. Higher values follow the surface and interior cavities more closely (and keep thinner features) but generate more occluder cubes.");
                 }
 
                 if (!m_occlusionVoxels.empty())
@@ -2616,9 +2609,10 @@ namespace Surfels
                 "(green), locked mid-transition (orange), or protected as an active silhouette edge\n"
                 "(lavender). Chunks stream in as the camera needs finer detail and drain out (via the\n"
                 "Decay control below) when no longer needed.\n\n"
-                "The rate at which memory fills or drains is controlled by the Network Profiles /\n"
-                "Bandwidth Throttle options on the Streaming tab -- lower bandwidth means slower fill,\n"
-                "and drain speed also scales with the Decay Rate slider below regardless of bandwidth."
+                "The fill rate is controlled by the Network Profiles / Bandwidth Throttle options on the\n"
+                "Streaming tab -- lower bandwidth means slower fill. The drain rate is controlled only by\n"
+                "the Decay Rate slider below and is independent of bandwidth: 0 = no decay, 10 = full\n"
+                "drain of every evictable level in 3 s on any bandwidth setting."
             );
         }
         if (lodResidencyOpen)
@@ -2882,7 +2876,9 @@ namespace Surfels
         }
     }
 
-    // Draws the per-LOD-level residency bar graph plus the Clear/Decay Rate/Policy controls beside it
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
+
+    // Draws the per-LOD-level residency bar graph plus the Evict/Decay Rate/Policy controls beside it
     void PreprocessApp::DrawLODResidencyEqualizer()
     {
         if (m_residentLODs.empty())
@@ -3156,7 +3152,7 @@ namespace Surfels
         ImGui::Separator();
 
         // Control buttons directly under the residency indicators
-        if (ImGui::Button("Clear", ImVec2(70.0f, 0.0f)))
+        if (ImGui::Button("Evict", ImVec2(70.0f, 0.0f)))
         {
             ClearResidentStream();
         }
@@ -3167,9 +3163,18 @@ namespace Surfels
 
         ImGui::SameLine();
         ImGui::PushItemWidth(availWidth - 165.0f);
-        if (ImGui::SliderFloat("##DecaySlider", &m_streamDecayRate, 0.0f, 10.0f, "Decay Rate: %.2f"))
+        if (ImGui::SliderFloat("##DecaySlider", &m_streamDecayRate, 0.0f, kMaxDecayRate, "Decay Rate: %.2f"))
         {
             m_streamStateDirty = true;
+        }
+        if (ImGui::IsItemHovered())
+        {
+            float drainSeconds = DecayFullDrainSeconds();
+            if (m_streamDecayRate <= 0.0f)
+                ImGui::SetTooltip("0 = no decay. Drag right to drain unused detail out of memory.\nIndependent of bandwidth: at 10 it clears everything but the two pinned\ncoarsest levels in %.0f s on any bandwidth setting.", kDecayFullDrainSecondsAtMaxRate);
+            else
+                ImGui::SetTooltip("Full drain of all evictable levels in ~%.1f s, on any bandwidth setting.\nAt 10 it clears everything but the two pinned coarsest levels in %.0f s.",
+                    drainSeconds, kDecayFullDrainSecondsAtMaxRate);
         }
         ImGui::PopItemWidth();
         ImGui::SameLine();
@@ -3179,7 +3184,7 @@ namespace Surfels
         }
         if (ImGui::IsItemHovered())
         {
-            ImGui::SetTooltip("Toggle LRU chunk memory reclamation over time.\nHigher decay rates reclaim larger memory chunks from lowest priority/least needed LODs.");
+            ImGui::SetTooltip("Toggle LRU chunk memory reclamation over time.\nHigher decay rates reclaim memory faster from the lowest priority/least needed LODs.\nDrain speed is independent of the bandwidth throttle.");
         }
 
         ImGui::Spacing();
@@ -3221,18 +3226,22 @@ namespace Surfels
         ImGui::Checkbox("View Occlusion Volume Only", &m_showOcclusionVolumeOnly);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Debug view: hides the surfel splats entirely and renders only the occluder geometry. Works regardless of 'Enable Occlusion Culling' above.");
 
-        ImGui::SliderFloat("Live Shrink", &m_occlusionRuntimeShrink, 0.1f, 1.0f, "%.2f");
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Interactive shrink applied on top of the shrink already baked into the file, to fine-tune poke-through in real time without re-exporting.");
+        ImGui::SliderFloat("Live Shrink (cells)", &m_occlusionShrinkCells, 0.0f, 1.0f, "%.2f");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Shaves the outer skin off the occlusion volume at draw time: every exposed face of the solid is pulled inward by this many voxel cells (faces shared between cubes are left alone, so the volume stays watertight). The volume's outer cubes contain the surface itself, so raise this until the proxy sits just beneath the surfels and nothing pokes through. One-cell-thick shells clamp to a thin slab rather than vanishing.");
     }
 
-    // Voxelizes the current model into a solid interior occlusion volume: cells fully enclosed by the
-    // model's surface shell (or making up a thick section of the shell itself) become depth-writing
-    // occluder cubes, so the splat pass can discard far-side surfels visible through gaps in a sparse
-    // near side. Cells are eroded by one layer against any adjacent exterior (empty, reachable-from-
-    // outside) cell first, guaranteeing the occluder never touches -- let alone pokes through -- the true
-    // surface from any view angle; m_occlusionBakedShrink then shrinks the surviving cubes further for
-    // extra leeway. Each cube's color is baked from the nearest surfels reachable without crossing
-    // color of surfels in its immediate vicinity without a full per-voxel visibility raycast.
+    // Voxelizes the current model into a closed solid occlusion volume -- a coarse voxel proxy of the
+    // entire model: every grid cell that cannot be reached from outside the model without crossing a
+    // surfel-occupied cell becomes a depth-writing occluder cube. That is the surfel-occupied surface
+    // shell itself plus everything it encloses, so thin features (one cell thick) are covered too, and
+    // the splat pass can discard far-side surfels visible through gaps in a sparse near side. Cubes
+    // are emitted at full cell size so neighbours share faces and the volume is watertight; each one
+    // records which of its 6 faces border a non-cube cell so the renderer can shave the outer skin
+    // inward at draw time (see OcclusionVoxelGPU) -- that live shrink is what keeps the proxy just
+    // beneath the surfels, since shell cubes necessarily contain surface points. Isolated single cells
+    // (no solid 6-neighbour) are dropped as noise. Each cube's color is baked from the nearest surfels
+    // cells), approximating the average color of surfels in its immediate vicinity without a full
+    // per-voxel visibility raycast.
     void PreprocessApp::BuildOcclusionVolume()
     {
         m_occlusionVoxels.clear();
@@ -3320,29 +3329,32 @@ namespace Surfels
             tryMarkExterior(x, y, z + 1); tryMarkExterior(x, y, z - 1);
         }
 
-        // 3. Solid = shell OR enclosed cavity (anything not reachable from outside). Erode by one layer
-        // against any 6-adjacent exterior cell so the occluder never touches the true outer surface.
-        auto isExteriorAt = [&](int32_t x, int32_t y, int32_t z) -> bool
+        // enclosed cavity. Isolated single solid cells (stray surfels with no solid neighbour) are
+        // dropped -- they can never be part of a shell and would just float as noise cubes.
+        std::vector<uint8_t> solid(totalCells, 0);
+        for (size_t idx = 0; idx < totalCells; idx++)
+            solid[idx] = exterior[idx] ? 0 : 1;
+
+        auto isSolidAt = [&](int32_t x, int32_t y, int32_t z) -> bool
         {
-            if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz) return true;
-            return exterior[cellIndex(x, y, z)] != 0;
+            if (x < 0 || y < 0 || z < 0 || x >= nx || y >= ny || z >= nz) return false;
+            return solid[cellIndex(x, y, z)] != 0;
         };
 
-        std::vector<uint8_t> eroded(totalCells, 0);
         for (int32_t z = 0; z < nz; z++)
             for (int32_t y = 0; y < ny; y++)
                 for (int32_t x = 0; x < nx; x++)
                 {
                     size_t idx = cellIndex(x, y, z);
-                    if (exterior[idx]) continue; // Not solid at all
-
-                    bool touchesExterior =
-                        isExteriorAt(x + 1, y, z) || isExteriorAt(x - 1, y, z) ||
-                        isExteriorAt(x, y + 1, z) || isExteriorAt(x, y - 1, z) ||
-                        isExteriorAt(x, y, z + 1) || isExteriorAt(x, y, z - 1);
-                    if (!touchesExterior)
-                        eroded[idx] = 1;
+                    if (!solid[idx]) continue;
+                    bool hasSolidNeighbour =
+                        isSolidAt(x + 1, y, z) || isSolidAt(x - 1, y, z) ||
+                        isSolidAt(x, y + 1, z) || isSolidAt(x, y - 1, z) ||
+                        isSolidAt(x, y, z + 1) || isSolidAt(x, y, z - 1);
+                    if (!hasSolidNeighbour) solid[idx] = 2; // Mark for removal after the scan (don't disturb neighbours' tests)
                 }
+        for (size_t idx = 0; idx < totalCells; idx++)
+            if (solid[idx] == 2) solid[idx] = 0;
 
         // 4. Propagate each shell cell's average color inward through solid space via multi-source BFS,
         // so cells with no surfels of their own inherit the nearest reachable surfel color.
@@ -3381,9 +3393,9 @@ namespace Surfels
             spreadColor(x, y, z + 1); spreadColor(x, y, z - 1);
         }
 
-        // 5. Emit one occluder cube per surviving eroded cell
-        float bakedShrink = std::clamp(m_occlusionBakedShrink, 0.05f, 1.0f);
-        float halfSize = (cellSize * 0.5f) * bakedShrink;
+        // 5. Emit one full-cell occluder cube per solid cell, tagged with which faces are exposed
+        // (border a non-solid cell). Face bit order matches the shader's s_occluderFaceIdx table.
+        const float halfSize = cellSize * 0.5f;
 
         m_occlusionVoxels.reserve(totalCells / 8);
         for (int32_t z = 0; z < nz; z++)
@@ -3391,7 +3403,15 @@ namespace Surfels
                 for (int32_t x = 0; x < nx; x++)
                 {
                     size_t idx = cellIndex(x, y, z);
-                    if (!eroded[idx]) continue;
+                    if (!solid[idx]) continue;
+
+                    uint32_t exposedFaces = 0;
+                    if (!isSolidAt(x, y, z - 1)) exposedFaces |= 1u << 0; // -Z
+                    if (!isSolidAt(x, y, z + 1)) exposedFaces |= 1u << 1; // +Z
+                    if (!isSolidAt(x - 1, y, z)) exposedFaces |= 1u << 2; // -X
+                    if (!isSolidAt(x + 1, y, z)) exposedFaces |= 1u << 3; // +X
+                    if (!isSolidAt(x, y - 1, z)) exposedFaces |= 1u << 4; // -Y
+                    if (!isSolidAt(x, y + 1, z)) exposedFaces |= 1u << 5; // +Y
 
                     OcclusionVoxelGPU v = {};
                     v.center = XMFLOAT3(
@@ -3410,7 +3430,7 @@ namespace Surfels
                     uint32_t r5 = (uint32_t)std::clamp(avgColor.x * 31.0f, 0.0f, 31.0f);
                     uint32_t g6 = (uint32_t)std::clamp(avgColor.y * 63.0f, 0.0f, 63.0f);
                     uint32_t b5 = (uint32_t)std::clamp(avgColor.z * 31.0f, 0.0f, 31.0f);
-                    v.packedColor = (r5 << 11) | (g6 << 5) | b5;
+                    v.packedColor = (r5 << 11) | (g6 << 5) | b5 | (exposedFaces << 16);
 
                     m_occlusionVoxels.push_back(v);
                 }
@@ -4125,7 +4145,7 @@ namespace Surfels
         m_state.pOcclusionVoxels = m_occlusionVoxels.empty() ? nullptr : m_occlusionVoxels.data();
         m_state.occlusionVoxelCount = (uint32_t)m_occlusionVoxels.size();
         m_state.enableOcclusionCulling = m_enableOcclusionCulling;
-        m_state.occlusionShrinkRuntime = m_occlusionRuntimeShrink;
+        m_state.occlusionShrinkCells = m_occlusionShrinkCells;
         m_state.showOcclusionVolumeOnly = m_showOcclusionVolumeOnly;
 
         if (m_deviceLost)

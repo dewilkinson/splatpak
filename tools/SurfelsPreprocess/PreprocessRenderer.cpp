@@ -1570,7 +1570,7 @@ namespace Surfels
         pCB->showOnlyLocked = pState->showOnlyLockedChunks ? 1 : 0;
         pCB->showChunkStream = pState->showChunkStream ? 1 : 0;
         pCB->enableOcclusionCulling = (pState->enableOcclusionCulling && pState->occlusionVoxelCount > 0 && m_pOcclusionVoxelBuffer != nullptr) ? 1 : 0;
-        pCB->occlusionShrinkRuntime = pState->occlusionShrinkRuntime;
+        pCB->occlusionShrinkCells = pState->occlusionShrinkCells;
         pCB->showOcclusionVolumeOnly = pState->showOcclusionVolumeOnly ? 1 : 0;
         pCB->occlusionVoxelCount = pState->occlusionVoxelCount;
 

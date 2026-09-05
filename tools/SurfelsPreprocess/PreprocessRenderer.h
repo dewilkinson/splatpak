@@ -69,7 +69,7 @@ namespace Surfels
             const OcclusionVoxelGPU* pOcclusionVoxels  = nullptr;
             uint32_t                 occlusionVoxelCount = 0;
             bool                     enableOcclusionCulling  = false; // Disabled by default
-            float                    occlusionShrinkRuntime  = 1.0f; // Live/interactive shrink on top of the baked shrink already applied at export time
+            float                    occlusionShrinkCells    = 0.5f;  // Live shrink: how many grid cells each exposed face of the volume is pulled inward at draw time
             bool                     showOcclusionVolumeOnly = false; // Debug view: render only the occluder geometry
         };
 
@@ -153,7 +153,7 @@ namespace Surfels
                                                    // it in this exact slot keeps everything below it correctly
                                                    // byte-aligned with the shader's cbuffer layout.
             uint32_t   enableOcclusionCulling;
-            float      occlusionShrinkRuntime;
+            float      occlusionShrinkCells;
             uint32_t   showOcclusionVolumeOnly;
             uint32_t   occlusionVoxelCount;
         };
