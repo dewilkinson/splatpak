@@ -1,15 +1,13 @@
-# Surfels User Guide
+# Surfel Streaming Demo User Guide
 
-A friendly walkthrough for actually *using* the app — for the technical deep-dive see [README.md](README.md).
+This guide explains how to use the app — for the technical deep-dive see [README.md](../README.md).
 
-## What am I looking at?
+## Overview
 
 Surfels is two programs sharing one GPU-driven mesh-shader renderer:
 
 - **SurfelsPreprocess** — the workbench. Load a point cloud, tune how it gets chunked and compressed, export a streamable package.
 - **Surfels_DX12** — the lightweight viewer. Loads a package and streams it, nothing else.
-
-Most people spend all their time in SurfelsPreprocess — it has a built-in viewer/renderer tab, so you rarely need to launch the other one separately.
 
 ```mermaid
 flowchart LR
@@ -22,13 +20,13 @@ flowchart LR
 
 ## Getting started
 
-**Just want to run it?** Grab the latest build from the [Releases page](../../releases) — unzip and run `SurfelsPreprocess.exe`. No install, no GPU driver hoops beyond a DX12 Ultimate–class card (RTX 20-series+, RDNA2+).
+**Just want to run it?** Grab the latest build from the [Releases page](../../../releases) — unzip and run `SurfelsPreprocess.exe`. No install, no GPU driver hoops beyond a DX12 Ultimate–class card (RTX 20-series+, RDNA2+).
 
-**Building from source?** See the Building section in [README.md](README.md) — short version: `cmake .. -G "Visual Studio 17 2022" -A x64` and open the solution.
+**Building from source?** See the Building section in [README.md](../README.md) — short version: `cmake .. -G "Visual Studio 17 2022" -A x64` and open the solution.
 
 On first launch the app auto-loads a built-in Cthulhu bust so you're never staring at an empty window.
 
-## The Preprocessor: turning a point cloud into a stream
+## The Preprocessor Tab: Convert point clouds into Surfel Streaming Format (.sflw)
 
 Tab **1. Surfel Generator**:
 
@@ -42,7 +40,7 @@ Tab **1. Surfel Generator**:
 
 That's it — you now have a `.sflw` + `.json` pair you can hand to the viewer or reload later.
 
-## The Renderer tab: living with your model
+## The Renderer Tab: Stream and Render a .sflw model
 
 Tab **2. Renderer** is where you actually look at things. A few controls worth knowing:
 
@@ -53,7 +51,7 @@ Tab **2. Renderer** is where you actually look at things. A few controls worth k
 
 If you baked an occlusion volume, an **Interior Occlusion Volume** section appears here with its own enable checkbox (off by default) and a live shrink slider for fine-tuning without re-exporting.
 
-## The Streaming tab: pretending you're on a network
+## The Streaming tab: Network streaming simulator
 
 Tab **3. Streaming** simulates progressive delivery over a constrained connection — handy for demos and for stress-testing the LOD system.
 
@@ -74,7 +72,7 @@ flowchart TD
     Decay --> Evict["Evicted from ring buffer"]
 ```
 
-## Reading the right-hand panel
+## The Performance Statistics Panel
 
 Top to bottom, roughly in "how much should I care right now" order:
 
@@ -91,7 +89,7 @@ Top to bottom, roughly in "how much should I care right now" order:
 - **Decay never seems to finish** — Decay Rate maxes out at a *guaranteed* full drain (minus the two coarsest pinned levels) within about 10 seconds, regardless of bandwidth. If it's stuck, bandwidth throttle might be fighting it — try Full/uncapped.
 - **Edges look blocky when zoomed in close** — bump **Silhouette LOD Bias** or check that GPU Silhouette Edge Refinement is on.
 
-## One-sentence glossary
+## Glossary
 
 - **Chunk** — a spatial cube of surfels, the unit of streaming.
 - **Surfel** — a colored, oriented disc/point standing in for a tiny patch of surface (like a pixel, but 3D).
@@ -99,7 +97,7 @@ Top to bottom, roughly in "how much should I care right now" order:
 - **Silhouette chunk** — a chunk currently on the model's outline from the camera's point of view; gets refined first.
 - **Decay** — the simulated cache eviction that drains unused detail back out to free memory.
 
-## Appendix: How the LOD pyramid actually gets built
+## Appendix: Lifting Wavelet Compression
 
 Each coarser level isn't just "every other point deleted" — it's built with a **second-generation lifting wavelet**, the same family of technique used in JPEG2000. The short version: it throws away detail *intelligently*, keeping the overall shape solid even after several rounds of halving.
 

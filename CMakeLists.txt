@@ -47,6 +47,22 @@ add_subdirectory(src/DX12)
 add_subdirectory(tools/SurfelsPreprocess)
 add_subdirectory(tests)
 
+# Without this, Visual Studio picks the alphabetically-first project as the
+# startup project, which is ALL_BUILD (or Docs) - neither is runnable, so F5
+# fails with "Unable to start program ... access denied". Pin it to the
+# client-facing app instead. Right-click another project > Set as Startup
+# Project to override for a session.
+set_property(DIRECTORY ${CMAKE_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT SurfelsPreprocess)
+
+# Docs project: a build-nothing target whose only purpose is to list the
+# Markdown docs in Solution Explorer so they can be opened and edited from
+# inside Visual Studio. SOURCES on a custom target are never compiled.
+add_custom_target(Docs SOURCES
+    README.md
+    docs/USER_GUIDE.md
+)
+source_group("" FILES README.md docs/USER_GUIDE.md)
+
 # Cauldron's own CMakeLists.txt files don't set FOLDER, so its targets
 # (Cauldron_DX12, Cauldron_Common, ImGUI, amd_ags, ...) land ungrouped at the
 # solution root, mixed in with our own targets. Sweep every target defined
