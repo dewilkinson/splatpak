@@ -352,6 +352,7 @@ namespace Surfels
         void  DrawLODResidencyEqualizer();
         void  DrawOcclusionVolumeControls();
         void  DrawRenderModeBanner(float leftPanelWidth, float rightPanelWidth); // "[X Mode Enabled]" overlay for every active toggle that alters the rendered model (see BuildUI)
+        void  DrawControlHints(float leftPanelWidth, float rightPanelWidth);     // Faint rotate / zoom / pan reminder at the bottom-right of the viewport (mirrors UpdateCamera's bindings)
         void  RebuildHeatmapClusterCubes();
         void  DrawOctreeVisualizer();
     };

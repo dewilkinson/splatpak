@@ -2988,6 +2988,9 @@ namespace Surfels
         // 4b. Active render-mode banner over the viewport
         DrawRenderModeBanner(leftPanelWidth, rightPanelWidth);
 
+        // 4c. Camera control hints at the bottom-right of the viewport
+        DrawControlHints(leftPanelWidth, rightPanelWidth);
+
         // 5. About Dialog Window
         if (m_showAboutDialog)
         {
@@ -3416,6 +3419,47 @@ namespace Surfels
             for (int i = 0; i < count; i++)
             {
                 ImGui::TextColored(lines[i].color, "%s", lines[i].text);
+            }
+        }
+        ImGui::End();
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor();
+    }
+
+    // Faint three-line reminder of the camera bindings, tucked into the bottom-right corner of the
+    // viewport just above the status bar and left of the right panel. Deliberately understated (dim
+    // text on a barely-there backing, no interaction) so it reads as part of the canvas rather than a
+    // control. The bindings listed must match UpdateCamera: left-drag or Left/Right arrows orbit; the
+    // wheel, right-drag, W/S, Up/Down, PageUp/PageDown and +/- zoom; Shift with any drag or with the
+    // arrow keys pans.
+    void PreprocessApp::DrawControlHints(float leftPanelWidth, float rightPanelWidth)
+    {
+        const float rightEdge  = (float)m_Width - rightPanelWidth - 20.0f; // Just left of the right panel
+        const float bottomEdge = (float)m_Height - 32.0f - 6.0f;           // Just above the status bar
+        if (rightEdge - (10.0f + leftPanelWidth + 10.0f) < 320.0f) return; // No room between the panels at this window size
+
+        ImGui::SetNextWindowPos(ImVec2(rightEdge, bottomEdge), ImGuiCond_Always, ImVec2(1.0f, 1.0f)); // Pivot: bottom-right corner
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.22f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 5.0f));
+        const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_AlwaysAutoResize |
+            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing;
+        if (ImGui::Begin("##ControlHints", nullptr, flags))
+        {
+            const ImVec4 label(0.75f, 0.75f, 0.78f, 0.85f); // Slightly brighter for the verb
+            const ImVec4 keys (0.55f, 0.55f, 0.58f, 0.80f); // Dimmer for the bindings
+            struct Hint { const char* verb; const char* binding; };
+            const Hint hints[] = {
+                { "Rotate", "left-drag   or   Left / Right arrows" },
+                { "Zoom",   "wheel  or  right-drag   or   W / S,  Up / Down" },
+                { "Pan",    "Shift + drag   or   Shift + arrows" },
+            };
+            for (const Hint& h : hints)
+            {
+                ImGui::TextColored(label, "%-7s", h.verb);
+                ImGui::SameLine(0.0f, 0.0f);
+                ImGui::TextColored(keys, "%s", h.binding);
             }
         }
         ImGui::End();
