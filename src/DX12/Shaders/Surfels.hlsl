@@ -739,7 +739,12 @@ void itemMS(
 
         float4 clipCenter = mul(g_ViewProj, float4(worldPos, 1.0));
         float distToCam = max(0.1f, clipCenter.w);
-        float minCoverageRadius = distToCam * 0.00015f;
+        // Item prepass only: never let a disc drop below about one screen pixel. At distance the
+        // visible render's discs are ~0.2 px, which is fine for the picture but leaves the item buffer
+        // full of background holes -- so nearly every chunk "touched background" and was flagged as a
+        // silhouette edge, and a rotation (which re-runs detection) then pulled the whole model two
+        // levels finer. One-pixel discs give a solid item buffer, so only the true rim is an edge.
+        float minCoverageRadius = distToCam * 0.00075f;
         splatRadius = max(splatRadius, minCoverageRadius);
 
         if (g_OrientMode == 0 && abs(normal.x) + abs(normal.y) + abs(normal.z) > 0.1f)
@@ -762,6 +767,10 @@ void itemMS(
         worldPos = s.position;
         normal = s.normal;
         float splatRadius = max(0.001f, s.radius * g_Radius);
+        {
+            float4 clipCenterRaw = mul(g_ViewProj, float4(worldPos, 1.0));
+            splatRadius = max(splatRadius, max(0.1f, clipCenterRaw.w) * 0.00075f); // ~1 px minimum, item prepass only (see above)
+        }
         if (g_OrientMode == 0 && dot(normal, normal) > 0.1f)
         {
             float3 up = abs(normal.y) < 0.99f ? float3(0.0f, 1.0f, 0.0f) : float3(1.0f, 0.0f, 0.0f);

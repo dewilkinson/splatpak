@@ -53,7 +53,7 @@ namespace Surfels
             bool     enableDithering  = true; // Stochastic screen-space Bayer dithering for smooth LOD transitions
             bool     highlightSilhouette = false; // Highlight silhouette chunks in lavender semi-transparent effect
             bool     showChunkStream  = true;  // Refinement visualizer: tint newly streamed chunks (arrival glow)
-            float    arrivalGlowIntensity = 1.0f; // Strength of that tint and bloom (0 = invisible, 1 = default, 2 = double)
+            float    arrivalGlowIntensity = 0.4f; // Strength of that tint and bloom (0 = invisible, 0.4 = default, 2 = strong)
             float    arrivalGlowHue = 0.0f;       // Hue rotation in degrees applied to the glow colours (0 = orange)
             bool     enableConeCulling = true; // Task Shader (mainAS) backface normal cone culling
             bool     useCopyQueue = true; // Dedicated DX12 Hardware DMA Copy Queue for asynchronous PCIe transfers

@@ -306,8 +306,8 @@ namespace Surfels
 
         // Show Chunk Stream: Creeping Wavefront & Dissolving Alpha Wake
         bool   m_showChunkStream            = true;   // Streaming arrival visualizer: newly delivered chunks glow hot orange, settle to a regular orange tint and fade out (Renderer tab: "Show Streaming Arrivals")
-        float  m_chunkStreamDuration        = 3.0f;   // Seconds a delivered chunk stays tinted (the glow is the first part of that)
-        float  m_arrivalGlowIntensity       = 1.0f;   // Refinement visualizer strength (0..2)
+        float  m_chunkStreamDuration        = 1.0f;   // Seconds a delivered chunk stays tinted (the glow is the first part of that); 1 s by default
+        float  m_arrivalGlowIntensity       = 0.4f;   // Refinement visualizer strength (0..2); 0.4 by default
         float  m_arrivalGlowHue             = 0.0f;   // Refinement visualizer hue rotation in degrees (-180..180, 0 = orange)
         void   DrawRefinementVisualizerControls(const char* idSuffix); // Checkbox + duration/intensity/hue sliders (Renderer tab)
 
@@ -335,6 +335,7 @@ namespace Surfels
         // belongs to the face its surface faces, and each face keeps its own priority list -- its blocks
         // their lists are multiplexed, most-directly-facing face first, into a scratch load list that the
         // delivery simulator consumes right after the edge chunks (see UpdateStreamingSimulation).
+        static constexpr int kMaxStreamLevels = 8;
         std::vector<StreamChunk*> m_scratchLoadList;                // This frame's multiplexed load list (visible faces, interleaved)
         uint8_t  m_visibleFaceMask = 0xFF;                          // Bit i = face i visible this frame
         uint32_t m_residencyEpoch = 0;                              // Bumped whenever any block stops being resident (evict, reset, decay), invalidating the cursors
