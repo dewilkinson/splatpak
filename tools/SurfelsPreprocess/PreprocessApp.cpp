@@ -2387,7 +2387,7 @@ namespace Surfels
                             m_target = m_detachedTarget;
                         }
                     }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Decouples the view and freezes the culling frustum, allowing inspection of culling boundaries from any angle: only the surfels the frozen camera could see (inside its frustum and facing it) are drawn. The interior occlusion volume is hidden while detached, since it would fill in the culled far side.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Decouples the view and freezes the culling frustum, allowing inspection of culling boundaries from any angle: only what the frozen camera could see is drawn -- surfels inside its frustum and facing it, and likewise only the occlusion volume faces turned toward it -- so from the side both read as the open shell that camera saw.");
                     if (m_detachCamera)
                     {
                         ImGui::SameLine();
@@ -3459,7 +3459,7 @@ namespace Surfels
         if (m_showOctreeVisualizer)        add(ImVec4(1.00f, 0.75f, 0.20f, 1.0f), "RENDERER: Macro Clusters enabled");
         if (m_showGlobalBounds)            add(ImVec4(0.40f, 0.60f, 1.00f, 1.0f), "RENDERER: Global Model Bounds enabled");
         if (m_showCulledChunks)            add(ImVec4(0.80f, 0.80f, 0.80f, 1.0f), "RENDERER: Show Culled Chunks enabled");
-        if (m_detachCamera)                add(ImVec4(0.30f, 0.90f, 1.00f, 1.0f), "RENDERER: Detach Camera (frozen culling frustum, occlusion volume hidden) enabled");
+        if (m_detachCamera)                add(ImVec4(0.30f, 0.90f, 1.00f, 1.0f), "RENDERER: Detach Camera (frozen culling frustum) enabled");
         if (m_freezeRenderingAndMemory)    add(ImVec4(0.55f, 0.75f, 1.00f, 1.0f), "STREAMING: Freeze Rendering & Memory enabled");
         if (m_enableStreamingSimulation && !m_unthrottledBandwidth) add(ImVec4(1.00f, 0.80f, 0.30f, 1.0f), "STREAMING: Bandwidth throttle %.1f MB/s enabled", m_bandwidthThrottleMBps);
         if (!m_autoLOD)                    add(ImVec4(0.50f, 1.00f, 0.50f, 1.0f), "RENDERER: Manual LOD %d enabled", m_selectedPreviewLOD);
@@ -4342,10 +4342,10 @@ namespace Surfels
         m_state.pOcclusionVoxels = m_occlusionVoxels.empty() ? nullptr : m_occlusionVoxels.data();
         m_state.occlusionVoxelCount = (uint32_t)m_occlusionVoxels.size();
         m_state.occlusionVoxelVersion = m_occlusionVoxelsVersion;
-        // The interior occlusion volume is drawn from the VIEWER and depth-tests the splats against it, so
-        // while the culling camera is detached it would fill in exactly the far-side surfels the frozen
-        // frustum culls -- the model looks whole and the mode looks broken. Suppress it while detached.
-        m_state.enableOcclusionCulling = m_enableOcclusionCulling && !m_detachCamera;
+        // While the culling camera is detached the occluder shader culls the volume against that camera
+        // too (faces turned away from it, cubes outside its frustum), so the volume stays on and shows
+        // the same open shell the surfels do.
+        m_state.enableOcclusionCulling = m_enableOcclusionCulling;
         m_state.showOcclusionVolumeOnly = m_showOcclusionVolumeOnly;
         if (m_occlusionMipOverride >= (int)m_occlusionMips.mipCount) m_occlusionMipOverride = -1; // A rebake/reload with fewer mips drops back to Auto
         m_state.occlusionMips = m_occlusionMips;

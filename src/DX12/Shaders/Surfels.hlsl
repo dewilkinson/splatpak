@@ -894,6 +894,35 @@ void occluderMS(
     if (((v.packedColor >> OCCLUDER_MASK_VALID_BIT) & 1) == 0)
         exposed = OCCLUDER_FACE_MASK_ALL; // Legacy file baked before the mask existed
 
+    // Detached culling camera: the volume obeys the same rule as the surfels -- only what the frozen
+    // camera could see is drawn. A cube outside its frustum is dropped whole; of a cube inside, only
+    // the faces turned toward it survive, so from the side the volume reads as the open shell the
+    // detached camera would have seen, not a closed solid filling in the culled far side.
+    if (g_UseDetachedCullCam == 1 && exposed != 0)
+    {
+        float4 cc = mul(g_CullViewProj, float4(v.center, 1.0));
+        float slack = v.halfSize * 1.75; // Corner reach: keep cubes straddling the frustum edge
+        bool outside = (cc.w <= 0.0001) ||
+                       (cc.x < -cc.w - slack) || (cc.x > cc.w + slack) ||
+                       (cc.y < -cc.w - slack) || (cc.y > cc.w + slack) ||
+                       (cc.z < 0.0) || (cc.z > cc.w);
+        if (outside)
+        {
+            exposed = 0;
+        }
+        else
+        {
+            [unroll]
+            for (uint f = 0; f < 6; f++)
+            {
+                if ((exposed & (1u << f)) == 0) continue;
+                float3 faceCenter = v.center + s_occluderFaceNormal[f] * v.halfSize;
+                if (dot(s_occluderFaceNormal[f], g_CullEyePos - faceCenter) <= 0.0)
+                    exposed &= ~(1u << f); // Back-facing to the detached camera
+            }
+        }
+    }
+
     uint faceCount = valid ? countbits(exposed) : 0;
     SetMeshOutputCounts(faceCount * 4, faceCount * 2);
     if (faceCount == 0)
