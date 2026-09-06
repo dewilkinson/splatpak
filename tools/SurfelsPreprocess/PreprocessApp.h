@@ -311,7 +311,7 @@ namespace Surfels
         float  m_silhouetteThreshold        = 0.40f;  // Grazing rim angle threshold
         float  m_silhouetteDepthThreshold   = 0.05f;  // GPU depth step threshold for interior occlusion edges
         bool   m_silhouetteExteriorOnly     = true;   // 1 = only outer perimeter against background, 0 = include interior occlusion
-        float  m_dilationMorphAmount        = 0.0f;   // Geometric dilation morph factor during edge transitions
+        float  m_dilationMorphAmount        = 0.25f;  // Geometric dilation morph factor during silhouette edge transitions: 0 = off, 1 = full (1.5 radii outward, +40% disc size mid-dissolve). 0.25 covers the dissolve gap on the rim without a visible bulge
         bool   m_highlightSilhouetteChunks  = false;  // Visualizer toggle for edge chunks (lavender)
         bool   m_showOnlyLockedChunks       = false;  // Isolate dynamic workload: show ONLY locked chunks (transition or edge)
         bool   m_freezeRenderingAndMemory   = false;  // Freeze streaming simulation, memory management, and edge updates to remove flickering when paused

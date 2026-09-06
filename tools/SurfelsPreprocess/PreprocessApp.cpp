@@ -2354,7 +2354,7 @@ namespace Surfels
                         {
                             m_streamStateDirty = true;
                         }
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Normal dilation morph factor to create a smooth organic expansion/dilation as sharp edges form.");
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("While a silhouette edge chunk is mid-transition, its surfels are pushed outward along their normals and their discs swell (both scaled by this factor, fading with the dissolve) so the rim does not thin out between levels. 0 = off. 1 = full: up to 1.5 splat radii outward and 40%% larger discs, which reads as a breathing edge. Default 0.25: a subtle 10%% swell that covers the dissolve gap without visible bulging.");
 
                         if (ImGui::Button("Test Silhouette Edge Refinement", ImVec2(-1, 26)))
                         {
