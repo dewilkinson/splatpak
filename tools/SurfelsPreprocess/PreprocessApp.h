@@ -252,6 +252,7 @@ namespace Surfels
             float    transitionProgress = 0.0f;   // 0.0 (Parent Level N Solid) <-> 1.0 (Children Level N-1 Solid)
             float    streamWaveTimer = 0.0f;      // Active chunk streaming lavender wavefront timer (3.0s -> 0.0s)
             float    silhouetteHysteresisTimer = 0.0f; // Hysteresis hold time (seconds) to eliminate refinement/demotion thrashing
+            bool     renderedLastFrame = false;    // Appended to the renderer's chunk list by the previous traversal. Only such chunks can carry an edge flag: the GPU bitmask is ingested for rendered chunks only, so anything else must be cleared (see the reset loop before traversal)
             uint32_t globalSurfelOffset = 0;      // Zero-copy offset into m_unifiedPackedSurfels / m_unifiedRawSurfels
             XMFLOAT3 aabbMin = { 0, 0, 0 };
             XMFLOAT3 aabbMax = { 0, 0, 0 };
