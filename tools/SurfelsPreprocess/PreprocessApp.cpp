@@ -3036,7 +3036,7 @@ namespace Surfels
 
                 ImGui::Text("Author:       Dave Wilkinson");
                 ImGui::Text("Organization: Blueshell LLC");
-                ImGui::Text("Version:      v1.2.0");
+                ImGui::Text("Version:      v1.2.1");
                 ImGui::Text("Date:         September 6, 2026");
                 if (m_pRenderer) ImGui::Text("GPU path:     %s", m_pRenderer->GetRenderPathDescription());
                 ImGui::Spacing();
