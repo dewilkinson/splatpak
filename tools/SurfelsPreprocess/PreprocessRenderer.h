@@ -52,7 +52,9 @@ namespace Surfels
             XMFLOAT3 cullTarget       = { 0.0f, 0.0f, 0.0f };
             bool     enableDithering  = true; // Stochastic screen-space Bayer dithering for smooth LOD transitions
             bool     highlightSilhouette = false; // Highlight silhouette chunks in lavender semi-transparent effect
-            bool     showChunkStream  = true;  // Render orange wave sweep for newly streamed chunks
+            bool     showChunkStream  = true;  // Refinement visualizer: tint newly streamed chunks (arrival glow)
+            float    arrivalGlowIntensity = 1.0f; // Strength of that tint and bloom (0 = invisible, 1 = default, 2 = double)
+            float    arrivalGlowHue = 0.0f;       // Hue rotation in degrees applied to the glow colours (0 = orange)
             bool     enableConeCulling = true; // Task Shader (mainAS) backface normal cone culling
             bool     useCopyQueue = true; // Dedicated DX12 Hardware DMA Copy Queue for asynchronous PCIe transfers
             bool     enableGpuSilhouetteInversion = true; // GPU Chunk-ID & Depth Discontinuity Edge Inversion
@@ -161,6 +163,8 @@ namespace Surfels
             uint32_t   showOcclusionVolumeOnly;
             uint32_t   occlusionVoxelCount;   // Blocks in the occlusion volume mip drawn this frame
             uint32_t   occlusionVoxelFirst;   // Index of that mip's first block in the voxel buffer
+            float      arrivalGlowIntensity;  // Refinement visualizer strength (see State)
+            float      arrivalGlowHue;        // Refinement visualizer hue rotation, degrees
         };
 
         CAULDRON_DX12::Device* m_pDevice = nullptr;

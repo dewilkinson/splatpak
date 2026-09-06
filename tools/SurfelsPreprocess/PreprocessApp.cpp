@@ -2229,18 +2229,7 @@ namespace Surfels
                     }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Visualizer toggle: highlights the active silhouette edge chunks.");
 
-                    if (ImGui::Checkbox("Show Streaming Arrivals (Orange Glow)", &m_showChunkStream))
-                    {
-                        m_streamStateDirty = true;
-                    }
-                    if (m_showChunkStream)
-                    {
-                        ImGui::SameLine();
-                        ImGui::PushItemWidth(100.0f);
-                        ImGui::SliderFloat("##ArrivalFade", &m_chunkStreamDuration, 0.5f, 10.0f, "%.1f s");
-                        ImGui::PopItemWidth();
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("How long a delivered chunk stays tinted. The bright glow occupies roughly the first third; the tint fades out at the end.");
-                    }
+                    DrawRefinementVisualizerControls("##Renderer");
 
                     if (ImGui::Checkbox("Show ONLY Locked Chunks (Transition / Edge)", &m_showOnlyLockedChunks))
                     {
@@ -2554,6 +2543,7 @@ namespace Surfels
 
                     ImGui::Checkbox("Prioritize View Frustum & Proximity", &m_prioritizeFrustumAndProximity);
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: within the detail ordering, blocks inside the view frustum are delivered before those outside it (then the neighbour band, then the rest), with view-centre and proximity breaking near-ties. Off: the pure detail ranking, model-wide, regardless of the camera.");
+                    DrawRefinementVisualizerControls("##Streaming");
 
                     // Bandwidth Preset Buttons
                     ImGui::Text("Network Profiles:");
@@ -3347,6 +3337,29 @@ namespace Surfels
         }
 
         ImGui::Spacing();
+    }
+
+    // Refinement visualizer controls, drawn identically on the Renderer and Streaming tabs (idSuffix keeps
+    // the two sets of widgets distinct for ImGui): the arrival-glow checkbox, and when it is on, the fade
+    // duration, glow intensity and hue sliders.
+    void PreprocessApp::DrawRefinementVisualizerControls(const char* idSuffix)
+    {
+        std::string label = std::string("Refinement Visualizer (Orange Glow)") + idSuffix;
+        if (ImGui::Checkbox(label.c_str(), &m_showChunkStream))
+        {
+            m_streamStateDirty = true;
+        }
+        if (!m_showChunkStream) return;
+        ImGui::Indent(12.0f);
+        ImGui::PushItemWidth(150.0f);
+        ImGui::SliderFloat((std::string("Fade Duration") + idSuffix).c_str(), &m_chunkStreamDuration, 0.5f, 10.0f, "%.1f s");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("How long a delivered chunk stays tinted. The bright glow occupies roughly the first third; the tint fades out at the end.");
+        ImGui::SliderFloat((std::string("Glow Intensity") + idSuffix).c_str(), &m_arrivalGlowIntensity, 0.0f, 2.0f, "%.2fx");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Strength of the tint and of the bright leading-edge bloom. 1 = default; 0 hides the effect without turning the visualizer off.");
+        ImGui::SliderFloat((std::string("Glow Hue") + idSuffix).c_str(), &m_arrivalGlowHue, -180.0f, 180.0f, "%.0f deg");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rotates the glow colour around the colour wheel. 0 = orange; about +95 = green, +180 = blue, -60 = magenta.");
+        ImGui::PopItemWidth();
+        ImGui::Unindent(12.0f);
     }
 
     // [Removed from the public history: proprietary streaming-order code, now in libs/gstx/StreamOrder]
@@ -4296,6 +4309,8 @@ namespace Surfels
         m_state.enableDithering = m_enableDitheredTransitions;
         m_state.highlightSilhouette = m_highlightSilhouetteChunks;
         m_state.showChunkStream = m_showChunkStream;
+        m_state.arrivalGlowIntensity = m_arrivalGlowIntensity;
+        m_state.arrivalGlowHue = m_arrivalGlowHue;
         m_state.enableGpuSilhouetteInversion = m_enableSilhouetteLOD0 || m_highlightSilhouetteChunks;
         m_state.silhouetteDepthThreshold = m_silhouetteDepthThreshold;
         m_state.enableTemporalFiltering = m_enableTemporalFiltering;

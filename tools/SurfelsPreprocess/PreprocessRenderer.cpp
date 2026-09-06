@@ -1637,6 +1637,8 @@ namespace Surfels
         pCB->enableConeCulling = pState->enableConeCulling ? 1 : 0;
         pCB->showOnlyLocked = pState->showOnlyLockedChunks ? 1 : 0;
         pCB->showChunkStream = pState->showChunkStream ? 1 : 0;
+        pCB->arrivalGlowIntensity = pState->arrivalGlowIntensity;
+        pCB->arrivalGlowHue = pState->arrivalGlowHue;
         pCB->enableOcclusionCulling = (pState->enableOcclusionCulling && pState->occlusionVoxelCount > 0 && m_pOcclusionVoxelBuffer != nullptr) ? 1 : 0;
         pCB->showOcclusionVolumeOnly = pState->showOcclusionVolumeOnly ? 1 : 0;
 

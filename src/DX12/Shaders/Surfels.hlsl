@@ -90,7 +90,20 @@ cbuffer SurfelsCB : register(b0)
     uint     g_ShowOcclusionVolumeOnly;
     uint     g_OcclusionVoxelCount; // Blocks in the occlusion volume mip drawn this frame
     uint     g_OcclusionVoxelFirst; // Index of that mip's first block in g_OcclusionVoxelBuffer
+    float    g_ArrivalGlowIntensity; // Refinement visualizer strength (1 = default)
+    float    g_ArrivalGlowHue;       // Refinement visualizer hue rotation, degrees (0 = orange)
 };
+
+// Hue/saturation/value to RGB, hue in degrees (wraps).
+float3 HsvToRgb(float h, float s, float v)
+{
+    float hp = fmod(fmod(h, 360.0) + 360.0, 360.0) / 60.0;
+    float c = v * s;
+    float x = c * (1.0 - abs(fmod(hp, 2.0) - 1.0));
+    float3 rgb = (hp < 1.0) ? float3(c, x, 0) : (hp < 2.0) ? float3(x, c, 0) : (hp < 3.0) ? float3(0, c, x)
+               : (hp < 4.0) ? float3(0, x, c) : (hp < 5.0) ? float3(x, 0, c) : float3(c, 0, x);
+    return rgb + (v - c);
+}
 
 struct ChunkPayload
 {
@@ -535,12 +548,14 @@ void mainMS(
             // settle to a regular semi-transparent orange fill that fades out at the end of its life.
             float life = saturate(w / 0.95);                 // 1 = just arrived, 0 = expired
             float glow = life * life;                        // Bright peak at the leading edge, still strong at mid-life
-            float3 regularOrange = float3(1.0, 0.42, 0.04);
-            float3 hotOrange     = float3(1.0, 0.80, 0.40);
-            float3 tint = lerp(regularOrange, hotOrange, glow);
-            float opacity = 0.60 * smoothstep(0.0, 0.25, life); // Semi-transparent fill; fades out over the last quarter
+            // Colours are orange by default (hue ~24 degrees); the Hue slider rotates both the regular
+            // fill and the hot leading-edge colour together, Intensity scales the fill opacity and bloom.
+            float3 regularTint = HsvToRgb(24.0 + g_ArrivalGlowHue, 0.96, 1.0);
+            float3 hotTint     = HsvToRgb(24.0 + g_ArrivalGlowHue, 0.55, 1.0);
+            float3 tint = lerp(regularTint, hotTint, glow);
+            float opacity = saturate(0.60 * g_ArrivalGlowIntensity) * smoothstep(0.0, 0.25, life); // Semi-transparent fill; fades out over the last quarter
             litColor = lerp(litColor, tint * (lighting + 0.35 * glow), opacity);
-            litColor += hotOrange * (glow * 0.55);           // Emissive bloom on the newest chunks
+            litColor += hotTint * (glow * 0.55 * g_ArrivalGlowIntensity); // Emissive bloom on the newest chunks
         }
     }
 

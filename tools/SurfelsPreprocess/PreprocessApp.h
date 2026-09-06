@@ -274,11 +274,10 @@ namespace Surfels
 
         enum class StreamingPolicy
         {
-            Conservative = 0, // Pulls only visible chunks + local neighbor buffer; stops when view is satisfied
             Greedy       = 1  // Refines visible chunks first, then continues pre-fetching remaining background chunks
         };
 
-        StreamingPolicy m_streamingPolicy           = StreamingPolicy::Greedy; // Greedy (default) or Conservative
+        StreamingPolicy m_streamingPolicy           = StreamingPolicy::Conservative; // Conservative (default) or Greedy
         float  m_conservativeNeighborBufferMargin   = 1.35f;  // Frustum margin for pre-fetching local neighbors in conservative mode
         bool   m_enableDitheredTransitions  = true;   // Stochastic screen-space Bayer dithering for smooth LOD transitions
         float  m_ditherTransitionDurationSec= 0.75f;  // Transition dissolve duration in seconds (slider 0.05..5 s)
@@ -308,6 +307,9 @@ namespace Surfels
         // Show Chunk Stream: Creeping Wavefront & Dissolving Alpha Wake
         bool   m_showChunkStream            = true;   // Streaming arrival visualizer: newly delivered chunks glow hot orange, settle to a regular orange tint and fade out (Renderer tab: "Show Streaming Arrivals")
         float  m_chunkStreamDuration        = 3.0f;   // Seconds a delivered chunk stays tinted (the glow is the first part of that)
+        float  m_arrivalGlowIntensity       = 1.0f;   // Refinement visualizer strength (0..2)
+        float  m_arrivalGlowHue             = 0.0f;   // Refinement visualizer hue rotation in degrees (-180..180, 0 = orange)
+        void   DrawRefinementVisualizerControls(const char* idSuffix); // Checkbox + duration/intensity/hue sliders; drawn on both the Renderer and Streaming tabs
 
         // Silhouette Edge Focused Reconstruction & Dilation Morphing
         bool   m_enableSilhouetteLOD0       = true;   // Refine silhouette edges using biased LOD levels (Option 2 GPU Inversion)
