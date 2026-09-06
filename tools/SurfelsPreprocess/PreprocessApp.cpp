@@ -391,8 +391,28 @@ namespace Surfels
         InitDirectXCompiler();
         CreateShaderCache();
 
+        // Proportional font for the on-canvas camera hints (see DrawControlHints): the UI's default
+        // ProggyClean is a wide bitmap monospace that reads as spread-out text. It has to be registered
+        // BEFORE the renderer's OnCreate, which adds the default font and uploads the font atlas once;
+        // the default font is then restored below so every panel keeps its usual face. A missing font
+        // file just leaves m_pHintFont null and the hints fall back to the default font.
+        {
+            ImGuiIO& fontIo = ImGui::GetIO();
+            HDC screenDc = GetDC(NULL);
+            const float dpiScale = screenDc ? (float)GetDeviceCaps(screenDc, LOGPIXELSX) / 96.0f : 1.0f;
+            if (screenDc) ReleaseDC(NULL, screenDc);
+            m_pHintFont = fontIo.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 17.0f * dpiScale);
+        }
         m_pRenderer = new PreprocessRenderer();
         m_pRenderer->OnCreate(&m_device, &m_swapChain);
+        {
+            // ImGUI::OnCreate appended the UI's default font after ours: make that one the default again.
+            ImGuiIO& fontIo = ImGui::GetIO();
+            if (m_pHintFont != nullptr && fontIo.Fonts->Fonts.Size > 1)
+            {
+                fontIo.FontDefault = fontIo.Fonts->Fonts[fontIo.Fonts->Fonts.Size - 1];
+            }
+        }
 
         if (m_device.GetDevice())
         {
@@ -3455,14 +3475,17 @@ namespace Surfels
     void PreprocessApp::DrawControlHints(float leftPanelWidth, float rightPanelWidth)
     {
         if (!m_showControlHints) return; // "Show Camera Control Hints" unchecked on the Renderer tab's viewport section
-        const float rightEdge  = (float)m_Width - rightPanelWidth - 20.0f; // Just left of the right panel
-        const float bottomEdge = (float)m_Height - 32.0f - 6.0f;           // Just above the status bar
-        if (rightEdge - (10.0f + leftPanelWidth + 10.0f) < 320.0f) return; // No room between the panels at this window size
 
+        // Bottom-right of the viewport: just left of the right panel and just above the status bar. On a
+        // window too narrow for a viewport strip it stays put over the model (still readable) rather
+        // than being hidden -- never pushed under the left panel, though.
+        const float rightEdge  = std::max(10.0f + leftPanelWidth + 260.0f, (float)m_Width - rightPanelWidth - 20.0f);
+        const float bottomEdge = (float)m_Height - 32.0f - 6.0f;
+
+        ImGui::PushFont(m_pHintFont); // Proportional Segoe UI; NULL falls back to the default font
         ImGui::SetNextWindowPos(ImVec2(rightEdge, bottomEdge), ImGuiCond_Always, ImVec2(1.0f, 1.0f)); // Pivot: bottom-right corner
         // Understated in size and placement, but legible: near-white text on a solid dark backing,
-        // because the model usually runs behind this corner and a translucent box over bright splats
-        // washed the earlier dim-grey version out completely.
+        // because the model usually runs behind this corner.
         ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.02f, 0.02f, 0.03f, 0.72f));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 7.0f));
@@ -3471,25 +3494,26 @@ namespace Surfels
             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing;
         if (ImGui::Begin("##ControlHints", nullptr, flags))
         {
-            ImGui::SetWindowFontScale(0.91f); // 0.7 (30% smaller than the panel text) then +30% at the user's request: still a reminder, not a control
             const ImVec4 label(1.00f, 0.92f, 0.60f, 1.00f); // Warm off-white for the verb
-            const ImVec4 keys (0.88f, 0.88f, 0.92f, 1.00f); // Light grey for the bindings
+            const ImVec4 keys (0.90f, 0.90f, 0.94f, 1.00f); // Light grey for the bindings
             struct Hint { const char* verb; const char* binding; };
-            const Hint hints[] = {
-                { "Rotate", "left-drag   or   Left / Right arrows" },
-                { "Zoom",   "wheel  or  right-drag   or   W / S,  Up / Down" },
-                { "Pan",    "Shift + drag   or   Shift + arrows" },
+            const Hint hints[] = {                         // "\xC2\xB7" = middle dot (U+00B7), in the default Latin glyph range
+                { "Rotate", "left-drag \xC2\xB7 Left/Right arrows" },
+                { "Zoom",   "wheel \xC2\xB7 right-drag \xC2\xB7 W/S \xC2\xB7 Up/Down" },
+                { "Pan",    "Shift + drag \xC2\xB7 Shift + arrows" },
             };
+            const float bindingColumn = ImGui::CalcTextSize("Rotate").x + 14.0f; // Fixed verb column so the proportional font still lines up
             for (const Hint& h : hints)
             {
-                ImGui::TextColored(label, "%-7s", h.verb);
-                ImGui::SameLine(0.0f, 0.0f);
+                ImGui::TextColored(label, "%s", h.verb);
+                ImGui::SameLine(bindingColumn);
                 ImGui::TextColored(keys, "%s", h.binding);
             }
         }
         ImGui::End();
         ImGui::PopStyleVar(2);
         ImGui::PopStyleColor();
+        ImGui::PopFont();
     }
 
     // Shared enable/view-only controls for the baked occlusion volume, drawn identically from both the
