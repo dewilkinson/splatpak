@@ -16,6 +16,7 @@
 #include <vector>
 #include "SpatialOctree.h"
 #include "Quantizer.h"
+#include "DetailHeatmap.h"
 #include "../../libs/bluesec-codec/LiftingWavelet.h"
 #include "../../libs/bluesec-codec/ByteShuffle.h"
 
@@ -32,7 +33,8 @@ namespace Surfels
             float splatRadius = 1.0f,
             const std::vector<OcclusionVoxelGPU>& occlusionVoxels = {},
             uint64_t sourceFileBytes = 0,
-            const OcclusionMipTable* pOcclusionMips = nullptr) // Mip layout of occlusionVoxels; nullptr = one mip covering the array
+            const OcclusionMipTable* pOcclusionMips = nullptr, // Mip layout of occlusionVoxels; nullptr = one mip covering the array
+            const DetailGrid* detailGrid = nullptr)             // Detail heatmap (v7+); nullptr = none stored
         {
             std::string sflwPath = outputBasepath + ".sflw";
 
@@ -167,6 +169,21 @@ namespace Surfels
                 }
             }
 
+            // Detail heatmap grid (v7+, optional): one byte per cell, written after the occlusion voxels.
+            // The streamer reads it back to order chunk delivery by detail (see DetailHeatmap.h).
+            header.detailGridDims[0] = header.detailGridDims[1] = header.detailGridDims[2] = 0;
+            header.detailGridCellSize = 0.0f;
+            header.detailGridOffset = 0;
+            if (detailGrid != nullptr && detailGrid->Valid())
+            {
+                header.detailGridDims[0] = detailGrid->nx;
+                header.detailGridDims[1] = detailGrid->ny;
+                header.detailGridDims[2] = detailGrid->nz;
+                header.detailGridCellSize = detailGrid->cellSize;
+                header.detailGridOffset = (uint64_t)sflwOut.tellp();
+                sflwOut.write(reinterpret_cast<const char*>(detailGrid->score.data()), detailGrid->score.size());
+            }
+
             // Embedded manifest table (v4+) goes last: one ChunkManifestRecord per chunk, each followed
             // by its ChunkLODHeader array. Every LOD payload offset is already absolute, so the manifest
             // can sit anywhere; the end of the file keeps the payload region contiguous.
@@ -215,6 +232,7 @@ namespace Surfels
             std::vector<std::vector<std::vector<PackedSurfelGPU>>> chunkLODSurfels; // [chunkIndex][lodLevelIndex] -> surfels
             std::vector<OcclusionVoxelGPU> occlusionVoxels; // v3+ only; empty on older files or files with no volume baked
             OcclusionMipTable occlusionMips;                // Mip layout of occlusionVoxels (v6+); a pre-v6 volume is presented as one mip
+            DetailGrid detailGrid;                          // v7+ only; invalid (nx == 0) on older files -- the app rebuilds one from LOD 0
             uint64_t totalSurfels = 0;
             size_t totalCompressedBytes = 0;
         };
@@ -335,6 +353,13 @@ namespace Surfels
                     outPackage.header.occlusionMipCellSize[k]   = 0.0f;
                 }
             }
+            // The detail heatmap grid was appended in version 7; same reasoning again.
+            if (outPackage.header.version < 7)
+            {
+                outPackage.header.detailGridDims[0] = outPackage.header.detailGridDims[1] = outPackage.header.detailGridDims[2] = 0;
+                outPackage.header.detailGridCellSize = 0.0f;
+                outPackage.header.detailGridOffset = 0;
+            }
 
             outPackage.occlusionVoxels.clear();
             outPackage.occlusionMips = OcclusionMipTable{};
@@ -357,6 +382,25 @@ namespace Surfels
                 if (mips.mipCount == 0 || mips.TotalBlocks() != outPackage.header.occlusionVoxelCount)
                     mips = OcclusionMipTable::SingleLevel(outPackage.occlusionVoxels.data(), outPackage.header.occlusionVoxelCount);
                 outPackage.occlusionMips = mips;
+            }
+
+            // Detail heatmap grid (v7+). Sanity-check the dimensions before trusting the offset.
+            outPackage.detailGrid = DetailGrid{};
+            {
+                const SFLWFileHeader& h = outPackage.header;
+                const uint64_t cells = (uint64_t)h.detailGridDims[0] * h.detailGridDims[1] * h.detailGridDims[2];
+                if (cells > 0 && cells <= (uint64_t)(96 * 96 * 96) && h.detailGridCellSize > 0.0f && h.detailGridOffset > 0)
+                {
+                    DetailGrid& dg = outPackage.detailGrid;
+                    dg.nx = h.detailGridDims[0]; dg.ny = h.detailGridDims[1]; dg.nz = h.detailGridDims[2];
+                    dg.cellSize = h.detailGridCellSize;
+                    dg.gMin = h.globalBoundsMin;
+                    dg.score.resize((size_t)cells);
+                    sflwIn.seekg((std::streamoff)h.detailGridOffset, std::ios::beg);
+                    sflwIn.read(reinterpret_cast<char*>(dg.score.data()), (std::streamsize)cells);
+                    if (!sflwIn.good()) { dg = DetailGrid{}; sflwIn.clear(); }
+                    else { for (uint8_t v : dg.score) if (v) dg.occupiedCells++; }
+                }
             }
 
             sflwIn.close();

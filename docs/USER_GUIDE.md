@@ -99,12 +99,6 @@ The panel is ordered, top to bottom, roughly by how often each section is consul
 
 ## Glossary
 
-- **Chunk** — a spatial cube of surfels; the unit of streaming.
-- **Surfel** — a coloured, oriented disc or point standing in for a small patch of surface; the three-dimensional analogue of a pixel.
-- **LOD (Level of Detail)** — a coarser or finer version of the same chunk. The wavelet pyramid holds several.
-- **Silhouette chunk** — a chunk that lies on the model's outline from the camera's point of view. Such chunks are refined first.
-- **Decay** — the simulated cache eviction that drains unused detail out of memory.
-
 ## Appendix: Lifting Wavelet Compression
 
 Each coarser level is not simply the finer level with every other point removed. It is built with a **second-generation lifting wavelet**, the same family of technique used in JPEG 2000. In short, the method discards detail selectively, preserving the overall shape even after several rounds of halving.

@@ -59,6 +59,11 @@ int main(int argc, char** argv)
     std::cout << "Loaded " << surfels.size() << " points, extent " << maxDim << ". chunk=" << chunkSize
               << " lods=" << maxLODs << " deadband=" << deadbandMeters * 1000.0f << "mm" << std::endl;
 
+    // Detail heatmap (v7+): the streaming order, baked from the original cloud (see DetailHeatmap.h)
+    Surfels::DetailGrid detailGrid = Surfels::DetailGrid::Build(surfels, minP, maxP);
+    std::cout << "Detail heatmap: detail grid " << detailGrid.nx << "x" << detailGrid.ny << "x" << detailGrid.nz
+              << " cells (" << detailGrid.cellSize << " m), " << detailGrid.occupiedCells << " occupied" << std::endl;
+
     std::cout << "Baking occlusion volume (shave " << shave << ")..." << std::endl;
     Surfels::OcclusionVolume::Grid grid;
     std::vector<Surfels::OcclusionVoxelGPU> occlusion;
@@ -73,7 +78,7 @@ int main(int argc, char** argv)
     auto chunks = Surfels::SpatialOctree::PartitionIntoChunks(surfels, chunkSize);
     std::cout << "Partitioned into " << chunks.size() << " chunks. Packaging to " << outputBase << ".sflw..." << std::endl;
 
-    if (!Surfels::StreamPackager::PackageDataset(outputBase, chunks, maxLODs, deadbandMeters, splatRadius, occlusion, sourceFileBytes, &occlusionMips))
+    if (!Surfels::StreamPackager::PackageDataset(outputBase, chunks, maxLODs, deadbandMeters, splatRadius, occlusion, sourceFileBytes, &occlusionMips, &detailGrid))
     {
         std::cerr << "Failed to package dataset" << std::endl;
         return 1;

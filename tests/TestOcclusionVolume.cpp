@@ -28,6 +28,8 @@ int main(int argc, char** argv)
         return 1;
     }
 
+    std::cout << "Package detail grid " << pkg.detailGrid.nx << "x" << pkg.detailGrid.ny << "x" << pkg.detailGrid.nz
+              << " (" << pkg.detailGrid.occupiedCells << " occupied cells)" << std::endl;
     std::vector<Surfels::PackedSurfelGPU> packed;
     for (const auto& c : pkg.chunkLOD0Surfels) packed.insert(packed.end(), c.begin(), c.end());
     auto points = Surfels::Quantizer::UnquantizeSurfels(packed, pkg.header.globalBoundsMin, pkg.header.globalBoundsMax);

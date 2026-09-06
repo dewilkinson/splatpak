@@ -9,6 +9,7 @@
 
 #pragma once
 #include "../../libs/bluesec-codec/OcclusionVolume.h"
+#include "DetailHeatmap.h"
 #include "../../src/DX12/stdafx.h"
 #include "PreprocessRenderer.h"
 #include "SyntheticGenerator.h"
@@ -213,6 +214,7 @@ namespace Surfels
         float m_hotspotOpacityScale  = 2.0f;   // Opacity scale multiplier for dense/hot cubes
         bool  m_showHeatmapWireframe = false;  // Unchecked by default
         int   m_heatmapColorScheme   = 0;      // 0 = Turbo, 1 = Viridis, 2 = Plasma
+        int   m_heatmapSource        = 0;      // What the cluster cubes colour by: 0 = point density, 1 = detail heatmap (the streaming order)
         bool  m_showOctreeVisualizer = false;  // Unchecked by default
         bool  m_showCulledChunks     = false;  // Unchecked by default
         bool  m_showGlobalBounds     = false;  // Unchecked by default
@@ -239,6 +241,7 @@ namespace Surfels
             float    radius = 0.0f;
             XMFLOAT3 avgNormal = { 0, 1, 0 };      // Representative surface normal for silhouette edge testing
             float    normalSpread = 0.0f;          // Normal angular variation
+            float    detailScore = 0.0f;           // 0..1 from the detail heatmap over this block's bounds (see DetailHeatmap.h): streams after the edge chunks in descending order of this
             std::vector<SurfelVertex>   rawSurfels;
             std::vector<PackedSurfelGPU> packedSurfels;
             size_t   byteSize = 0;
@@ -325,6 +328,7 @@ namespace Surfels
 
         std::vector<std::vector<StreamChunk>> m_lodStreamChunks; // Chunks grouped by LOD level for O(1) equalizer
         std::vector<StreamChunk*>             m_allStreamChunkPtrs; // Flat list of pointers for priority sorting
+        DetailGrid                            m_detailGrid;         // Detail heatmap for the loaded model: from the package (v7+) or built from LOD 0 on load / preprocess; written into exported packages
         std::vector<StreamChunk*>             m_rendererSourceChunks; // Source chunk pointers corresponding to m_rendererMeshletChunks
         std::vector<PackedSurfelGPU>          m_unifiedPackedSurfels; // Global zero-copy packed surfel buffer
         std::vector<SurfelVertex>            m_unifiedRawSurfels;    // Global zero-copy raw surfel buffer

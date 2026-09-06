@@ -30,7 +30,7 @@ namespace Surfels
 
     // Magic bytes for .sflw binary stream container ("SFLW" in ASCII)
     static constexpr uint32_t SFLW_MAGIC = 0x574C4653;
-    static constexpr uint32_t SFLW_VERSION = 6; // v2 adds SFLWFileHeader::splatRadius (appended at the
+    static constexpr uint32_t SFLW_VERSION = 7; // v2 adds SFLWFileHeader::splatRadius (appended at the
                                                  // struct's end so v1 files still read correctly -- see
                                                  // the version check in StreamPackager::LoadPackage).
                                                  // v3 adds an optional occlusion voxel array, appended
@@ -54,6 +54,11 @@ namespace Surfels
                                                  // reader draws the whole array and still sees a correct
                                                  // volume, because every coarser mip lies strictly inside
                                                  // mip 0's skin (see OcclusionMipTable).
+                                                 // v7 adds the detail heatmap grid (detailGridDims,
+                                                 // detailGridCellSize, detailGridOffset): one byte per
+                                                 // cell scoring how much fine detail each region of the
+                                                 // model holds, stored after the occlusion voxels, which
+                                                 // first (see DetailHeatmap.h). Older readers ignore it.
 
     // Upper bound on the occlusion volume mip chain: mip 0 plus up to three coarser levels. Blocks fall
     // by roughly 4x per level (the skin is a surface), so the whole chain costs about a third more than
@@ -232,6 +237,9 @@ namespace Surfels
                                        // array is one mip (StreamPackager::LoadPackage synthesizes the table).
         uint32_t occlusionMipBlockCount[kMaxOcclusionMips]; // v6+ only -- blocks per mip; sums to occlusionVoxelCount
         float    occlusionMipCellSize[kMaxOcclusionMips];   // v6+ only -- finest cube edge of each mip
+        uint32_t detailGridDims[3];    // v7+ only -- detail heatmap grid resolution (x, y, z); all 0 = no grid stored
+        float    detailGridCellSize;   // v7+ only -- cell edge in metres; the grid's origin is globalBoundsMin
+        uint64_t detailGridOffset;     // v7+ only -- absolute offset of the dims[0]*dims[1]*dims[2] uint8 score array (see DetailGrid)
     };
 
     // On-disk form of one ChunkManifest entry in a v4+ .sflw's embedded manifest table. The table
