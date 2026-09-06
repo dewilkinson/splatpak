@@ -3347,7 +3347,6 @@ namespace Surfels
         }
         if (ImGui::IsItemHovered())
         {
-            ImGui::SetTooltip("Conservative Mode: Streams only visible chunks + local neighbor buffer.\nStreaming pauses once the active view is satisfied until camera moves.");
         }
         ImGui::SameLine();
         if (ImGui::RadioButton("Greedy##Eq", &policyRadio2, 1))
@@ -3389,6 +3388,8 @@ namespace Surfels
     // [Removed from the public history: proprietary streaming-order code, now in libs/gstx/StreamOrder]
 
     // [Removed from the public history: proprietary streaming-order code, now in libs/gstx/StreamOrder]
+
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
     // [Removed from the public history: proprietary streaming-order code, now in libs/gstx/StreamOrder]
 
@@ -3459,12 +3460,12 @@ namespace Surfels
         ImGui::Dummy(ImVec2(2.0f * cell + 14.0f, cell));
         if (ImGui::IsItemHovered())
         {
-            std::string tip = "Left (green): the four upper faces (+Y), right (blue): the four lower faces (-Y), both seen from above with +X right and +Z down.\nYellow dot = camera direction; inner triangle = share of the face's blocks resident. Pending / total blocks per face (bits: 1 = +X, 2 = +Y, 4 = +Z):";
+            std::string tip = "Left (green): the four upper faces (+Y), right (blue): the four lower faces (-Y), both seen from above with +X right and +Z down.\nYellow dot = camera direction; inner triangle = share of the face's blocks resident. Pending / total blocks per face, and queued edge requests (bits: 1 = +X, 2 = +Y, 4 = +Z):";
             for (int f = 0; f < kOctahedronFaces; f++)
             {
                 char b[96];
-                snprintf(b, sizeof(b), "\n  face %d (%c%c%c): %u / %u %s", f, (f & 1) ? '+' : '-', (f & 2) ? '+' : '-', (f & 4) ? '+' : '-',
-                    m_faceRemaining[f], m_faceTotal[f], (m_visibleFaceMask & (1u << f)) ? "(visible)" : "");
+                snprintf(b, sizeof(b), "\n  face %d (%c%c%c): %u / %u, %zu edge requests %s", f, (f & 1) ? '+' : '-', (f & 2) ? '+' : '-', (f & 4) ? '+' : '-',
+                    m_faceRemaining[f], m_faceTotal[f], m_faceEdgeQueue[f].size() - m_faceEdgeHead[f], (m_visibleFaceMask & (1u << f)) ? "(visible)" : "");
                 tip += b;
             }
             ImGui::SetTooltip("%s", tip.c_str());

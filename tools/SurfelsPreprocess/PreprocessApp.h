@@ -247,6 +247,8 @@ namespace Surfels
             size_t   byteSize = 0;
             float    currentPriority = 0.0f;
             bool     isRequested = false;
+            bool     isEdgeQueued = false;         // Has an entry in one of the per-face edge queues (m_faceEdgeQueue); cleared when that entry is consumed
+            uint32_t lastRequestFrame = 0;         // m_streamFrame of the traversal's most recent request for this block; an edge-queue entry not re-requested for a while is stale and dropped
             bool     isDelivered = false;
             bool     isResident = false;
             bool     isEvictionPending = false;    // Marked for eviction: waiting for parent demotion transition to complete
@@ -274,7 +276,6 @@ namespace Surfels
 
         enum class StreamingPolicy
         {
-            Conservative = 0, // Pulls only visible chunks + local neighbor buffer; stops when view is satisfied. The bounding octahedron's visible-face streams run in both policies
             Greedy       = 1  // Refines visible chunks first, then continues pre-fetching remaining background chunks
         };
 
@@ -341,6 +342,15 @@ namespace Surfels
         static constexpr int kOctahedronFaces = 8; // Face index = (nx>=0) | (ny>=0)<<1 | (nz>=0)<<2
         static constexpr int kMaxStreamLevels = 8;
         std::vector<StreamChunk*> m_scratchLoadList;                // This frame's multiplexed load list (visible faces, interleaved)
+        std::vector<size_t>       m_faceDrainBuckets[kOctahedronFaces]; // Scratch: demand-queue entries of the tier being drained, bucketed by face
+        // TIER 1 (silhouette edges and the bootstrap envelope) bypasses the capped demand queue: those requests
+        // go straight into a queue per octahedron face, and the delivery simulator drains the eight queues
+        // model -- the faces filled one after another however the drain was interleaved.
+        static constexpr size_t   kMaxEdgeQueuePerFace = 8192;
+        std::vector<ChunkRequest> m_faceEdgeQueue[kOctahedronFaces];
+        size_t                    m_faceEdgeHead[kOctahedronFaces] = {};
+        uint32_t                  m_streamFrame = 0;                   // Counts UpdateStreamingSimulation calls (request staleness)
+        void  ClearFaceEdgeQueues();                                // Drops every queued edge request (streaming reset)
         float    m_faceFacing[kOctahedronFaces] = {};                  // dot(face normal, direction to camera), this frame
         uint8_t  m_visibleFaceMask = 0xFF;                          // Bit i = face i visible this frame
         uint32_t m_faceRemaining[kOctahedronFaces] = {};               // Non-resident blocks per face (UI; recounted periodically)
