@@ -3460,17 +3460,20 @@ namespace Surfels
         if (rightEdge - (10.0f + leftPanelWidth + 10.0f) < 320.0f) return; // No room between the panels at this window size
 
         ImGui::SetNextWindowPos(ImVec2(rightEdge, bottomEdge), ImGuiCond_Always, ImVec2(1.0f, 1.0f)); // Pivot: bottom-right corner
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.22f));
+        // Understated in size and placement, but legible: near-white text on a solid dark backing,
+        // because the model usually runs behind this corner and a translucent box over bright splats
+        // washed the earlier dim-grey version out completely.
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.02f, 0.02f, 0.03f, 0.72f));
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 5.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 7.0f));
         const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
             ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_AlwaysAutoResize |
             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing;
         if (ImGui::Begin("##ControlHints", nullptr, flags))
         {
-            ImGui::SetWindowFontScale(0.7f); // 30% smaller than the panel text: a reminder, not a control
-            const ImVec4 label(0.75f, 0.75f, 0.78f, 0.85f); // Slightly brighter for the verb
-            const ImVec4 keys (0.55f, 0.55f, 0.58f, 0.80f); // Dimmer for the bindings
+            ImGui::SetWindowFontScale(0.91f); // 0.7 (30% smaller than the panel text) then +30% at the user's request: still a reminder, not a control
+            const ImVec4 label(1.00f, 0.92f, 0.60f, 1.00f); // Warm off-white for the verb
+            const ImVec4 keys (0.88f, 0.88f, 0.92f, 1.00f); // Light grey for the bindings
             struct Hint { const char* verb; const char* binding; };
             const Hint hints[] = {
                 { "Rotate", "left-drag   or   Left / Right arrows" },
