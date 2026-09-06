@@ -2964,6 +2964,9 @@ namespace Surfels
         // 4c. Camera control hints at the bottom-right of the viewport
         DrawControlHints(leftPanelWidth, rightPanelWidth);
 
+        // 4d. Reset View button at the bottom-left of the viewport
+        DrawResetViewButton(leftPanelWidth);
+
         // 5. About Dialog Window
         if (m_showAboutDialog)
         {
@@ -3510,6 +3513,36 @@ namespace Surfels
         const float distV = radius / tanHalfV;
         const float distH = radius / (tanHalfV * aspect * stripFraction);
         return std::max(0.1f, std::min(1000.0f, 1.15f * std::max(distV, distH)));
+    }
+
+    // "Reset View" button in the bottom-left corner of the viewport (just right of the left panel, just
+    // above the status bar): puts the camera back to the launch view -- the default orbit angle, centred
+    // on the model, at the distance that fits it between the control panels.
+    void PreprocessApp::DrawResetViewButton(float leftPanelWidth)
+    {
+        const float x = 10.0f + leftPanelWidth + 10.0f;
+        const float y = (float)m_Height - 32.0f - 6.0f;
+        ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always, ImVec2(0.0f, 1.0f)); // Pivot: bottom-left corner
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.02f, 0.02f, 0.03f, 0.55f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
+        const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
+            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
+            ImGuiWindowFlags_NoFocusOnAppearing;
+        if (ImGui::Begin("##ResetViewButton", nullptr, flags))
+        {
+            if (ImGui::Button("Reset View", ImVec2(96.0f, 24.0f)))
+            {
+                m_yaw = 0.6f;
+                m_pitch = 0.35f;
+                m_target = m_center;
+                m_distance = FitDistanceForViewport();
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Returns the camera to the launch view: the default angle, centred on the model, fitted between the control panels. The culling camera, if detached, is left where it is.");
+        }
+        ImGui::End();
+        ImGui::PopStyleVar(2);
+        ImGui::PopStyleColor();
     }
 
     // Faint three-line reminder of the camera bindings, tucked into the bottom-right corner of the
