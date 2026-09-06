@@ -905,7 +905,7 @@ namespace Surfels
         // Camera Framing
         m_target = m_center;
         float maxDim = std::max(m_extents.x, std::max(m_extents.y, m_extents.z));
-        m_distance = std::max(0.1f, maxDim * 0.85f);
+        m_distance = FitDistanceForViewport(); // Frame the whole model between the control panels
 
         // Splat sizing & orientation: restore the radius the package was exported with (see
         // StreamPackager::PackageDataset/LoadPackage). Packages older than SFLW v2 didn't store this,
@@ -1257,7 +1257,7 @@ namespace Surfels
         );
 
         float maxDim = std::max(m_extents.x, std::max(m_extents.y, m_extents.z));
-        m_distance = maxDim * 0.85f;
+        m_distance = FitDistanceForViewport(); // Frame the whole model between the control panels
         m_target = m_center;
 
         // Auto-adapt Octree Chunk Size and Wavelet LOD levels dynamically based on model extent & point count
@@ -1937,7 +1937,7 @@ namespace Surfels
                 if (ImGui::MenuItem("Reset Camera to Center"))
                 {
                     m_target = m_center;
-                    m_distance = std::max(m_extents.x, std::max(m_extents.y, m_extents.z)) * 0.85f;
+                    m_distance = FitDistanceForViewport();
                 }
                 ImGui::EndMenu();
             }
@@ -2397,7 +2397,7 @@ namespace Surfels
                     if (ImGui::Button("Center Camera on Model", ImVec2(-1, 24)))
                     {
                         m_target = m_center;
-                        m_distance = std::max(m_extents.x, std::max(m_extents.y, m_extents.z)) * 0.85f;
+                        m_distance = FitDistanceForViewport();
                     }
 
                     ImGui::Separator();
@@ -3491,6 +3491,27 @@ namespace Surfels
         ImGui::PopStyleColor();
     }
 
+    // Camera distance at which the model's bounding sphere fits neatly inside the strip of viewport left
+    // free between the two control panels (each 420 px wide, scaled with the UI, and never wider than
+    // 45% of the window), with a little margin, and inside the window height as well. The panels are
+    // symmetric so the strip is centred on the window, which is where the projection's centre is too.
+    float PreprocessApp::FitDistanceForViewport() const
+    {
+        const float radius = 0.5f * sqrtf(m_extents.x * m_extents.x + m_extents.y * m_extents.y + m_extents.z * m_extents.z);
+        if (!(radius > 1e-5f)) return 25.0f;
+        // The startup dataset loads before the window has been sized (OnCreate runs ahead of the first
+        // OnResize), so fall back to the initial client size from OnParseCommandLine in that case.
+        const float width  = (m_Width  > 0) ? (float)m_Width  : 1440.0f;
+        const float height = (m_Height > 0) ? (float)m_Height : 900.0f;
+        const float panel  = std::min(width * 0.45f, std::max(300.0f, 420.0f * m_uiScale)) + 10.0f;
+        const float stripFraction = std::max(0.25f, (width - 2.0f * panel) / width);
+        const float tanHalfV = tanf(0.5f * XM_PIDIV4); // Vertical FOV is 45 degrees (see UpdateCamera / OnRender)
+        const float aspect = width / height;
+        const float distV = radius / tanHalfV;
+        const float distH = radius / (tanHalfV * aspect * stripFraction);
+        return std::max(0.1f, std::min(1000.0f, 1.15f * std::max(distV, distH)));
+    }
+
     // Faint three-line reminder of the camera bindings, tucked into the bottom-right corner of the
     // viewport just above the status bar and left of the right panel. Deliberately understated (dim
     // text on a barely-there backing, no interaction) so it reads as part of the canvas rather than a
@@ -4217,33 +4238,60 @@ namespace Surfels
                 validF[i] = ProjectToScreen(F[i], screenF[i]);
             }
 
-            // Distinct Shading per Face for Unambiguous 3D Orientation from Any Angle
-            const ImU32 nearCapFillCol   = IM_COL32(70, 120, 200, 65);   // Darker blue-gray solid near cap (Camera Body)
-            const ImU32 nearCapWireCol   = IM_COL32(110, 170, 240, 160); // Crisp near cap wireframe
-            const ImU32 farFaceFillCol   = IM_COL32(160, 185, 220, 15);  // Translucent far aperture
-            const ImU32 farFaceWireCol   = IM_COL32(160, 215, 255, 110); // Bright far aperture wireframe
-            const ImU32 topFaceFillCol   = IM_COL32(210, 230, 255, 30);  // Lighter top face (Up Orientation)
-            const ImU32 sideFaceFillCol  = IM_COL32(170, 180, 195, 13);  // 5% standard side tint
-            const ImU32 frustumWireCol   = IM_COL32(200, 210, 225, 75);  // 30% side wireframe
-            const ImU32 gazeRayCol       = IM_COL32(80, 210, 255, 180);  // Cyan forward gaze direction ray
-
-            // 6 Frustum Faces with directional distinction
-            if (validN[0] && validN[1] && validN[2] && validN[3]) drawList->AddQuadFilled(screenN[0], screenN[1], screenN[2], screenN[3], nearCapFillCol); // Near Cap (Back)
-            if (validF[0] && validF[1] && validF[2] && validF[3]) drawList->AddQuadFilled(screenF[3], screenF[2], screenF[1], screenF[0], farFaceFillCol); // Far Face (Front)
-            if (validN[3] && validN[2] && validF[2] && validF[3]) drawList->AddQuadFilled(screenN[3], screenN[2], screenF[2], screenF[3], topFaceFillCol); // Top Face (Up)
-            if (validN[0] && validN[3] && validF[3] && validF[0]) drawList->AddQuadFilled(screenN[0], screenN[3], screenF[3], screenF[0], sideFaceFillCol);
-            if (validN[1] && validF[1] && validF[2] && validN[2]) drawList->AddQuadFilled(screenN[1], screenF[1], screenF[2], screenN[2], sideFaceFillCol);
-            if (validN[0] && validF[0] && validF[1] && validN[1]) drawList->AddQuadFilled(screenN[0], screenF[0], screenF[1], screenN[1], sideFaceFillCol);
-
-            // 12 Frustum Outer Edges
-            for (int i = 0; i < 4; i++)
+            // Hidden-line frustum: only the faces turned toward the viewer are drawn, back to front, each
+            // shaded by how squarely it faces the light so the cone's shape reads at a glance; edges are
+            // drawn only where they bound a visible face, and the silhouette (a visible face meeting a
+            // hidden one) is drawn brighter.
+            const XMFLOAT3 corner[8] = { N[0], N[1], N[2], N[3], F[0], F[1], F[2], F[3] };
+            const ImVec2   cornerScreen[8] = { screenN[0], screenN[1], screenN[2], screenN[3], screenF[0], screenF[1], screenF[2], screenF[3] };
+            const bool     cornerValid[8] = { validN[0], validN[1], validN[2], validN[3], validF[0], validF[1], validF[2], validF[3] };
+            // Faces as corner indices (outward winding): 0 near, 1 far, 2 top, 3 left, 4 right, 5 bottom
+            const int faceIdx[6][4] = { {0,1,2,3}, {7,6,5,4}, {3,2,6,7}, {0,3,7,4}, {1,5,6,2}, {0,4,5,1} };
+            const ImU32 faceBase[6] = { IM_COL32(70, 120, 200, 255), IM_COL32(160, 185, 220, 255), IM_COL32(210, 230, 255, 255),
+                                        IM_COL32(170, 180, 195, 255), IM_COL32(170, 180, 195, 255), IM_COL32(150, 160, 175, 255) };
+            XMFLOAT3 frustumCenter(0, 0, 0);
+            for (int i = 0; i < 8; i++) { frustumCenter.x += corner[i].x * 0.125f; frustumCenter.y += corner[i].y * 0.125f; frustumCenter.z += corner[i].z * 0.125f; }
+            const XMVECTOR lightDir = XMVector3Normalize(XMVectorSet(0.5f, 0.8f, 0.6f, 0.0f));
+            const XMVECTOR viewerEye = XMLoadFloat3(&eyePos);
+            struct FaceDraw { int f; float depth; float shade; bool visible; };
+            FaceDraw faces[6];
+            for (int f = 0; f < 6; f++)
             {
-                int next = (i + 1) % 4;
-                if (validN[i] && validN[next]) drawList->AddLine(screenN[i], screenN[next], nearCapWireCol, 1.5f);
-                if (validF[i] && validF[next]) drawList->AddLine(screenF[i], screenF[next], farFaceWireCol, 1.2f);
-                if (validN[i] && validF[i])    drawList->AddLine(screenN[i], screenF[i], frustumWireCol, 1.0f);
+                XMVECTOR p0 = XMLoadFloat3(&corner[faceIdx[f][0]]), p1 = XMLoadFloat3(&corner[faceIdx[f][1]]), p2 = XMLoadFloat3(&corner[faceIdx[f][2]]), p3 = XMLoadFloat3(&corner[faceIdx[f][3]]);
+                XMVECTOR centre = XMVectorScale(XMVectorAdd(XMVectorAdd(p0, p1), XMVectorAdd(p2, p3)), 0.25f);
+                XMVECTOR n = XMVector3Normalize(XMVector3Cross(XMVectorSubtract(p1, p0), XMVectorSubtract(p2, p0)));
+                if (XMVectorGetX(XMVector3Dot(n, XMVectorSubtract(centre, XMLoadFloat3(&frustumCenter)))) < 0.0f) n = XMVectorNegate(n); // Outward
+                XMVECTOR toViewer = XMVectorSubtract(viewerEye, centre);
+                faces[f].f = f;
+                faces[f].visible = XMVectorGetX(XMVector3Dot(n, toViewer)) > 0.0f;
+                faces[f].depth = XMVectorGetX(XMVector3Length(toViewer));
+                faces[f].shade = 0.35f + 0.65f * std::max(0.0f, XMVectorGetX(XMVector3Dot(n, lightDir)));
             }
-
+            std::sort(faces, faces + 6, [](const FaceDraw& a, const FaceDraw& b) { return a.depth > b.depth; }); // Farthest first
+            for (const FaceDraw& fd : faces)
+            {
+                if (!fd.visible) continue;
+                const int* idx = faceIdx[fd.f];
+                if (!(cornerValid[idx[0]] && cornerValid[idx[1]] && cornerValid[idx[2]] && cornerValid[idx[3]])) continue;
+                const ImU32 base = faceBase[fd.f];
+                const int r = (int)(((base >> IM_COL32_R_SHIFT) & 0xFF) * fd.shade), g = (int)(((base >> IM_COL32_G_SHIFT) & 0xFF) * fd.shade), b = (int)(((base >> IM_COL32_B_SHIFT) & 0xFF) * fd.shade);
+                drawList->AddQuadFilled(cornerScreen[idx[0]], cornerScreen[idx[1]], cornerScreen[idx[2]], cornerScreen[idx[3]], IM_COL32(r, g, b, 120));
+            }
+            // Edges: each belongs to two faces; drawn only if at least one is visible, brighter on the silhouette.
+            const int edgeIdx[12][2]  = { {0,1},{1,2},{2,3},{3,0}, {4,5},{5,6},{6,7},{7,4}, {0,4},{1,5},{2,6},{3,7} };
+            const int edgeFaces[12][2] = { {0,5},{0,4},{0,2},{0,3}, {1,5},{1,4},{1,2},{1,3}, {3,5},{4,5},{2,4},{2,3} };
+            bool faceVisible[6]; for (const FaceDraw& fd : faces) faceVisible[fd.f] = fd.visible;
+            for (int e = 0; e < 12; e++)
+            {
+                const bool va = faceVisible[edgeFaces[e][0]], vb = faceVisible[edgeFaces[e][1]];
+                if (!va && !vb) continue; // Hidden line
+                if (!(cornerValid[edgeIdx[e][0]] && cornerValid[edgeIdx[e][1]])) continue;
+                const bool silhouette = (va != vb);
+                drawList->AddLine(cornerScreen[edgeIdx[e][0]], cornerScreen[edgeIdx[e][1]],
+                    silhouette ? IM_COL32(200, 230, 255, 230) : IM_COL32(170, 190, 215, 120), silhouette ? 2.0f : 1.0f);
+            }
+            const ImU32 nearCapWireCol = IM_COL32(110, 170, 240, 160);
+            const ImU32 gazeRayCol     = IM_COL32(80, 210, 255, 180);  // Cyan forward gaze direction ray
             // 4 Apex Rays from Eye Position to Near Corners
             if (validEye)
             {

@@ -489,7 +489,10 @@ void mainMS(
             }
             return;
         }
-        // 3. Hollow Mold Interior Shading when camera is detached
+        // 3. Back sides in solid mid grey when the camera is detached: a surfel whose normal faces away
+        // from the VIEWER is being looked at from behind, so it is painted a flat, unlit grey. That makes
+        // it obvious which side of the model (relative to the frozen camera) the viewer is looking at.
+        // Zeroing the normal removes the lighting term below, so the grey is uniform.
         if (dot(normal, normal) > 0.1)
         {
             float3 toViewer = g_ViewerEyePos - worldPos;
@@ -497,11 +500,10 @@ void mainMS(
             float3 normViewerDir = distViewer > 1e-4 ? (toViewer / distViewer) : float3(0, 0, 1);
             float nDotViewer = dot(normal, normViewerDir);
 
-            if (nDotViewer < -0.06)
+            if (nDotViewer < -0.02)
             {
-                float innerFade = saturate((-nDotViewer - 0.06) / 0.5);
-                float3 darkInterior = float3(0.08, 0.07, 0.09);
-                color = lerp(color * 0.45, darkInterior, innerFade * 0.85);
+                color = float3(0.5, 0.5, 0.5);
+                normal = float3(0.0, 0.0, 0.0);
             }
         }
     }
