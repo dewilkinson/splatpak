@@ -3002,8 +3002,8 @@ namespace Surfels
 
                 ImGui::Text("Author:       Dave Wilkinson");
                 ImGui::Text("Organization: Blueshell LLC");
-                ImGui::Text("Version:      v1.1.0");
-                ImGui::Text("Date:         September 5, 2026");
+                ImGui::Text("Version:      v1.2.0");
+                ImGui::Text("Date:         September 6, 2026");
                 ImGui::Spacing();
                 ImGui::Separator();
                 ImGui::Spacing();
