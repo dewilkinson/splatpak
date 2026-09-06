@@ -3402,7 +3402,6 @@ namespace Surfels
         uint32_t visible = 0;
         for (int f = 0; f < kOctahedronFaces; f++) if (m_visibleFaceMask & (1u << f)) visible++;
         ImGui::TextDisabled("Bounding octahedron: %u of %d faces visible, %zu blocks in this frame's scratch load list", visible, kOctahedronFaces, m_scratchLoadList.size());
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Faces of the octahedron around the model that the camera can currently see. Only their priority lists are streamed (interleaved, most directly facing face first); the rest wait until they come into view.");
 
         const float R = 30.0f;
         ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -3431,6 +3430,21 @@ namespace Surfels
                     line = vis ? IM_COL32((int)(120 + 40 * (1 - t)), (int)(170 + 50 * t), (int)(230 + 25 * t), 255) : IM_COL32(70, 74, 86, 255);
                 }
                 dl->AddTriangleFilled(c, px, pz, fill);
+                // Fill progress: an inner triangle growing from the face's centroid, area proportional to
+                // the share of the face's blocks that are resident, so every visible face can be seen
+                // streaming its own list at once.
+                if (m_faceTotal[f] > 0)
+                {
+                    const float done = 1.0f - (float)std::min(m_faceRemaining[f], m_faceTotal[f]) / (float)m_faceTotal[f];
+                    const float sc = sqrtf(std::max(0.0f, std::min(1.0f, done)));
+                    if (sc > 0.02f)
+                    {
+                        const ImVec2 g((c.x + px.x + pz.x) / 3.0f, (c.y + px.y + pz.y) / 3.0f);
+                        auto lerp = [&](const ImVec2& v) { return ImVec2(g.x + (v.x - g.x) * sc, g.y + (v.y - g.y) * sc); };
+                        const ImU32 prog = upper ? IM_COL32(120, 235, 150, vis ? 230 : 110) : IM_COL32(150, 205, 255, vis ? 230 : 110);
+                        dl->AddTriangleFilled(lerp(c), lerp(px), lerp(pz), prog);
+                    }
+                }
                 dl->AddTriangle(c, px, pz, line, vis ? 2.0f : 1.0f);
             }
             // Camera marker: its horizontal direction, on this half if the camera is on this side of the equator.
@@ -3445,12 +3459,12 @@ namespace Surfels
         ImGui::Dummy(ImVec2(2.0f * cell + 14.0f, cell));
         if (ImGui::IsItemHovered())
         {
-            std::string tip = "Left (green): the four upper faces (+Y), right (blue): the four lower faces (-Y), both seen from above with +X right and +Z down.\nYellow dot = camera direction. Pending blocks per face (bits: 1 = +X, 2 = +Y, 4 = +Z):";
+            std::string tip = "Left (green): the four upper faces (+Y), right (blue): the four lower faces (-Y), both seen from above with +X right and +Z down.\nYellow dot = camera direction; inner triangle = share of the face's blocks resident. Pending / total blocks per face (bits: 1 = +X, 2 = +Y, 4 = +Z):";
             for (int f = 0; f < kOctahedronFaces; f++)
             {
                 char b[96];
-                snprintf(b, sizeof(b), "\n  face %d (%c%c%c): %u %s", f, (f & 1) ? '+' : '-', (f & 2) ? '+' : '-', (f & 4) ? '+' : '-',
-                    m_faceRemaining[f], (m_visibleFaceMask & (1u << f)) ? "(visible)" : "");
+                snprintf(b, sizeof(b), "\n  face %d (%c%c%c): %u / %u %s", f, (f & 1) ? '+' : '-', (f & 2) ? '+' : '-', (f & 4) ? '+' : '-',
+                    m_faceRemaining[f], m_faceTotal[f], (m_visibleFaceMask & (1u << f)) ? "(visible)" : "");
                 tip += b;
             }
             ImGui::SetTooltip("%s", tip.c_str());
