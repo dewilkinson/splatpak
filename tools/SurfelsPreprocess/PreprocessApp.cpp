@@ -3349,6 +3349,49 @@ namespace Surfels
         ImGui::Spacing();
     }
 
+    // [Removed from the public history: proprietary streaming-order code, now in libs/gstx/StreamOrder]
+
+    // [Removed from the public history: proprietary streaming-order code, now in libs/gstx/StreamOrder]
+
+    // [Removed from the public history: proprietary streaming-order code, now in libs/gstx/StreamOrder]
+
+    // camera), hidden faces dim, a marker for the camera direction, and the pending block count per face.
+    {
+        uint32_t visible = 0;
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Faces of the 8-sided prism around the model that the camera can currently see. Only their priority lists are streamed (interleaved, most directly facing face first); the rest wait until they come into view.");
+
+        const float R = 30.0f;
+        ImVec2 origin = ImGui::GetCursorScreenPos();
+        ImVec2 c(origin.x + R + 6.0f, origin.y + R + 6.0f);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        {
+            // Screen mapping is a top-down view: +X right, +Z down. Face f spans yaw f*45 +/- 22.5 degrees.
+            const float a0 = ((float)f - 0.5f) * 0.78539816f, a1 = ((float)f + 0.5f) * 0.78539816f;
+            ImVec2 p0(c.x + cosf(a0) * R, c.y + sinf(a0) * R);
+            ImVec2 p1(c.x + cosf(a1) * R, c.y + sinf(a1) * R);
+            const bool vis = (m_visibleFaceMask & (1u << f)) != 0;
+            const float t = vis ? std::max(0.0f, std::min(1.0f, (m_faceFacing[f] + 0.15f) / 1.15f)) : 0.0f;
+            ImU32 col = vis ? IM_COL32((int)(60 + 40 * (1 - t)), (int)(150 + 105 * t), (int)(80 + 40 * t), 255) : IM_COL32(70, 72, 80, 255);
+            dl->AddTriangleFilled(c, p0, p1, vis ? IM_COL32(35, 120, 60, 110) : IM_COL32(40, 40, 46, 110));
+            dl->AddLine(p0, p1, col, vis ? 3.0f : 1.5f);
+        }
+        // Camera direction marker (where the eye is, seen from above)
+        float bestF = -2.0f; int lead = 0;
+        const float la = (float)lead * 0.78539816f;
+        dl->AddCircleFilled(ImVec2(c.x + cosf(la) * (R + 7.0f), c.y + sinf(la) * (R + 7.0f)), 3.5f, IM_COL32(255, 220, 90, 255));
+        ImGui::Dummy(ImVec2(2.0f * R + 12.0f, 2.0f * R + 12.0f));
+        if (ImGui::IsItemHovered())
+        {
+            std::string tip = "Pending blocks per face (0 = +X, 2 = +Z, 4 = -X, 6 = -Z; yellow dot = camera side):";
+            {
+                char b[64];
+                snprintf(b, sizeof(b), "\n  face %d: %u %s", f, m_faceRemaining[f], (m_visibleFaceMask & (1u << f)) ? "(visible)" : "");
+                tip += b;
+            }
+            ImGui::SetTooltip("%s", tip.c_str());
+        }
+    }
+
     // Overlay listing every toggle that currently alters what the viewport shows -- debug views, isolation
     // modes, frozen state, forced levels -- as "[X Mode Enabled]" lines, one per row, each in its own
     // colour, anchored at the top-left of the viewport next to the control panel. Its purpose is purely
@@ -3377,7 +3420,7 @@ namespace Surfels
         if (m_showOcclusionVolumeOnly)     add(ImVec4(1.00f, 0.90f, 0.20f, 1.0f), "[View Occlusion Volume Only Mode Enabled]");
         if (m_showOnlyLockedChunks)        add(ImVec4(1.00f, 0.60f, 0.20f, 1.0f), "[Show ONLY Locked Chunks Mode Enabled]");
         if (m_highlightSilhouetteChunks)   add(ImVec4(0.78f, 0.68f, 1.00f, 1.0f), "[Highlight Edge Chunks Mode Enabled]");
-        if (m_showChunkStream)             add(ImVec4(1.00f, 0.62f, 0.20f, 1.0f), "[Streaming Arrival Glow Mode Enabled]");
+        if (m_showChunkStream)             add(ImVec4(1.00f, 0.62f, 0.20f, 1.0f), "[Refinement Visualizer (Orange Glow) Mode Enabled]");
         if (m_showClusterHeatmap)          add(ImVec4(1.00f, 0.45f, 0.35f, 1.0f), m_heatmapSource == 1 ? "[Detail Heatmap Cluster Cubes Mode Enabled]" : "[Density Heatmap Cluster Cubes Mode Enabled]");
         if (m_showHeatmapWireframe)        add(ImVec4(0.92f, 0.82f, 0.60f, 1.0f), "[Cube Outlines Mode Enabled]");
         if (m_showOctreeVisualizer)        add(ImVec4(1.00f, 0.75f, 0.20f, 1.0f), "[Macro Clusters Mode Enabled]");
