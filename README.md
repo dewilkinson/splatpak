@@ -9,6 +9,11 @@ on-GPU. There is no vertex/index buffer and no `DrawInstanced` anywhere in the
 pipeline: every splat is procedurally emitted by an amplification/mesh shader
 pair each frame, directly from a `StructuredBuffer` of packed surfels.
 
+## Screenshots
+
+| Surfel Generator | Renderer | Streaming |
+|---|---|---|
+
 **Core pieces:**
 
 Built on top of AMD's [Cauldron](https://github.com/GPUOpen-LibrariesAndSDKs/Cauldron)
