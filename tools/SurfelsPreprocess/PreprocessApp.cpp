@@ -3468,6 +3468,7 @@ namespace Surfels
             ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing;
         if (ImGui::Begin("##ControlHints", nullptr, flags))
         {
+            ImGui::SetWindowFontScale(0.7f); // 30% smaller than the panel text: a reminder, not a control
             const ImVec4 label(0.75f, 0.75f, 0.78f, 0.85f); // Slightly brighter for the verb
             const ImVec4 keys (0.55f, 0.55f, 0.58f, 0.80f); // Dimmer for the bindings
             struct Hint { const char* verb; const char* binding; };
