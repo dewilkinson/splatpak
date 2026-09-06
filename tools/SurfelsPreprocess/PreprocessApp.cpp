@@ -2386,8 +2386,21 @@ namespace Surfels
                         m_swapChain.SetVSync(m_vsync);
                     }
 
-                    ImGui::Checkbox("Meshlet Backface Cone Culling (Task Shader)", &m_enableConeCulling);
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Task Shader (mainAS) culls ~50% of meshlet chunks facing away from the camera before mesh shaders and rasterization ever execute.");
+                    if (m_pRenderer && m_pRenderer->GetRenderPath() != PreprocessRenderer::RenderPath::MeshShaders)
+                    {
+                        // No amplification (task) shader stage on this render path: the control is greyed out and
+                        // inert. Chunk backface culling still happens, per splat in the vertex shader, always on.
+                        bool fixedOn = true;
+                        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.35f);
+                        ImGui::Checkbox("Meshlet Backface Cone Culling (Task Shader)", &fixedOn);
+                        ImGui::PopStyleVar();
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Unavailable on this GPU path (%s): there is no amplification (task) shader stage. Chunk backface culling runs per splat in the vertex shader instead and is always on.", m_pRenderer->GetRenderPathDescription());
+                    }
+                    else
+                    {
+                        ImGui::Checkbox("Meshlet Backface Cone Culling (Task Shader)", &m_enableConeCulling);
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Task Shader (mainAS) culls ~50% of meshlet chunks facing away from the camera before mesh shaders and rasterization ever execute.");
+                    }
 
                     ImGui::Checkbox("Use DX12 CopyQueue (Async DMA)", &m_useCopyQueue);
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Uses a dedicated D3D12_COMMAND_LIST_TYPE_COPY hardware DMA queue for PCIe buffer uploads in parallel with 3D rendering.");
@@ -2726,7 +2739,7 @@ namespace Surfels
                 ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "  • Occlusion Volume Pass:            %.2f ms  (mip %u of %u)", m_pRenderer->GetSmoothOccluderMs(), m_pRenderer->GetActiveOcclusionMip(), m_occlusionMips.mipCount);
             }
 
-            ImGui::Text("  • Main Splat Mesh Shader Dispatch:  %.2f ms", m_pRenderer->GetSmoothMainDispatchMs());
+            ImGui::Text(m_pRenderer->GetRenderPath() == PreprocessRenderer::RenderPath::MeshShaders ? "  • Main Splat Mesh Shader Dispatch:  %.2f ms" : "  • Main Splat Vertex Shader Draw:    %.2f ms", m_pRenderer->GetSmoothMainDispatchMs());
 
             if (m_enableTemporalFiltering)
             {

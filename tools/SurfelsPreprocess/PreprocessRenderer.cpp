@@ -329,6 +329,26 @@ namespace Surfels
         if (m_renderPath != RenderPath::MeshShaders)
         {
             CreateVertexShaderPipelines(pSwapChain);
+
+            // Say so up front, in a Windows dialog, so nobody mistakes the slower fallback for the real
+            // thing: which stages this GPU path is doing without and what that means.
+            const bool forced = m_renderPathForced;
+            const char* why = forced ? "bypassed by \"render_path\" in config.json" : (m_gpuCaps.meshPipelineFailed ? "reported by the driver, but its pipelines could not be created" : "not provided by this GPU or driver");
+            char msg[1024];
+            snprintf(msg, sizeof(msg),
+                "SplatLab is running without DirectX 12 mesh shaders (Shader Model 6.5).\n\n"
+                "Hardware stages not in use (%s):\n"
+                "    - Amplification (task) shader stage\n"
+                "    - Mesh shader stage\n"
+                "%s"
+                "\nRender path: %s.\n\n"
+                "The picture is the same, but frame rates are lower. The banner at the top left of the viewport "
+                "lists the stages the fallback is standing in for while it is active.%s",
+                why,
+                (m_renderPath == RenderPath::VertexShadersSM5) ? "    - Shader Model 6 (DXIL) shader compiler\n" : "",
+                GetRenderPathDescription(),
+                forced ? "\n\nSet \"render_path\" to \"auto\" in config.json to use the best path this GPU supports." : "\n\nFor full performance use a GPU with D3D12 Mesh Shader Tier 1 (GeForce RTX 20 series or newer, Radeon RX 6000 or newer, Intel Arc) and a current driver.");
+            MessageBoxA(NULL, msg, "SplatLab - Mesh shader fallback engaged", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
         }
 
         // Create Silhouette Edge Extraction and Clear Compute Shaders
@@ -1786,7 +1806,7 @@ namespace Surfels
         pCB->cullEyePos = cullEyePos;
         pCB->enableDithering = pState->enableDithering ? 1 : 0;
         pCB->highlightSilhouette = pState->highlightSilhouette ? 1 : 0;
-        pCB->enableConeCulling = pState->enableConeCulling ? 1 : 0;
+        pCB->enableConeCulling = (pState->enableConeCulling || m_renderPath != RenderPath::MeshShaders) ? 1 : 0; // Vertex-shader paths: per-splat cone culling always on (the task-shader toggle is greyed out)
         pCB->showOnlyLocked = pState->showOnlyLockedChunks ? 1 : 0;
         pCB->showChunkStream = pState->showChunkStream ? 1 : 0;
         pCB->arrivalGlowIntensity = pState->arrivalGlowIntensity;
