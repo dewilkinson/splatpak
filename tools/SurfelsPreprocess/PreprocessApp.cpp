@@ -263,6 +263,19 @@ namespace Surfels
                         }
                     }
 
+                    // Camera control hints overlay on/off (JSON or INI); see DrawControlHints.
+                    {
+                        size_t hPos = line.find("\"show_control_hints\":");
+                        size_t eqPos = std::string::npos;
+                        if (hPos != std::string::npos) eqPos = line.find(':', hPos);
+                        else if (line.find("show_control_hints=") != std::string::npos) eqPos = line.find('=');
+                        if (eqPos != std::string::npos)
+                        {
+                            std::string val = line.substr(eqPos + 1);
+                            m_showControlHints = !(val.find("false") != std::string::npos || val.find('0') != std::string::npos);
+                        }
+                    }
+
                     // Last folder the user browsed to in an Open/Save dialog (JSON or INI) -- makes the
                     // dialogs remember where the user left off across sessions instead of always
                     // resetting to the project root. See RememberDialogFolder/GetDialogDefaultFolder.
@@ -354,6 +367,7 @@ namespace Surfels
             out << "  \"default_max_lods\": 4,\n";
             out << "  \"default_deadband_mm\": 3.0,\n";
             out << "  \"occlusion_shave_bias\": " << m_occlusionShaveBiasCells << ",\n";
+            out << "  \"show_control_hints\": " << (m_showControlHints ? "true" : "false") << ",\n";
             out << "  \"last_dialog_folder\": \"" << m_lastDialogFolder << "\"\n";
             out << "}\n";
             out.close();
@@ -2373,6 +2387,12 @@ namespace Surfels
                     ImGui::Checkbox("Auto Rotate Model##Viewport", &m_autoRotate);
                     m_state.autoRotate = m_autoRotate;
 
+                    if (ImGui::Checkbox("Show Camera Control Hints##Viewport", &m_showControlHints))
+                    {
+                        SaveConfigFile();
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Shows or hides the faint rotate / zoom / pan reminder in the bottom-right corner of the viewport. Remembered across sessions.");
+
                     if (ImGui::Checkbox("VSync (Lock Framerate to Display)", &m_vsync))
                     {
                         m_swapChain.SetVSync(m_vsync);
@@ -3434,6 +3454,7 @@ namespace Surfels
     // arrow keys pans.
     void PreprocessApp::DrawControlHints(float leftPanelWidth, float rightPanelWidth)
     {
+        if (!m_showControlHints) return; // "Show Camera Control Hints" unchecked on the Renderer tab's viewport section
         const float rightEdge  = (float)m_Width - rightPanelWidth - 20.0f; // Just left of the right panel
         const float bottomEdge = (float)m_Height - 32.0f - 6.0f;           // Just above the status bar
         if (rightEdge - (10.0f + leftPanelWidth + 10.0f) < 320.0f) return; // No room between the panels at this window size
