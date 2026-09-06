@@ -3232,7 +3232,10 @@ namespace Surfels
                 }
 
                 isLit = (resCount > 0) || !m_enableStreamingSimulation;
-                bool isSil = (isLit && silCount > 0 && m_highlightSilhouetteChunks);
+                // Lavender whenever the segment holds a detected edge chunk: the residency graph reports
+                // state, so it must not depend on the Highlight Edge Chunks visualizer toggle (which only
+                // tints the viewport). Edge detection runs while refinement or highlighting is enabled.
+                bool isSil = (isLit && silCount > 0);
                 bool isTrans = (isLit && transCount > 0);
 
                 if (isLit)
