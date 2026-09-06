@@ -377,6 +377,9 @@ namespace Surfels
         void  DrawRenderModeBanner(float leftPanelWidth, float rightPanelWidth); // "[X Mode Enabled]" overlay for every active toggle that alters the rendered model (see BuildUI)
         void  DrawControlHints(float leftPanelWidth, float rightPanelWidth);     // Faint rotate / zoom / pan reminder at the bottom-right of the viewport (mirrors UpdateCamera's bindings)
         void  DrawResetViewButton(float leftPanelWidth);                          // "Reset View" overlay button at the bottom-left of the viewport: default angle, centred, fitted
+        bool  m_fitViewPending = false;                                           // Set when a load framed the camera before the window had a size; the first sized frame re-fits once
+        float m_lastFitDistance = 0.0f;                                           // Fit distance for the current window size; on resize the camera distance is rescaled by newFit / this so the model keeps its relative size
+        void  ApplyFitDistance();                                                 // m_distance = FitDistanceForViewport(), and remember it for resize rescaling
         float FitDistanceForViewport() const;                                     // Camera distance at which the model's bounding sphere fits neatly in the viewport strip between the two control panels
         void  RebuildHeatmapClusterCubes();
         void  DrawOctreeVisualizer();

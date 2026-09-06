@@ -546,6 +546,25 @@ namespace Surfels
         ImGuiIO& io = ImGui::GetIO();
         io.DisplaySize = ImVec2((float)m_Width, (float)m_Height);
         m_streamStateDirty = true;
+
+        // Keep the model's relative size when the window is resized: rescale the camera distance by the
+        // ratio of the fit distance for the new size to the one for the old size. This preserves any
+        // zoom the user applied (a doubled window shows the model at the same fraction of the canvas).
+        if (m_lastFitDistance > 0.0f && !m_fitViewPending && m_Width > 0 && m_Height > 0)
+        {
+            const float newFit = FitDistanceForViewport();
+            if (newFit > 0.0f)
+            {
+                m_distance = std::max(0.1f, std::min(1000.0f, m_distance * (newFit / m_lastFitDistance)));
+                m_lastFitDistance = newFit;
+            }
+        }
+    }
+
+    void PreprocessApp::ApplyFitDistance()
+    {
+        m_distance = FitDistanceForViewport();
+        m_lastFitDistance = m_distance;
     }
 
     // Rebuilds display-dependent renderer resources (e.g. after a format change)
@@ -905,7 +924,8 @@ namespace Surfels
         // Camera Framing
         m_target = m_center;
         float maxDim = std::max(m_extents.x, std::max(m_extents.y, m_extents.z));
-        m_distance = FitDistanceForViewport(); // Frame the whole model between the control panels
+        ApplyFitDistance(); // Frame the whole model between the control panels
+        m_fitViewPending = true; // Re-fit on the first frame, when the window is sized and the LOD points exist (tighter than the box)
 
         // Splat sizing & orientation: restore the radius the package was exported with (see
         // StreamPackager::PackageDataset/LoadPackage). Packages older than SFLW v2 didn't store this,
@@ -1257,7 +1277,8 @@ namespace Surfels
         );
 
         float maxDim = std::max(m_extents.x, std::max(m_extents.y, m_extents.z));
-        m_distance = FitDistanceForViewport(); // Frame the whole model between the control panels
+        ApplyFitDistance(); // Frame the whole model between the control panels
+        m_fitViewPending = true; // Re-fit on the first frame, when the window is sized and the LOD points exist (tighter than the box)
         m_target = m_center;
 
         // Auto-adapt Octree Chunk Size and Wavelet LOD levels dynamically based on model extent & point count
@@ -1937,7 +1958,7 @@ namespace Surfels
                 if (ImGui::MenuItem("Reset Camera to Center"))
                 {
                     m_target = m_center;
-                    m_distance = FitDistanceForViewport();
+                    ApplyFitDistance();
                 }
                 ImGui::EndMenu();
             }
@@ -2397,7 +2418,7 @@ namespace Surfels
                     if (ImGui::Button("Center Camera on Model", ImVec2(-1, 24)))
                     {
                         m_target = m_center;
-                        m_distance = FitDistanceForViewport();
+                        ApplyFitDistance();
                     }
 
                     ImGui::Separator();
@@ -3494,25 +3515,79 @@ namespace Surfels
         ImGui::PopStyleColor();
     }
 
-    // Camera distance at which the model's bounding sphere fits neatly inside the strip of viewport left
-    // free between the two control panels (each 420 px wide, scaled with the UI, and never wider than
-    // 45% of the window), with a little margin, and inside the window height as well. The panels are
-    // symmetric so the strip is centred on the window, which is where the projection's centre is too.
+    // Camera distance at which the model makes the best use of the viewport: its bounding box, projected
+    // with the current orbit angle, is brought as close as possible to a one-centimetre screen margin
+    // from whichever limit it reaches first -- the inner edge of a control panel (left/right) or the
+    // top/bottom of the canvas (below the menu bar, above the status bar) -- and never past it. The
+    // margin is one centimetre on the actual display (from its DPI). Found by bisection on the distance
+    // against the projected box corners, so the result is exact for the view that will be shown.
     float PreprocessApp::FitDistanceForViewport() const
     {
-        const float radius = 0.5f * sqrtf(m_extents.x * m_extents.x + m_extents.y * m_extents.y + m_extents.z * m_extents.z);
-        if (!(radius > 1e-5f)) return 25.0f;
+        if (!(m_extents.x > 1e-6f || m_extents.y > 1e-6f || m_extents.z > 1e-6f)) return 25.0f;
         // The startup dataset loads before the window has been sized (OnCreate runs ahead of the first
         // OnResize), so fall back to the initial client size from OnParseCommandLine in that case.
         const float width  = (m_Width  > 0) ? (float)m_Width  : 1440.0f;
         const float height = (m_Height > 0) ? (float)m_Height : 900.0f;
-        const float panel  = std::min(width * 0.45f, std::max(300.0f, 420.0f * m_uiScale)) + 10.0f;
-        const float stripFraction = std::max(0.25f, (width - 2.0f * panel) / width);
-        const float tanHalfV = tanf(0.5f * XM_PIDIV4); // Vertical FOV is 45 degrees (see UpdateCamera / OnRender)
-        const float aspect = width / height;
-        const float distV = radius / tanHalfV;
-        const float distH = radius / (tanHalfV * aspect * stripFraction);
-        return std::max(0.1f, std::min(1000.0f, 1.15f * std::max(distV, distH)));
+        float dpi = 96.0f;
+        if (HDC dc = GetDC(NULL)) { dpi = (float)GetDeviceCaps(dc, LOGPIXELSX); ReleaseDC(NULL, dc); }
+        const float panel = std::min(width * 0.45f, std::max(300.0f, 420.0f * m_uiScale));
+        // One centimetre, plus an allowance for what the fitted points do not capture (the splat discs
+        // drawn around them and the few points the subsample skips), so the margin is never breached.
+        const float usableW = width - 2.0f * (10.0f + panel), usableH = height - 22.0f - 32.0f;
+        const float marginPx = dpi / 2.54f + 0.03f * std::min(usableW, usableH);
+        // Usable rectangle in pixels, then in NDC (y up).
+        const float left = 10.0f + panel + marginPx, right = width - 10.0f - panel - marginPx;
+        const float top = 22.0f + marginPx, bottom = height - 32.0f - marginPx; // Menu bar above, status bar below
+        if (right - left < 40.0f || bottom - top < 40.0f) return 25.0f;
+        const float ndcL = left / width * 2.0f - 1.0f, ndcR = right / width * 2.0f - 1.0f;
+        const float ndcT = 1.0f - top / height * 2.0f, ndcB = 1.0f - bottom / height * 2.0f;
+
+        // Fit against the model's actual silhouette: a subsample of the coarsest LOD's points (the box's
+        // corners stick out well past the visible model at a diagonal view and would leave the margin
+        // unreached on every axis). Falls back to the box corners before the LODs exist.
+        std::vector<XMFLOAT3> pts;
+        if (!m_residentLODs.empty() && !m_residentLODs.back().rawSurfels.empty())
+        {
+            const auto& src = m_residentLODs.back().rawSurfels;
+            const size_t stride = std::max<size_t>(1, src.size() / 200000); // Every point of the coarsest level, in practice
+            pts.reserve(src.size() / stride + 1);
+            for (size_t i = 0; i < src.size(); i += stride) pts.push_back(src[i].position);
+        }
+        else
+        {
+            pts = {
+                { m_aabbMin.x, m_aabbMin.y, m_aabbMin.z }, { m_aabbMax.x, m_aabbMin.y, m_aabbMin.z },
+                { m_aabbMin.x, m_aabbMax.y, m_aabbMin.z }, { m_aabbMax.x, m_aabbMax.y, m_aabbMin.z },
+                { m_aabbMin.x, m_aabbMin.y, m_aabbMax.z }, { m_aabbMax.x, m_aabbMin.y, m_aabbMax.z },
+                { m_aabbMin.x, m_aabbMax.y, m_aabbMax.z }, { m_aabbMax.x, m_aabbMax.y, m_aabbMax.z } };
+        }
+        const float cy = cosf(m_pitch), sy = sinf(m_pitch), sx = sinf(m_yaw), cx = cosf(m_yaw);
+        const XMVECTOR at = XMLoadFloat3(&m_center);
+        const XMVECTOR worldUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+        const XMMATRIX proj = XMMatrixPerspectiveFovRH(XM_PIDIV4, width / height, 0.1f, 500.0f);
+        auto fits = [&](float dist) -> bool
+        {
+            XMVECTOR eye = XMVectorSet(m_center.x + dist * cy * sx, m_center.y + dist * sy, m_center.z + dist * cy * cx, 1.0f);
+            XMMATRIX viewProj = XMMatrixMultiply(XMMatrixLookAtRH(eye, at, worldUp), proj);
+            for (const XMFLOAT3& c : pts)
+            {
+                XMFLOAT4 clip;
+                XMStoreFloat4(&clip, XMVector4Transform(XMVectorSet(c.x, c.y, c.z, 1.0f), viewProj));
+                if (clip.w <= 0.11f) return false;
+                const float x = clip.x / clip.w, y = clip.y / clip.w;
+                if (x < ndcL || x > ndcR || y < ndcB || y > ndcT) return false;
+            }
+            return true;
+        };
+        // Bisection for the closest distance that still fits (fitting is monotonic in distance).
+        float lo = 0.1f, hi = 1000.0f;
+        if (!fits(hi)) return hi;
+        for (int it = 0; it < 48; it++)
+        {
+            const float mid = 0.5f * (lo + hi);
+            if (fits(mid)) hi = mid; else lo = mid;
+        }
+        return std::max(0.1f, std::min(1000.0f, hi));
     }
 
     // "Reset View" button in the bottom-left corner of the viewport (just right of the left panel, just
@@ -3536,7 +3611,7 @@ namespace Surfels
                 m_yaw = 0.6f;
                 m_pitch = 0.35f;
                 m_target = m_center;
-                m_distance = FitDistanceForViewport();
+                ApplyFitDistance();
             }
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Returns the camera to the launch view: the default angle, centred on the model, fitted between the control panels. The culling camera, if detached, is left where it is.");
         }
@@ -4405,6 +4480,11 @@ namespace Surfels
         ImGUI_UpdateIO(m_Width, m_Height);
         ImGui::NewFrame();
 
+        if (m_fitViewPending && m_Width > 0 && m_Height > 0)
+        {
+            ApplyFitDistance(); // The load ran before the window was sized (see LoadSFLWFile)
+            m_fitViewPending = false;
+        }
         UpdateCamera(ImGui::GetIO());
         BuildUI();
         m_state.time += (float)(m_deltaTime / 1000.0);
