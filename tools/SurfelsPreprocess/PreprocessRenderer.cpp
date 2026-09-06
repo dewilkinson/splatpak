@@ -42,13 +42,42 @@ namespace Surfels
         m_pDevice = pDevice;
 
         {
+            // GPU capabilities decide the render path (see RenderPath): mesh shaders when the hardware has
+            // them, otherwise the instanced vertex-shader fallback -- compiled for Shader Model 6.0 where
+            // DXIL is supported and through the legacy compiler as Shader Model 5.1 where it is not. This
+            // runs before any shader is compiled (the UI's come first) so the compiler choice applies to all.
             D3D12_FEATURE_DATA_D3D12_OPTIONS7 options7 = {};
-            HRESULT hr = pDevice->GetDevice()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &options7, sizeof(options7));
-            if (FAILED(hr) || options7.MeshShaderTier == D3D12_MESH_SHADER_TIER_NOT_SUPPORTED)
+            HRESULT hr7 = pDevice->GetDevice()->CheckFeatureSupport(D3D12_FEATURE_D3D12_OPTIONS7, &options7, sizeof(options7));
+            m_gpuCaps.meshShaders = SUCCEEDED(hr7) && options7.MeshShaderTier != D3D12_MESH_SHADER_TIER_NOT_SUPPORTED;
+
+            D3D12_FEATURE_DATA_SHADER_MODEL sm = { D3D_SHADER_MODEL_6_5 };
+            if (FAILED(pDevice->GetDevice()->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &sm, sizeof(sm))))
             {
-                MessageBoxA(NULL, "Mesh Shaders are not supported on this GPU.", "SplatLab", MB_ICONERROR);
-                exit(1);
+                sm.HighestShaderModel = D3D_SHADER_MODEL_6_0;
+                if (FAILED(pDevice->GetDevice()->CheckFeatureSupport(D3D12_FEATURE_SHADER_MODEL, &sm, sizeof(sm))))
+                    sm.HighestShaderModel = D3D_SHADER_MODEL_5_1;
             }
+            m_gpuCaps.highestShaderModel = (uint32_t)sm.HighestShaderModel;
+            m_gpuCaps.shaderModel6 = sm.HighestShaderModel >= D3D_SHADER_MODEL_6_0;
+
+            const RenderPath autoPath = (m_gpuCaps.meshShaders && sm.HighestShaderModel >= D3D_SHADER_MODEL_6_5) ? RenderPath::MeshShaders
+                                      : (m_gpuCaps.shaderModel6 ? RenderPath::VertexShadersSM6 : RenderPath::VertexShadersSM5);
+            m_renderPath = autoPath;
+            m_renderPathForced = false;
+            if (m_renderPathOverride >= 0 && m_renderPathOverride <= 2)
+            {
+                const RenderPath wanted = (RenderPath)m_renderPathOverride;
+                const bool runnable = (wanted == RenderPath::MeshShaders) ? (autoPath == RenderPath::MeshShaders)
+                                    : (wanted == RenderPath::VertexShadersSM6) ? m_gpuCaps.shaderModel6 : true;
+                if (runnable && wanted != autoPath)
+                {
+                    m_renderPath = wanted;
+                    m_renderPathForced = true;
+                }
+            }
+            SetLegacyShaderCompiler(m_renderPath == RenderPath::VertexShadersSM5);
+            LogTransitionTrace("PreprocessRenderer::OnCreate GPU: mesh shaders %s, highest shader model 0x%02X -> %s%s",
+                m_gpuCaps.meshShaders ? "yes" : "no", m_gpuCaps.highestShaderModel, GetRenderPathDescription(), m_renderPathForced ? " (forced by config)" : "");
         }
 
         m_resourceViewHeaps.OnCreate(pDevice, 256, 256, 256, 64, 64, 64);
@@ -141,6 +170,8 @@ namespace Surfels
         CreateComputePSO("GatherSurfelsCS", &m_pGatherSurfelsPSO);
         CreateComputePSO("GatherChunkIndicesCS", &m_pGatherChunkIndicesPSO);
 
+        if (m_renderPath == RenderPath::MeshShaders)
+        {
         D3D12_SHADER_BYTECODE as = {};
         D3D12_SHADER_BYTECODE ms = {};
         D3D12_SHADER_BYTECODE ps = {};
@@ -189,7 +220,7 @@ namespace Surfels
 
         Microsoft::WRL::ComPtr<ID3D12Device2> device2;
         m_pDevice->GetDevice()->QueryInterface(IID_PPV_ARGS(&device2));
-        device2->CreatePipelineState(&streamDesc, IID_PPV_ARGS(&m_pPipelineState));
+        HRESULT hrMainPSO = device2->CreatePipelineState(&streamDesc, IID_PPV_ARGS(&m_pPipelineState));
 
         // Create Item Prepass Pipeline State Object (itemMS & itemPS with DepthWrite ON, RTV: R32_UINT, DSV: D32_FLOAT)
         D3D12_SHADER_BYTECODE itemMs = {};
@@ -223,7 +254,7 @@ namespace Surfels
         D3D12_PIPELINE_STATE_STREAM_DESC itemStreamDesc = {};
         itemStreamDesc.SizeInBytes = sizeof(itemStream);
         itemStreamDesc.pPipelineStateSubobjectStream = &itemStream;
-        device2->CreatePipelineState(&itemStreamDesc, IID_PPV_ARGS(&m_pItemPrepassPSO));
+        HRESULT hrItemPSO = device2->CreatePipelineState(&itemStreamDesc, IID_PPV_ARGS(&m_pItemPrepassPSO));
 
         // Create Occluder Pipeline State Object (occluderMS & occluderPS): solid depth-writing interior
         // occlusion volume cubes, drawn into the main color+depth target before the splat pass. Same
@@ -281,6 +312,25 @@ namespace Surfels
             LogTransitionTrace("PreprocessRenderer::OnCreate ERROR: CreatePipelineState(occlusionTest) failed hr=0x%08X -- occlusion culling will silently do nothing on the main splat pass.", (unsigned int)hrOcclusionTestPSO);
         }
 
+        if (FAILED(hrMainPSO) || FAILED(hrItemPSO) || m_pPipelineState == nullptr || m_pItemPrepassPSO == nullptr)
+        {
+            // The driver reported mesh shaders but could not build the pipelines (typically a shader
+            // model it cannot actually compile): fall back to the vertex-shader path instead of running
+            // with null pipeline states.
+            LogTransitionTrace("PreprocessRenderer::OnCreate ERROR: mesh-shader pipeline creation failed (main hr=0x%08X, item hr=0x%08X) -- falling back to vertex shaders", (unsigned int)hrMainPSO, (unsigned int)hrItemPSO);
+            if (m_pPipelineState) { m_pPipelineState->Release(); m_pPipelineState = nullptr; }
+            if (m_pPipelineStateOcclusionTest) { m_pPipelineStateOcclusionTest->Release(); m_pPipelineStateOcclusionTest = nullptr; }
+            if (m_pItemPrepassPSO) { m_pItemPrepassPSO->Release(); m_pItemPrepassPSO = nullptr; }
+            if (m_pOccluderPSO) { m_pOccluderPSO->Release(); m_pOccluderPSO = nullptr; }
+            m_gpuCaps.meshPipelineFailed = true;
+            m_renderPath = m_gpuCaps.shaderModel6 ? RenderPath::VertexShadersSM6 : RenderPath::VertexShadersSM5;
+        }
+        }
+        if (m_renderPath != RenderPath::MeshShaders)
+        {
+            CreateVertexShaderPipelines(pSwapChain);
+        }
+
         // Create Silhouette Edge Extraction and Clear Compute Shaders
         m_clearBitmaskCS.OnCreate(pDevice, &m_resourceViewHeaps, "SilhouetteEdgeExtractCS.hlsl", "clearBitmaskCS", 1, 0, 0, 0, 0);
         m_silhouetteEdgeExtractCS.OnCreate(pDevice, &m_resourceViewHeaps, "SilhouetteEdgeExtractCS.hlsl", "mainCS", 1, 2, 0, 0, 0);
@@ -294,7 +344,8 @@ namespace Surfels
         sigDesc.NumArgumentDescs = 1;
         sigDesc.pArgumentDescs = &argDesc;
 
-        m_pDevice->GetDevice()->CreateCommandSignature(&sigDesc, nullptr, IID_PPV_ARGS(&m_pCommandSignature));
+        if (m_renderPath == RenderPath::MeshShaders)
+            m_pDevice->GetDevice()->CreateCommandSignature(&sigDesc, nullptr, IID_PPV_ARGS(&m_pCommandSignature));
 
         // Create Dedicated DX12 Hardware DMA Copy Queue for asynchronous PCIe transfers
         D3D12_COMMAND_QUEUE_DESC copyQueueDesc = {};
@@ -499,6 +550,107 @@ namespace Surfels
     }
 
     // Releases every GPU resource/PSO/buffer created in OnCreate
+    // The fallback's pipelines: the same stages as the mesh path as instanced vertex shaders (see
+    // Surfels.hlsl, mainVS/itemVS/occluderVS), built as classic graphics pipeline states with no input
+    // layout (the shaders read the surfel buffers by SV_InstanceID). Targets are vs_6_0/ps_6_0; in
+    // legacy-compiler mode (SetLegacyShaderCompiler) they become vs_5_1/ps_5_1 automatically.
+    void PreprocessRenderer::CreateVertexShaderPipelines(SwapChain* pSwapChain)
+    {
+        DefineList defines;
+        defines["SURFELS_NO_MESH_SHADERS"] = "1";
+
+        D3D12_SHADER_BYTECODE vs = {}, ps = {}, itemVs = {}, itemPs = {}, occVs = {}, occPs = {};
+        bool mainOk = CompileShaderFromFile("Surfels.hlsl", &defines, "mainVS", "-T vs_6_0", &vs) && vs.pShaderBytecode != nullptr;
+        mainOk = (CompileShaderFromFile("Surfels.hlsl", &defines, "mainPS", "-T ps_6_0", &ps) && ps.pShaderBytecode != nullptr) && mainOk;
+        bool itemOk = CompileShaderFromFile("Surfels.hlsl", &defines, "itemVS", "-T vs_6_0", &itemVs) && itemVs.pShaderBytecode != nullptr;
+        itemOk = (CompileShaderFromFile("Surfels.hlsl", &defines, "itemPS", "-T ps_6_0", &itemPs) && itemPs.pShaderBytecode != nullptr) && itemOk;
+        bool occOk = CompileShaderFromFile("Surfels.hlsl", &defines, "occluderVS", "-T vs_6_0", &occVs) && occVs.pShaderBytecode != nullptr;
+        occOk = (CompileShaderFromFile("Surfels.hlsl", &defines, "occluderPS", "-T ps_6_0", &occPs) && occPs.pShaderBytecode != nullptr) && occOk;
+        if (!mainOk || !itemOk)
+        {
+            LogTransitionTrace("PreprocessRenderer::CreateVertexShaderPipelines ERROR: fallback shaders failed to compile (main %d, item %d)", mainOk ? 1 : 0, itemOk ? 1 : 0);
+            MessageBoxA(NULL, "SplatLab could not compile its vertex-shader fallback for this GPU.\nThe trace log next to the executable holds the compiler output.", "SplatLab", MB_ICONERROR);
+            exit(1);
+        }
+        if (!occOk)
+        {
+            LogTransitionTrace("PreprocessRenderer::CreateVertexShaderPipelines ERROR: occluder fallback shaders failed to compile -- occlusion volume feature will be a silent no-op.");
+        }
+
+        CD3DX12_RASTERIZER_DESC rasterizer(D3D12_DEFAULT);
+        rasterizer.CullMode = D3D12_CULL_MODE_NONE;
+
+        // Premultiplied alpha blending for the splats: Output = SrcColor + DestColor * (1 - SrcAlpha)
+        CD3DX12_BLEND_DESC splatBlend(D3D12_DEFAULT);
+        splatBlend.RenderTarget[0].BlendEnable = TRUE;
+        splatBlend.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
+        splatBlend.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        splatBlend.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+        splatBlend.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+        splatBlend.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        splatBlend.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        splatBlend.RenderTarget[0].RenderTargetWriteMask = D3D12_COLOR_WRITE_ENABLE_ALL;
+        CD3DX12_BLEND_DESC opaqueBlend(D3D12_DEFAULT);
+
+        CD3DX12_DEPTH_STENCIL_DESC depthOff(D3D12_DEFAULT);
+        depthOff.DepthEnable = FALSE;
+        depthOff.StencilEnable = FALSE;
+        CD3DX12_DEPTH_STENCIL_DESC depthWrite(D3D12_DEFAULT);
+        depthWrite.DepthEnable = TRUE;
+        depthWrite.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+        depthWrite.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+        CD3DX12_DEPTH_STENCIL_DESC depthTestOnly(D3D12_DEFAULT);
+        depthTestOnly.DepthEnable = TRUE;
+        depthTestOnly.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+        depthTestOnly.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        depthTestOnly.StencilEnable = FALSE;
+
+        auto create = [&](const D3D12_SHADER_BYTECODE& v, const D3D12_SHADER_BYTECODE& px, const D3D12_BLEND_DESC& blend,
+                          const D3D12_DEPTH_STENCIL_DESC& depth, DXGI_FORMAT rtv, ID3D12PipelineState** ppOut, const char* name) -> bool
+        {
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC d = {};
+            d.pRootSignature = m_pRootSignature;
+            d.VS = v;
+            d.PS = px;
+            d.BlendState = blend;
+            d.SampleMask = UINT_MAX;
+            d.RasterizerState = rasterizer;
+            d.DepthStencilState = depth;
+            d.InputLayout = { nullptr, 0 };
+            d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            d.NumRenderTargets = 1;
+            d.RTVFormats[0] = rtv;
+            d.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+            d.SampleDesc = DXGI_SAMPLE_DESC{ 1, 0 };
+            HRESULT hr = m_pDevice->GetDevice()->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(ppOut));
+            if (FAILED(hr))
+                LogTransitionTrace("PreprocessRenderer::CreateVertexShaderPipelines ERROR: %s PSO failed hr=0x%08X", name, (unsigned int)hr);
+            return SUCCEEDED(hr);
+        };
+
+        bool ok = create(vs, ps, splatBlend, depthOff, pSwapChain->GetFormat(), &m_pPipelineState, "main splat");
+        ok = create(vs, ps, splatBlend, depthTestOnly, pSwapChain->GetFormat(), &m_pPipelineStateOcclusionTest, "occlusion-test splat") && ok;
+        ok = create(itemVs, itemPs, opaqueBlend, depthWrite, DXGI_FORMAT_R32_UINT, &m_pItemPrepassPSO, "item prepass") && ok;
+        if (occOk)
+            create(occVs, occPs, opaqueBlend, depthWrite, pSwapChain->GetFormat(), &m_pOccluderPSO, "occluder");
+        if (!ok)
+        {
+            MessageBoxA(NULL, "SplatLab could not create its vertex-shader fallback pipelines on this GPU.\nThe trace log next to the executable holds the details.", "SplatLab", MB_ICONERROR);
+            exit(1);
+        }
+        LogTransitionTrace("PreprocessRenderer: vertex-shader render path ready: %s", GetRenderPathDescription());
+    }
+
+    const char* PreprocessRenderer::GetRenderPathDescription() const
+    {
+        switch (m_renderPath)
+        {
+        case RenderPath::VertexShadersSM6: return "Vertex shaders, Shader Model 6.0 (no mesh shader support)";
+        case RenderPath::VertexShadersSM5: return "Vertex shaders, Shader Model 5.1 via the legacy compiler (no DXIL support)";
+        default:                           return "Mesh shaders, Shader Model 6.5";
+        }
+    }
+
     void PreprocessRenderer::OnDestroy()
     {
         FlushCopyQueue();
@@ -1690,12 +1842,21 @@ namespace Surfels
             pCmdLst->SetGraphicsRootShaderResourceView(4, m_pSortedChunkIndicesGpuBuffer ? m_pSortedChunkIndicesGpuBuffer->GetGPUVirtualAddress() : 0);
             pCmdLst->SetGraphicsRootShaderResourceView(5, m_pOcclusionVoxelBuffer->GetGPUVirtualAddress());
 
-            Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> occluderCmd6;
-            pCmdLst->QueryInterface(IID_PPV_ARGS(&occluderCmd6));
-            // One threadgroup per block of the selected mip only (the shader offsets by g_OcclusionVoxelFirst).
-            uint32_t dimX = std::min(occluderBlockCount, 32768u);
-            uint32_t dimY = (dimX > 0) ? ((occluderBlockCount + dimX - 1) / dimX) : 1;
-            occluderCmd6->DispatchMesh(dimX, dimY, 1);
+            if (m_renderPath == RenderPath::MeshShaders)
+            {
+                Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> occluderCmd6;
+                pCmdLst->QueryInterface(IID_PPV_ARGS(&occluderCmd6));
+                // One threadgroup per block of the selected mip only (the shader offsets by g_OcclusionVoxelFirst).
+                uint32_t dimX = std::min(occluderBlockCount, 32768u);
+                uint32_t dimY = (dimX > 0) ? ((occluderBlockCount + dimX - 1) / dimX) : 1;
+                occluderCmd6->DispatchMesh(dimX, dimY, 1);
+            }
+            else
+            {
+                // Vertex-shader path: one instance per block, 36 vertices (six faces of two triangles); occluderVS drops buried faces.
+                pCmdLst->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                pCmdLst->DrawInstanced(36, occluderBlockCount, 0, 0);
+            }
 
             auto occluderEnd = std::chrono::high_resolution_clock::now();
             m_metrics.occluderPassTimeMs = std::chrono::duration<float, std::milli>(occluderEnd - occluderStart).count();
@@ -2022,10 +2183,20 @@ namespace Surfels
                     pCmdLst->SetGraphicsRootShaderResourceView(4, m_pSortedChunkIndicesGpuBuffer->GetGPUVirtualAddress());
                     pCmdLst->SetGraphicsRootShaderResourceView(5, m_pOcclusionVoxelBuffer ? m_pOcclusionVoxelBuffer->GetGPUVirtualAddress() : 0);
 
-                    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> cmdList6;
-                    pCmdLst->QueryInterface(IID_PPV_ARGS(&cmdList6));
-                    uint32_t asGroupCount = (chunkCount + AS_GROUP_SIZE - 1) / AS_GROUP_SIZE;
-                    cmdList6->DispatchMesh(asGroupCount, 1, 1);
+                    if (m_renderPath == RenderPath::MeshShaders)
+                    {
+                        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> cmdList6;
+                        pCmdLst->QueryInterface(IID_PPV_ARGS(&cmdList6));
+                        uint32_t asGroupCount = (chunkCount + AS_GROUP_SIZE - 1) / AS_GROUP_SIZE;
+                        cmdList6->DispatchMesh(asGroupCount, 1, 1);
+                    }
+                    else
+                    {
+                        // Vertex-shader path: one instance per surfel slot (64 per sorted chunk), six vertices each (see mainVS).
+                        pCmdLst->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                        const uint32_t instances = pState->useChunkedPipeline ? chunkCount * SURFELS_PER_GROUP : pState->surfelCount;
+                        pCmdLst->DrawInstanced(6, instances, 0, 0);
+                    }
 
                     auto mainDispatchEnd = std::chrono::high_resolution_clock::now();
                     m_metrics.mainDispatchTimeMs += std::chrono::duration<float, std::milli>(mainDispatchEnd - mainDispatchStart).count();
@@ -2295,12 +2466,21 @@ namespace Surfels
                 pCmdLst->SetGraphicsRootShaderResourceView(4, m_pSortedChunkIndicesGpuBuffer ? m_pSortedChunkIndicesGpuBuffer->GetGPUVirtualAddress() : 0);
                 pCmdLst->SetGraphicsRootShaderResourceView(5, m_pOcclusionVoxelBuffer ? m_pOcclusionVoxelBuffer->GetGPUVirtualAddress() : 0);
 
-                Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> itemCmd6;
-                pCmdLst->QueryInterface(IID_PPV_ARGS(&itemCmd6));
                 uint32_t totalItemGroups = (pState->useChunkedPipeline && pState->chunkCount > 0) ? pState->chunkCount : ((surfelCount + SURFELS_PER_GROUP - 1) / SURFELS_PER_GROUP);
-                uint32_t dimX = std::min(totalItemGroups, 32768u);
-                uint32_t dimY = (dimX > 0) ? ((totalItemGroups + dimX - 1) / dimX) : 1;
-                itemCmd6->DispatchMesh(dimX, dimY, 1);
+                if (m_renderPath == RenderPath::MeshShaders)
+                {
+                    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> itemCmd6;
+                    pCmdLst->QueryInterface(IID_PPV_ARGS(&itemCmd6));
+                    uint32_t dimX = std::min(totalItemGroups, 32768u);
+                    uint32_t dimY = (dimX > 0) ? ((totalItemGroups + dimX - 1) / dimX) : 1;
+                    itemCmd6->DispatchMesh(dimX, dimY, 1);
+                }
+                else
+                {
+                    // Vertex-shader path: 64 instances per chunk (or one per surfel, flat), six vertices each (see itemVS).
+                    pCmdLst->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                    pCmdLst->DrawInstanced(6, totalItemGroups * SURFELS_PER_GROUP, 0, 0);
+                }
 
                 // 2. Transition ItemBuffer -> ALL_SHADER_RESOURCE, ItemDepthBuffer -> ALL_SHADER_RESOURCE
                 D3D12_RESOURCE_BARRIER midBarriers[2] = {
@@ -2384,8 +2564,6 @@ namespace Surfels
                 pCmdLst->SetGraphicsRootShaderResourceView(4, m_pSortedChunkIndicesGpuBuffer ? m_pSortedChunkIndicesGpuBuffer->GetGPUVirtualAddress() : 0);
                 pCmdLst->SetGraphicsRootShaderResourceView(5, m_pOcclusionVoxelBuffer ? m_pOcclusionVoxelBuffer->GetGPUVirtualAddress() : 0);
 
-                Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> cmdList6;
-                pCmdLst->QueryInterface(IID_PPV_ARGS(&cmdList6));
                 uint32_t groupCount = (pState->useChunkedPipeline && pState->chunkCount > 0)
                     ? ((pState->chunkCount + 32 - 1) / 32)
                     : ((surfelCount + SURFELS_PER_GROUP - 1) / SURFELS_PER_GROUP);
@@ -2396,7 +2574,19 @@ namespace Surfels
                         pState->chunkCount, surfelCount, groupCount, pState->useChunkedPipeline ? 1 : 0);
                 }
 
-                cmdList6->DispatchMesh(groupCount, 1, 1);
+                if (m_renderPath == RenderPath::MeshShaders)
+                {
+                    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> cmdList6;
+                    pCmdLst->QueryInterface(IID_PPV_ARGS(&cmdList6));
+                    cmdList6->DispatchMesh(groupCount, 1, 1);
+                }
+                else
+                {
+                    // Vertex-shader path: one instance per surfel slot (64 per sorted chunk), six vertices each (see mainVS).
+                    pCmdLst->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                    const uint32_t instances = (pState->useChunkedPipeline && pState->chunkCount > 0) ? pState->chunkCount * SURFELS_PER_GROUP : surfelCount;
+                    pCmdLst->DrawInstanced(6, instances, 0, 0);
+                }
 
                 auto mainDispatchEnd2 = std::chrono::high_resolution_clock::now();
                 m_metrics.mainDispatchTimeMs += std::chrono::duration<float, std::milli>(mainDispatchEnd2 - mainDispatchStart2).count();

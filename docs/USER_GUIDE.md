@@ -34,6 +34,8 @@ Both programs share one code base for the renderer and the streaming manager, so
 
 **Running a release build.** Download the latest build from the [Releases page](../../../releases), extract it, and run `SplatLab.exe`. No installation is required. The only hardware requirement is a DirectX 12 Ultimate–class GPU (NVIDIA RTX 20-series or newer, AMD RDNA2 or newer).
 
+**Hardware.** SplatLab renders with D3D12 mesh shaders where the GPU has them (GeForce RTX 20 series or newer, Radeon RX 6000 or newer, Intel Arc). On other D3D12 hardware it falls back automatically to instanced vertex shaders, compiled for Shader Model 6.0 or, on drivers without DXIL support, through the legacy Shader Model 5.1 compiler. The fallback draws the same picture at lower frame rates; when it is active the top-left banner lists each hardware stage it is standing in for, and Help > About names the path in use. Setting `"render_path"` in `config.json` to `vs6` or `vs5` forces a fallback on capable hardware for testing (`auto` is the default).
+
 **Building from source.** The Building section of [README.md](../README.md) gives the full procedure. In brief, the user runs `cmake .. -G "Visual Studio 18 2026" -A x64` from a `build/` directory and opens the generated solution. SplatLab is the default startup project; Surfels_DX12 is available in the same solution for those who require the standalone viewer.
 
 On first launch the application automatically loads a bundled Cthulhu bust, so the window is never empty.

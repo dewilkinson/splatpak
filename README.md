@@ -200,10 +200,14 @@ Diolez is CC BY-NC 4.0 (attribution required, **non-commercial use only**).
 
 ## Known gaps
 
-- Requires D3D12 Mesh Shader Tier 1 (Shader Model 6.5+) hardware/driver —
-  checked via `D3D12_FEATURE_D3D12_OPTIONS7` on startup, with a message box
-  and clean exit if unsupported. Any DX12 Ultimate-class GPU (RTX 20-series+,
-  RDNA2+) has this.
+- Mesh shaders (D3D12 Mesh Shader Tier 1, Shader Model 6.5) are the fast path
+  and are checked on startup. Hardware without them runs the same stages as
+  instanced vertex shaders: compiled for Shader Model 6.0 where the driver
+  supports DXIL, or through the legacy Shader Model 5.1 compiler where it does
+  not, on any D3D12 feature level 11_0 device. The fallback draws the same
+  picture at lower performance, and the top-left banner lists each stage it is
+  standing in for. `render_path` in `config.json` (`auto`, `mesh`, `vs6`, `vs5`)
+  forces a fallback for testing.
 - The main splat pass renders with a depth buffer bound but hardware depth
   test/write both disabled (`DepthEnable = FALSE`, `DepthWriteMask = ZERO`,
   `DepthFunc = ALWAYS`) — intentional, not a placeholder gap: overlapping

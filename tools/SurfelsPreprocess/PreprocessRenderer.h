@@ -96,6 +96,26 @@ namespace Surfels
         };
 
         void OnCreate(CAULDRON_DX12::Device* pDevice, CAULDRON_DX12::SwapChain* pSwapChain);
+
+        // Render path, decided in OnCreate from the GPU's capabilities: mesh shaders where the hardware
+        // has D3D12 Mesh Shader Tier 1, otherwise the instanced vertex-shader fallback (Surfels.hlsl,
+        // mainVS/itemVS/occluderVS) compiled for Shader Model 6.0, or through the legacy compiler for
+        // Shader Model 5.1 when the driver has no DXIL support. SetRenderPathOverride (config
+        // "render_path") forces a fallback on capable hardware for testing; a path the hardware cannot
+        // run is never forced.
+        enum class RenderPath { MeshShaders = 0, VertexShadersSM6 = 1, VertexShadersSM5 = 2 };
+        struct GpuCapabilities
+        {
+            bool     meshShaders = false;        // D3D12 Mesh Shader Tier 1: amplification + mesh stages
+            bool     shaderModel6 = false;       // DXIL, Shader Model 6.0 or later
+            uint32_t highestShaderModel = 0;     // D3D_SHADER_MODEL value, e.g. 0x65 = 6.5, 0x51 = 5.1
+            bool     meshPipelineFailed = false; // Mesh shaders were reported but their pipeline states could not be created
+        };
+        void SetRenderPathOverride(int path) { m_renderPathOverride = path; } // Before OnCreate: -1 = auto, else a RenderPath value
+        RenderPath GetRenderPath() const { return m_renderPath; }
+        bool IsRenderPathForced() const { return m_renderPathForced; }
+        const GpuCapabilities& GetGpuCapabilities() const { return m_gpuCaps; }
+        const char* GetRenderPathDescription() const;
         void OnDestroy();
 
         void OnCreateWindowSizeDependentResources(CAULDRON_DX12::SwapChain* pSwapChain, uint32_t width, uint32_t height);
@@ -179,6 +199,12 @@ namespace Surfels
         ID3D12PipelineState* m_pPipelineState = nullptr;
         ID3D12PipelineState* m_pPipelineStateOcclusionTest = nullptr; // Same as m_pPipelineState but with depth-test-only (no write) enabled, used when occlusion culling is active
         ID3D12PipelineState* m_pOccluderPSO = nullptr; // Solid depth-writing interior occlusion volume cubes (occluderMS/occluderPS)
+
+        RenderPath      m_renderPath = RenderPath::MeshShaders;
+        int             m_renderPathOverride = -1;
+        bool            m_renderPathForced = false;
+        GpuCapabilities m_gpuCaps;
+        void CreateVertexShaderPipelines(CAULDRON_DX12::SwapChain* pSwapChain); // The fallback's graphics PSOs (main, occlusion-test, item prepass, occluder)
 
         void UpdateOcclusionVoxelBuffer(const State* pState);
         uint32_t SelectOcclusionMip(const State* pState, const OcclusionMipTable& mips, const XMFLOAT3& eyePos);

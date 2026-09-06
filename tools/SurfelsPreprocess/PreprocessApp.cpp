@@ -276,6 +276,25 @@ namespace Surfels
                         }
                     }
 
+                    // Render path (JSON or INI): "auto" (default), "mesh", "vs6" (vertex shaders, Shader
+                    // Model 6.0) or "vs5" (vertex shaders through the legacy Shader Model 5.1 compiler).
+                    // Anything but auto forces that fallback on capable hardware, for testing; a path the
+                    // hardware cannot run is ignored. See PreprocessRenderer::RenderPath.
+                    {
+                        size_t rPos = line.find("\"render_path\":");
+                        size_t eqPos = std::string::npos;
+                        if (rPos != std::string::npos) eqPos = line.find(':', rPos);
+                        else if (line.find("render_path=") != std::string::npos) eqPos = line.find('=');
+                        if (eqPos != std::string::npos)
+                        {
+                            std::string val = line.substr(eqPos + 1);
+                            if (val.find("mesh") != std::string::npos)     { m_renderPathOverride = 0;  m_renderPathConfig = "mesh"; }
+                            else if (val.find("vs6") != std::string::npos) { m_renderPathOverride = 1;  m_renderPathConfig = "vs6"; }
+                            else if (val.find("vs5") != std::string::npos) { m_renderPathOverride = 2;  m_renderPathConfig = "vs5"; }
+                            else                                           { m_renderPathOverride = -1; m_renderPathConfig = "auto"; }
+                        }
+                    }
+
                     // Last folder the user browsed to in an Open/Save dialog (JSON or INI) -- makes the
                     // dialogs remember where the user left off across sessions instead of always
                     // resetting to the project root. See RememberDialogFolder/GetDialogDefaultFolder.
@@ -368,6 +387,7 @@ namespace Surfels
             out << "  \"default_deadband_mm\": 3.0,\n";
             out << "  \"occlusion_shave_bias\": " << m_occlusionShaveBiasCells << ",\n";
             out << "  \"show_control_hints\": " << (m_showControlHints ? "true" : "false") << ",\n";
+            out << "  \"render_path\": \"" << m_renderPathConfig << "\",\n";
             out << "  \"last_dialog_folder\": \"" << m_lastDialogFolder << "\"\n";
             out << "}\n";
             out.close();
@@ -404,6 +424,7 @@ namespace Surfels
             m_pHintFont = fontIo.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 17.0f * dpiScale);
         }
         m_pRenderer = new PreprocessRenderer();
+        m_pRenderer->SetRenderPathOverride(m_renderPathOverride);
         m_pRenderer->OnCreate(&m_device, &m_swapChain);
         {
             // ImGUI::OnCreate appended the UI's default font after ours: make that one the default again.
@@ -3004,6 +3025,7 @@ namespace Surfels
                 ImGui::Text("Organization: Blueshell LLC");
                 ImGui::Text("Version:      v1.2.0");
                 ImGui::Text("Date:         September 6, 2026");
+                if (m_pRenderer) ImGui::Text("GPU path:     %s", m_pRenderer->GetRenderPathDescription());
                 ImGui::Spacing();
                 ImGui::Separator();
                 ImGui::Spacing();
@@ -3482,7 +3504,7 @@ namespace Surfels
     // listed -- they are the normal picture, not a departure from it.
     void PreprocessApp::DrawRenderModeBanner(float leftPanelWidth, float rightPanelWidth)
     {
-        struct ModeLine { char text[96]; ImVec4 color; };
+        struct ModeLine { char text[128]; ImVec4 color; };
         ModeLine lines[16];
         int count = 0;
         auto add = [&](const ImVec4& color, const char* fmt, ...)
@@ -3511,6 +3533,19 @@ namespace Surfels
         if (m_enableStreamingSimulation && !m_unthrottledBandwidth) add(ImVec4(1.00f, 0.80f, 0.30f, 1.0f), "STREAMING: Bandwidth throttle %.1f MB/s enabled", m_bandwidthThrottleMBps);
         if (!m_autoLOD)                    add(ImVec4(0.50f, 1.00f, 0.50f, 1.0f), "RENDERER: Manual LOD %d enabled", m_selectedPreviewLOD);
         if (m_occlusionMipOverride >= 0)   add(ImVec4(1.00f, 0.55f, 0.80f, 1.0f), "RENDERER: Occlusion Volume Mip %d forced enabled", m_occlusionMipOverride);
+        // Hardware fallbacks: one row per GPU stage the render path is not using, so a screenshot from a
+        // machine without mesh shaders says exactly which stages it lacks (PreprocessRenderer::RenderPath).
+        if (m_pRenderer && m_pRenderer->GetRenderPath() != PreprocessRenderer::RenderPath::MeshShaders)
+        {
+            const auto& caps = m_pRenderer->GetGpuCapabilities();
+            const ImVec4 hw(1.00f, 0.40f, 0.30f, 1.0f);
+            const bool forced = m_pRenderer->IsRenderPathForced();
+            const char* why = forced ? "bypassed (forced)" : (caps.meshPipelineFailed ? "pipeline failed" : "unavailable");
+            add(hw, "RENDERER: Amplification shader %s, VS chunk culling enabled", why);
+            add(hw, "RENDERER: Mesh shader %s, instanced VS splats enabled", why);
+            if (m_pRenderer->GetRenderPath() == PreprocessRenderer::RenderPath::VertexShadersSM5)
+                add(hw, "RENDERER: Shader Model 6 %s, SM 5.1 legacy compiler enabled", (forced && caps.shaderModel6) ? "bypassed (forced)" : "unavailable");
+        }
         if (count == 0) return;
 
         // Top-left of the viewport: just right of the left panel, below the menu bar, never under the

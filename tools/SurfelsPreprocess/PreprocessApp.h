@@ -184,6 +184,8 @@ namespace Surfels
         float m_autoLODCooldownTimer = 0.0f;  // Blocks auto-LOD from advancing another level until the in-flight dither transition has had time to settle
         bool  m_autoRotate           = false; // Disabled by default
         bool  m_showControlHints     = true;  // Viewport: draw the faint rotate/zoom/pan reminder at the bottom-right (see DrawControlHints); saved in config.json
+        int         m_renderPathOverride = -1;     // Config "render_path": -1 auto, else PreprocessRenderer::RenderPath to force (testing)
+        std::string m_renderPathConfig = "auto";  // The config value as written back (auto / mesh / vs6 / vs5)
         ImFont* m_pHintFont          = nullptr; // Proportional font for that reminder (Segoe UI, registered in OnCreate before the atlas is built); nullptr = default font
         bool  m_gpuRadixSort         = true;  // Checkbox: "GPU Radix Sort" under Accelerators (Enabled by default)
         bool  m_enableMortonOrder    = true;  // Checkbox: "Morton Spatial Curve Ordering" under Accelerators
