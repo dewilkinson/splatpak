@@ -1,0 +1,20 @@
+Venus de Milo (Louvre Museum) -- example dataset
+
+Title:       Venus de Milo (Louvre Museum)
+Author:      Nicolas Diolez (https://superspl.at/user/nicolasdiolez)
+Source:      https://superspl.at/scene/90e88a10
+License:     Creative Commons Attribution-NonCommercial 4.0 International (CC BY-NC 4.0)
+License URL: http://creativecommons.org/licenses/by-nc/4.0/
+Requirements: the author must be credited. NO COMMERCIAL USE.
+
+Files in this directory:
+  venus.ply   the source point cloud as downloaded (Git LFS)
+  venus.sflw  a derivative work: the same scan repackaged by SplatLab's pipeline (chunked,
+              wavelet LOD pyramid, entropy-coded, with a baked interior occlusion volume)
+
+Both files are redistributed here under the CC BY-NC 4.0 license above, which also governs any
+use you make of them: this dataset may be used for non-commercial purposes only, regardless of
+the permissive terms of the software around it. They are NOT covered by the repository's
+Apache-2.0 LICENSE or by the bluesec-codec Binary License, which apply to the software only.
+Changes made: converted to the .sflw package format described in the top-level README; no
+change to the scan's content.

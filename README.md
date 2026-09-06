@@ -187,6 +187,13 @@ Without a config file the built-in defaults apply and the bundled
 regenerated with `CompressVenus` whenever the pipeline or the occlusion volume
 generator changes, so they always match the current format.
 
+Both example scans come from [SuperSplat](https://superspl.at) and are redistributed
+under their authors' Creative Commons terms, which govern the datasets (and the `.sflw`
+packages derived from them) independently of the software's license -- see the
+`LICENSE.txt` beside each: the Cthulhu Statue by Christoph Schindelar is CC BY 4.0
+(attribution required, commercial use allowed); the Venus de Milo scan by Nicolas
+Diolez is CC BY-NC 4.0 (attribution required, **non-commercial use only**).
+
 ## Known gaps
 
 - Requires D3D12 Mesh Shader Tier 1 (Shader Model 6.5+) hardware/driver —
@@ -241,6 +248,15 @@ obvious next step toward an actual surfel GI renderer is an
 irradiance-accumulation/shading pass, since splats currently get simple
 per-surfel colour with a flat two-sided diffuse (`|N·L|`) term and no global
 illumination.
+
+## Contributing
+
+The public repository at `github.com/dewilkinson/splatlab` is a generated mirror: every
+sync rewrites its history from scratch (see `libs/bluesec-codec/README.md`), so a pull
+request opened against it cannot be merged there and will be closed. Bug reports and
+feature requests are welcome as GitHub issues on that repository. Code contributions are
+accepted only by prior arrangement with the author, so that they can be applied to the
+source of truth and re-published; contact details are in the About dialog.
 
 ## License
 

@@ -1,0 +1,18 @@
+Cthulhu Statue -- example dataset
+
+Title:       Cthulhu Statue
+Author:      Christoph SCHINDELAR (https://superspl.at/user?id=schindelar3d)
+Source:      https://superspl.at/scene/44e8fe8f
+License:     Creative Commons Attribution 4.0 International (CC BY 4.0)
+License URL: http://creativecommons.org/licenses/by/4.0/
+Requirements: the author must be credited. Commercial use is allowed.
+
+Files in this directory:
+  cthulu.ply   the source point cloud as downloaded (Git LFS)
+  cthulu.sflw  a derivative work: the same scan repackaged by SplatLab's pipeline (chunked,
+               wavelet LOD pyramid, entropy-coded, with a baked interior occlusion volume)
+
+Both files are redistributed here under the CC BY 4.0 license above, which also governs any use
+you make of them. They are NOT covered by the repository's Apache-2.0 LICENSE or by the
+bluesec-codec Binary License, which apply to the software only. Changes made: converted to
+the .sflw package format described in the top-level README; no change to the scan's content.
