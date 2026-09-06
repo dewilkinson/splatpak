@@ -2564,6 +2564,7 @@ namespace Surfels
 
                     ImGui::Checkbox("Prioritize View Frustum & Proximity", &m_prioritizeFrustumAndProximity);
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: within the detail ordering, blocks inside the view frustum are delivered before those outside it (then the neighbour band, then the rest), with view-centre and proximity breaking near-ties. Off: the pure detail ranking, model-wide, regardless of the camera.");
+                    DrawOctahedronGlyph();
 
                     // Bandwidth Preset Buttons
                     ImGui::Text("Network Profiles:");
@@ -3391,58 +3392,65 @@ namespace Surfels
 
     // [Removed from the public history: proprietary streaming-order code, now in libs/gstx/StreamOrder]
 
-    // [Removed from the public history: proprietary streaming-order code, now in libs/gstx/StreamOrder]
-
-    // is right, up is up). Visible faces are lit, brighter the more directly they face the camera, hidden
-    // faces dim; a yellow dot marks the camera on each. Hovering either shows the pending count per face.
+    // Streaming tab: the bounding octahedron as two diamonds. Seen from above, an octahedron projects to
+    // a square standing on a corner whose diagonals split it into its four upper faces; the left diamond
+    // (green) shows those, the right one (pastel blue) the four lower faces, both with +X right and +Z
+    // down. Visible faces are lit, brighter the more directly they face the camera, hidden faces dim; a
+    // yellow dot marks the camera's direction on whichever half it lies in (a dim dot on the other).
+    void PreprocessApp::DrawOctahedronGlyph()
     {
-        uint32_t visYaw = 0, visPitch = 0;
-        {
-            if (m_visibleFaceMask & (1u << f)) visYaw++;
-            if (m_visiblePitchMask & (1u << f)) visPitch++;
-        }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Faces of the two 8-sided prisms around the model that the camera can currently see. Only blocks on a visible yaw face AND a visible elevation face are streamed (yaw lists interleaved, most directly facing face first); the rest wait until they come into view.");
+        uint32_t visible = 0;
+        for (int f = 0; f < kOctahedronFaces; f++) if (m_visibleFaceMask & (1u << f)) visible++;
+        ImGui::TextDisabled("Bounding octahedron: %u of %d faces visible, %zu blocks in this frame's scratch load list", visible, kOctahedronFaces, m_scratchLoadList.size());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Faces of the octahedron around the model that the camera can currently see. Only their priority lists are streamed (interleaved, most directly facing face first); the rest wait until they come into view.");
 
         const float R = 30.0f;
         ImDrawList* dl = ImGui::GetWindowDrawList();
+        ImVec2 origin = ImGui::GetCursorScreenPos();
+        const float cell = 2.0f * R + 12.0f;
+        auto drawHalf = [&](const ImVec2& c, bool upper)
         {
+            // The four faces of this half: octants with the matching Y sign. Each is the triangle from the
+            // centre (the +Y or -Y apex, seen end-on) to the two equatorial vertices of its X and Z signs.
+            for (int f = 0; f < kOctahedronFaces; f++)
             {
-                const float a0 = ((float)f - 0.5f) * 0.78539816f, a1 = ((float)f + 0.5f) * 0.78539816f;
-                // Yaw glyph: screen y grows with +Z (top-down). Elevation glyph: screen y grows downward, up is up.
-                const float sy = blue ? -1.0f : 1.0f;
-                ImVec2 p0(c.x + cosf(a0) * R, c.y + sy * sinf(a0) * R);
-                ImVec2 p1(c.x + cosf(a1) * R, c.y + sy * sinf(a1) * R);
-                const bool vis = (mask & (1u << f)) != 0;
-                const float t = vis ? std::max(0.0f, std::min(1.0f, (facing[f] + 0.15f) / 1.15f)) : 0.0f;
-                ImU32 col, fill;
-                if (blue)
+                if (((f & 2) != 0) != upper) continue;
+                const float sx = (f & 1) ? 1.0f : -1.0f, sz = (f & 4) ? 1.0f : -1.0f;
+                ImVec2 px(c.x + sx * R, c.y), pz(c.x, c.y + sz * R);
+                const bool vis = (m_visibleFaceMask & (1u << f)) != 0;
+                const float t = vis ? std::max(0.0f, std::min(1.0f, (m_faceFacing[f] + 0.15f) / 1.15f)) : 0.0f;
+                ImU32 fill, line;
+                if (upper)
                 {
-                    col  = vis ? IM_COL32((int)(120 + 40 * (1 - t)), (int)(170 + 50 * t), (int)(230 + 25 * t), 255) : IM_COL32(70, 74, 86, 255);
-                    fill = vis ? IM_COL32(90, 130, 200, 110) : IM_COL32(40, 42, 50, 110);
+                    fill = vis ? IM_COL32((int)(35 + 20 * t), (int)(110 + 70 * t), (int)(55 + 25 * t), 190) : IM_COL32(40, 40, 46, 150);
+                    line = vis ? IM_COL32((int)(70 + 30 * (1 - t)), (int)(160 + 95 * t), (int)(85 + 40 * t), 255) : IM_COL32(70, 72, 80, 255);
                 }
                 else
                 {
-                    col  = vis ? IM_COL32((int)(60 + 40 * (1 - t)), (int)(150 + 105 * t), (int)(80 + 40 * t), 255) : IM_COL32(70, 72, 80, 255);
-                    fill = vis ? IM_COL32(35, 120, 60, 110) : IM_COL32(40, 40, 46, 110);
+                    fill = vis ? IM_COL32((int)(70 + 20 * t), (int)(110 + 40 * t), (int)(170 + 50 * t), 190) : IM_COL32(40, 42, 50, 150);
+                    line = vis ? IM_COL32((int)(120 + 40 * (1 - t)), (int)(170 + 50 * t), (int)(230 + 25 * t), 255) : IM_COL32(70, 74, 86, 255);
                 }
-                dl->AddTriangleFilled(c, p0, p1, fill);
-                dl->AddLine(p0, p1, col, vis ? 3.0f : 1.5f);
+                dl->AddTriangleFilled(c, px, pz, fill);
+                dl->AddTriangle(c, px, pz, line, vis ? 2.0f : 1.0f);
             }
-            const float sy = blue ? -1.0f : 1.0f;
-            dl->AddCircleFilled(ImVec2(c.x + cosf(camAngle) * (R + 7.0f), c.y + sy * sinf(camAngle) * (R + 7.0f)), 3.5f, IM_COL32(255, 220, 90, 255));
+            // Camera marker: its horizontal direction, on this half if the camera is on this side of the equator.
+            const bool camHere = (m_camDir[1] >= 0.0f) == upper;
+            const float h = sqrtf(m_camDir[0] * m_camDir[0] + m_camDir[2] * m_camDir[2]);
+            const float mx = (h > 1e-4f) ? m_camDir[0] / h : 0.0f, mz = (h > 1e-4f) ? m_camDir[2] / h : 0.0f;
+            const float reach = std::min(1.0f, h + 0.15f) * (R + 6.0f); // Toward the centre as the camera goes overhead
+            dl->AddCircleFilled(ImVec2(c.x + mx * reach, c.y + mz * reach), camHere ? 3.5f : 2.0f, camHere ? IM_COL32(255, 220, 90, 255) : IM_COL32(255, 220, 90, 90));
         };
-
-        ImVec2 origin = ImGui::GetCursorScreenPos();
-        const float cell = 2.0f * R + 12.0f;
-        const float yawAngle = atan2f(m_camHorizDir[1], m_camHorizDir[0]);
+        drawHalf(ImVec2(origin.x + R + 6.0f, origin.y + R + 6.0f), true);
+        drawHalf(ImVec2(origin.x + cell + 14.0f + R + 6.0f, origin.y + R + 6.0f), false);
         ImGui::Dummy(ImVec2(2.0f * cell + 14.0f, cell));
         if (ImGui::IsItemHovered())
         {
-            std::string tip = "Left (green): yaw faces seen from above (0 = +X, 2 = +Z, 4 = -X, 6 = -Z), pending blocks per face.\nRight (blue): elevation faces seen from the side (0 = toward camera, 2 = up, 4 = away, 6 = down).\nYellow dot = camera.";
+            std::string tip = "Left (green): the four upper faces (+Y), right (blue): the four lower faces (-Y), both seen from above with +X right and +Z down.\nYellow dot = camera direction. Pending blocks per face (bits: 1 = +X, 2 = +Y, 4 = +Z):";
+            for (int f = 0; f < kOctahedronFaces; f++)
             {
                 char b[96];
-                snprintf(b, sizeof(b), "\n  yaw face %d: %u %s   elevation face %d: %s", f, m_faceRemaining[f],
-                    (m_visibleFaceMask & (1u << f)) ? "(visible)" : "", f, (m_visiblePitchMask & (1u << f)) ? "visible" : "hidden");
+                snprintf(b, sizeof(b), "\n  face %d (%c%c%c): %u %s", f, (f & 1) ? '+' : '-', (f & 2) ? '+' : '-', (f & 4) ? '+' : '-',
+                    m_faceRemaining[f], (m_visibleFaceMask & (1u << f)) ? "(visible)" : "");
                 tip += b;
             }
             ImGui::SetTooltip("%s", tip.c_str());

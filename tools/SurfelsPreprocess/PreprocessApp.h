@@ -274,6 +274,7 @@ namespace Surfels
 
         enum class StreamingPolicy
         {
+            Conservative = 0, // Pulls only visible chunks + local neighbor buffer; stops when view is satisfied. The bounding octahedron's visible-face streams run in both policies
             Greedy       = 1  // Refines visible chunks first, then continues pre-fetching remaining background chunks
         };
 
@@ -331,21 +332,22 @@ namespace Surfels
         std::vector<std::vector<StreamChunk>> m_lodStreamChunks; // Chunks grouped by LOD level for O(1) equalizer
         std::vector<StreamChunk*>             m_allStreamChunkPtrs; // Flat list of pointers for priority sorting
 
-        // steps, face i's outward normal at angle i*45 degrees in the XZ plane, 0 = +X). Every block
-        // belongs to the face its surface faces, and each face keeps its own priority list -- its blocks
-        // their lists are multiplexed, most-directly-facing face first, into a scratch load list that the
-        // delivery simulator consumes right after the edge chunks (see UpdateStreamingSimulation).
+        // Bounding octahedron streaming. The model is wrapped in a regular octahedron: eight triangular
+        // faces whose outward normals are the eight sign combinations of (1,1,1)/sqrt3, one per octant of
+        // direction space. Every block belongs to the face whose normal is nearest its own surface normal
+        // (the octant of its normal's signs), and each face keeps its own priority list -- its blocks in
+        // dot product against the direction to the eye) and their lists are multiplexed, most directly
+        // facing face first, into a scratch load list that the delivery simulator consumes right after
+        // the edge chunks (see UpdateStreamingSimulation).
+        static constexpr int kOctahedronFaces = 8; // Face index = (nx>=0) | (ny>=0)<<1 | (nz>=0)<<2
         static constexpr int kMaxStreamLevels = 8;
         std::vector<StreamChunk*> m_scratchLoadList;                // This frame's multiplexed load list (visible faces, interleaved)
+        float    m_faceFacing[kOctahedronFaces] = {};                  // dot(face normal, direction to camera), this frame
         uint8_t  m_visibleFaceMask = 0xFF;                          // Bit i = face i visible this frame
+        uint32_t m_faceRemaining[kOctahedronFaces] = {};               // Non-resident blocks per face (UI; recounted periodically)
         uint32_t m_residencyEpoch = 0;                              // Bumped whenever any block stops being resident (evict, reset, decay), invalidating the cursors
-        // direction (face 0 = toward the camera, 2 = up, 4 = away, 6 = down). A block's elevation face is
-        // computed on the fly from its normal (it rotates with the camera yaw, so there are no per-face
-        // lists); it FILTERS the yaw-face streams, which is what tells the bottom of the model from the
-        // top when the camera looks down from above and every yaw face is visible at once.
-        uint8_t  m_visiblePitchMask = 0xFF;                         // Bit i = elevation face i visible this frame
-        float    m_camHorizDir[2] = { 1.0f, 0.0f };                 // Unit XZ direction from the model centre toward the camera
-        float    m_camElevation = 0.0f;                             // Camera elevation above the model centre, radians
+        float    m_camDir[3] = { 1.0f, 0.0f, 0.0f };                   // Unit direction from the model centre to the camera, this frame (glyph marker)
+        void  DrawOctahedronGlyph();                                   // Streaming tab: the octahedron's upper and lower faces with the visible ones lit
         DetailGrid                            m_detailGrid;         // Detail heatmap for the loaded model: from the package (v7+) or built from LOD 0 on load / preprocess; written into exported packages
         std::vector<StreamChunk*>             m_rendererSourceChunks; // Source chunk pointers corresponding to m_rendererMeshletChunks
         std::vector<PackedSurfelGPU>          m_unifiedPackedSurfels; // Global zero-copy packed surfel buffer
