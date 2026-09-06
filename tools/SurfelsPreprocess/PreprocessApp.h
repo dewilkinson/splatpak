@@ -309,7 +309,7 @@ namespace Surfels
         float  m_chunkStreamDuration        = 3.0f;   // Seconds a delivered chunk stays tinted (the glow is the first part of that)
         float  m_arrivalGlowIntensity       = 1.0f;   // Refinement visualizer strength (0..2)
         float  m_arrivalGlowHue             = 0.0f;   // Refinement visualizer hue rotation in degrees (-180..180, 0 = orange)
-        void   DrawRefinementVisualizerControls(const char* idSuffix); // Checkbox + duration/intensity/hue sliders; drawn on both the Renderer and Streaming tabs
+        void   DrawRefinementVisualizerControls(const char* idSuffix); // Checkbox + duration/intensity/hue sliders (Renderer tab)
 
         // Silhouette Edge Focused Reconstruction & Dilation Morphing
         bool   m_enableSilhouetteLOD0       = true;   // Refine silhouette edges using biased LOD levels (Option 2 GPU Inversion)

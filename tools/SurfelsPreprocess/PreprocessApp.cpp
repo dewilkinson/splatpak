@@ -2543,7 +2543,6 @@ namespace Surfels
 
                     ImGui::Checkbox("Prioritize View Frustum & Proximity", &m_prioritizeFrustumAndProximity);
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: within the detail ordering, blocks inside the view frustum are delivered before those outside it (then the neighbour band, then the rest), with view-centre and proximity breaking near-ties. Off: the pure detail ranking, model-wide, regardless of the camera.");
-                    DrawRefinementVisualizerControls("##Streaming");
 
                     // Bandwidth Preset Buttons
                     ImGui::Text("Network Profiles:");
@@ -3339,8 +3338,8 @@ namespace Surfels
         ImGui::Spacing();
     }
 
-    // Refinement visualizer controls, drawn identically on the Renderer and Streaming tabs (idSuffix keeps
-    // the two sets of widgets distinct for ImGui): the arrival-glow checkbox, and when it is on, the fade
+    // Refinement visualizer controls on the Renderer tab (idSuffix keeps the widget IDs distinct should the
+    // block ever be drawn in a second place): the arrival-glow checkbox, and when it is on, the fade
     // duration, glow intensity and hue sliders.
     void PreprocessApp::DrawRefinementVisualizerControls(const char* idSuffix)
     {
@@ -3427,8 +3426,8 @@ namespace Surfels
     }
 
     // Overlay listing every toggle that currently alters what the viewport shows -- debug views, isolation
-    // modes, frozen state, forced levels -- as "[X Mode Enabled]" lines, one per row, each in its own
-    // colour, anchored at the top-left of the viewport next to the control panel. Its purpose is purely
+    // modes, frozen state, forced levels -- as "TAB NAME: <feature> enabled" lines, one per row, each in
+    // its own colour, anchored at the top-left of the viewport next to the control panel. Its purpose is purely
     // to stop a user from reading a deliberately altered picture (surfels hidden, a stale culling
     // frustum, lavender-tinted chunks, a frozen stream) as a rendering bug: whenever the model looks
     // wrong, the reason is written on the screen. Draws nothing when no such mode is active. Ordinary
@@ -3451,19 +3450,19 @@ namespace Surfels
         };
 
         // Order: the modes that hide or replace the model first, then tints/overlays, then frozen/forced state.
-        if (m_showOcclusionVolumeOnly)     add(ImVec4(1.00f, 0.90f, 0.20f, 1.0f), "[View Occlusion Volume Only Mode Enabled]");
-        if (m_showOnlyLockedChunks)        add(ImVec4(1.00f, 0.60f, 0.20f, 1.0f), "[Show ONLY Locked Chunks Mode Enabled]");
-        if (m_highlightSilhouetteChunks)   add(ImVec4(0.78f, 0.68f, 1.00f, 1.0f), "[Highlight Edge Chunks Mode Enabled]");
-        if (m_showChunkStream)             add(ImVec4(1.00f, 0.62f, 0.20f, 1.0f), "[Refinement Visualizer Mode Enabled -- see Streaming tab]");
-        if (m_showClusterHeatmap)          add(ImVec4(1.00f, 0.45f, 0.35f, 1.0f), m_heatmapSource == 1 ? "[Detail Heatmap Cluster Cubes Mode Enabled]" : "[Density Heatmap Cluster Cubes Mode Enabled]");
-        if (m_showHeatmapWireframe)        add(ImVec4(0.92f, 0.82f, 0.60f, 1.0f), "[Cube Outlines Mode Enabled]");
-        if (m_showOctreeVisualizer)        add(ImVec4(1.00f, 0.75f, 0.20f, 1.0f), "[Macro Clusters Mode Enabled]");
-        if (m_showGlobalBounds)            add(ImVec4(0.40f, 0.60f, 1.00f, 1.0f), "[Global Model Bounds Mode Enabled]");
-        if (m_showCulledChunks)            add(ImVec4(0.80f, 0.80f, 0.80f, 1.0f), "[Show Culled Chunks Mode Enabled]");
-        if (m_detachCamera)                add(ImVec4(0.30f, 0.90f, 1.00f, 1.0f), "[Detached Culling Camera Mode Enabled]");
-        if (m_freezeRenderingAndMemory)    add(ImVec4(0.55f, 0.75f, 1.00f, 1.0f), "[Freeze Rendering & Memory Mode Enabled]");
-        if (!m_autoLOD)                    add(ImVec4(0.50f, 1.00f, 0.50f, 1.0f), "[Manual LOD %d Mode Enabled]", m_selectedPreviewLOD);
-        if (m_occlusionMipOverride >= 0)   add(ImVec4(1.00f, 0.55f, 0.80f, 1.0f), "[Occlusion Volume Mip %d Forced Mode Enabled]", m_occlusionMipOverride);
+        if (m_showOcclusionVolumeOnly)     add(ImVec4(1.00f, 0.90f, 0.20f, 1.0f), "RENDERER: View Occlusion Volume Only enabled");
+        if (m_showOnlyLockedChunks)        add(ImVec4(1.00f, 0.60f, 0.20f, 1.0f), "RENDERER: Show ONLY Locked Chunks enabled");
+        if (m_highlightSilhouetteChunks)   add(ImVec4(0.78f, 0.68f, 1.00f, 1.0f), "RENDERER: Highlight Edge Chunks enabled");
+        if (m_showChunkStream)             add(ImVec4(1.00f, 0.62f, 0.20f, 1.0f), "RENDERER: Refinement Visualizer enabled");
+        if (m_showClusterHeatmap)          add(ImVec4(1.00f, 0.45f, 0.35f, 1.0f), m_heatmapSource == 1 ? "RENDERER: Detail Heatmap Cluster Cubes enabled" : "RENDERER: Density Heatmap Cluster Cubes enabled");
+        if (m_showHeatmapWireframe)        add(ImVec4(0.92f, 0.82f, 0.60f, 1.0f), "RENDERER: Cube Outlines enabled");
+        if (m_showOctreeVisualizer)        add(ImVec4(1.00f, 0.75f, 0.20f, 1.0f), "RENDERER: Macro Clusters enabled");
+        if (m_showGlobalBounds)            add(ImVec4(0.40f, 0.60f, 1.00f, 1.0f), "RENDERER: Global Model Bounds enabled");
+        if (m_showCulledChunks)            add(ImVec4(0.80f, 0.80f, 0.80f, 1.0f), "RENDERER: Show Culled Chunks enabled");
+        if (m_detachCamera)                add(ImVec4(0.30f, 0.90f, 1.00f, 1.0f), "RENDERER: Detach Camera (frozen culling frustum) enabled");
+        if (m_freezeRenderingAndMemory)    add(ImVec4(0.55f, 0.75f, 1.00f, 1.0f), "STREAMING: Freeze Rendering & Memory enabled");
+        if (!m_autoLOD)                    add(ImVec4(0.50f, 1.00f, 0.50f, 1.0f), "RENDERER: Manual LOD %d enabled", m_selectedPreviewLOD);
+        if (m_occlusionMipOverride >= 0)   add(ImVec4(1.00f, 0.55f, 0.80f, 1.0f), "RENDERER: Occlusion Volume Mip %d forced enabled", m_occlusionMipOverride);
         if (count == 0) return;
 
         // Top-left of the viewport: just right of the left panel, below the menu bar, never under the
