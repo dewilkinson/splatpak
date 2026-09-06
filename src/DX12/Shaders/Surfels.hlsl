@@ -530,10 +530,17 @@ void mainMS(
         }
         else if (g_ShowChunkStream == 1)
         {
-            // Wave Sweep: 10% Orange Tint Opacity
-            float trailFactor = saturate(w / 0.95);
-            float3 orangeTint = float3(1.0, 0.55, 0.1);
-            litColor = lerp(litColor, orangeTint * lighting, 0.10 * trailFactor);
+            // Streaming arrival glow (Show Streaming Arrivals): w runs 0.95 (just delivered) -> 0 (faded).
+            // Newly added chunks -- the leading edge of the growing model -- flash bright hot orange, then
+            // settle to a regular semi-transparent orange fill that fades out at the end of its life.
+            float life = saturate(w / 0.95);                 // 1 = just arrived, 0 = expired
+            float glow = life * life;                        // Bright peak at the leading edge, still strong at mid-life
+            float3 regularOrange = float3(1.0, 0.42, 0.04);
+            float3 hotOrange     = float3(1.0, 0.80, 0.40);
+            float3 tint = lerp(regularOrange, hotOrange, glow);
+            float opacity = 0.60 * smoothstep(0.0, 0.25, life); // Semi-transparent fill; fades out over the last quarter
+            litColor = lerp(litColor, tint * (lighting + 0.35 * glow), opacity);
+            litColor += hotOrange * (glow * 0.55);           // Emissive bloom on the newest chunks
         }
     }
 

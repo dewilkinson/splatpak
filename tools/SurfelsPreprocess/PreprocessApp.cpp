@@ -1451,90 +1451,6 @@ namespace Surfels
 
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
-    // Automated self-test: walks every LOD level checking for buffer overruns, NaN/Inf positions, and dither coverage gaps
-    void PreprocessApp::RunMemoryAndLODIntegrityTest()
-    {
-        std::stringstream ss;
-        int numLODs = (int)m_lodStreamChunks.size();
-        if (numLODs == 0)
-        {
-            m_integrityReport = "[ERROR] No LOD dataset loaded to test.";
-            return;
-        }
-
-        size_t totalChunksTested = 0;
-        size_t totalSurfelsTested = 0;
-        size_t outOfBoundsOffsetErrors = 0;
-        size_t nanCoordErrors = 0;
-        size_t boundsViolationErrors = 0;
-        size_t emptyChunkErrors = 0;
-
-        size_t rawBufferSize = m_unifiedRawSurfels.size();
-        size_t packedBufferSize = m_unifiedPackedSurfels.size();
-
-        for (int lvl = 0; lvl < numLODs; lvl++)
-        {
-            size_t lvlChunks = m_lodStreamChunks[lvl].size();
-            totalChunksTested += lvlChunks;
-
-            for (size_t c = 0; c < lvlChunks; c++)
-            {
-                const auto& chunk = m_lodStreamChunks[lvl][c];
-                size_t count = chunk.rawSurfels.size();
-                totalSurfelsTested += count;
-
-                if (count == 0) emptyChunkErrors++;
-
-                // 1. Buffer range & offset validation
-                if (chunk.globalSurfelOffset + count > rawBufferSize)
-                {
-                    outOfBoundsOffsetErrors++;
-                }
-                if (!m_unifiedPackedSurfels.empty() && chunk.globalSurfelOffset + count > packedBufferSize)
-                {
-                    outOfBoundsOffsetErrors++;
-                }
-
-                // 2. Numerical Sanity & AABB Coverage Validation
-                for (const auto& s : chunk.rawSurfels)
-                {
-                    if (std::isnan(s.position.x) || std::isnan(s.position.y) || std::isnan(s.position.z) ||
-                        std::isinf(s.position.x) || std::isinf(s.position.y) || std::isinf(s.position.z))
-                    {
-                        nanCoordErrors++;
-                    }
-
-                    if (s.position.x < m_aabbMin.x - 0.05f || s.position.x > m_aabbMax.x + 0.05f ||
-                        s.position.y < m_aabbMin.y - 0.05f || s.position.y > m_aabbMax.y + 0.05f ||
-                        s.position.z < m_aabbMin.z - 0.05f || s.position.z > m_aabbMax.z + 0.05f)
-                    {
-                        boundsViolationErrors++;
-                    }
-                }
-            }
-        }
-
-        if (outOfBoundsOffsetErrors == 0 && nanCoordErrors == 0 && boundsViolationErrors == 0 && emptyChunkErrors == 0)
-        {
-            ss << "[PASS] 100% Data & Memory Integrity Validated!\n"
-               << "  - LOD Levels: " << numLODs << "\n"
-               << "  - Total Chunks Tested: " << totalChunksTested << "\n"
-               << "  - Total Multi-Res Surfels: " << totalSurfelsTested << "\n"
-               << "  - VRAM Layout: 0 Buffer Overruns, 0 NaN/Inf Points, 0 AABB Leaks\n"
-               << "  - Dither Coverage: 100% Screen-Space Complementary Sum Verified.";
-        }
-        else
-        {
-            ss << "[FAIL] Integrity Issues Found:\n"
-               << "  - Offset Overruns: " << outOfBoundsOffsetErrors << "\n"
-               << "  - NaN/Inf Points: " << nanCoordErrors << "\n"
-               << "  - AABB Violations: " << boundsViolationErrors << "\n"
-               << "  - Empty Chunks: " << emptyChunkErrors;
-        }
-
-        m_integrityReport = ss.str();
-    }
-
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
@@ -2313,6 +2229,19 @@ namespace Surfels
                     }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Visualizer toggle: highlights the active silhouette edge chunks.");
 
+                    if (ImGui::Checkbox("Show Streaming Arrivals (Orange Glow)", &m_showChunkStream))
+                    {
+                        m_streamStateDirty = true;
+                    }
+                    if (m_showChunkStream)
+                    {
+                        ImGui::SameLine();
+                        ImGui::PushItemWidth(100.0f);
+                        ImGui::SliderFloat("##ArrivalFade", &m_chunkStreamDuration, 0.5f, 10.0f, "%.1f s");
+                        ImGui::PopItemWidth();
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("How long a delivered chunk stays tinted. The bright glow occupies roughly the first third; the tint fades out at the end.");
+                    }
+
                     if (ImGui::Checkbox("Show ONLY Locked Chunks (Transition / Edge)", &m_showOnlyLockedChunks))
                     {
                         m_streamStateDirty = true;
@@ -2383,18 +2312,6 @@ namespace Surfels
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Unloads and immediately refreshes ONLY the silhouette edge chunks without touching or waving the rest of the model.");
                     }
 
-                    ImGui::Separator();
-                    if (ImGui::Button("Validate Buffer & LOD Integrity", ImVec2(-1, 26)))
-                    {
-                        RunMemoryAndLODIntegrityTest();
-                    }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Runs automated deep diagnostics across all LOD levels: checks for buffer overruns, NaN/Inf positions, AABB leaks, and verifies 100% complementary dither coverage.");
-
-                    if (!m_integrityReport.empty())
-                    {
-                        bool isPass = (m_integrityReport.find("[PASS]") != std::string::npos);
-                        ImGui::TextColored(isPass ? ImVec4(0.3f, 1.0f, 0.4f, 1.0f) : ImVec4(1.0f, 0.3f, 0.3f, 1.0f), "%s", m_integrityReport.c_str());
-                    }
                 }
 
                 // Interior Occlusion Volume (viewer controls) -- only relevant when the loaded model
@@ -3460,6 +3377,7 @@ namespace Surfels
         if (m_showOcclusionVolumeOnly)     add(ImVec4(1.00f, 0.90f, 0.20f, 1.0f), "[View Occlusion Volume Only Mode Enabled]");
         if (m_showOnlyLockedChunks)        add(ImVec4(1.00f, 0.60f, 0.20f, 1.0f), "[Show ONLY Locked Chunks Mode Enabled]");
         if (m_highlightSilhouetteChunks)   add(ImVec4(0.78f, 0.68f, 1.00f, 1.0f), "[Highlight Edge Chunks Mode Enabled]");
+        if (m_showChunkStream)             add(ImVec4(1.00f, 0.62f, 0.20f, 1.0f), "[Streaming Arrival Glow Mode Enabled]");
         if (m_showClusterHeatmap)          add(ImVec4(1.00f, 0.45f, 0.35f, 1.0f), m_heatmapSource == 1 ? "[Detail Heatmap Cluster Cubes Mode Enabled]" : "[Density Heatmap Cluster Cubes Mode Enabled]");
         if (m_showHeatmapWireframe)        add(ImVec4(0.92f, 0.82f, 0.60f, 1.0f), "[Cube Outlines Mode Enabled]");
         if (m_showOctreeVisualizer)        add(ImVec4(1.00f, 0.75f, 0.20f, 1.0f), "[Macro Clusters Mode Enabled]");

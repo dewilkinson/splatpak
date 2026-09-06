@@ -255,7 +255,7 @@ namespace Surfels
             float    transitionProgress = 0.0f;   // 0.0 (Parent Level N Solid) <-> 1.0 (Children Level N-1 Solid)
             float    streamWaveTimer = 0.0f;      // Active chunk streaming lavender wavefront timer (3.0s -> 0.0s)
             float    silhouetteHysteresisTimer = 0.0f; // Hysteresis hold time (seconds) to eliminate refinement/demotion thrashing
-            bool     renderedLastFrame = false;    // Appended to the renderer's chunk list by the previous traversal. Only such chunks can carry an edge flag: the GPU bitmask is ingested for rendered chunks only, so anything else must be cleared (see the reset loop before traversal)
+            bool     renderedLastFrame = false;    // Visited by the previous frame's traversal: rendered, or refined in place of by its children. Only such "active" chunks may keep an edge flag; anything the traversal never reached (a level outside the active range) is cleared before the next traversal. Clearing on "not rendered" alone made a refined edge parent lose its flag, re-render, get re-detected and refine again every other frame -- a whole-model flicker
             uint32_t globalSurfelOffset = 0;      // Zero-copy offset into m_unifiedPackedSurfels / m_unifiedRawSurfels
             XMFLOAT3 aabbMin = { 0, 0, 0 };
             XMFLOAT3 aabbMax = { 0, 0, 0 };
@@ -306,8 +306,8 @@ namespace Surfels
         size_t m_evictedSurfelCount         = 0;      // Count of earlier slots evicted from GPU Ring Buffer
 
         // Show Chunk Stream: Creeping Wavefront & Dissolving Alpha Wake
-        bool   m_showChunkStream            = false;  // Chunk-arrival wave sweep visualizer. No UI toggle any more; left off
-        float  m_chunkStreamDuration        = 3.0f;   // Duration in seconds of advancing wave crest & trailing alpha dissipation
+        bool   m_showChunkStream            = true;   // Streaming arrival visualizer: newly delivered chunks glow hot orange, settle to a regular orange tint and fade out (Renderer tab: "Show Streaming Arrivals")
+        float  m_chunkStreamDuration        = 3.0f;   // Seconds a delivered chunk stays tinted (the glow is the first part of that)
 
         // Silhouette Edge Focused Reconstruction & Dilation Morphing
         bool   m_enableSilhouetteLOD0       = true;   // Refine silhouette edges using biased LOD levels (Option 2 GPU Inversion)
@@ -346,8 +346,6 @@ namespace Surfels
         bool     m_streamStateDirty = true;
         uint32_t m_lastActiveTransitions = 0; // Simultaneously mid-transition chunk count from the previous frame; forces instant transition completion under overload (see UpdateStreamingSimulation)
 
-        std::string m_integrityReport;
-        void   RunMemoryAndLODIntegrityTest();
         float  m_morphTestDebounceTimer = 0.0f;
 
         void   InitStreamingSimulation();
