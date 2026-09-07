@@ -2586,7 +2586,7 @@ namespace Surfels
                     bool detachToggle = m_detachCamera;
                     if (ImGui::Checkbox("Detach Camera (Freeze Culling Frustum)", &detachToggle))
                         SetDetachCamera(detachToggle);
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Ctrl+D. Freezes the culling camera where the view is and steps the view aside so the culling can be inspected from any angle. The model is exactly what the frozen camera would render, its level of detail included: surfels it would draw keep their colour (mid grey where the viewer sees their back), everything it would have culled -- chunks outside its frustum or facing away, and the far side of the shell -- stays on screen in dark grey. The occlusion volume shows only the faces turned toward the frozen camera.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Ctrl+D. Freezes the culling camera where the view is and steps the view aside so the culling can be inspected from any angle. The model is exactly what the frozen camera would render, its level of detail included: surfels it would draw keep their colour (mid grey where the viewer sees their back), everything it would have culled -- chunks outside its frustum or whose normal cone faces away, and the far half of the model beyond its centre -- stays on screen in dark grey. The occlusion volume shows only the faces turned toward the frozen camera.");
                     if (m_detachCamera)
                     {
                         ImGui::SameLine();

@@ -414,14 +414,16 @@ bool BuildSplat(uint surfelIndex, uint lod, float chunkBlendWeight, float chunkD
                               (cullClip.y < -cullClip.w) || (cullClip.y > cullClip.w) ||
                               (cullClip.z < 0.0) || (cullClip.z > cullClip.w);
 
-        // 2. Normal test wrt the detached camera: only the front-facing shell it could see keeps colour
-        float3 toCullCam = g_CullEyePos - worldPos;
-        float distCull = length(toCullCam);
-        float3 normCullDir = distCull > 1e-4 ? (toCullCam / distCull) : float3(0, 0, 1);
-        float nDotCull = dot(normal, normCullDir);
-        bool isBackFacingToDetached = (dot(normal, normal) > 0.1) && (nDotCull < -0.05);
+        // 2. Far-side test: the half of the model beyond its centre, as seen from the frozen camera, is
+        // what that camera cannot see. Decided by position, not by the surfel normal: splat scans carry
+        // arbitrary normal signs, so a normal test speckles both halves instead of splitting them.
+        float3 modelCentre = g_AABBMin + g_AABBExtents * 0.5;
+        float3 frozenForward = modelCentre - g_CullEyePos;
+        float fwdLen = length(frozenForward);
+        frozenForward = fwdLen > 1e-4 ? frozenForward / fwdLen : float3(0, 0, -1);
+        bool farSideOfDetached = dot(worldPos - modelCentre, frozenForward) > 0.0;
 
-        if (frozenCulled || outsideFrustum || isBackFacingToDetached)
+        if (frozenCulled || outsideFrustum || farSideOfDetached)
         {
             frozenGrey = true;
             normal = float3(0.0, 0.0, 0.0); // No lighting term: uniform grey
@@ -495,7 +497,7 @@ bool BuildSplat(uint surfelIndex, uint lod, float chunkBlendWeight, float chunkD
     }
 
     if (frozenGrey)
-        litColor = float3(0.32, 0.32, 0.32); // Detach Camera: culled by the frozen camera, kept as dark grey (no tints)
+        litColor = float3(0.09, 0.09, 0.09); // Detach Camera: culled by the frozen camera, kept as dark grey (no tints). Linear 0.09 shows as ~85/255 after the sRGB output; 0.32 looked as bright as the stone
 
     sd.worldPos = worldPos;
     sd.normal = normal;
