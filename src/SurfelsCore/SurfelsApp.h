@@ -167,6 +167,7 @@ namespace Surfels
         // Interior Occlusion Volume: solid depth-writing cubes baked at preprocessing time so far-side
         // surfels can't show through gaps in the near side. Optional and disabled by default.
         bool  m_generateOcclusionVolume   = true;  // Preprocessor: bake a volume for this dataset on export (on by default)
+        float m_occlusionShave            = 0.0f;  // Preprocessor: baked erosion beyond poke-through removal, 0 = none .. 10 = a thin core (see BuildOcclusionVolume)
         float m_occlusionShaveBiasCells   = 0.0f;  // From config.json "occlusion_shave_bias": extra cells added to the unconditional poke-through cull band (see OcclusionVolume::BuildGrid)
         std::string m_lastDialogFolder;             // From config.json "last_dialog_folder": Open/Save dialogs start here instead of the project root once the user has browsed elsewhere
         float m_occlusionHueShift         = 0.0f;  // Preprocessor: baked colour grade of the volume -- hue rotation in degrees (-180..180)

@@ -2246,7 +2246,7 @@ namespace Surfels
                     {
                         RefreshOcclusionVolume();
                     }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Erodes the solid further inside the model. Cubes that would poke through the surfel surface are always removed first (see the count below), so 0 = the largest volume that stays inside the model. 10 = every part shaved down to its own centre line, leaving only a thin core along the model's length. The cut is proportional to local thickness, so thin and thick parts shrink together. Rebuilds live; baked into the package.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Erodes the solid further inside the model. Cubes that would poke through the surfel surface are always removed first (see the count below), so 0 = the largest volume that stays inside the model and 10 = a thin core along the model's length. Thin and thick parts shrink together. Rebuilds live; baked into the package.");
                     // Colour grade of the baked colour. Applied when each block's colour is packed, so it
                     // ships in the .sflw like the shape does; rebuilds live off the cached grid.
                     bool gradeChanged = false;
@@ -2263,8 +2263,9 @@ namespace Surfels
                     if (m_occlusionGrid.valid)
                     {
                         ImGui::TextDisabled("Auto resolution: %d cells along the longest axis (%.3f m per cell)", m_occlusionGrid.resolution, m_occlusionGrid.cellSize);
+                        ImGui::TextDisabled("Shell padding: %d cell(s)   Poke-through cull: %zu of %zu cubes removed   Bias: %+.1f cells (config.json)", m_occlusionGrid.gapClose, m_occlusionGrid.pokeCount, m_occlusionGrid.solidCount, m_occlusionShaveBiasCells);
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Cubes whose corners fall outside the surfel surface (tested against the centroid and mean normal of the neighbouring surfels). Always removed, at any shave, so the volume never clips outside the model.");
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Chosen from the point density so a few points span every surface cell, then coarsened if the shell would leak. Interior blocks are merged into larger cubes automatically.");
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Chosen from the point density so a few points span every surface cell. Interior blocks are merged into larger cubes automatically.");
                     }
                 }
 
@@ -2275,6 +2276,7 @@ namespace Surfels
                     for (uint32_t k = 0; k < m_occlusionMips.mipCount; k++)
                         chain += (k ? " / " : "") + std::to_string(m_occlusionMips.blockCount[k]);
                     ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Baked: %zu occluder cubes in %u mips (%s)", m_occlusionVoxels.size(), m_occlusionMips.mipCount, chain.c_str());
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Mip 0 is the fine skin, %.3f m cells. Each further mip is a coarser level that lies inside the one below it, so no mip ever protrudes. The renderer draws one mip per frame, chosen from how many pixels a cell covers at the model's nearest point, so the volume coarsens together with the surfel LOD in view.", m_occlusionMips.mipCount > 0 ? m_occlusionMips.cellSize[0] : 0.0f);
                 }
                 else if (m_generateOcclusionVolume)
                     ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "Baked: no cubes survived (point cloud too sparse/thin at this resolution)");
@@ -3966,6 +3968,7 @@ namespace Surfels
                 }
                 ImGui::EndCombo();
             }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("The volume is baked as %u nested mips (mip 0 = the fine skin; each further mip a coarser level lying inside it). Auto draws the finest mip whose cell still covers a few pixels at the model's nearest point, with hysteresis, so the cube size grows with the surfel LOD in view. Force a mip here to compare levels.", m_occlusionMips.mipCount);
         }
     }
 

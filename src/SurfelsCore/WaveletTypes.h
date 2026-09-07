@@ -68,15 +68,12 @@ namespace Surfels
     static constexpr uint32_t kMaxOcclusionMips = 4;
 
     #pragma pack(push, 1)
-    // One baked occluder block of the interior occlusion volume (see SurfelsApp::BuildOcclusionVolume).
-    // The volume is a closed voxel solid -- every fine grid cell that cannot be reached from outside the
-    // model without crossing a surfel-occupied cell (the surfel-occupied shell plus everything it
-    // encloses) -- eroded by a baked number of cell layers so it sits just inside the surfel shell, and
-    // then stored as an adaptive octree: runs of 2x2x2 solid blocks are merged into one larger cube,
-    // recursively, so the finest cubes hug the surface while the interior is covered by a few big ones.
-    // Blocks with no exposed face at all are dropped outright, since a closed occluder only needs its
-    // skin. halfSize is therefore half of (cellSize * 2^level), and faces of neighbouring blocks of
-    // different sizes still tile exactly because every block is grid-aligned to its own size.
+    // One baked occluder block of the interior occlusion volume (libs/bluesec-codec/OcclusionVolume.h).
+    // The volume is a closed voxel solid of the model sitting just inside the surfel shell, stored as an
+    // adaptive octree: the finest cubes hug the surface while the interior is covered by a few big ones,
+    // and blocks with no exposed face are dropped, since a closed occluder only needs its skin. halfSize
+    // is half of (cellSize * 2^level), and faces of neighbouring blocks of different sizes still tile
+    // exactly because every block is grid-aligned to its own size.
     //
     // packedColor layout:
     //   bits  0..15  RGB565 bake of the mean surfel colour over a wide box of surface around the block
@@ -99,13 +96,12 @@ namespace Surfels
     static_assert(sizeof(OcclusionVoxelGPU) == 20, "OcclusionVoxelGPU must be exactly 20 bytes");
 
     // Layout of the occlusion volume mip chain inside one OcclusionVoxelGPU array (v6+ packages, and the
-    // in-memory result of OcclusionVolume::Bake). Mip 0 is the finest volume -- the level-0 skin, sitting
-    // one below it and can never protrude, and its exposed-face masks are recomputed against its own
-    // solid. The renderer draws exactly ONE mip per frame, chosen so a cell still covers a few pixels at
-    // the model's nearest point (see SurfelsRenderer): at distance the fine skin is sub-pixel work and,
-    // worse, too tight for the big coarse-LOD splats it is paired with (a tangent disc sags below a
-    // curved surface by ~r^2 / 2R, and gets clipped once that exceeds the skin's erosion margin), so the
-    // cube size and the erosion margin grow together with the surfel LOD in view.
+    // in-memory result of OcclusionVolume::Bake). Mip 0 is the finest volume, the skin just inside the
+    // surfel surface; each further mip is a coarser level that lies inside the one below it and can never
+    // protrude, with its own exposed-face masks. The renderer draws exactly ONE mip per frame, chosen so
+    // a cell still covers a few pixels at the model's nearest point (see SurfelsRenderer): at distance the
+    // fine skin is sub-pixel work and too tight for the big coarse-LOD splats it is paired with, so the
+    // cube size grows together with the surfel LOD in view.
     //
     // The blocks of all mips are stored back to back, mip 0 first, so a pre-v6 reader that draws the
     // whole array still renders correctly (the coarser mips are hidden inside mip 0's skin).
