@@ -96,20 +96,76 @@ namespace Surfels
     }
 
     // Sets the initial window size and disables vsync/validation layers before device creation
+    std::vector<std::string> SurfelsApp::SplitCommandLine(const char* cmdLine)
+    {
+        std::vector<std::string> args;
+        if (!cmdLine) return args;
+        std::string cur;
+        bool inQuotes = false, have = false;
+        for (const char* c = cmdLine; *c; c++)
+        {
+            if (*c == '"') { inQuotes = !inQuotes; have = true; continue; }
+            if (!inQuotes && (*c == ' ' || *c == '\t' || *c == '\r' || *c == '\n'))
+            {
+                if (have) { args.push_back(cur); cur.clear(); have = false; }
+                continue;
+            }
+            cur += *c; have = true;
+        }
+        if (have) args.push_back(cur);
+        return args;
+    }
+
+    const char* SurfelsApp::CommandLineUsage()
+    {
+        // One option per line with its description indented below it: reads the same on a console
+        // and in the proportional-font message box (aligned columns do not survive the latter).
+        return
+            "Usage:\n"
+            "  SplatLab.exe [options] [file]\n"
+            "  Surfels_DX12.exe [options] [file]\n"
+            "\n"
+            "file\n"
+            "  A .sflw package to open, or (Studio mode) a .ply or .splat point cloud to preprocess. Dropping a file on the executable does the same. Without it the startup_dataset from config.json is opened.\n"
+            "\n"
+            "--viewer\n"
+            "  Viewer mode: the Renderer and Streaming tabs only (the default for Surfels_DX12.exe).\n"
+            "\n"
+            "--studio\n"
+            "  Studio mode: the Surfel Generator, Renderer and Streaming tabs (the default for SplatLab.exe).\n"
+            "\n"
+            "--render-path <p>\n"
+            "  GPU path for this run: auto, mesh, vs6 or vs5. Overrides render_path in config.json without changing it.\n"
+            "\n"
+            "--help, -h, /?\n"
+            "  Show this text.\n";
+    }
+
+    // The mode switches and --help are handled before the app exists (RunSurfelsApp in AppEntry.cpp);
+    // what arrives here is the rest: an optional file path and --render-path.
     void SurfelsApp::OnParseCommandLine(LPSTR lpCmdLine, uint32_t* pWidth, uint32_t* pHeight)
     {
         *pWidth = 1440;
         *pHeight = 900;
 
-        // The command line is one file path (drag-and-drop onto the exe, or the launch script's %*),
-        // which Windows quotes when it contains spaces. Strip the quotes and surrounding whitespace so
-        // the path opens as-is.
-        if (lpCmdLine && strlen(lpCmdLine) > 0)
+        const std::vector<std::string> args = SplitCommandLine(lpCmdLine);
+        for (size_t i = 0; i < args.size(); i++)
         {
-            std::string arg = lpCmdLine;
-            while (!arg.empty() && (arg.back() == ' ' || arg.back() == '\t' || arg.back() == '\r' || arg.back() == '\n' || arg.back() == '"')) arg.pop_back();
-            while (!arg.empty() && (arg.front() == ' ' || arg.front() == '\t' || arg.front() == '"')) arg.erase(arg.begin());
-            strncpy_s(m_inputPathBuf, sizeof(m_inputPathBuf), arg.c_str(), _TRUNCATE);
+            const std::string& a = args[i];
+            if (a == "--render-path" && i + 1 < args.size())
+            {
+                const std::string v = args[++i];
+                m_renderPathFromCommandLine = true;
+                if      (v == "mesh") m_renderPathOverride = 0;
+                else if (v == "vs6")  m_renderPathOverride = 1;
+                else if (v == "vs5")  m_renderPathOverride = 2;
+                else                  m_renderPathOverride = -1;
+                LogTransitionTrace("Command line: --render-path %s", v.c_str());
+            }
+            else if (!a.empty() && a[0] != '-' && a[0] != '/')
+            {
+                strncpy_s(m_inputPathBuf, sizeof(m_inputPathBuf), a.c_str(), _TRUNCATE);
+            }
         }
     }
 
@@ -292,10 +348,12 @@ namespace Surfels
                         if (eqPos != std::string::npos)
                         {
                             std::string val = line.substr(eqPos + 1);
-                            if (val.find("mesh") != std::string::npos)     { m_renderPathOverride = 0;  m_renderPathConfig = "mesh"; }
-                            else if (val.find("vs6") != std::string::npos) { m_renderPathOverride = 1;  m_renderPathConfig = "vs6"; }
-                            else if (val.find("vs5") != std::string::npos) { m_renderPathOverride = 2;  m_renderPathConfig = "vs5"; }
-                            else                                           { m_renderPathOverride = -1; m_renderPathConfig = "auto"; }
+                            int cfgOverride = -1;
+                            if (val.find("mesh") != std::string::npos)     { cfgOverride = 0;  m_renderPathConfig = "mesh"; }
+                            else if (val.find("vs6") != std::string::npos) { cfgOverride = 1;  m_renderPathConfig = "vs6"; }
+                            else if (val.find("vs5") != std::string::npos) { cfgOverride = 2;  m_renderPathConfig = "vs5"; }
+                            else                                           { cfgOverride = -1; m_renderPathConfig = "auto"; }
+                            if (!m_renderPathFromCommandLine) m_renderPathOverride = cfgOverride; // --render-path wins for this run; the config value is still written back unchanged
                         }
                     }
 
@@ -3675,7 +3733,7 @@ namespace Surfels
         if (!m_autoLOD)                    add(ImVec4(0.50f, 1.00f, 0.50f, 1.0f), "RENDERER: Manual LOD %d enabled", m_selectedPreviewLOD);
         if (m_occlusionMipOverride >= 0)   add(ImVec4(1.00f, 0.55f, 0.80f, 1.0f), "RENDERER: Occlusion Volume Mip %d forced enabled", m_occlusionMipOverride);
         // The open stand-in codec is a different product: say so on every frame, in one short row.
-        if (!CodecBuild::IsProprietary()) add(ImVec4(1.00f, 0.35f, 0.35f, 1.0f), "CODEC: %s (%s)", CodecBuild::Name(), CodecBuild::MissingFeatures());
+        if (!CodecBuild::IsProprietary()) add(ImVec4(1.00f, 0.35f, 0.35f, 1.0f), "CODEC: %s (%s)", CodecBuild::Name(), CodecBuild::MissingFeatures()); // Kept to one short row: the codec README has the full list
         // Hardware fallbacks: one row per GPU stage the render path is not using, so a screenshot from a
         // machine without mesh shaders says exactly which stages it lacks (SurfelsRenderer::RenderPath).
         if (m_pRenderer && m_pRenderer->GetRenderPath() != SurfelsRenderer::RenderPath::MeshShaders)

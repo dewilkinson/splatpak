@@ -30,6 +30,16 @@ The same renderer is also available as separate components for situations in whi
 
 Both programs are the same application code in two modes, built from one library, so the image shown in SplatLab's Renderer tab is the image the standalone viewer produces.
 
+**Command line.** Both executables take the same options and differ only in their default mode: `SplatLab.exe [options] [file]` and `Surfels_DX12.exe [options] [file]`.
+
+| Option | Effect |
+|---|---|
+| `file` | A `.sflw` package to open, or (Studio mode) a `.ply` / `.splat` point cloud to preprocess. Dropping a file on the executable does the same. Without it the `startup_dataset` from `config.json` is opened. |
+| `--viewer` | Viewer mode: the Renderer and Streaming tabs only (the default for `Surfels_DX12.exe`). |
+| `--studio` | Studio mode: the Surfel Generator, Renderer and Streaming tabs (the default for `SplatLab.exe`). |
+| `--render-path <p>` | GPU path for this run: `auto`, `mesh`, `vs6` or `vs5`. Overrides `render_path` in `config.json` without changing it. |
+| `--help`, `-h`, `/?` | Show the usage (on the console when started from a prompt, and in a dialog). |
+
 ## Getting Started
 
 **Running a release build.** Download the latest build from the [Releases page](../../../releases), extract it, and run `SplatLab.exe`. No installation is required. The only hardware requirement is a DirectX 12 Ultimate–class GPU (NVIDIA RTX 20-series or newer, AMD RDNA2 or newer).

@@ -12,6 +12,8 @@
 
 namespace Surfels
 {
-    // windowName is the window title / Cauldron app name. Returns the process exit code.
+    // windowName is the window title / Cauldron app name and mode the executable's default; the
+    // command line can override both (--viewer / --studio) and ask for usage (--help). Returns the
+    // process exit code: 0, or 2 for a bad option. See SurfelsApp::CommandLineUsage().
     int RunSurfelsApp(HINSTANCE hInstance, LPSTR lpCmdLine, int nCmdShow, const char* windowName, SurfelsApp::Mode mode);
 }

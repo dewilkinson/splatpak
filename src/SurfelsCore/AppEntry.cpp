@@ -86,8 +86,59 @@ LONG WINAPI VectoredCrashHandler(EXCEPTION_POINTERS* pEx)
     return EXCEPTION_CONTINUE_SEARCH;
 }
 
+// Shows the usage text: on the parent console when there is one (these are WIN32 executables, so
+// a console is only present when launched from a prompt), and always in a message box.
+static void ShowUsage(const char* windowName, const std::string& problem)
+{
+    std::string text = problem.empty() ? std::string() : (problem + "\n\n");
+    text += Surfels::SurfelsApp::CommandLineUsage();
+    if (AttachConsole(ATTACH_PARENT_PROCESS))
+    {
+        HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
+        DWORD written = 0;
+        std::string consoleText = "\n" + text;
+        WriteConsoleA(out, consoleText.c_str(), (DWORD)consoleText.size(), &written, nullptr);
+        FreeConsole();
+    }
+    std::string title = std::string(windowName) + " - Command line";
+    MessageBoxA(nullptr, text.c_str(), title.c_str(), MB_OK | (problem.empty() ? MB_ICONINFORMATION : MB_ICONWARNING));
+}
+
 int Surfels::RunSurfelsApp(HINSTANCE hInstance, LPSTR lpCmdLine, int nCmdShow, const char* windowName, SurfelsApp::Mode mode)
 {
+    // Mode switches and --help are decided here, before the app object exists; everything else
+    // (file path, --render-path) is handed on to SurfelsApp::OnParseCommandLine as a rebuilt
+    // command line. An unknown option shows the usage and exits with code 2.
+    std::string forwarded;
+    {
+        const std::vector<std::string> args = SurfelsApp::SplitCommandLine(lpCmdLine);
+        for (size_t i = 0; i < args.size(); i++)
+        {
+            const std::string& a = args[i];
+            if (a == "--viewer")      { mode = SurfelsApp::Mode::Viewer; windowName = "Surfels Viewer"; continue; }
+            if (a == "--studio")      { mode = SurfelsApp::Mode::Studio; windowName = "SplatLab"; continue; }
+            if (a == "--help" || a == "-h" || a == "/?" || a == "-?") { ShowUsage(windowName, ""); return 0; }
+            if (a == "--render-path")
+            {
+                if (i + 1 >= args.size() || (args[i + 1] != "auto" && args[i + 1] != "mesh" && args[i + 1] != "vs6" && args[i + 1] != "vs5"))
+                {
+                    ShowUsage(windowName, "--render-path needs one of: auto, mesh, vs6, vs5");
+                    return 2;
+                }
+                forwarded += "--render-path " + args[++i] + " ";
+                continue;
+            }
+            if (!a.empty() && (a[0] == '-' || (a[0] == '/' && a.size() == 2)))
+            {
+                ShowUsage(windowName, "Unknown option: " + a);
+                return 2;
+            }
+            forwarded += "\"" + a + "\" ";
+        }
+    }
+    std::vector<char> cmdBuf(forwarded.begin(), forwarded.end());
+    cmdBuf.push_back('\0');
+
     SetUnhandledExceptionFilter(CrashDumpHandler);
     AddVectoredExceptionHandler(1, VectoredCrashHandler);
 
@@ -103,7 +154,7 @@ int Surfels::RunSurfelsApp(HINSTANCE hInstance, LPSTR lpCmdLine, int nCmdShow, c
 #endif
 
     HRESULT hrCom = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    int result = RunFramework(hInstance, lpCmdLine, nCmdShow, new Surfels::SurfelsApp(windowName, mode));
+    int result = RunFramework(hInstance, cmdBuf.data(), nCmdShow, new Surfels::SurfelsApp(windowName, mode));
     if (SUCCEEDED(hrCom))
     {
         CoUninitialize();

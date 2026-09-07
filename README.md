@@ -139,6 +139,23 @@ structs and version history.
 - `bin/launch_surfellab.cmd` — launches SplatLab, forwarding any arguments (so a file path can be dropped on it).
 - `bin/launch.cmd` — launches the standalone viewer.
 
+### Command line
+
+Both executables take the same options; they differ only in their default mode:
+
+```bat
+SplatLab.exe [options] [file]
+Surfels_DX12.exe [options] [file]
+```
+
+| Option | Effect |
+|---|---|
+| `file` | A `.sflw` package to open, or (Studio mode) a `.ply` / `.splat` point cloud to preprocess. Dropping a file on the executable does the same. Without it the `startup_dataset` from `config.json` is opened. |
+| `--viewer` | Viewer mode: the Renderer and Streaming tabs only (the default for `Surfels_DX12.exe`). |
+| `--studio` | Studio mode: the Surfel Generator, Renderer and Streaming tabs (the default for `SplatLab.exe`). |
+| `--render-path <p>` | GPU path for this run: `auto`, `mesh`, `vs6` or `vs5`. Overrides `render_path` in `config.json` without changing it. |
+| `--help`, `-h`, `/?` | Show the usage (on the console when started from a prompt, and in a dialog). |
+
 ## Building
 
 Prerequisites (per [Cauldron's own README](https://github.com/GPUOpen-LibrariesAndSDKs/Cauldron)):

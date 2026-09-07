@@ -48,6 +48,11 @@ namespace Surfels
         bool        IsViewerOnly() const { return m_mode == Mode::Viewer; }
         const char* AppTitle() const     { return m_mode == Mode::Viewer ? "Surfels Viewer" : "SplatLab"; } // Dialog titles
 
+        // Splits a Win32 command line into arguments: whitespace-separated, double quotes group.
+        static std::vector<std::string> SplitCommandLine(const char* cmdLine);
+        // The options both executables accept (see AppEntry.cpp for the mode switches and --help).
+        static const char* CommandLineUsage();
+
         void OnParseCommandLine(LPSTR lpCmdLine, uint32_t* pWidth, uint32_t* pHeight) override;
         void OnCreate() override;
         void OnDestroy() override;
@@ -199,8 +204,9 @@ namespace Surfels
         float m_autoLODCooldownTimer = 0.0f;  // Blocks auto-LOD from advancing another level until the in-flight dither transition has had time to settle
         bool  m_autoRotate           = false; // Disabled by default
         bool  m_showControlHints     = true;  // Viewport: draw the faint rotate/zoom/pan reminder at the bottom-right (see DrawControlHints); saved in config.json
-        int         m_renderPathOverride = -1;     // Config "render_path": -1 auto, else SurfelsRenderer::RenderPath to force (testing)
-        std::string m_renderPathConfig = "auto";  // The config value as written back (auto / mesh / vs6 / vs5)
+        int         m_renderPathOverride = -1;     // "render_path" from config.json or --render-path: -1 auto, else SurfelsRenderer::RenderPath to force (testing)
+        std::string m_renderPathConfig = "auto";  // The config value as written back (auto / mesh / vs6 / vs5); --render-path never changes it
+        bool        m_renderPathFromCommandLine = false; // --render-path was given: it wins over config.json for this run only
         ImFont* m_pHintFont          = nullptr; // Proportional font for that reminder (Segoe UI, registered in OnCreate before the atlas is built); nullptr = default font
         bool  m_gpuRadixSort         = true;  // Checkbox: "GPU Radix Sort" under Accelerators (Enabled by default)
         bool  m_enableMortonOrder    = true;  // Checkbox: "Morton Spatial Curve Ordering" under Accelerators
