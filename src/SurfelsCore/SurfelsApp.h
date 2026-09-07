@@ -196,6 +196,7 @@ namespace Surfels
         XMFLOAT3 m_target = { 0.0f, 0.0f, 0.0f };
 
         bool     m_detachCamera     = false; // Detach/freeze culling camera from viewing camera
+        void     SetDetachCamera(bool on);   // Checkbox and Ctrl+D: freezes the culling camera where the view is and steps the view aside, or returns to it
         float    m_detachedYaw      = 0.6f;
         float    m_detachedPitch    = 0.35f;
         float    m_detachedDistance = 25.0f;

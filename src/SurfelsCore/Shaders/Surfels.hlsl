@@ -327,10 +327,12 @@ void SolidDot(float distToCam, inout float3 tangentX, inout float3 tangentY, out
     }
 }
 
-// Decodes surfel surfelIndex for the active render mode, applies detached-camera culling (returns
-// false when the surfel is dropped), the dilation morph, lighting and the edge / arrival tints.
-bool BuildSplat(uint surfelIndex, uint lod, float chunkBlendWeight, float chunkDilationMorph, float chunkIsSilhouette, out SplatData sd)
+// Decodes surfel surfelIndex for the active render mode, applies the detached-camera shading (what the
+// frozen camera would have culled is kept, flat dark grey), the dilation morph, lighting and the edge /
+// arrival tints. frozenCulled: the whole chunk was outside the frozen camera's frustum or normal cone.
+bool BuildSplat(uint surfelIndex, uint lod, float chunkBlendWeight, float chunkDilationMorph, float chunkIsSilhouette, bool frozenCulled, out SplatData sd)
 {
+    bool frozenGrey = false; // Painted flat dark grey at the end: the frozen camera would not draw this surfel
     float3 worldPos = float3(0.0, 0.0, 0.0);
     float3 normal = float3(0.0, 1.0, 0.0);
     float3 color = float3(0.0, 0.0, 0.0);
@@ -400,33 +402,34 @@ bool BuildSplat(uint surfelIndex, uint lod, float chunkBlendWeight, float chunkD
         SolidDot(distToCam, tangentX, tangentY, solid);
     }
 
-    // When the camera is detached: render the model as a hollow plaster mold shell
+    // When the camera is detached: everything the frozen camera would draw keeps its colour; everything
+    // it would have culled stays on screen as flat dark grey, so the observer sees the frozen frustum and
+    // the front shell in colour against the rest of the model in grey instead of against a void.
     if (g_UseDetachedCullCam == 1)
     {
-        // 1. Frustum culling against the frozen detached camera
+        // 1. Frustum test against the frozen detached camera
         float4 cullClip = mul(g_CullViewProj, float4(worldPos, 1.0));
         bool outsideFrustum = (cullClip.w <= 0.0001) ||
                               (cullClip.x < -cullClip.w) || (cullClip.x > cullClip.w) ||
                               (cullClip.y < -cullClip.w) || (cullClip.y > cullClip.w) ||
                               (cullClip.z < 0.0) || (cullClip.z > cullClip.w);
 
-        // 2. Normal culling wrt the detached camera: keep only the front-facing shell it could see
+        // 2. Normal test wrt the detached camera: only the front-facing shell it could see keeps colour
         float3 toCullCam = g_CullEyePos - worldPos;
         float distCull = length(toCullCam);
         float3 normCullDir = distCull > 1e-4 ? (toCullCam / distCull) : float3(0, 0, 1);
         float nDotCull = dot(normal, normCullDir);
         bool isBackFacingToDetached = (dot(normal, normal) > 0.1) && (nDotCull < -0.05);
 
-        if (outsideFrustum || isBackFacingToDetached)
+        if (frozenCulled || outsideFrustum || isBackFacingToDetached)
         {
-            sd.worldPos = worldPos; sd.normal = normal; sd.litColor = color; sd.tangentX = tangentX; sd.tangentY = tangentY; sd.solid = 0.0;
-            return false;
+            frozenGrey = true;
+            normal = float3(0.0, 0.0, 0.0); // No lighting term: uniform grey
         }
-        // 3. Back sides in solid mid grey: a surfel whose normal faces away from the VIEWER is being
-        // looked at from behind, so it is painted a flat, unlit grey. That makes it obvious which side of
-        // the model (relative to the frozen camera) the viewer is looking at. Zeroing the normal removes
-        // the lighting term below, so the grey is uniform.
-        if (dot(normal, normal) > 0.1)
+        // 3. Back sides of the visible shell in solid mid grey: a surfel whose normal faces away from the
+        // VIEWER is being looked at from behind, so it is painted a flat, unlit grey. That makes it
+        // obvious which side of the model (relative to the frozen camera) the viewer is looking at.
+        else if (dot(normal, normal) > 0.1)
         {
             float3 toViewer = g_ViewerEyePos - worldPos;
             float distViewer = length(toViewer);
@@ -490,6 +493,9 @@ bool BuildSplat(uint surfelIndex, uint lod, float chunkBlendWeight, float chunkD
             litColor += hotTint * (glow * 0.55 * g_ArrivalGlowIntensity); // Emissive bloom on the newest chunks
         }
     }
+
+    if (frozenGrey)
+        litColor = float3(0.32, 0.32, 0.32); // Detach Camera: culled by the frozen camera, kept as dark grey (no tints)
 
     sd.worldPos = worldPos;
     sd.normal = normal;
@@ -729,6 +735,10 @@ OccluderVSOut OccluderCornerVertex(OcclusionVoxel v, uint face, uint corner)
 // Amplification / Task Shader Stage (mainAS)
 // =========================================================================
 
+// Detach Camera keeps every chunk and marks the ones the frozen camera would have culled (frustum
+// or normal cone) with this bit in the payload index; the mesh shader paints them flat dark grey.
+#define CHUNK_FROZEN_CULLED_BIT 0x80000000u
+
 struct ChunkPayload
 {
     uint chunkIndices[AS_GROUP_SIZE];
@@ -784,6 +794,13 @@ void mainAS(
                 isVisible = false;
         }
 
+        // Detach Camera: nothing the frozen camera culled is dropped; it is flagged and drawn dark grey.
+        if (g_UseDetachedCullCam == 1 && !isVisible)
+        {
+            isVisible = true;
+            chunkIdx |= CHUNK_FROZEN_CULLED_BIT;
+        }
+
         // Show ONLY Locked Chunks (Transition or Edge)
         if (isVisible && g_ShowOnlyLocked == 1 && !ChunkIsLocked(chunk))
             isVisible = false;
@@ -826,10 +843,13 @@ void mainMS(
     float chunkDilationMorph = 0.0;
     float chunkIsSilhouette = 0.0;
     uint chunkLod = 0xFF;
+    bool frozenCulled = false;
     if (g_UseChunkedPipeline == 1)
     {
         uint pIdx = min(groupId.x, (uint)(AS_GROUP_SIZE - 1));
         uint chunkIdx = payload.chunkIndices[pIdx];
+        frozenCulled = (chunkIdx & CHUNK_FROZEN_CULLED_BIT) != 0;
+        chunkIdx &= ~CHUNK_FROZEN_CULLED_BIT;
         if (chunkIdx >= g_TotalChunks)
         {
             SetMeshOutputCounts(0, 0);
@@ -866,7 +886,7 @@ void mainMS(
     uint pBase = threadId * 2;
 
     SplatData sd;
-    if (!BuildSplat(surfelIndex, chunkLod, chunkBlendWeight, chunkDilationMorph, chunkIsSilhouette, sd))
+    if (!BuildSplat(surfelIndex, chunkLod, chunkBlendWeight, chunkDilationMorph, chunkIsSilhouette, frozenCulled, sd))
     {
         tris[pBase + 0] = uint3(0, 0, 0);
         tris[pBase + 1] = uint3(0, 0, 0);
@@ -1034,6 +1054,7 @@ VSOut mainVS(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
     float chunkDilationMorph = 0.0;
     float chunkIsSilhouette = 0.0;
     uint chunkLod = 0xFF;
+    bool frozenCulled = false;
 
     if (g_UseChunkedPipeline == 1)
     {
@@ -1048,8 +1069,14 @@ VSOut mainVS(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
         if (local >= chunk.surfelCount)
             return CulledSplatVertex();
         float3 eyePos = (g_UseDetachedCullCam == 1) ? g_CullEyePos : g_ViewerEyePos;
-        if (ChunkConeBackfacing(chunk, eyePos))
-            return CulledSplatVertex();
+        // The vertex-shader path never frustum-culled chunks (off-screen ones cost nothing); in Detach
+        // Camera mode the frozen frustum matters, so test it there to know what to paint grey.
+        bool chunkCulled = ChunkConeBackfacing(chunk, eyePos) || (g_UseDetachedCullCam == 1 && !ChunkInFrustum(chunk));
+        if (chunkCulled)
+        {
+            if (g_UseDetachedCullCam == 1) frozenCulled = true; // Detach Camera: kept, painted dark grey
+            else return CulledSplatVertex();
+        }
         if (g_ShowOnlyLocked == 1 && !ChunkIsLocked(chunk))
             return CulledSplatVertex();
         surfelIndex = chunk.surfelOffset + local;
@@ -1067,7 +1094,7 @@ VSOut mainVS(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
         return CulledSplatVertex();
 
     SplatData sd;
-    if (!BuildSplat(surfelIndex, chunkLod, chunkBlendWeight, chunkDilationMorph, chunkIsSilhouette, sd))
+    if (!BuildSplat(surfelIndex, chunkLod, chunkBlendWeight, chunkDilationMorph, chunkIsSilhouette, frozenCulled, sd))
         return CulledSplatVertex();
 
     return SplatCornerVertex(sd, s_quadVertexCorner[vertexId % 6], chunkBlendWeight, chunkIsSilhouette);
