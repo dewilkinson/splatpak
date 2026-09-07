@@ -1,13 +1,8 @@
 # Surfels
 
-> Just want to use the app? See the [User Guide](docs/USER_GUIDE.md) instead — this README covers the technical architecture.
+> Want to use the app? Start with the [User Guide](docs/USER_GUIDE.md). This README covers the architecture and the build.
 
-A GPU-driven DirectX 12 **mesh shader** renderer for massive surfel/point-cloud
-datasets — wavelet-based multi-resolution LOD streaming and GPU silhouette
-refinement, with geometry generated, culled, sorted, and cross-faded entirely
-on-GPU. There is no vertex/index buffer and no `DrawInstanced` anywhere in the
-pipeline: every splat is procedurally emitted by an amplification/mesh shader
-pair each frame, directly from a `StructuredBuffer` of packed surfels.
+Surfels is a DirectX 12 renderer and toolchain for very large point clouds and Gaussian splat scans. A scan of millions of points is packaged once into a compact, multi-resolution `.sflw` file, then streamed and drawn on the GPU as surfels: small oriented, coloured discs standing in for patches of surface. Every splat is generated, culled, sorted and cross-faded on the GPU each frame, straight from a buffer of packed surfels. There is no vertex or index buffer in the pipeline.
 
 ## Screenshots
 
@@ -15,133 +10,55 @@ pair each frame, directly from a `StructuredBuffer` of packed surfels.
 |---|---|---|
 | ![Surfel Generator tab: preprocessing parameters and the baked occlusion volume](docs/images/sl-01.png) | ![Renderer tab: runtime LOD, refinement visualizer and occlusion volume controls](docs/images/sl-02.png) | ![Streaming tab: the bounding octahedron glyph, network profiles and the LOD residency graph](docs/images/sl-03.png) |
 
-The Cthulhu Statue scan (3.3 M points, 748 MB raw) streamed from a 44 MB `.sflw` package: the Surfel Generator tab bakes the package, the Renderer tab drives LOD and the visualizers, and the Streaming tab shows the bounding octahedron and per-level residency.
+The Cthulhu Statue scan (3.3 M points, 748 MB raw) streamed from a 44 MB `.sflw` package. The Surfel Generator tab bakes the package, the Renderer tab drives LOD and the visualisers, and the Streaming tab shows the bounding octahedron and per-level residency.
 
-**Core pieces:**
+## How it works
 
-Built on top of AMD's [Cauldron](https://github.com/GPUOpen-LibrariesAndSDKs/Cauldron)
-framework (vendored as a git submodule under `libs/cauldron`) for device/
-swapchain/ImGui bootstrap — Cauldron ships no sample apps of its own, so
-`src/SurfelsCore/` is written directly against its
-`FrameworkWindows` API.
+- **Wavelet LOD pyramid.** The preprocessor partitions the scan into cubic chunks along a Morton Z-order curve, then runs a second-generation lifting wavelet decomposition with deadband sparsification over each chunk. The result is a pyramid of detail levels per chunk, written to a single `.sflw` file. At runtime chunks stream in and out of a bandwidth-throttled GPU ring buffer according to screen-space error and camera distance, with dithered (8x8 Bayer) cross-fades between levels so refinement never pops.
+- **GPU silhouette detection.** A compute pass renders a low-resolution item and depth buffer, extracts screen-space silhouette edges on the GPU, and biases streaming to refine those edges first. Contours stay crisp while the rest of a receding object coarsens.
+- **Interior occlusion volume.** The preprocessor can bake a solid, coloured voxel body of the model into the package, stored as a compact octree with a chain of coarser levels. The renderer draws it as depth-writing cubes, choosing the level each frame from how large its cells are on screen, so far-side surfels are occluded rather than bleeding through a sparse near side.
+- **GPU-driven culling and sorting.** Per-chunk frustum culling and normal-cone backface culling run in the amplification shader, a compute pre-pass produces depth keys and the `ExecuteIndirect` arguments, and a GPU bitonic sort keeps overlapping splats in order for alpha blending. No CPU round trip.
+- **Streaming scheduler.** After the coarse envelope and the silhouette chunks, a scheduler in the `bluesec-codec` core decides what streams next. The model is wrapped in a bounding octahedron, every chunk belongs to the face in front of it, and the faces the camera can see stream together while hidden faces wait. A detail grid baked into the package lets it favour some regions over others.
+- **Streaming controls.** Bandwidth throttling with 3G/4G/5G presets, a decay pass that drains unused detail, and a live residency panel showing which chunks are resident, in transition or silhouette-locked at each level.
+- **Hardware fallback.** Mesh shaders (D3D12 Mesh Shader Tier 1, Shader Model 6.5) are the fast path. Other D3D12 hardware runs the same stages as instanced vertex shaders, compiled for Shader Model 6.0 or, without DXIL support, through the legacy Shader Model 5.1 compiler. The picture is the same at lower frame rates, and the banner names the stages being stood in for.
 
-## Solution & Workspace Structure
+The apps sit on AMD's [Cauldron](https://github.com/GPUOpen-LibrariesAndSDKs/Cauldron) framework (a git submodule under `libs/cauldron`) for device, swapchain and ImGui bootstrap. Cauldron ships no sample apps, so `src/SurfelsCore/` is written directly against its `FrameworkWindows` API.
 
-The solution is organized into Solution Explorer folders:
+## Solution structure
 
-1. **`SplatLab` (Tools)** — `tools/SurfelsPreprocess/main.cpp`, a few lines that
-   start the shared app in `surfels_core` (below) in Studio mode. The primary
-   application: preprocessor and viewer in one window, and the default startup
-   project. This is what the User Guide describes.
-   - Loaders for binary and ASCII `.ply` and for `.splat` (3D Gaussian Splat)
-     files, plus a built-in synthetic urban-street benchmark generator.
-   - 64-bit Morton Z-order curve spatial partitioning into cubic chunks.
-   - Second-generation lifting wavelet decomposition with deadband sparsification.
-   - 8-byte GPU surfel quantization (`10:10:10:2` position, `oct16` normal,
-     `rgb565` colour), byte-shuffle transposition, and a run-length byte codec.
-   - Optional interior occlusion volume bake.
-   - The full renderer: mesh-shader splatting, GPU silhouette item-prepass,
-     temporal accumulation (TAA) resolve, occlusion volume, and the streaming
-     simulator with bandwidth/decay controls and the residency equalizer.
-   - Accepts a `.ply`, `.splat`, or `.sflw` path on the command line (drag a
-     file onto the executable). With no argument it loads the startup dataset
-     from `config.json` (`startup_dataset`, default `assets/cthulu/cthulu.sflw`).
+1. **`SplatLab` (Tools)**. `tools/SurfelsPreprocess/main.cpp`, a few lines that start the shared app in Studio mode: the Surfel Generator, Renderer and Streaming tabs in one window. The default startup project and what the User Guide describes.
 
-2. **`Surfels_DX12` (Apps)** — `src/DX12/main.cpp`, the same few lines starting
-   the shared app in Viewer mode. The standalone viewer: SplatLab's Renderer and
-   Streaming tabs with the Surfel Generator tab, its menu items and shortcuts
-   hidden. Same renderer, same render-path fallback, same streaming simulator,
-   TAA, silhouette prepass and occlusion volume, by construction rather than by
-   keeping two copies in step. Accepts a `.sflw` path on the command line and
-   otherwise loads the `startup_dataset` from `config.json`, exactly like SplatLab.
+2. **`Surfels_DX12` (Apps)**. `src/DX12/main.cpp`, the same few lines starting the shared app in Viewer mode: the Renderer and Streaming tabs with the generator hidden. Same renderer, fallback, TAA, silhouette prepass, occlusion volume and streaming simulator by construction.
 
-3. **Tests** — `tests/`. Small standalone console executables, each built as its
-   own target: `TestBitonicCPU` (CPU reference for the bitonic sort network),
-   `TestGPUSort` (runs `GPURadixSortCS.hlsl` on a raw D3D12 device and checks
-   against a CPU sort), `TestGeometryCull` (culling-statistics math),
-   `TestLoadPackage` (loads `models/venus.sflw` and prints chunk/surfel counts),
-   `TestOcclusionVolume` (runs the occlusion volume generator on a package and
-   prints its trace; optional resolution override and shave values), and
-   `CompressVenus` (command-line packager: writes the same `.sflw` SplatLab
-   would export for a `.ply` with default settings, occlusion volume included;
-   used to regenerate the bundled assets).
+3. **`surfels_core` (Core)**. `src/SurfelsCore/`, the static library both executables are built from: the app shell (`SurfelsApp`, with its Studio / Viewer mode and command-line parsing), the renderer (`SurfelsRenderer`), the `.ply` / `.splat` / `.sog` loaders, the octree, quantizer and packager, the `.sflw` types and format validators (`WaveletTypes.h`), the HLSL shaders (copied to `bin/ShaderLibDX` at build time) and the shared `WinMain` body with its crash-dump handlers (`AppEntry.cpp`). Anything both apps need lives here. The console tools include its headers directly and need neither a GPU nor Cauldron.
 
-4. **`surfels_core` (Core)** — `src/SurfelsCore/`. The static library both executables
-   are built from: the app shell (`SurfelsApp`, with its Studio / Viewer mode), the
-   renderer (`SurfelsRenderer`), the `.ply` / `.splat` / `.sog` loaders, the octree,
-   quantizer and packager, the `.sflw` types and format validators (`WaveletTypes.h`),
-   the HLSL shaders (copied to `bin/ShaderLibDX` at build time), and the shared
-   `WinMain` body with its crash-dump handlers (`AppEntry.cpp`). Anything both apps
-   need belongs here, so it is written once. The console test tools include its
-   headers directly; they need no GPU or Cauldron.
+4. **`bluesec-codec` (Core)**. `libs/bluesec-codec/`, the algorithm core: the lifting-wavelet decomposition, the byte-shuffle and run-length codec, the interior occlusion volume generator, and the streaming scheduler with the detail grid it reads. In this repository these are proprietary source: each module is a public header (data structures and declarations) plus a `.cpp` implementation, built as a static library that `SplatLab`, `Surfels_DX12` and the console tools link against. **This subtree is not covered by the repository's Apache-2.0 `LICENSE`**; see `libs/bluesec-codec/README.md` for the boundary and its limits. A static library keeps source out of ordinary distribution but does not prevent disassembly of a shipped binary, and the shader source under `src/SurfelsCore/Shaders/` ships as plain text in `bin/ShaderLibDX/` regardless.
 
-5. **`bluesec-codec` (Core)** — source in `libs/bluesec-codec/`. A static library holding the
-   lifting-wavelet decomposition, the byte-shuffle/RLE codec, the interior occlusion
-   volume generator, and the streaming scheduler's ordering with the detail grid it reads:
-   the pieces of this project judged distinctive enough to be worth keeping as compiled
-   objects rather than open source, even within this repo. Each
-   module is a public header (data structures and function declarations only) plus a
-   `.cpp` implementation; `SplatLab`, `Surfels_DX12`, and the console test tools all link
-   against it. **This subtree is explicitly not covered by the repository's top-level
-   Apache-2.0 `LICENSE`** — see `libs/bluesec-codec/README.md` for the licensing boundary
-   and its limits (a static library keeps source out of ordinary distribution; it doesn't
-   protect against disassembly of a shipped binary, and the GPU-side shader source under
-   `src/SurfelsCore/Shaders/` still ships as plain text in `bin/ShaderLibDX/` regardless).
+5. **Tests**. `tests/`, small console executables: `TestBitonicCPU` (CPU reference for the sort network), `TestGPUSort` (runs the radix sort on a raw D3D12 device against a CPU sort), `TestGeometryCull` (culling statistics), `TestLoadPackage` (loads a package and prints its counts), `TestOcclusionVolume` (runs the occlusion generator on a package) and `CompressVenus` (command-line packager, used to regenerate the bundled assets).
 
-6. **Docs** — a build-nothing target that lists `README.md` and
-   `docs/USER_GUIDE.md` in Solution Explorer for editing.
-
-7. **ThirdParty/Cauldron** — every vendored Cauldron target, swept into one folder.
+6. **Docs** lists `README.md` and `docs/USER_GUIDE.md` in Solution Explorer. **ThirdParty/Cauldron** holds every vendored Cauldron target.
 
 ### Public repository
 
-`https://github.com/dewilkinson/splatlab` is a public mirror of this repository with
-`bluesec-codec`'s proprietary *source* replaced by prebuilt `.lib` binaries of the same
-code (plus open stand-in sources as a fallback -- see that library's public README for
-exactly what differs) — the algorithm source never appears anywhere in its git history,
-not just at the current tip, while the public build still bakes real occlusion volumes
-and runs the real wavelet/codec. It's generated, not hand-maintained: run
-`python scripts/sync-public-repo.py` from a clean working tree to rebuild it from the
-current state of this repo (strips the proprietary paths from every commit, drops in the
-stand-in sources, compiles this repo's codec into the prebuilt `.lib` files, swaps a
-couple of private-repo-specific README passages, builds the result, regenerates the
-bundled example packages with it, runs the stress test, and pushes). Pass `--no-push` to
-inspect the result first, or `--no-prebuilt-codec` to publish a stand-in-only build. The
-script's own header comment documents each step and the config that needs updating if a
-proprietary module is ever renamed or moved again. Since 2026-09-07 the sync also rewrites the
-contents of past revisions (`scripts/public-history-scrub.py`): the streaming scheduler's
-ordering and the detail-grid scoring lived inside the app source before they moved into
-`bluesec-codec`, so those functions, the paragraphs describing them and the commit messages
-naming them are removed from every public commit, not only the current one.
+`https://github.com/dewilkinson/splatlab` is a generated public mirror of this repository. The proprietary source of `bluesec-codec` is replaced by prebuilt `.lib` binaries of the same code, with open stand-in sources as a fallback, so the public build has the full feature set while the algorithm source never appears in its history. `python scripts/sync-public-repo.py`, run from a clean working tree, rebuilds the mirror: it strips the proprietary paths from every commit, rewrites the contents of past revisions through `scripts/public-history-scrub.py` (the streaming scheduler and detail-grid scoring lived inside the app source before 2026-09-07, so those passages, the paragraphs describing them and the commit messages naming them are removed from every public commit), drops in the stand-ins, compiles this repository's codec into the prebuilt `.lib` files, swaps a few README passages, builds the result, regenerates the bundled packages, runs the stress test and pushes every branch and tag. `--no-push` inspects the result first; `--no-prebuilt-codec` publishes a stand-in-only build. `scripts/build-release.py` assembles the release zip from the built public tree.
 
 ### Package format (`.sflw`)
 
-A package is a single self-contained binary file (format version 5):
+A package is one self-contained binary file (format version 7):
 
 | Section | Contents |
 |---|---|
-| `SFLWFileHeader` | magic, version, chunk count, LOD count, global bounds, splat radius, absolute offsets of the occlusion volume and manifest, the byte size of the original input file (so the compression ratio shown is always source file vs package file), and the occlusion volume's mip table (mip count, blocks per mip, cell size per mip; v6+), and the detail grid's dimensions, cell size and offset (v7+) |
-| Chunk LOD payloads | one compressed blob per chunk per LOD level, in export order |
-| Occlusion voxels | optional `OcclusionVoxelGPU` array (only when a volume was baked) holding the mip chain back to back, mip 0 first; the header's mip table says where each mip starts, and a pre-v6 reader that draws the whole array still sees a correct volume because every coarser mip lies inside mip 0's skin |
-| Detail grid | optional `uint8` grid (v7+), one byte per cell over the model's bounds, an input to the streaming scheduler's delivery order; see `libs/bluesec-codec/DetailHeatmap.h` |
+| `SFLWFileHeader` | magic, version, chunk and LOD counts, global bounds, splat radius, the size of the original input file (so the compression ratio survives a reload), absolute offsets of the manifest, the occlusion volume with its mip table (v6+) and the detail grid (v7+) |
+| Chunk LOD payloads | one compressed blob per chunk per level, in export order |
+| Occlusion voxels | optional `OcclusionVoxelGPU` array holding the mip chain back to back, mip 0 first; a pre-v6 reader that draws the whole array still sees a correct volume |
+| Detail grid | optional `uint8` grid, one byte per cell over the model's bounds, read by the streaming scheduler; see `libs/bluesec-codec/DetailHeatmap.h` |
 | Manifest table | one `ChunkManifestRecord` per chunk (id, bounds, centre, radius, LOD count) followed by its `ChunkLODHeader` array (surfel count, byte sizes, payload offset, geometric error) |
 
-Every payload offset is absolute, so the manifest is written last and the
-header patched once all offsets are known. Packages written by format versions
-1–3 kept the manifest in a companion `.json`; both apps still load those if the
-`.json` sits next to the `.sflw`. See `src/SurfelsCore/WaveletTypes.h` for the
-structs and version history.
-
-### Helper scripts
-
-`bin/` is build output and is not tracked, but two convenience launchers live there:
-
-- `bin/launch_surfellab.cmd` — launches SplatLab, forwarding any arguments (so a file path can be dropped on it).
-- `bin/launch.cmd` — launches the standalone viewer.
+Every offset is absolute, so the manifest is written last and the header patched once all offsets are known. Formats 1 to 3 kept the manifest in a companion `.json`, which both apps still read when it sits next to the `.sflw`. Loading validates the header, the manifest and every payload and reports a specific reason when a file is not a valid package. See `src/SurfelsCore/WaveletTypes.h` for the structs and the version history.
 
 ### Command line
 
-Both executables take the same options; they differ only in their default mode:
+Both executables take the same options and differ only in their default mode:
 
 ```bat
 SplatLab.exe [options] [file]
@@ -150,19 +67,15 @@ Surfels_DX12.exe [options] [file]
 
 | Option | Effect |
 |---|---|
-| `file` | A `.sflw` package to open, or (Studio mode) a `.ply` / `.splat` point cloud to preprocess. Dropping a file on the executable does the same. Without it the `startup_dataset` from `config.json` is opened. |
-| `--viewer` | Viewer mode: the Renderer and Streaming tabs only (the default for `Surfels_DX12.exe`). |
-| `--studio` | Studio mode: the Surfel Generator, Renderer and Streaming tabs (the default for `SplatLab.exe`). |
+| `file` | A `.sflw` package to open, or in Studio mode a `.ply` / `.splat` to preprocess. Dropping a file on the executable does the same. Without it, the `startup_dataset` from `config.json` opens. |
+| `--viewer` | Viewer mode: the Renderer and Streaming tabs only. The default for `Surfels_DX12.exe`. |
+| `--studio` | Studio mode: all three tabs. The default for `SplatLab.exe`. |
 | `--render-path <p>` | GPU path for this run: `auto`, `mesh`, `vs6` or `vs5`. Overrides `render_path` in `config.json` without changing it. |
-| `--help`, `-h`, `/?` | Show the usage (on the console when started from a prompt, and in a dialog). |
+| `--help`, `-h`, `/?` | Show the usage, on the console when started from a prompt and in a dialog. |
 
 ## Building
 
-Prerequisites (per [Cauldron's own README](https://github.com/GPUOpen-LibrariesAndSDKs/Cauldron)):
-
-- CMake 3.24+
-- Visual Studio 2019 or newer (MSVC toolset 142+), with the Windows 10 SDK
-- No Vulkan SDK needed — the root `CMakeLists.txt` forces `GFX_API=DX12`
+Prerequisites, per [Cauldron's README](https://github.com/GPUOpen-LibrariesAndSDKs/Cauldron): CMake 3.24 or newer and Visual Studio 2019 or newer (MSVC toolset 142+) with the Windows 10 SDK. No Vulkan SDK is needed; the root `CMakeLists.txt` forces `GFX_API=DX12`.
 
 ```bat
 git clone --recurse-submodules https://github.com/dewilkinson/surfels.git
@@ -171,148 +84,38 @@ mkdir build && cd build
 cmake .. -G "Visual Studio 18 2026" -A x64
 ```
 
-Use whichever Visual Studio generator matches your install (`"Visual Studio 17 2022"` works the same way).
+Use whichever Visual Studio generator matches your install; `"Visual Studio 17 2022"` works the same way. If you cloned without `--recurse-submodules`, run `git submodule update --init --recursive` first.
 
-**You don't need to build Cauldron.** `libs/cauldron-prebuilt/lib/{Debug,Release}/` ships prebuilt
-`Cauldron_Common`/`Cauldron_DX12`/`ImGUI` static libraries (checked in via [Git LFS](https://git-lfs.com/),
-so `git lfs install` once per machine before cloning, or `git lfs pull` after if you already cloned
-without it) — the build links against those directly instead of compiling Cauldron's ~50 source files.
-This is controlled by the `CAULDRON_USE_PREBUILT` CMake option (`ON` by default); it's still Cauldron's
-own source/headers doing the work, this only skips recompiling three of its libraries, and it falls back
-to a normal from-source build automatically if the prebuilt `.lib` files aren't present (e.g. LFS objects
-not pulled). Pass `-DCAULDRON_USE_PREBUILT=OFF` to force a from-source build regardless (useful if you're
-patching Cauldron itself, or building for a toolset/platform the prebuilt libs don't cover).
+**Cauldron is prebuilt.** `libs/cauldron-prebuilt/lib/{Debug,Release}/` ships `Cauldron_Common`, `Cauldron_DX12` and `ImGUI` as static libraries through [Git LFS](https://git-lfs.com/), so run `git lfs install` once per machine before cloning, or `git lfs pull` afterwards. The `CAULDRON_USE_PREBUILT` option (on by default) links them instead of compiling Cauldron's sources, and falls back to a from-source build when the `.lib` files are missing. Pass `-DCAULDRON_USE_PREBUILT=OFF` to force the from-source build, for instance when patching Cauldron. The `.ply` scans under `assets/` are LFS objects too.
 
-The `.ply` assets under `assets/` are also LFS objects.
+Open the generated solution in `build/` (`Surfels_DX12.slnx` with the VS 2026 generator, `.sln` with older ones) or run `cmake --build . --config Release`. Executables and shaders land in `bin/`: every `.hlsl` under `src/SurfelsCore/Shaders/` is copied to `bin/ShaderLibDX/` for `CompileShaderFromFile` to find at runtime. Debug binaries get a `d` suffix. Release builds keep full optimisation and also emit PDBs.
 
-Open the generated solution in `build/` (`Surfels_DX12.slnx` with the VS 2026
-generator, `Surfels_DX12.sln` with older ones) and build/run, or build from the
-command line with `cmake --build . --config Release`. SplatLab is pinned as the
-startup project. Executables and shaders land in `bin/`: every `.hlsl` under
-`src/DX12/Shaders/` is copied to `bin/ShaderLibDX/` so `CompileShaderFromFile`
-can find it at runtime, and the post-build step also clears Cauldron's on-disk
-shader cache under `%LOCALAPPDATA%\AMD\Cauldron\ShaderCacheDX` so edited
-shaders are always recompiled.
-
-**Use a Visual Studio generator, not Ninja.** Cauldron's own `src/Common` and
-`src/DX12` CMakeLists.txt both copy overlapping FidelityFX headers into the
-same `bin/ShaderLibDX` output path. MSBuild tolerates that; Ninja's single
-global build graph rejects it as "multiple rules generate ...". If you open
-this folder directly in Visual Studio (rather than running `cmake` yourself),
-check `CMakeSettings.json` — it needs `"generator"` set to a Visual Studio
-generator matching your installed version (it ships set to `"Visual Studio 18
-2026 Win64"`), not the CMake Tools default of `"Ninja"`.
-
-If you already cloned without `--recurse-submodules`, run
-`git submodule update --init --recursive` first.
-
-`CMakeSettings.json` defines both `x64-Debug` and `x64-Release` configurations
-(pick one from Visual Studio's configuration dropdown); both build to the same
-`bin/` output, with Debug binaries getting a `d` suffix (`SplatLabd.exe`
-vs `SplatLab.exe`). Release builds keep full optimization but also emit PDBs
-(`/Zi` + `/DEBUG`) so crashes in the shipping configuration are debuggable.
+**Use a Visual Studio generator, not Ninja.** Cauldron's `src/Common` and `src/DX12` both copy overlapping FidelityFX headers into `bin/ShaderLibDX`. MSBuild tolerates that; Ninja rejects it. If you open the folder directly in Visual Studio, `CMakeSettings.json` must name a Visual Studio generator (it ships set to `"Visual Studio 18 2026 Win64"`).
 
 ### Runtime configuration
 
-SplatLab reads an optional `config.json` (searched in the working directory
-and a few parent directories; `surfels_config.ini` is also accepted). Keys
-that are read: `startup_dataset` (path loaded when no file is given on the
-command line), `benchmark_dataset`, and `occlusion_shave_bias` (extra cells,
-positive or negative, added to the occlusion volume's unconditional cull band
-around the sampled surface; use it when a noisy cloud still shows cubes poking
-through). The file SplatLab writes when none exists also lists
-`fallback_synthetic_points`, `default_chunk_size`, `default_max_lods`, and
-`default_deadband_mm`, but those are informational and not currently parsed.
-Without a config file the built-in defaults apply and the bundled
-`assets/cthulu/cthulu.sflw` is loaded. A second bundled package,
-`assets/venus/venus.sflw`, can be opened from the File menu. Both are
-regenerated with `CompressVenus` whenever the pipeline or the occlusion volume
-generator changes, so they always match the current format.
+The apps read an optional `config.json` from the working directory or a few parent directories (`surfels_config.ini` is also accepted). Keys read: `startup_dataset` (opened when no file is given), `render_path` (`auto`, `mesh`, `vs6`, `vs5`), `occlusion_shave_bias` (extra cells added to the occlusion volume's automatic cull band, for a noisy scan that still shows cubes poking through), `show_control_hints` and `last_dialog_folder`. The file written when none exists also lists a few informational defaults that are not parsed. Without a config file the bundled `assets/cthulu/cthulu.sflw` loads; `assets/venus/venus.sflw` can be opened from the File menu. Both are regenerated with `CompressVenus` whenever the pipeline changes.
 
-Both example scans come from [SuperSplat](https://superspl.at) and are redistributed
-under their authors' Creative Commons terms, which govern the datasets (and the `.sflw`
-packages derived from them) independently of the software's license -- see the
-`LICENSE.txt` beside each: the Cthulhu Statue by Christoph Schindelar is CC BY 4.0
-(attribution required, commercial use allowed); the Venus de Milo scan by Nicolas
-Diolez is CC BY-NC 4.0 (attribution required, **non-commercial use only**).
+Both example scans come from [SuperSplat](https://superspl.at) and carry their authors' Creative Commons terms, which govern the datasets and the packages derived from them independently of the software's license. See the `LICENSE.txt` beside each: the Cthulhu Statue by Christoph Schindelar is CC BY 4.0, and the Venus de Milo scan by Nicolas Diolez is CC BY-NC 4.0 (**non-commercial use only**).
 
-## Known gaps
+## Notes and known gaps
 
-- Mesh shaders (D3D12 Mesh Shader Tier 1, Shader Model 6.5) are the fast path
-  and are checked on startup. Hardware without them runs the same stages as
-  instanced vertex shaders: compiled for Shader Model 6.0 where the driver
-  supports DXIL, or through the legacy Shader Model 5.1 compiler where it does
-  not, on any D3D12 feature level 11_0 device. The fallback draws the same
-  picture at lower performance, and the top-left banner lists each stage it is
-  standing in for. `render_path` in `config.json` (`auto`, `mesh`, `vs6`, `vs5`)
-  forces a fallback for testing.
-- The main splat pass renders with a depth buffer bound but hardware depth
-  test/write both disabled (`DepthEnable = FALSE`, `DepthWriteMask = ZERO`,
-  `DepthFunc = ALWAYS`) — intentional, not a placeholder gap: overlapping
-  splats are alpha-blended, so correct visual order comes from the GPU bitonic
-  depth sort rather than from per-pixel hardware Z-testing, which would
-  incorrectly reject translucent surfaces behind whatever drew first. Enabling
-  real depth test/write on this pass would break blending, not improve it. The
-  separate GPU silhouette item-prepass and the occlusion-volume cube pass
-  (SplatLab only) are a different story — they use a real depth test
-  (`DepthEnable = TRUE`, `DepthFunc = LESS`) since they need correct
-  nearest-item-wins occlusion, not blending.
-- `.sog` (PlayCanvas Spatially Ordered Gaussians) support exists as a loader
-  header (`SOGLoader.h`, with its own ZIP/DEFLATE and WIC-based WebP decode)
-  but is not yet wired into the file dialog or `LoadFile` dispatch.
-- The chunk codec is a byte-shuffle plus run-length byte coder, not a real
-  entropy coder. `ZstdDecompressor.h` is named for the intended eventual
-  replacement and today just wraps `ByteShuffle`.
-- No Agility SDK opt-in (see the comment in `AppEntry.cpp`) — uses
-  whatever D3D12 runtime Windows provides.
-- Both apps call `InitDirectXCompiler()` (from `Common/base/DXCHelper.h`)
-  before `CreateShaderCache()` — easy to miss since the current
-  `DX12/base/ShaderCompilerHelper.h` doesn't mention it at all; skip it and
-  every shader compile silently fails with a `SpvSize != 0` assert and no
-  useful error message (see the next point).
-- Cauldron's own `DXCHelper.cpp` (`DXCompileToDXO`) has a use-after-free in
-  its error-reporting path: it releases `pLibrary`, then on the failure
-  branch calls `pLibrary->GetBlobAsUtf8(...)` on the already-released
-  pointer. In practice this swallows the real DXC error text instead of
-  crashing outright, so a genuine shader compile error just looks like the
-  assert above with nothing in `Cauldron.log` to explain it. Not patched
-  here (it's vendored code); if a shader ever fails to compile, don't trust
-  the log until this is fixed upstream or patched locally.
-- Each app's post-build step overwrites Cauldron's vendored DXC
-  (`dxcompiler.dll`/`dxil.dll`, v1.6.2106.3 from 2021) with the Windows
-  SDK's redistributable copy from `Windows Kits/10/Redist/D3D/x64`, purely
-  because that path is hardcoded to this dev machine's SDK install. If that
-  path doesn't exist, CMake just warns and leaves Cauldron's older DXC in
-  place — which turned out not to matter for the actual bug above, but is
-  still worth having a newer compiler.
+- The main splat pass binds a depth buffer but disables hardware depth test and write on purpose. Overlapping splats are alpha-blended, so visual order comes from the GPU bitonic sort; a hardware Z-test would reject translucent surfaces behind whatever drew first. The silhouette item-prepass and the occlusion-volume cube pass use a real depth test because they need nearest-item-wins occlusion.
+- `.sog` (PlayCanvas Spatially Ordered Gaussians) support exists as a loader header (`SOGLoader.h`, with its own ZIP/DEFLATE and WebP decode) but is not yet wired into the file dialog.
+- Both apps call `InitDirectXCompiler()` before `CreateShaderCache()`. Skip it and every shader compile fails silently with a `SpvSize != 0` assert.
+- Cauldron's `DXCompileToDXO` has a use-after-free in its error path that swallows the real DXC error text, so a shader compile error shows up as the assert above with nothing useful in `Cauldron.log`. It is vendored code and not patched here.
 
 ## Where this goes next
 
-Real scene geometry is already the normal path (`.ply`/`.splat` loading, the
-wavelet LOD hierarchy, GPU streaming) rather than a placeholder — the
-obvious next step toward an actual surfel GI renderer is an
-irradiance-accumulation/shading pass, since splats currently get simple
-per-surfel colour with a flat two-sided diffuse (`|N·L|`) term and no global
-illumination.
+Real scene geometry is the normal path today. The obvious next step toward a surfel global-illumination renderer is an irradiance accumulation and shading pass; splats currently get per-surfel colour with a flat two-sided diffuse term and no global illumination.
 
 ## Contributing
 
-The public repository at `github.com/dewilkinson/splatlab` is a generated mirror: every
-sync rewrites its history from scratch (see `libs/bluesec-codec/README.md`), so a pull
-request opened against it cannot be merged there and will be closed. Bug reports and
-feature requests are welcome as GitHub issues on that repository. Code contributions are
-accepted only by prior arrangement with the author, so that they can be applied to the
-source of truth and re-published; contact details are in the About dialog.
+The public repository at `github.com/dewilkinson/splatlab` is a generated mirror whose history is rewritten on every sync, so a pull request opened against it cannot be merged and will be closed. Bug reports and feature requests are welcome as GitHub issues there. Code contributions are accepted by prior arrangement with the author, so they can be applied to the source of truth and re-published; contact details are in the About dialog.
 
 ## License
 
-The source code in this repository is licensed under the [Apache License, Version 2.0](LICENSE),
-with these exceptions:
+The source code in this repository is licensed under the [Apache License, Version 2.0](LICENSE), with these exceptions:
 
-- `libs/bluesec-codec/` (the proprietary algorithm core) is **All Rights Reserved** and is not
-  covered by the Apache License -- see that directory's README for the boundary. The public
-  mirror ships it as prebuilt binaries under the bluesec-codec Binary License
-  (`scripts/public-release-stubs/libs/bluesec-codec/prebuilt/LICENSE.txt`), which lets anyone
-  use the binaries, copy them with the repository, and ship them inside builds of the project.
-- `libs/cauldron/` is AMD's Cauldron framework under the MIT License (`libs/cauldron/license.txt`,
-  third-party notices in `libs/cauldron/NOTICES.txt`).
+- `libs/bluesec-codec/` (the proprietary algorithm core) is **All Rights Reserved** and not covered by the Apache License; see that directory's README for the boundary. The public mirror ships it as prebuilt binaries under the bluesec-codec Binary License (`scripts/public-release-stubs/libs/bluesec-codec/prebuilt/LICENSE.txt`), which lets anyone use the binaries, copy them with the repository and ship them inside builds of the project.
+- `libs/cauldron/` is AMD's Cauldron framework under the MIT License (`libs/cauldron/license.txt`, third-party notices in `libs/cauldron/NOTICES.txt`).
