@@ -29,3 +29,6 @@ models/
 data/
 datasets/
 
+
+# Claude Code per-job worktrees (EnterWorktree); the skills/agents beside them ARE tracked.
+/.claude/worktrees/
