@@ -315,6 +315,34 @@ namespace Surfels
             LogTransitionTrace("SurfelsRenderer::OnCreate ERROR: CreatePipelineState(occlusionTest) failed hr=0x%08X -- occlusion culling will silently do nothing on the main splat pass.", (unsigned int)hrOcclusionTestPSO);
         }
 
+        // Detach Camera variants (see the member comments in SurfelsRenderer.h).
+        {
+            CD3DX12_DEPTH_STENCIL_DESC dsMain(D3D12_DEFAULT);
+            dsMain.DepthEnable = TRUE; dsMain.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL; dsMain.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL; dsMain.StencilEnable = FALSE;
+            CD3DX12_DEPTH_STENCIL_DESC dsDepthOnly(D3D12_DEFAULT);
+            dsDepthOnly.DepthEnable = TRUE; dsDepthOnly.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL; dsDepthOnly.DepthFunc = D3D12_COMPARISON_FUNC_LESS; dsDepthOnly.StencilEnable = FALSE;
+            CD3DX12_DEPTH_STENCIL_DESC dsEqual(D3D12_DEFAULT);
+            dsEqual.DepthEnable = TRUE; dsEqual.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO; dsEqual.DepthFunc = D3D12_COMPARISON_FUNC_EQUAL; dsEqual.StencilEnable = FALSE;
+            CD3DX12_BLEND_DESC noColour(D3D12_DEFAULT);
+            noColour.RenderTarget[0].RenderTargetWriteMask = 0;
+
+            auto makeVariant = [&](const CD3DX12_DEPTH_STENCIL_DESC& ds, const CD3DX12_BLEND_DESC& blend, ID3D12PipelineState** ppOut, const char* name)
+            {
+                MeshShaderPipelineStateStream v = stream;
+                v.DepthStencilState = ds;
+                v.BlendState = blend;
+                D3D12_PIPELINE_STATE_STREAM_DESC vd = {};
+                vd.SizeInBytes = sizeof(v);
+                vd.pPipelineStateSubobjectStream = &v;
+                HRESULT hr = device2->CreatePipelineState(&vd, IID_PPV_ARGS(ppOut));
+                if (FAILED(hr))
+                    LogTransitionTrace("SurfelsRenderer::OnCreate ERROR: CreatePipelineState(%s) failed hr=0x%08X -- Detach Camera falls back to the plain splat pass.", name, (unsigned int)hr);
+            };
+            makeVariant(dsMain, blendDesc, &m_pPipelineStateDetachedMain, "detached main");
+            makeVariant(dsDepthOnly, noColour, &m_pPipelineStateCulledDepth, "culled depth");
+            makeVariant(dsEqual, blendDesc, &m_pPipelineStateCulledColor, "culled colour");
+        }
+
         if (FAILED(hrMainPSO) || FAILED(hrItemPSO) || m_pPipelineState == nullptr || m_pItemPrepassPSO == nullptr)
         {
             // The driver reported mesh shaders but could not build the pipelines (typically a shader
@@ -323,6 +351,9 @@ namespace Surfels
             LogTransitionTrace("SurfelsRenderer::OnCreate ERROR: mesh-shader pipeline creation failed (main hr=0x%08X, item hr=0x%08X) -- falling back to vertex shaders", (unsigned int)hrMainPSO, (unsigned int)hrItemPSO);
             if (m_pPipelineState) { m_pPipelineState->Release(); m_pPipelineState = nullptr; }
             if (m_pPipelineStateOcclusionTest) { m_pPipelineStateOcclusionTest->Release(); m_pPipelineStateOcclusionTest = nullptr; }
+            if (m_pPipelineStateDetachedMain) { m_pPipelineStateDetachedMain->Release(); m_pPipelineStateDetachedMain = nullptr; }
+            if (m_pPipelineStateCulledDepth) { m_pPipelineStateCulledDepth->Release(); m_pPipelineStateCulledDepth = nullptr; }
+            if (m_pPipelineStateCulledColor) { m_pPipelineStateCulledColor->Release(); m_pPipelineStateCulledColor = nullptr; }
             if (m_pItemPrepassPSO) { m_pItemPrepassPSO->Release(); m_pItemPrepassPSO = nullptr; }
             if (m_pOccluderPSO) { m_pOccluderPSO->Release(); m_pOccluderPSO = nullptr; }
             m_gpuCaps.meshPipelineFailed = true;
@@ -658,6 +689,19 @@ namespace Surfels
 
         bool ok = create(vs, ps, splatBlend, depthOff, pSwapChain->GetFormat(), &m_pPipelineState, "main splat");
         ok = create(vs, ps, splatBlend, depthTestOnly, pSwapChain->GetFormat(), &m_pPipelineStateOcclusionTest, "occlusion-test splat") && ok;
+        {
+            // Detach Camera variants (see the member comments in SurfelsRenderer.h). Failure here only
+            // loses the three-pass sequence; the plain splat pass still runs.
+            CD3DX12_DEPTH_STENCIL_DESC dsMain(D3D12_DEFAULT);
+            dsMain.DepthEnable = TRUE; dsMain.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL; dsMain.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL; dsMain.StencilEnable = FALSE;
+            CD3DX12_DEPTH_STENCIL_DESC dsEqual(D3D12_DEFAULT);
+            dsEqual.DepthEnable = TRUE; dsEqual.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO; dsEqual.DepthFunc = D3D12_COMPARISON_FUNC_EQUAL; dsEqual.StencilEnable = FALSE;
+            CD3DX12_BLEND_DESC noColour(D3D12_DEFAULT);
+            noColour.RenderTarget[0].RenderTargetWriteMask = 0;
+            create(vs, ps, splatBlend, dsMain, pSwapChain->GetFormat(), &m_pPipelineStateDetachedMain, "detached main splat");
+            create(vs, ps, noColour, depthWrite, pSwapChain->GetFormat(), &m_pPipelineStateCulledDepth, "culled depth splat");
+            create(vs, ps, splatBlend, dsEqual, pSwapChain->GetFormat(), &m_pPipelineStateCulledColor, "culled colour splat");
+        }
         ok = create(itemVs, itemPs, opaqueBlend, depthWrite, DXGI_FORMAT_R32_UINT, &m_pItemPrepassPSO, "item prepass") && ok;
         if (occOk)
             create(occVs, occPs, opaqueBlend, depthWrite, pSwapChain->GetFormat(), &m_pOccluderPSO, "occluder");
@@ -730,6 +774,9 @@ namespace Surfels
         if (m_pComputeRootSignature) { m_pComputeRootSignature->Release(); m_pComputeRootSignature = nullptr; }
         if (m_pPipelineState) { m_pPipelineState->Release(); m_pPipelineState = nullptr; }
         if (m_pPipelineStateOcclusionTest) { m_pPipelineStateOcclusionTest->Release(); m_pPipelineStateOcclusionTest = nullptr; }
+        if (m_pPipelineStateDetachedMain) { m_pPipelineStateDetachedMain->Release(); m_pPipelineStateDetachedMain = nullptr; }
+        if (m_pPipelineStateCulledDepth) { m_pPipelineStateCulledDepth->Release(); m_pPipelineStateCulledDepth = nullptr; }
+        if (m_pPipelineStateCulledColor) { m_pPipelineStateCulledColor->Release(); m_pPipelineStateCulledColor = nullptr; }
         if (m_pOccluderPSO) { m_pOccluderPSO->Release(); m_pOccluderPSO = nullptr; }
         if (m_pItemPrepassPSO) { m_pItemPrepassPSO->Release(); m_pItemPrepassPSO = nullptr; }
         if (m_pOcclusionVoxelBuffer) { m_pOcclusionVoxelBuffer->Unmap(0, nullptr); m_pOcclusionVoxelBuffer->Release(); m_pOcclusionVoxelBuffer = nullptr; }
@@ -1824,7 +1871,7 @@ namespace Surfels
         pCB->arrivalGlowIntensity = pState->arrivalGlowIntensity;
         pCB->arrivalGlowHue = pState->arrivalGlowHue;
         pCB->autoSplatSize = pState->autoSplatSize ? 1u : 0u;
-        pCB->autoSplatPad0 = 0.0f;
+        pCB->culledPass = 0;
         pCB->autoSplatPad1[0] = 0.0f; pCB->autoSplatPad1[1] = 0.0f;
         for (int l = 0; l < 8; l++) pCB->lodRadius[l] = pState->lodRadius[l];
         pCB->enableOcclusionCulling = (pState->enableOcclusionCulling && pState->occlusionVoxelCount > 0 && m_pOcclusionVoxelBuffer != nullptr) ? 1 : 0;
@@ -1900,6 +1947,61 @@ namespace Surfels
         ID3D12PipelineState* pMainSplatPSO = (pState->enableOcclusionCulling && m_pPipelineStateOcclusionTest != nullptr)
             ? m_pPipelineStateOcclusionTest
             : m_pPipelineState;
+
+        // Detach Camera: the three-pass sequence needs its PSOs and a second constant buffer that only
+        // differs in culledPass (the shader draws either the frozen camera's splats or the culled ones).
+        const bool detachedPasses = pState->detachCullCamera && m_pPipelineStateDetachedMain && m_pPipelineStateCulledDepth && m_pPipelineStateCulledColor;
+        D3D12_GPU_VIRTUAL_ADDRESS cbCulledAddress = 0;
+        if (detachedPasses)
+        {
+            SurfelsCB* pCBCulled = nullptr;
+            if (m_constantBufferRing.AllocConstantBuffer(sizeof(SurfelsCB), (void**)&pCBCulled, &cbCulledAddress))
+            {
+                *pCBCulled = *pCB;
+                pCBCulled->culledPass = 1;
+            }
+            else
+            {
+                cbCulledAddress = 0;
+            }
+        }
+        // Issues the main splat draw (DispatchMesh or DrawInstanced) with the bound PSO and constant buffer.
+        // In Detach Camera mode it runs the three passes described in SurfelsRenderer.h instead of one.
+        auto issueSplatDraws = [&](uint32_t asGroupCount, uint32_t instances)
+        {
+            auto draw = [&]()
+            {
+                if (m_renderPath == RenderPath::MeshShaders)
+                {
+                    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> cmdList6;
+                    pCmdLst->QueryInterface(IID_PPV_ARGS(&cmdList6));
+                    cmdList6->DispatchMesh(asGroupCount, 1, 1);
+                }
+                else
+                {
+                    // Vertex-shader path: one instance per surfel slot (64 per sorted chunk), six vertices each (see mainVS).
+                    pCmdLst->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                    pCmdLst->DrawInstanced(6, instances, 0, 0);
+                }
+            };
+            if (detachedPasses && cbCulledAddress != 0)
+            {
+                pCmdLst->SetPipelineState(m_pPipelineStateDetachedMain);
+                pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
+                draw();
+                pCmdLst->SetPipelineState(m_pPipelineStateCulledDepth);
+                pCmdLst->SetGraphicsRootConstantBufferView(0, cbCulledAddress);
+                draw();
+                pCmdLst->SetPipelineState(m_pPipelineStateCulledColor);
+                draw();
+            }
+            else
+            {
+                pCmdLst->SetPipelineState(pMainSplatPSO);
+                pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
+                draw();
+            }
+        };
 
         if (surfelCount > 0 && pGpuRes != nullptr && pUploadRes != nullptr)
         {
@@ -2211,28 +2313,15 @@ namespace Surfels
                     auto mainDispatchStart = std::chrono::high_resolution_clock::now();
 
                     pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
-                    pCmdLst->SetPipelineState(pMainSplatPSO);
-                    pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
                     pCmdLst->SetGraphicsRootShaderResourceView(1, surfelAddr);
                     pCmdLst->SetGraphicsRootShaderResourceView(2, surfelAddr);
                     pCmdLst->SetGraphicsRootShaderResourceView(3, m_pChunkGpuBuffer->GetGPUVirtualAddress());
                     pCmdLst->SetGraphicsRootShaderResourceView(4, m_pSortedChunkIndicesGpuBuffer->GetGPUVirtualAddress());
                     pCmdLst->SetGraphicsRootShaderResourceView(5, m_pOcclusionVoxelBuffer ? m_pOcclusionVoxelBuffer->GetGPUVirtualAddress() : 0);
 
-                    if (m_renderPath == RenderPath::MeshShaders)
-                    {
-                        Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> cmdList6;
-                        pCmdLst->QueryInterface(IID_PPV_ARGS(&cmdList6));
-                        uint32_t asGroupCount = (chunkCount + AS_GROUP_SIZE - 1) / AS_GROUP_SIZE;
-                        cmdList6->DispatchMesh(asGroupCount, 1, 1);
-                    }
-                    else
-                    {
-                        // Vertex-shader path: one instance per surfel slot (64 per sorted chunk), six vertices each (see mainVS).
-                        pCmdLst->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                        const uint32_t instances = pState->useChunkedPipeline ? chunkCount * SURFELS_PER_GROUP : pState->surfelCount;
-                        pCmdLst->DrawInstanced(6, instances, 0, 0);
-                    }
+                    const uint32_t asGroupCount = (chunkCount + AS_GROUP_SIZE - 1) / AS_GROUP_SIZE;
+                    const uint32_t instances = pState->useChunkedPipeline ? chunkCount * SURFELS_PER_GROUP : pState->surfelCount;
+                    issueSplatDraws(asGroupCount, instances);
 
                     auto mainDispatchEnd = std::chrono::high_resolution_clock::now();
                     m_metrics.mainDispatchTimeMs += std::chrono::duration<float, std::milli>(mainDispatchEnd - mainDispatchStart).count();
@@ -2592,8 +2681,6 @@ namespace Surfels
                 auto mainDispatchStart2 = std::chrono::high_resolution_clock::now();
 
                 pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
-                pCmdLst->SetPipelineState(pMainSplatPSO);
-                pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
                 pCmdLst->SetGraphicsRootShaderResourceView(1, drawSurfelAddr);
                 pCmdLst->SetGraphicsRootShaderResourceView(2, drawSurfelAddr);
                 pCmdLst->SetGraphicsRootShaderResourceView(3, m_pChunkGpuBuffer ? m_pChunkGpuBuffer->GetGPUVirtualAddress() : 0);
@@ -2610,19 +2697,8 @@ namespace Surfels
                         pState->chunkCount, surfelCount, groupCount, pState->useChunkedPipeline ? 1 : 0);
                 }
 
-                if (m_renderPath == RenderPath::MeshShaders)
-                {
-                    Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> cmdList6;
-                    pCmdLst->QueryInterface(IID_PPV_ARGS(&cmdList6));
-                    cmdList6->DispatchMesh(groupCount, 1, 1);
-                }
-                else
-                {
-                    // Vertex-shader path: one instance per surfel slot (64 per sorted chunk), six vertices each (see mainVS).
-                    pCmdLst->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                    const uint32_t instances = (pState->useChunkedPipeline && pState->chunkCount > 0) ? pState->chunkCount * SURFELS_PER_GROUP : surfelCount;
-                    pCmdLst->DrawInstanced(6, instances, 0, 0);
-                }
+                const uint32_t instances = (pState->useChunkedPipeline && pState->chunkCount > 0) ? pState->chunkCount * SURFELS_PER_GROUP : surfelCount;
+                issueSplatDraws(groupCount, instances);
 
                 auto mainDispatchEnd2 = std::chrono::high_resolution_clock::now();
                 m_metrics.mainDispatchTimeMs += std::chrono::duration<float, std::milli>(mainDispatchEnd2 - mainDispatchStart2).count();

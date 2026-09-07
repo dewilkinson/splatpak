@@ -197,7 +197,7 @@ namespace Surfels
             float      arrivalGlowIntensity;  // Refinement visualizer strength (see State)
             float      arrivalGlowHue;        // Refinement visualizer hue rotation, degrees
             uint32_t   autoSplatSize;         // Auto splat size on/off (see State)
-            float      autoSplatPad0;
+            uint32_t   culledPass;            // Detach Camera: 0 = draw the splats the frozen camera sees, 1 = draw only the ones it culled (the red volume)
             float      autoSplatPad1[2];
             float      lodRadius[8];          // Disc radius per LOD level, world units (two float4 rows in the shader)
         };
@@ -213,6 +213,14 @@ namespace Surfels
         ID3D12RootSignature* m_pRootSignature = nullptr;
         ID3D12PipelineState* m_pPipelineState = nullptr;
         ID3D12PipelineState* m_pPipelineStateOcclusionTest = nullptr; // Same as m_pPipelineState but with depth-test-only (no write) enabled, used when occlusion culling is active
+        // Detach Camera's three-pass sequence (all against the viewer's depth buffer): the splats the frozen
+        // camera sees are drawn as usual but also record depth; the culled splats then run a depth-only
+        // prepass so only their nearest layer survives, and that layer alone is blended at 10% with an
+        // EQUAL depth test. Stacked culled splats therefore cannot add up, and red behind the visible shell
+        // is rejected. Same shaders as m_pPipelineState; only depth/blend state differs.
+        ID3D12PipelineState* m_pPipelineStateDetachedMain = nullptr; // Blend, depth LESS_EQUAL test + write
+        ID3D12PipelineState* m_pPipelineStateCulledDepth = nullptr;  // No colour writes, depth LESS test + write
+        ID3D12PipelineState* m_pPipelineStateCulledColor = nullptr;  // Blend, depth EQUAL test, no write
         ID3D12PipelineState* m_pOccluderPSO = nullptr; // Solid depth-writing interior occlusion volume cubes (occluderMS/occluderPS)
 
         RenderPath      m_renderPath = RenderPath::MeshShaders;

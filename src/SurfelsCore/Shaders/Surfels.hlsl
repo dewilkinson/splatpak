@@ -101,7 +101,7 @@ cbuffer SurfelsCB : register(b0)
     float    g_ArrivalGlowIntensity; // Refinement visualizer strength (1 = default)
     float    g_ArrivalGlowHue;       // Refinement visualizer hue rotation, degrees (0 = orange)
     uint     g_AutoSplatSize;        // 1 = disc radius from the level's point spacing (g_LodRadius), 0 = size classes x g_Radius
-    float    g_AutoSplatPad0;
+    uint     g_CulledPass;           // Detach Camera: 0 = the splats the frozen camera sees, 1 = only the ones it culled (the red volume)
     float2   g_AutoSplatPad1;
     float4   g_LodRadius[2];         // Auto splat size: disc radius per LOD level (world units), index = lodLevel 0..7; 0 = level unknown
 };
@@ -301,7 +301,7 @@ struct SplatData
     float3 tangentX;
     float3 tangentY;
     float  solid;    // 1 = drawn as an opaque dot (see SolidDot)
-    float  culledTint; // 1 = Detach Camera: culled by the frozen camera, drawn as a faint pastel-blue tint
+    float  culledTint; // 1 = Detach Camera: culled by the frozen camera, drawn as a translucent red layer
 };
 
 // About one screen pixel of world radius at this distance (the same constant the item prepass uses).
@@ -334,7 +334,7 @@ void SolidDot(float distToCam, inout float3 tangentX, inout float3 tangentY, out
 // arrival tints. frozenCulled: the whole chunk was outside the frozen camera's frustum or normal cone.
 bool BuildSplat(uint surfelIndex, uint lod, float chunkBlendWeight, float chunkDilationMorph, float chunkIsSilhouette, bool frozenCulled, out SplatData sd)
 {
-    bool frozenCulledSplat = false; // Drawn as a faint pastel-blue tint at the end: the frozen camera would not draw this surfel
+    bool frozenCulledSplat = false; // Drawn as translucent red at the end (own depth-tested pass): the frozen camera would not draw this surfel
     float3 worldPos = float3(0.0, 0.0, 0.0);
     float3 normal = float3(0.0, 1.0, 0.0);
     float3 color = float3(0.0, 0.0, 0.0);
@@ -430,6 +430,13 @@ bool BuildSplat(uint surfelIndex, uint lod, float chunkBlendWeight, float chunkD
             frozenCulledSplat = true;
             normal = float3(0.0, 0.0, 0.0); // No lighting term: uniform tint
         }
+        // The two halves are drawn by separate passes (see SurfelsRenderer.h): pass 0 draws what the frozen
+        // camera sees, pass 1 (twice: depth prepass, then the 10% blend) draws only what it culled.
+        if ((g_CulledPass == 1) != frozenCulledSplat)
+        {
+            sd.worldPos = worldPos; sd.normal = normal; sd.litColor = color; sd.tangentX = tangentX; sd.tangentY = tangentY; sd.solid = 0.0; sd.culledTint = 0.0;
+            return false;
+        }
         // 3. Back sides of the visible shell in solid mid grey: a surfel whose normal faces away from the
         // VIEWER is being looked at from behind, so it is painted a flat, unlit grey. That makes it
         // obvious which side of the model (relative to the frozen camera) the viewer is looking at.
@@ -502,7 +509,7 @@ bool BuildSplat(uint surfelIndex, uint lod, float chunkBlendWeight, float chunkD
         // Detach Camera: culled by the frozen camera -- a dim red at 10% opacity per splat (mainPS). Dozens of
         // splats stack per pixel, so even 10% alpha adds up to near-full coverage; the dim colour caps what
         // that stack can reach at a dark, see-through tint instead of a bright fill.
-        litColor = float3(0.22, 0.02, 0.02);
+        litColor = float3(1.0, 0.12, 0.10); // Detach Camera: culled by the frozen camera -- red, drawn once (depth-tested against the viewer) at 10% opacity in mainPS
 
     sd.worldPos = worldPos;
     sd.normal = normal;
