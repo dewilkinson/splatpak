@@ -22,11 +22,15 @@ int main(int argc, char** argv)
     std::string inputPLY = (argc > 1) ? argv[1] : "models/venus.ply";
     std::string outputBase = (argc > 2) ? argv[2] : "models/venus";
     float shave = (argc > 3) ? (float)atof(argv[3]) : 0.0f;
+    // Splat mode: a fourth argument gives the spherical-harmonics degree (0, 1 or 3) and bakes the
+    // package as 20-byte Gaussians (surfel format 1) when the .ply carries 3DGS attributes.
+    const int splatDegree = (argc > 4) ? atoi(argv[4]) : -1;
 
     std::cout << "Loading " << inputPLY << "..." << std::endl;
     std::vector<Surfels::SurfelVertex> surfels;
+    std::vector<Surfels::SplatAttributes> splatAttrs;
     double origin[3] = {0,0,0};
-    if (!Surfels::PLYLoader::LoadPLY(inputPLY, surfels, origin))
+    if (!Surfels::PLYLoader::LoadPLY(inputPLY, surfels, origin, splatDegree >= 0 ? &splatAttrs : nullptr))
     {
         std::cerr << "Failed to load " << inputPLY << std::endl;
         return 1;
@@ -78,7 +82,15 @@ int main(int argc, char** argv)
     auto chunks = Surfels::SpatialOctree::PartitionIntoChunks(surfels, chunkSize);
     std::cout << "Partitioned into " << chunks.size() << " chunks. Packaging to " << outputBase << ".sflw..." << std::endl;
 
-    if (!Surfels::StreamPackager::PackageDataset(outputBase, chunks, maxLODs, deadbandMeters, splatRadius, occlusion, sourceFileBytes, &occlusionMips, &detailGrid))
+    Surfels::SplatBakeInput splatInput;
+    splatInput.attributes = &splatAttrs;
+    splatInput.shDegree = (uint32_t)std::max(0, splatDegree);
+    const bool splatMode = splatDegree >= 0 && !splatAttrs.empty();
+    if (splatDegree >= 0 && splatAttrs.empty())
+        std::cout << "Note: " << inputPLY << " carries no 3DGS attributes; baking 8-byte surfels instead." << std::endl;
+    if (splatMode)
+        std::cout << "Splat mode: 20-byte Gaussian records, spherical-harmonics degree " << splatInput.shDegree << std::endl;
+    if (!Surfels::StreamPackager::PackageDataset(outputBase, chunks, maxLODs, deadbandMeters, splatRadius, occlusion, sourceFileBytes, &occlusionMips, &detailGrid, splatMode ? &splatInput : nullptr))
     {
         std::cerr << "Failed to package dataset" << std::endl;
         return 1;
