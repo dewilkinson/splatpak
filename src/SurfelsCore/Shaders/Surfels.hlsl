@@ -499,7 +499,10 @@ bool BuildSplat(uint surfelIndex, uint lod, float chunkBlendWeight, float chunkD
     }
 
     if (frozenCulledSplat)
-        litColor = float3(1.0, 0.12, 0.10); // Detach Camera: culled by the frozen camera -- red, drawn at 10% opacity in mainPS
+        // Detach Camera: culled by the frozen camera -- a dim red at 10% opacity per splat (mainPS). Dozens of
+        // splats stack per pixel, so even 10% alpha adds up to near-full coverage; the dim colour caps what
+        // that stack can reach at a dark, see-through tint instead of a bright fill.
+        litColor = float3(0.22, 0.02, 0.02);
 
     sd.worldPos = worldPos;
     sd.normal = normal;
