@@ -1518,7 +1518,9 @@ namespace Surfels
         }
 
         // Throttle CPU so it does not overwrite in-flight command allocator / dynamic buffers
+        const auto tWaitStart = std::chrono::high_resolution_clock::now();
         pSwapChain->WaitForSwapChain();
+        const auto tWaitEnd = std::chrono::high_resolution_clock::now();
 
         // Safely map silhouette bitmask readback buffer from previous completed frame
         if (m_pSilhouetteReadbackBuffer != nullptr && !m_silhouetteBitmaskCPU.empty())
@@ -2717,6 +2719,10 @@ namespace Surfels
         m_pDevice->GetGraphicsQueue()->ExecuteCommandLists(1, pCmdLists);
 
         auto now = std::chrono::high_resolution_clock::now();
+        const float gpuWaitMs = std::chrono::duration<float, std::milli>(tWaitEnd - tWaitStart).count();
+        const float commandRecordMs = std::chrono::duration<float, std::milli>(now - tWaitEnd).count();
+        m_lastGpuWaitMs = gpuWaitMs;
+        m_lastCommandRecordMs = commandRecordMs;
         if (m_lastWallClockTime.time_since_epoch().count() == 0)
         {
             m_lastWallClockTime = now;
@@ -2754,6 +2760,8 @@ namespace Surfels
         }
         m_smoothDispatchMs = (m_smoothDispatchMs > 0.0001f) ? (m_smoothDispatchMs * 0.85f + m_metrics.gpuDispatchTimeMs * 0.15f) : m_metrics.gpuDispatchTimeMs;
         m_smoothUiMs = (m_smoothUiMs > 0.0001f) ? (m_smoothUiMs * 0.85f + m_metrics.uiDrawTimeMs * 0.15f) : m_metrics.uiDrawTimeMs;
+        m_smoothGpuWaitMs = (m_smoothGpuWaitMs > 0.0001f) ? (m_smoothGpuWaitMs * 0.85f + gpuWaitMs * 0.15f) : gpuWaitMs;
+        m_smoothCommandRecordMs = (m_smoothCommandRecordMs > 0.0001f) ? (m_smoothCommandRecordMs * 0.85f + commandRecordMs * 0.15f) : commandRecordMs;
 
         // Upload and silhouette prepass are cached/sporadic (only re-run when dirty or the view/edge
         // cache invalidates) -- only feed the EMA on the frames they actually ran, holding the last

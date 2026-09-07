@@ -256,11 +256,11 @@ namespace Surfels
             bool     isResident = false;
             bool     isEvictionPending = false;    // Marked for eviction: waiting for parent demotion transition to complete
             bool     isLockedInTransition = false; // Locked against eviction while transition is running in either direction
+            bool     refinedBySilhouette = false;  // The refinement into its children was edge-driven (this node sits at or below the target level). When the flag drops and it demotes, the children are kept resident: evicting them only made the face lists re-stream them for the next flag, which flashed the visible faces while spinning
             bool     isSilhouette = false;         // Active in-view silhouette edge chunk (locked against eviction)
             float    transitionProgress = 0.0f;   // 0.0 (Parent Level N Solid) <-> 1.0 (Children Level N-1 Solid)
             float    streamWaveTimer = 0.0f;      // Active chunk streaming lavender wavefront timer (3.0s -> 0.0s)
             float    silhouetteHysteresisTimer = 0.0f; // Hysteresis hold time (seconds) to eliminate refinement/demotion thrashing
-            float    silhouetteAge = 0.0f;        // Seconds the GPU edge detector has flagged this chunk without a gap; refinement below the target waits for 0.25 s of it
             bool     renderedLastFrame = false;    // Visited by the previous frame's traversal: rendered, or refined in place of by its children. Only such "active" chunks may keep an edge flag; anything the traversal never reached (a level outside the active range) is cleared before the next traversal. Clearing on "not rendered" alone made a refined edge parent lose its flag, re-render, get re-detected and refine again every other frame -- a whole-model flicker
             uint32_t globalSurfelOffset = 0;      // Zero-copy offset into m_unifiedPackedSurfels / m_unifiedRawSurfels
             XMFLOAT3 aabbMin = { 0, 0, 0 };
@@ -283,9 +283,20 @@ namespace Surfels
             Greedy       = 1  // Refines visible chunks first, then continues pre-fetching remaining background chunks
         };
 
-        StreamingPolicy m_streamingPolicy           = StreamingPolicy::Conservative; // Conservative (default) or Greedy
+        StreamingPolicy m_streamingPolicy           = StreamingPolicy::Greedy; // Greedy (default) or Conservative
         float  m_conservativeNeighborBufferMargin   = 1.35f;  // Frustum margin for pre-fetching local neighbors in conservative mode
         bool   m_enableDitheredTransitions  = true;   // Stochastic screen-space Bayer dithering for smooth LOD transitions
+        bool   m_demoteChunks               = false;  // Off: a node that has refined into its children stays refined when the zoom target coarsens or its edge flag drops (only Decay-marked children demote). On: the v1.2.0 handshake, children cross-fade back to the parent and are evicted
+        // Frame budget for the stats panel (CPU wall clock per frame, EMA-smoothed): where the frame time
+        // actually goes, as opposed to the command-recording stage costs the renderer reports.
+        float  m_frameSimMs = 0.0f, m_frameTraversalMs = 0.0f, m_frameUiMs = 0.0f, m_frameRenderMs = 0.0f, m_framePresentMs = 0.0f;
+        // Displayed values: averaged over a 250 ms window and updated four times a second (like the FPS
+        // counter), so the readout holds still instead of jittering with every frame.
+        enum { kBudgetSim = 0, kBudgetTraversal, kBudgetUi, kBudgetGpuWait, kBudgetRecord, kBudgetPresent, kBudgetCount };
+        float  m_budgetAccum[kBudgetCount] = {};
+        float  m_budgetShown[kBudgetCount] = {};
+        float  m_budgetAccumWallMs = 0.0f;
+        uint32_t m_budgetAccumFrames = 0;
         float  m_ditherTransitionDurationSec= 0.75f;  // Transition dissolve duration in seconds (slider 0.05..5 s)
         bool   m_enableStreamingSimulation  = true;  // Hierarchical streaming simulation & LOD refinement
         bool   m_unthrottledBandwidth       = true;  // Full uncapped bandwidth (removes throttle cap) -- the default; pick a network profile to throttle
@@ -318,7 +329,7 @@ namespace Surfels
         void   DrawRefinementVisualizerControls(const char* idSuffix); // Checkbox + duration/intensity/hue sliders (Renderer tab)
 
         // Silhouette Edge Focused Reconstruction & Dilation Morphing
-        bool   m_enableSilhouetteLOD0       = true;   // Refine silhouette edges using biased LOD levels (Option 2 GPU Inversion)
+        bool   m_enableSilhouetteLOD0       = false;   // Refine silhouette edges using biased LOD levels (Option 2 GPU Inversion)
         int    m_silhouetteLODBias          = 2;      // Silhouette edge LOD bias (renders fine edges using Level N - 2, min value 0)
         float  m_silhouetteThreshold        = 0.40f;  // Grazing rim angle threshold
         float  m_silhouetteDepthThreshold   = 0.05f;  // GPU depth step threshold for interior occlusion edges
@@ -354,6 +365,7 @@ namespace Surfels
         std::vector<ChunkRequest> m_faceEdgeQueue[kOctahedronFaces];
         size_t                    m_faceEdgeHead[kOctahedronFaces] = {};
         uint32_t                  m_streamFrame = 0;                   // Counts UpdateStreamingSimulation calls (request staleness)
+        uint32_t                  m_edgeRefineStartsThisFrame = 0;     // Edge-driven refinements into already-resident children begun this frame (capped, see kEdgeRefineStartsPerFrame)
         uint32_t                  m_extraDeliveries = 0;               // Diagnostic: deliveries of blocks that had already been delivered since the last reset (re-streamed after an eviction)
         uint32_t                  m_redeliveredBlocks = 0;             // Diagnostic: distinct blocks delivered more than once since the last reset
         void  ClearFaceEdgeQueues();                                // Drops every queued edge request (streaming reset)

@@ -137,6 +137,10 @@ namespace Surfels
         uint32_t GetActiveOcclusionMip() const { return m_activeOcclusionMip; }             // Mip of the occlusion volume drawn last frame (see SelectOcclusionMip)
         float    GetOcclusionMipCellPixels() const { return m_activeOcclusionMipCellPixels; } // Screen-space size of that mip's cell at the model's nearest point
         float GetSmoothMainDispatchMs() const { return m_smoothMainDispatchMs; }
+        float GetLastGpuWaitMs() const { return m_lastGpuWaitMs; }                 // Raw, this frame (the app windows these itself)
+        float GetLastCommandRecordMs() const { return m_lastCommandRecordMs; }
+        float GetSmoothGpuWaitMs() const { return m_smoothGpuWaitMs; }             // CPU blocked in WaitForSwapChain (the GPU, or VSync)
+        float GetSmoothCommandRecordMs() const { return m_smoothCommandRecordMs; } // From that wait to ExecuteCommandLists: uploads, sort, every pass
         float GetSmoothTaaMs() const { return m_smoothTaaMs; }
         const std::vector<uint32_t>& GetSilhouetteBitmask() const { return m_silhouetteBitmaskCPU; }
         uint32_t GetSilhouetteBitmaskChunkCount() const { return m_lastEdgeChunkCount; }
@@ -259,6 +263,10 @@ namespace Surfels
         float                      m_smoothSilhouettePrepassMs = 0.0f;
         float                      m_smoothOccluderMs = 0.0f;
         float                      m_smoothMainDispatchMs = 0.0f;
+        float                      m_smoothGpuWaitMs = 0.0f;
+        float                      m_lastGpuWaitMs = 0.0f;
+        float                      m_lastCommandRecordMs = 0.0f;
+        float                      m_smoothCommandRecordMs = 0.0f;
         float                      m_smoothTaaMs = 0.0f;
         std::chrono::high_resolution_clock::time_point m_lastWallClockTime;
 
