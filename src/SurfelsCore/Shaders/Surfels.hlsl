@@ -497,7 +497,7 @@ bool BuildSplat(uint surfelIndex, uint lod, float chunkBlendWeight, float chunkD
     }
 
     if (frozenGrey)
-        litColor = float3(0.09, 0.09, 0.09); // Detach Camera: culled by the frozen camera, kept as dark grey (no tints). Linear 0.09 shows as ~85/255 after the sRGB output; 0.32 looked as bright as the stone
+        litColor = float3(0.025, 0.025, 0.025); // Detach Camera: culled by the frozen camera, kept as very dark grey (no tints). Linear 0.025 shows as ~44/255 after the sRGB output
 
     sd.worldPos = worldPos;
     sd.normal = normal;
