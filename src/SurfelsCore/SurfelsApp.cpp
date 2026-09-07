@@ -2586,7 +2586,7 @@ namespace Surfels
                     bool detachToggle = m_detachCamera;
                     if (ImGui::Checkbox("Detach Camera (Freeze Culling Frustum)", &detachToggle))
                         SetDetachCamera(detachToggle);
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Ctrl+D. Freezes the culling camera where the view is and steps the view aside so the culling can be inspected from any angle. The model is exactly what the frozen camera would render, its level of detail included: surfels it would draw keep their colour (mid grey where the viewer sees their back), everything it would have culled -- chunks outside its frustum or whose normal cone faces away, and the far half of the model beyond its centre -- stays on screen in dark grey. The occlusion volume shows only the faces turned toward the frozen camera.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Ctrl+D. Freezes the culling camera where the view is and steps the view aside so the culling can be inspected from any angle. The model is exactly what the frozen camera would render, its level of detail included: surfels it would draw keep their colour (mid grey where the viewer sees their back), everything it would have culled -- chunks outside its frustum or whose normal cone faces away, and the far half of the model beyond its centre -- stays on screen as a faint pastel-blue tint. Streaming keeps running from the frozen camera's point of view. The occlusion volume shows only the faces turned toward the frozen camera.");
                     if (m_detachCamera)
                     {
                         ImGui::SameLine();
@@ -4652,14 +4652,19 @@ namespace Surfels
                 faces[f].shade = 0.35f + 0.65f * std::max(0.0f, XMVectorGetX(XMVector3Dot(n, lightDir)));
             }
             std::sort(faces, faces + 6, [](const FaceDraw& a, const FaceDraw& b) { return a.depth > b.depth; }); // Farthest first
+            // Two passes: the hidden (interior) faces first, dimmer and fainter, then the faces turned toward
+            // the viewer over them. With the fills translucent the inside of the cone shows through, so its
+            // shape reads as a volume instead of a flat cut-out.
+            for (int pass = 0; pass < 2; pass++)
             for (const FaceDraw& fd : faces)
             {
-                if (!fd.visible) continue;
+                if (fd.visible != (pass == 1)) continue;
                 const int* idx = faceIdx[fd.f];
                 if (!(cornerValid[idx[0]] && cornerValid[idx[1]] && cornerValid[idx[2]] && cornerValid[idx[3]])) continue;
                 const ImU32 base = faceBase[fd.f];
-                const int r = (int)(((base >> IM_COL32_R_SHIFT) & 0xFF) * fd.shade), g = (int)(((base >> IM_COL32_G_SHIFT) & 0xFF) * fd.shade), b = (int)(((base >> IM_COL32_B_SHIFT) & 0xFF) * fd.shade);
-                drawList->AddQuadFilled(cornerScreen[idx[0]], cornerScreen[idx[1]], cornerScreen[idx[2]], cornerScreen[idx[3]], IM_COL32(r, g, b, 120));
+                const float shade = fd.visible ? fd.shade : fd.shade * 0.55f;
+                const int r = (int)(((base >> IM_COL32_R_SHIFT) & 0xFF) * shade), g = (int)(((base >> IM_COL32_G_SHIFT) & 0xFF) * shade), b = (int)(((base >> IM_COL32_B_SHIFT) & 0xFF) * shade);
+                drawList->AddQuadFilled(cornerScreen[idx[0]], cornerScreen[idx[1]], cornerScreen[idx[2]], cornerScreen[idx[3]], IM_COL32(r, g, b, fd.visible ? 120 : 70));
             }
             // Edges: each belongs to two faces; drawn only if at least one is visible, brighter on the silhouette.
             const int edgeIdx[12][2]  = { {0,1},{1,2},{2,3},{3,0}, {4,5},{5,6},{6,7},{7,4}, {0,4},{1,5},{2,6},{3,7} };
@@ -4668,8 +4673,12 @@ namespace Surfels
             for (int e = 0; e < 12; e++)
             {
                 const bool va = faceVisible[edgeFaces[e][0]], vb = faceVisible[edgeFaces[e][1]];
-                if (!va && !vb) continue; // Hidden line
                 if (!(cornerValid[edgeIdx[e][0]] && cornerValid[edgeIdx[e][1]])) continue;
+                if (!va && !vb) // Hidden edge: faint, so the interior structure of the cone can be followed
+                {
+                    drawList->AddLine(cornerScreen[edgeIdx[e][0]], cornerScreen[edgeIdx[e][1]], IM_COL32(150, 170, 200, 55), 1.0f);
+                    continue;
+                }
                 const bool silhouette = (va != vb);
                 drawList->AddLine(cornerScreen[edgeIdx[e][0]], cornerScreen[edgeIdx[e][1]],
                     silhouette ? IM_COL32(200, 230, 255, 230) : IM_COL32(170, 190, 215, 120), silhouette ? 2.0f : 1.0f);

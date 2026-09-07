@@ -140,6 +140,7 @@ struct VSOut
     float  blendWeight : BLENDWEIGHT0;
     float  isSil       : TEXCOORD1;
     float  solid       : TEXCOORD2; // 1 = sub-pixel splat drawn as an opaque dot (see SolidDot)
+    float  culledTint  : TEXCOORD3; // 1 = Detach Camera: the frozen camera would have culled this splat (drawn faint)
 };
 
 // Quad corners in local 2D tangent space: 0(-1,-1) 1(1,-1) 2(-1,1) 3(1,1)
@@ -300,6 +301,7 @@ struct SplatData
     float3 tangentX;
     float3 tangentY;
     float  solid;    // 1 = drawn as an opaque dot (see SolidDot)
+    float  culledTint; // 1 = Detach Camera: culled by the frozen camera, drawn as a faint pastel-blue tint
 };
 
 // About one screen pixel of world radius at this distance (the same constant the item prepass uses).
@@ -332,7 +334,7 @@ void SolidDot(float distToCam, inout float3 tangentX, inout float3 tangentY, out
 // arrival tints. frozenCulled: the whole chunk was outside the frozen camera's frustum or normal cone.
 bool BuildSplat(uint surfelIndex, uint lod, float chunkBlendWeight, float chunkDilationMorph, float chunkIsSilhouette, bool frozenCulled, out SplatData sd)
 {
-    bool frozenGrey = false; // Painted flat dark grey at the end: the frozen camera would not draw this surfel
+    bool frozenCulledSplat = false; // Drawn as a faint pastel-blue tint at the end: the frozen camera would not draw this surfel
     float3 worldPos = float3(0.0, 0.0, 0.0);
     float3 normal = float3(0.0, 1.0, 0.0);
     float3 color = float3(0.0, 0.0, 0.0);
@@ -425,8 +427,8 @@ bool BuildSplat(uint surfelIndex, uint lod, float chunkBlendWeight, float chunkD
 
         if (frozenCulled || outsideFrustum || farSideOfDetached)
         {
-            frozenGrey = true;
-            normal = float3(0.0, 0.0, 0.0); // No lighting term: uniform grey
+            frozenCulledSplat = true;
+            normal = float3(0.0, 0.0, 0.0); // No lighting term: uniform tint
         }
         // 3. Back sides of the visible shell in solid mid grey: a surfel whose normal faces away from the
         // VIEWER is being looked at from behind, so it is painted a flat, unlit grey. That makes it
@@ -496,8 +498,8 @@ bool BuildSplat(uint surfelIndex, uint lod, float chunkBlendWeight, float chunkD
         }
     }
 
-    if (frozenGrey)
-        litColor = float3(0.025, 0.025, 0.025); // Detach Camera: culled by the frozen camera, kept as very dark grey (no tints). Linear 0.025 shows as ~44/255 after the sRGB output
+    if (frozenCulledSplat)
+        litColor = float3(1.0, 0.12, 0.10); // Detach Camera: culled by the frozen camera -- red, drawn at 10% opacity in mainPS
 
     sd.worldPos = worldPos;
     sd.normal = normal;
@@ -505,6 +507,7 @@ bool BuildSplat(uint surfelIndex, uint lod, float chunkBlendWeight, float chunkD
     sd.tangentX = tangentX;
     sd.tangentY = tangentY;
     sd.solid = solid;
+    sd.culledTint = frozenCulledSplat ? 1.0 : 0.0;
     return true;
 }
 
@@ -522,6 +525,7 @@ VSOut SplatCornerVertex(SplatData sd, uint corner, float chunkBlendWeight, float
     o.blendWeight = chunkBlendWeight;
     o.isSil = (g_HighlightSilhouette == 1) ? chunkIsSilhouette : 0.0;
     o.solid = sd.solid;
+    o.culledTint = sd.culledTint;
     return o;
 }
 
@@ -535,6 +539,7 @@ VSOut CulledSplatVertex()
     o.blendWeight = 0.0;
     o.isSil = 0.0;
     o.solid = 0.0;
+    o.culledTint = 0.0;
     return o;
 }
 
@@ -1223,8 +1228,11 @@ float4 mainPS(VSOut i) : SV_Target
     // With back-to-front depth sorting, overlapping splats melt together into continuous, silky-smooth marble.
     // A sub-pixel splat (SolidDot) is an opaque dot instead, so a far level covers as a surface.
     float alpha = (i.solid > 0.5) ? 1.0 : saturate(exp(-2.5 * d) * 0.90);
+    // Detach Camera: what the frozen camera would have culled is drawn see-through, 10% opacity per splat.
+    if (i.culledTint > 0.5) alpha *= 0.10;
 
     return float4(i.color * alpha, alpha);
+
 }
 
 uint itemPS(ItemVSOut i) : SV_Target0
