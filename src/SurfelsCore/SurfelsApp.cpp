@@ -498,6 +498,10 @@ namespace Surfels
                     break;
                 }
                 LogTransitionTrace("Startup: load failed for '%s': %s", path.c_str(), m_statusMessage.c_str());
+                // The candidates are the same file reached from different directories, so a file that
+                // exists but will not load (an invalid package the user has just dismissed a dialog for)
+                // would only fail, and prompt, again at the next path. Stop here.
+                break;
             }
 
             if (!loaded)
