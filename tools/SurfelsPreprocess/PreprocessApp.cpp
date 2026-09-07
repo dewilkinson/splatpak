@@ -3447,6 +3447,10 @@ namespace Surfels
         {
             // The four faces of this half: octants with the matching Y sign. Each is the triangle from the
             // centre (the +Y or -Y apex, seen end-on) to the two equatorial vertices of its X and Z signs.
+            // Two passes: every fill first, then every outline, so a face's progress fill can never cover
+            // the divider it shares with a neighbour; the progress fill is semi-transparent for the same
+            // reason, so the dividers read through it at any fill level.
+            for (int pass = 0; pass < 2; pass++)
             for (int f = 0; f < kOctahedronFaces; f++)
             {
                 if (((f & 2) != 0) != upper) continue;
@@ -3458,30 +3462,33 @@ namespace Surfels
                 if (upper)
                 {
                     fill = vis ? IM_COL32((int)(35 + 20 * t), (int)(110 + 70 * t), (int)(55 + 25 * t), 190) : IM_COL32(40, 40, 46, 150);
-                    line = vis ? IM_COL32((int)(70 + 30 * (1 - t)), (int)(160 + 95 * t), (int)(85 + 40 * t), 255) : IM_COL32(70, 72, 80, 255);
+                    line = vis ? IM_COL32((int)(50 + 22 * (1 - t)), (int)(120 + 70 * t), (int)(62 + 30 * t), 255) : IM_COL32(52, 54, 60, 255);
                 }
                 else
                 {
                     fill = vis ? IM_COL32((int)(70 + 20 * t), (int)(110 + 40 * t), (int)(170 + 50 * t), 190) : IM_COL32(40, 42, 50, 150);
-                    line = vis ? IM_COL32((int)(120 + 40 * (1 - t)), (int)(170 + 50 * t), (int)(230 + 25 * t), 255) : IM_COL32(70, 74, 86, 255);
+                    line = vis ? IM_COL32((int)(90 + 30 * (1 - t)), (int)(128 + 38 * t), (int)(172 + 20 * t), 255) : IM_COL32(52, 56, 64, 255);
+                }
+                if (pass == 1)
+                {
+                    dl->AddTriangle(c, px, pz, line, vis ? 2.0f : 1.0f);
+                    continue;
                 }
                 dl->AddTriangleFilled(c, px, pz, fill);
-                // Fill progress: an inner triangle growing from the face's centroid, area proportional to
-                // the share of the face's blocks that are resident, so every visible face can be seen
-                // streaming its own list at once.
+                // Fill progress: a triangle growing from the diamond's centre point outward to the rim,
+                // area proportional to the share of the face's blocks that are resident, so every visible
+                // face can be seen streaming its own list at once. 30% opacity keeps the dividers visible.
                 if (m_faceTotal[f] > 0)
                 {
                     const float done = 1.0f - (float)std::min(m_faceRemaining[f], m_faceTotal[f]) / (float)m_faceTotal[f];
                     const float sc = sqrtf(std::max(0.0f, std::min(1.0f, done)));
                     if (sc > 0.02f)
                     {
-                        const ImVec2 g((c.x + px.x + pz.x) / 3.0f, (c.y + px.y + pz.y) / 3.0f);
-                        auto lerp = [&](const ImVec2& v) { return ImVec2(g.x + (v.x - g.x) * sc, g.y + (v.y - g.y) * sc); };
-                        const ImU32 prog = upper ? IM_COL32(120, 235, 150, vis ? 230 : 110) : IM_COL32(150, 205, 255, vis ? 230 : 110);
-                        dl->AddTriangleFilled(lerp(c), lerp(px), lerp(pz), prog);
+                        auto lerp = [&](const ImVec2& v) { return ImVec2(c.x + (v.x - c.x) * sc, c.y + (v.y - c.y) * sc); };
+                        const ImU32 prog = upper ? IM_COL32(120, 235, 150, vis ? 77 : 40) : IM_COL32(150, 205, 255, vis ? 77 : 40);
+                        dl->AddTriangleFilled(c, lerp(px), lerp(pz), prog);
                     }
                 }
-                dl->AddTriangle(c, px, pz, line, vis ? 2.0f : 1.0f);
             }
             // Camera marker: its horizontal direction, on this half if the camera is on this side of the equator.
             const bool camHere = (m_camDir[1] >= 0.0f) == upper;
