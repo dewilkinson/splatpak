@@ -1813,6 +1813,10 @@ namespace Surfels
         pCB->showChunkStream = pState->showChunkStream ? 1 : 0;
         pCB->arrivalGlowIntensity = pState->arrivalGlowIntensity;
         pCB->arrivalGlowHue = pState->arrivalGlowHue;
+        pCB->autoSplatSize = pState->autoSplatSize ? 1u : 0u;
+        pCB->autoSplatPad0 = 0.0f;
+        pCB->autoSplatPad1[0] = 0.0f; pCB->autoSplatPad1[1] = 0.0f;
+        for (int l = 0; l < 8; l++) pCB->lodRadius[l] = pState->lodRadius[l];
         pCB->enableOcclusionCulling = (pState->enableOcclusionCulling && pState->occlusionVoxelCount > 0 && m_pOcclusionVoxelBuffer != nullptr) ? 1 : 0;
         pCB->showOcclusionVolumeOnly = pState->showOcclusionVolumeOnly ? 1 : 0;
 

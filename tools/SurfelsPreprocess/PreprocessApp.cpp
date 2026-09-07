@@ -8,6 +8,7 @@
 
 #include "PreprocessApp.h"
 #include <chrono>
+#include <cfloat>
 #include "../../libs/bluesec-codec/OcclusionVolume.h"
 #include <DirectXCollision.h>
 #include <iomanip>
@@ -2383,6 +2384,24 @@ namespace Surfels
                         m_state.orientMode = (uint32_t)orientIdx;
                     }
                     ImGui::SliderFloat("Splat Radius Scale", &m_state.splatRadius, 0.10f, 10.0f, "%.2fx");
+                    ImGui::Checkbox("Auto Splat Size (per-level density)", &m_autoSplatSize);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Sizes every disc from its level's typical point spacing instead of the per-point size classes: a dense patch covers the surface exactly and an isolated point (scan outlier, decimation stray) gets the same small disc instead of an inflated one, which removes the halo of ghost discs around the model at coarse levels. Splat Radius Scale still multiplies.");
+                    if (m_autoSplatSize)
+                    {
+                        ImGui::Indent(12.0f);
+                        ImGui::PushItemWidth(150.0f);
+                        ImGui::SliderFloat("Coverage", &m_autoSplatCoverage, 0.0f, 8.0f, "%.2f x spacing");
+                        ImGui::PopItemWidth();
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Disc radius as a multiple of the level's point spacing. Around 1.0 neighbouring discs just cover the surface; below ~0.6 gaps open, well above 1 discs overlap heavily and strays grow again. Splats that project below about 1.5 pixels are drawn as opaque one-pixel dots regardless.");
+                        if (!m_lodSpacing.empty())
+                        {
+                            std::string sp = "Level spacing:";
+                            for (size_t l = 0; l < m_lodSpacing.size(); l++) { char b[40]; snprintf(b, sizeof(b), " L%zu %.4g", l, m_lodSpacing[l]); sp += b; }
+                            ImGui::TextDisabled("%s", sp.c_str());
+                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Median nearest-neighbour distance of each level's points, in model units (measured on load).");
+                        }
+                        ImGui::Unindent(12.0f);
+                    }
                     ImGui::Separator();
 
                     ImGui::Checkbox("Auto Rotate Model##Viewport", &m_autoRotate);
@@ -3459,9 +3478,13 @@ namespace Surfels
         ImGui::Unindent(12.0f);
     }
 
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
+
     // [Removed from the public history: proprietary streaming-order code, now in libs/gstx/StreamOrder]
 
     // [Removed from the public history: proprietary streaming-order code, now in libs/gstx/StreamOrder]
+
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
@@ -4608,6 +4631,8 @@ namespace Surfels
         m_state.showChunkStream = m_showChunkStream;
         m_state.arrivalGlowIntensity = m_arrivalGlowIntensity;
         m_state.arrivalGlowHue = m_arrivalGlowHue;
+        m_state.autoSplatSize = m_autoSplatSize;
+        for (int l = 0; l < 8; l++) m_state.lodRadius[l] = (l < (int)m_lodSpacing.size()) ? m_lodSpacing[l] * m_autoSplatCoverage : 0.0f;
         m_state.enableGpuSilhouetteInversion = m_enableSilhouetteLOD0 || m_highlightSilhouetteChunks;
         m_state.silhouetteDepthThreshold = m_silhouetteDepthThreshold;
         m_state.enableTemporalFiltering = m_enableTemporalFiltering;

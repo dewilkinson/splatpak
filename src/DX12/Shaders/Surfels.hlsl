@@ -100,7 +100,25 @@ cbuffer SurfelsCB : register(b0)
     uint     g_OcclusionVoxelFirst; // Index of that mip's first block in g_OcclusionVoxelBuffer
     float    g_ArrivalGlowIntensity; // Refinement visualizer strength (1 = default)
     float    g_ArrivalGlowHue;       // Refinement visualizer hue rotation, degrees (0 = orange)
+    uint     g_AutoSplatSize;        // 1 = disc radius from the level's point spacing (g_LodRadius), 0 = size classes x g_Radius
+    float    g_AutoSplatPad0;
+    float2   g_AutoSplatPad1;
+    float4   g_LodRadius[2];         // Auto splat size: disc radius per LOD level (world units), index = lodLevel 0..7; 0 = level unknown
 };
+
+// Auto splat size: every disc of a level takes that level's density-derived radius (its typical point
+// spacing times the coverage factor), so a dense patch covers the surface exactly and an isolated point
+// -- a scan outlier or a decimation stray -- gets the same small disc instead of the inflated one the
+// size classes hand it, which is what made the halo of ghost discs around the model at coarse levels.
+// The point's own size class (1, 1.5, 2.5, 4.5: the packer's measure of how far its neighbours are)
+// still scales the level radius, capped at 2.5, so a locally sparse patch keeps covering while a lone
+// stray cannot balloon to the largest class.
+float AutoSplatRadius(uint lod, float classRadius, float classScale)
+{
+    if (g_AutoSplatSize != 1 || lod >= 8) return classRadius;
+    float lr = g_LodRadius[lod >> 2][lod & 3];
+    return (lr > 0.0) ? g_Radius * lr * min(classScale, 2.5) : classRadius;
+}
 
 // Hue/saturation/value to RGB, hue in degrees (wraps).
 float3 HsvToRgb(float h, float s, float v)
@@ -121,6 +139,7 @@ struct VSOut
     float3 norm        : NORMAL0;
     float  blendWeight : BLENDWEIGHT0;
     float  isSil       : TEXCOORD1;
+    float  solid       : TEXCOORD2; // 1 = sub-pixel splat drawn as an opaque dot (see SolidDot)
 };
 
 // Quad corners in local 2D tangent space: 0(-1,-1) 1(1,-1) 2(-1,1) 3(1,1)
@@ -280,16 +299,43 @@ struct SplatData
     float3 litColor;
     float3 tangentX;
     float3 tangentY;
+    float  solid;    // 1 = drawn as an opaque dot (see SolidDot)
 };
+
+// About one screen pixel of world radius at this distance (the same constant the item prepass uses).
+static const float kPixelRadiusPerDistance = 0.00075;
+
+// Splats that project below ~1.5 pixels cannot cover as discs: a normal-oriented disc seen at a
+// grazing angle is a sliver, and the Gaussian falloff leaves each dot mostly transparent, so a far
+// (coarse) level reads as a translucent speckle cloud around whatever is behind it. Such a splat is
+// drawn instead as a camera-facing, fully opaque dot of at least one pixel: a dense level becomes a
+// solid surface and an isolated stray stays a single dot rather than an inflated disc.
+void SolidDot(float distToCam, inout float3 tangentX, inout float3 tangentY, out float solid)
+{
+    float onePixel = distToCam * kPixelRadiusPerDistance;
+    float radius = max(length(tangentX), length(tangentY));
+    if (radius < onePixel * 1.5)
+    {
+        float r = max(radius, onePixel);
+        tangentX = g_CamRight * r;
+        tangentY = g_CamUp * r;
+        solid = 1.0;
+    }
+    else
+    {
+        solid = 0.0;
+    }
+}
 
 // Decodes surfel surfelIndex for the active render mode, applies detached-camera culling (returns
 // false when the surfel is dropped), the dilation morph, lighting and the edge / arrival tints.
-bool BuildSplat(uint surfelIndex, float chunkBlendWeight, float chunkDilationMorph, float chunkIsSilhouette, out SplatData sd)
+bool BuildSplat(uint surfelIndex, uint lod, float chunkBlendWeight, float chunkDilationMorph, float chunkIsSilhouette, out SplatData sd)
 {
     float3 worldPos = float3(0.0, 0.0, 0.0);
     float3 normal = float3(0.0, 1.0, 0.0);
     float3 color = float3(0.0, 0.0, 0.0);
     float3 tangentX = float3(0.0, 0.0, 0.0), tangentY = float3(0.0, 0.0, 0.0);
+    float solid = 0.0;
 
     if (g_RenderMode == 0)
     {
@@ -322,7 +368,7 @@ bool BuildSplat(uint surfelIndex, float chunkBlendWeight, float chunkDilationMor
         float radScale = (re == 0) ? 1.0f : (re == 1) ? 1.5f : (re == 2) ? 2.5f : 4.5f;
         float maxExtent = max(g_AABBExtents.x, max(g_AABBExtents.y, g_AABBExtents.z));
         float baseVoxelRadius = max(0.0005f, (maxExtent / 1024.0f) * 1.35f);
-        float splatRadius = g_Radius * baseVoxelRadius * radScale;
+        float splatRadius = AutoSplatRadius(lod, g_Radius * baseVoxelRadius * radScale, radScale);
 
         float4 clipCenter = mul(g_ViewProj, float4(worldPos, 1.0));
         float distToCam = max(0.1f, clipCenter.w);
@@ -330,6 +376,7 @@ bool BuildSplat(uint surfelIndex, float chunkBlendWeight, float chunkDilationMor
         splatRadius = max(splatRadius, minCoverageRadius);
 
         SplatTangents(normal, splatRadius, tangentX, tangentY);
+        SolidDot(distToCam, tangentX, tangentY, solid);
     }
     else
     {
@@ -342,7 +389,7 @@ bool BuildSplat(uint surfelIndex, float chunkBlendWeight, float chunkDilationMor
         float maxExtent = max(g_AABBExtents.x, max(g_AABBExtents.y, g_AABBExtents.z));
         float defaultRadius = max(0.0005f, (maxExtent / 1024.0f) * 1.35f);
         float baseRadius = (s.radius > 0.00001f) ? s.radius : defaultRadius;
-        float splatRadius = baseRadius * g_Radius;
+        float splatRadius = AutoSplatRadius(lod, baseRadius * g_Radius, 1.0);
 
         float4 clipCenter = mul(g_ViewProj, float4(worldPos, 1.0));
         float distToCam = max(0.1f, clipCenter.w);
@@ -350,6 +397,7 @@ bool BuildSplat(uint surfelIndex, float chunkBlendWeight, float chunkDilationMor
         splatRadius = max(splatRadius, minCoverageRadius);
 
         SplatTangents(normal, splatRadius, tangentX, tangentY);
+        SolidDot(distToCam, tangentX, tangentY, solid);
     }
 
     // When the camera is detached: render the model as a hollow plaster mold shell
@@ -371,7 +419,7 @@ bool BuildSplat(uint surfelIndex, float chunkBlendWeight, float chunkDilationMor
 
         if (outsideFrustum || isBackFacingToDetached)
         {
-            sd.worldPos = worldPos; sd.normal = normal; sd.litColor = color; sd.tangentX = tangentX; sd.tangentY = tangentY;
+            sd.worldPos = worldPos; sd.normal = normal; sd.litColor = color; sd.tangentX = tangentX; sd.tangentY = tangentY; sd.solid = 0.0;
             return false;
         }
         // 3. Back sides in solid mid grey: a surfel whose normal faces away from the VIEWER is being
@@ -448,6 +496,7 @@ bool BuildSplat(uint surfelIndex, float chunkBlendWeight, float chunkDilationMor
     sd.litColor = litColor;
     sd.tangentX = tangentX;
     sd.tangentY = tangentY;
+    sd.solid = solid;
     return true;
 }
 
@@ -464,6 +513,7 @@ VSOut SplatCornerVertex(SplatData sd, uint corner, float chunkBlendWeight, float
     o.norm = sd.normal;
     o.blendWeight = chunkBlendWeight;
     o.isSil = (g_HighlightSilhouette == 1) ? chunkIsSilhouette : 0.0;
+    o.solid = sd.solid;
     return o;
 }
 
@@ -476,6 +526,7 @@ VSOut CulledSplatVertex()
     o.norm = float3(0.0, 0.0, 0.0);
     o.blendWeight = 0.0;
     o.isSil = 0.0;
+    o.solid = 0.0;
     return o;
 }
 
@@ -483,7 +534,7 @@ VSOut CulledSplatVertex()
 // Per-surfel item-prepass disc shared by itemMS and itemVS
 // =========================================================================
 
-void BuildItemSplat(uint surfelIndex, out float3 worldPos, out float3 tangentX, out float3 tangentY)
+void BuildItemSplat(uint surfelIndex, uint lod, out float3 worldPos, out float3 tangentX, out float3 tangentY)
 {
     worldPos = float3(0.0, 0.0, 0.0);
     tangentX = float3(0.0, 0.0, 0.0);
@@ -504,7 +555,7 @@ void BuildItemSplat(uint surfelIndex, out float3 worldPos, out float3 tangentX, 
         float radScale = (re == 0) ? 1.0f : (re == 1) ? 1.5f : (re == 2) ? 2.5f : 4.5f;
         float maxExtent = max(g_AABBExtents.x, max(g_AABBExtents.y, g_AABBExtents.z));
         float baseVoxelRadius = max(0.0005f, (maxExtent / 1024.0f) * 1.35f);
-        float splatRadius = g_Radius * baseVoxelRadius * radScale;
+        float splatRadius = AutoSplatRadius(lod, g_Radius * baseVoxelRadius * radScale, radScale);
 
         float4 clipCenter = mul(g_ViewProj, float4(worldPos, 1.0));
         float distToCam = max(0.1f, clipCenter.w);
@@ -523,7 +574,7 @@ void BuildItemSplat(uint surfelIndex, out float3 worldPos, out float3 tangentX, 
         RawSurfel s = g_RawSurfelBuffer[surfelIndex];
         worldPos = s.position;
         normal = s.normal;
-        float splatRadius = max(0.001f, s.radius * g_Radius);
+        float splatRadius = AutoSplatRadius(lod, max(0.001f, s.radius * g_Radius), 1.0);
         {
             float4 clipCenterRaw = mul(g_ViewProj, float4(worldPos, 1.0));
             splatRadius = max(splatRadius, max(0.1f, clipCenterRaw.w) * 0.00075f); // ~1 px minimum, item prepass only (see above)
@@ -774,6 +825,7 @@ void mainMS(
     float chunkBlendWeight = 1.0;
     float chunkDilationMorph = 0.0;
     float chunkIsSilhouette = 0.0;
+    uint chunkLod = 0xFF;
     if (g_UseChunkedPipeline == 1)
     {
         uint pIdx = min(groupId.x, (uint)(AS_GROUP_SIZE - 1));
@@ -789,6 +841,7 @@ void mainMS(
         chunkBlendWeight = chunk.blendWeight;
         chunkDilationMorph = chunk.dilationMorph;
         chunkIsSilhouette = chunk.isSilhouette;
+        chunkLod = chunk.lodLevel;
 
         if (g_ShowOnlyLocked == 1 && !ChunkIsLocked(chunk))
         {
@@ -813,7 +866,7 @@ void mainMS(
     uint pBase = threadId * 2;
 
     SplatData sd;
-    if (!BuildSplat(surfelIndex, chunkBlendWeight, chunkDilationMorph, chunkIsSilhouette, sd))
+    if (!BuildSplat(surfelIndex, chunkLod, chunkBlendWeight, chunkDilationMorph, chunkIsSilhouette, sd))
     {
         tris[pBase + 0] = uint3(0, 0, 0);
         tris[pBase + 1] = uint3(0, 0, 0);
@@ -853,6 +906,7 @@ void itemMS(
     uint groupSurfelCount = SURFELS_PER_GROUP;
     uint surfelIndex = 0;
     uint chunkIndex = groupId.y * 32768 + groupId.x;
+    uint itemLod = 0xFF;
 
     if (g_UseChunkedPipeline == 1)
     {
@@ -872,6 +926,7 @@ void itemMS(
 
         groupSurfelCount = min((uint)SURFELS_PER_GROUP, c.surfelCount);
         surfelIndex = c.surfelOffset + threadId;
+        itemLod = c.lodLevel;
     }
     else
     {
@@ -892,7 +947,7 @@ void itemMS(
         return;
 
     float3 worldPos, tangentX, tangentY;
-    BuildItemSplat(surfelIndex, worldPos, tangentX, tangentY);
+    BuildItemSplat(surfelIndex, itemLod, worldPos, tangentX, tangentY);
 
     uint vBase = threadId * 4;
     [unroll]
@@ -978,6 +1033,7 @@ VSOut mainVS(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
     float chunkBlendWeight = 1.0;
     float chunkDilationMorph = 0.0;
     float chunkIsSilhouette = 0.0;
+    uint chunkLod = 0xFF;
 
     if (g_UseChunkedPipeline == 1)
     {
@@ -1000,6 +1056,7 @@ VSOut mainVS(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
         chunkBlendWeight = chunk.blendWeight;
         chunkDilationMorph = chunk.dilationMorph;
         chunkIsSilhouette = chunk.isSilhouette;
+        chunkLod = chunk.lodLevel;
     }
     else
     {
@@ -1010,7 +1067,7 @@ VSOut mainVS(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
         return CulledSplatVertex();
 
     SplatData sd;
-    if (!BuildSplat(surfelIndex, chunkBlendWeight, chunkDilationMorph, chunkIsSilhouette, sd))
+    if (!BuildSplat(surfelIndex, chunkLod, chunkBlendWeight, chunkDilationMorph, chunkIsSilhouette, sd))
         return CulledSplatVertex();
 
     return SplatCornerVertex(sd, s_quadVertexCorner[vertexId % 6], chunkBlendWeight, chunkIsSilhouette);
@@ -1027,6 +1084,7 @@ ItemVSOut itemVS(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
 
     uint surfelIndex = 0;
     uint chunkIndex = 0;
+    uint itemLod = 0xFF;
 
     if (g_UseChunkedPipeline == 1)
     {
@@ -1040,6 +1098,7 @@ ItemVSOut itemVS(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
         if (local >= c.surfelCount)
             return culled;
         surfelIndex = c.surfelOffset + local;
+        itemLod = c.lodLevel;
     }
     else
     {
@@ -1051,7 +1110,7 @@ ItemVSOut itemVS(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
         return culled;
 
     float3 worldPos, tangentX, tangentY;
-    BuildItemSplat(surfelIndex, worldPos, tangentX, tangentY);
+    BuildItemSplat(surfelIndex, itemLod, worldPos, tangentX, tangentY);
     return ItemCornerVertex(worldPos, tangentX, tangentY, s_quadVertexCorner[vertexId % 6], chunkIndex);
 }
 
@@ -1133,7 +1192,8 @@ float4 mainPS(VSOut i) : SV_Target
 
     // Continuous 3D Gaussian falloff:
     // With back-to-front depth sorting, overlapping splats melt together into continuous, silky-smooth marble.
-    float alpha = saturate(exp(-2.5 * d) * 0.90);
+    // A sub-pixel splat (SolidDot) is an opaque dot instead, so a far level covers as a surface.
+    float alpha = (i.solid > 0.5) ? 1.0 : saturate(exp(-2.5 * d) * 0.90);
 
     return float4(i.color * alpha, alpha);
 }

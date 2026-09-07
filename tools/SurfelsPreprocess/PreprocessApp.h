@@ -287,6 +287,10 @@ namespace Surfels
         float  m_conservativeNeighborBufferMargin   = 1.35f;  // Frustum margin for pre-fetching local neighbors in conservative mode
         bool   m_enableDitheredTransitions  = true;   // Stochastic screen-space Bayer dithering for smooth LOD transitions
         bool   m_demoteChunks               = false;  // Off: a node that has refined into its children stays refined when the zoom target coarsens or its edge flag drops (only Decay-marked children demote). On: the v1.2.0 handshake, children cross-fade back to the parent and are evicted
+        bool   m_autoSplatSize       = true;   // Auto Splat Size: disc radius from each level's point spacing (m_lodSpacing x m_autoSplatCoverage), not the size classes
+        float  m_autoSplatCoverage   = 1.2f;   // Disc radius as a multiple of the level's typical point spacing
+        std::vector<float> m_lodSpacing;       // Per LOD level: median nearest-neighbour distance of its points (world units), from ComputeLodSpacing
+        void   ComputeLodSpacing();           // Fills m_lodSpacing from the resident level point sets (after a load or a preprocess)
         // Frame budget for the stats panel (CPU wall clock per frame, EMA-smoothed): where the frame time
         // actually goes, as opposed to the command-recording stage costs the renderer reports.
         float  m_frameSimMs = 0.0f, m_frameTraversalMs = 0.0f, m_frameUiMs = 0.0f, m_frameRenderMs = 0.0f, m_framePresentMs = 0.0f;
@@ -369,6 +373,7 @@ namespace Surfels
         uint32_t                  m_extraDeliveries = 0;               // Diagnostic: deliveries of blocks that had already been delivered since the last reset (re-streamed after an eviction)
         uint32_t                  m_redeliveredBlocks = 0;             // Diagnostic: distinct blocks delivered more than once since the last reset
         void  ClearFaceEdgeQueues();                                // Drops every queued edge request (streaming reset)
+        void  HealStaleRequestFlags();                              // Periodic safety net: clears isRequested / isEvictionPending on non-resident blocks no queue holds, so a lost request cannot leave a permanent hole
         float    m_faceFacing[kOctahedronFaces] = {};                  // dot(face normal, direction to camera), this frame
         uint8_t  m_visibleFaceMask = 0xFF;                          // Bit i = face i visible this frame
         uint32_t m_faceRemaining[kOctahedronFaces] = {};               // Non-resident blocks per face (UI; recounted periodically)

@@ -55,6 +55,8 @@ namespace Surfels
             bool     showChunkStream  = true;  // Refinement visualizer: tint newly streamed chunks (arrival glow)
             float    arrivalGlowIntensity = 0.4f; // Strength of that tint and bloom (0 = invisible, 0.4 = default, 2 = strong)
             float    arrivalGlowHue = 0.0f;       // Hue rotation in degrees applied to the glow colours (0 = orange)
+            bool     autoSplatSize = true;        // Disc radius from each level's point spacing (lodRadius) instead of the size classes
+            float    lodRadius[8] = {};           // Auto splat size: disc radius per LOD level, world units (0 = unknown level)
             bool     enableConeCulling = true; // Task Shader (mainAS) backface normal cone culling
             bool     useCopyQueue = true; // Dedicated DX12 Hardware DMA Copy Queue for asynchronous PCIe transfers
             bool     enableGpuSilhouetteInversion = true; // GPU Chunk-ID & Depth Discontinuity Edge Inversion
@@ -189,6 +191,10 @@ namespace Surfels
             uint32_t   occlusionVoxelFirst;   // Index of that mip's first block in the voxel buffer
             float      arrivalGlowIntensity;  // Refinement visualizer strength (see State)
             float      arrivalGlowHue;        // Refinement visualizer hue rotation, degrees
+            uint32_t   autoSplatSize;         // Auto splat size on/off (see State)
+            float      autoSplatPad0;
+            float      autoSplatPad1[2];
+            float      lodRadius[8];          // Disc radius per LOD level, world units (two float4 rows in the shader)
         };
 
         CAULDRON_DX12::Device* m_pDevice = nullptr;
