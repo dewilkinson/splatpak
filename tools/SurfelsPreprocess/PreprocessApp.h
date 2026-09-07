@@ -259,6 +259,7 @@ namespace Surfels
             float    transitionProgress = 0.0f;   // 0.0 (Parent Level N Solid) <-> 1.0 (Children Level N-1 Solid)
             float    streamWaveTimer = 0.0f;      // Active chunk streaming lavender wavefront timer (3.0s -> 0.0s)
             float    silhouetteHysteresisTimer = 0.0f; // Hysteresis hold time (seconds) to eliminate refinement/demotion thrashing
+            float    silhouetteAge = 0.0f;        // Seconds the GPU edge detector has flagged this chunk without a gap; refinement below the target waits for 0.25 s of it
             bool     renderedLastFrame = false;    // Visited by the previous frame's traversal: rendered, or refined in place of by its children. Only such "active" chunks may keep an edge flag; anything the traversal never reached (a level outside the active range) is cleared before the next traversal. Clearing on "not rendered" alone made a refined edge parent lose its flag, re-render, get re-detected and refine again every other frame -- a whole-model flicker
             uint32_t globalSurfelOffset = 0;      // Zero-copy offset into m_unifiedPackedSurfels / m_unifiedRawSurfels
             XMFLOAT3 aabbMin = { 0, 0, 0 };
