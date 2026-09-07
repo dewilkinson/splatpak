@@ -34,6 +34,7 @@ struct RawSurfel
     float3 normal;
     float3 color;
     float  radius;
+    uint   sourceIndex; // Splat mode bookkeeping (SurfelVertex::sourceIndex); unused by the shaders
 };
 
 struct SortPair

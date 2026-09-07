@@ -19,9 +19,18 @@
 #include "../../libs/bluesec-codec/DetailHeatmap.h"
 #include "../../libs/bluesec-codec/LiftingWavelet.h"
 #include "../../libs/bluesec-codec/ByteShuffle.h"
+#include "../../libs/bluesec-codec/SplatCodec.h"
 
 namespace Surfels
 {
+    // Splat mode input to PackageDataset: the source Gaussians every chunk's points refer to through
+    // SurfelVertex::sourceIndex, and the spherical-harmonics degree to keep (0, 1 or 3).
+    struct SplatBakeInput
+    {
+        const std::vector<SplatAttributes>* attributes = nullptr;
+        uint32_t shDegree = 1;
+    };
+
     class StreamPackager
     {
     public:
@@ -34,7 +43,8 @@ namespace Surfels
             const std::vector<OcclusionVoxelGPU>& occlusionVoxels = {},
             uint64_t sourceFileBytes = 0,
             const OcclusionMipTable* pOcclusionMips = nullptr, // Mip layout of occlusionVoxels; nullptr = one mip covering the array
-            const DetailGrid* detailGrid = nullptr)             // Detail heatmap (v7+); nullptr = none stored
+            const DetailGrid* detailGrid = nullptr,             // Detail heatmap (v7+); nullptr = none stored
+            const SplatBakeInput* splat = nullptr)              // Splat mode (v8+, surfel format 1); nullptr = 8-byte surfel records
         {
             std::string sflwPath = outputBasepath + ".sflw";
 
@@ -78,10 +88,35 @@ namespace Surfels
             header.splatRadius = splatRadius;
             header.sourceFileBytes = sourceFileBytes;
 
+            // Record format (v8+). Splat mode encodes every level through SplatCodec against one
+            // global scale range, so the header carries what a decoder needs to invert it.
+            const bool splatMode = (splat != nullptr && splat->attributes != nullptr);
+            SplatEncodeParams splatParams;
+            header.surfelFormat = splatMode ? SURFEL_FORMAT_SPLAT20 : SURFEL_FORMAT_SURFEL8;
+            header.splatRecordBytes = SurfelRecordBytes(header.surfelFormat);
+            header.shDegree = 0;
+            header.shRecordBytes = 0;
+            header.splatScaleLog2Min = 0.0f;
+            header.splatScaleLog2Max = 0.0f;
+            header.shManifestOffset = 0;
+            if (splatMode)
+            {
+                splatParams.shDegree = (splat->shDegree >= 3) ? 3u : (splat->shDegree >= 1 ? 1u : 0u);
+                splatParams.aabbMin = gMin;
+                splatParams.aabbMax = gMax;
+                SplatCodec::ComputeScaleRange(*splat->attributes, maxLODs, splatParams.scaleLog2Min, splatParams.scaleLog2Max);
+                header.shDegree = splatParams.shDegree;
+                header.shRecordBytes = SplatCodec::SHRecordBytes(splatParams.shDegree);
+                header.splatScaleLog2Min = splatParams.scaleLog2Min;
+                header.splatScaleLog2Max = splatParams.scaleLog2Max;
+            }
+            const uint32_t recordBytes = header.splatRecordBytes;
+
             sflwOut.write(reinterpret_cast<const char*>(&header), sizeof(SFLWFileHeader));
 
             std::vector<ChunkManifest> chunkManifests;
             chunkManifests.reserve(chunks.size());
+            std::vector<SHLODRecord> shRecords; // Splat mode: one per chunk LOD, manifest order
 
             size_t totalRawBytes = 0;
             size_t totalCompressedBytes = 0;
@@ -103,17 +138,27 @@ namespace Surfels
 
                 for (const auto& lod : waveletResult.lodLevels)
                 {
-                    // 2. Quantize to 8-byte PackedSurfelGPU using dataset Global Bounding Box
-                    // This guarantees that all streamed chunks unpack with the exact same global AABB in Mesh Shaders & GPU Sorting!
-                    auto packedSurfels = Quantizer::QuantizeSurfels(lod.surfels, gMin, gMax);
+                    // 2. Quantize against the dataset's global bounding box, so every streamed chunk
+                    // unpacks with the exact same frame in the shaders and the GPU sort.
+                    std::vector<PackedSurfelGPU> packedSurfels;
+                    std::vector<PackedSplatGPU> packedSplats;
+                    std::vector<uint8_t> shStream;
+                    const uint8_t* recordBytesPtr = nullptr;
+                    size_t recordCount = lod.surfels.size();
+                    if (splatMode)
+                    {
+                        SplatCodec::Encode(lod.surfels, *splat->attributes, lod.level, splatParams, packedSplats, shStream);
+                        recordBytesPtr = reinterpret_cast<const uint8_t*>(packedSplats.data());
+                    }
+                    else
+                    {
+                        packedSurfels = Quantizer::QuantizeSurfels(lod.surfels, gMin, gMax);
+                        recordBytesPtr = reinterpret_cast<const uint8_t*>(packedSurfels.data());
+                    }
 
                     // 3. Byte-Shuffle
-                    size_t uncompressedBytes = packedSurfels.size() * sizeof(PackedSurfelGPU);
-                    auto shuffled = ByteShuffle::Shuffle(
-                        reinterpret_cast<const uint8_t*>(packedSurfels.data()),
-                        packedSurfels.size(),
-                        sizeof(PackedSurfelGPU)
-                    );
+                    size_t uncompressedBytes = recordCount * recordBytes;
+                    auto shuffled = ByteShuffle::Shuffle(recordBytesPtr, recordCount, recordBytes);
 
                     // 4. Compress
                     auto compressed = ByteShuffle::CompressShuffled(shuffled);
@@ -123,11 +168,30 @@ namespace Surfels
 
                     ChunkLODHeader lh = {};
                     lh.lodLevel = lod.level;
-                    lh.surfelCount = (uint32_t)packedSurfels.size();
+                    lh.surfelCount = (uint32_t)recordCount;
                     lh.uncompressedByteSize = (uint32_t)uncompressedBytes;
                     lh.compressedByteSize = (uint32_t)compressed.size();
                     lh.fileOffset = currentFileOffset;
                     lh.geometricError = lod.geometricError;
+
+                    // Splat mode: the level's spherical-harmonics stream right after its records, through
+                    // the same shuffle (stride = bytes per splat) and entropy stages.
+                    if (splatMode)
+                    {
+                        SHLODRecord sr = {};
+                        if (header.shRecordBytes > 0 && !shStream.empty())
+                        {
+                            auto shShuffled = ByteShuffle::Shuffle(shStream.data(), recordCount, header.shRecordBytes);
+                            auto shCompressed = ByteShuffle::CompressShuffled(shShuffled);
+                            sr.fileOffset = (uint64_t)sflwOut.tellp();
+                            sr.uncompressedByteSize = (uint32_t)shStream.size();
+                            sr.compressedByteSize = (uint32_t)shCompressed.size();
+                            sflwOut.write(reinterpret_cast<const char*>(shCompressed.data()), shCompressed.size());
+                            totalRawBytes += shStream.size();
+                            totalCompressedBytes += shCompressed.size();
+                        }
+                        shRecords.push_back(sr);
+                    }
 
                     cm.lods.push_back(lh);
 
@@ -184,6 +248,13 @@ namespace Surfels
                 sflwOut.write(reinterpret_cast<const char*>(detailGrid->score.data()), detailGrid->score.size());
             }
 
+            // Splat mode SH table (v8+): one SHLODRecord per chunk LOD, in manifest order.
+            if (splatMode && header.shRecordBytes > 0 && !shRecords.empty())
+            {
+                header.shManifestOffset = (uint64_t)sflwOut.tellp();
+                sflwOut.write(reinterpret_cast<const char*>(shRecords.data()), sizeof(SHLODRecord) * shRecords.size());
+            }
+
             // Embedded manifest table (v4+) goes last: one ChunkManifestRecord per chunk, each followed
             // by its ChunkLODHeader array. Every LOD payload offset is already absolute, so the manifest
             // can sit anywhere; the end of the file keeps the payload region contiguous.
@@ -229,7 +300,13 @@ namespace Surfels
             SFLWFileHeader header = {};
             std::vector<ChunkManifest> chunkManifests;
             std::vector<std::vector<PackedSurfelGPU>> chunkLOD0Surfels; // kept for existing callers (== chunkLODSurfels[c][0])
-            std::vector<std::vector<std::vector<PackedSurfelGPU>>> chunkLODSurfels; // [chunkIndex][lodLevelIndex] -> surfels
+            std::vector<std::vector<std::vector<PackedSurfelGPU>>> chunkLODSurfels; // [chunkIndex][lodLevelIndex] -> surfels (surfel format 0; empty vectors on a splat package)
+            // Splat packages (header.surfelFormat == SURFEL_FORMAT_SPLAT20): the records and the SH stream
+            // per chunk LOD, plus the parameters that decode them (SplatCodec::Decode). chunkLODSurfels stays empty.
+            std::vector<std::vector<std::vector<PackedSplatGPU>>> chunkLODSplats;
+            std::vector<std::vector<std::vector<uint8_t>>>        chunkLODSH;
+            SplatEncodeParams splatParams;
+            bool IsSplatPackage() const { return header.version >= 8 && header.surfelFormat == SURFEL_FORMAT_SPLAT20; }
             std::vector<OcclusionVoxelGPU> occlusionVoxels; // v3+ only; empty on older files or files with no volume baked
             OcclusionMipTable occlusionMips;                // Mip layout of occlusionVoxels (v6+); a pre-v6 volume is presented as one mip
             DetailGrid detailGrid;                          // v7+ only; invalid (nx == 0) on older files -- the app rebuilds one from LOD 0
@@ -318,15 +395,58 @@ namespace Surfels
             {
                 return fail("This is a pre-v4 package and its companion manifest " + jsonPath + " is missing or unreadable.");
             }
-            if (!ValidateSFLWManifest(outPackage.chunkManifests, fileSize, reason))
+            // The record format fields were appended in version 8; older files hold 8-byte surfels.
+            if (outPackage.header.version < 8)
+            {
+                outPackage.header.surfelFormat = SURFEL_FORMAT_SURFEL8;
+                outPackage.header.shDegree = 0;
+                outPackage.header.splatRecordBytes = (uint32_t)sizeof(PackedSurfelGPU);
+                outPackage.header.shRecordBytes = 0;
+                outPackage.header.splatScaleLog2Min = 0.0f;
+                outPackage.header.splatScaleLog2Max = 0.0f;
+                outPackage.header.shManifestOffset = 0;
+            }
+            const bool splatPackage = outPackage.IsSplatPackage();
+            const uint32_t recordBytes = SurfelRecordBytes(outPackage.header.surfelFormat);
+            if (!ValidateSFLWManifest(outPackage.chunkManifests, fileSize, reason, recordBytes))
             {
                 return fail(reason);
             }
 
+            // Splat mode: the SH table, one record per chunk LOD in manifest order.
+            std::vector<SHLODRecord> shRecords;
+            if (splatPackage)
+            {
+                outPackage.splatParams.shDegree = outPackage.header.shDegree;
+                outPackage.splatParams.scaleLog2Min = outPackage.header.splatScaleLog2Min;
+                outPackage.splatParams.scaleLog2Max = outPackage.header.splatScaleLog2Max;
+                outPackage.splatParams.aabbMin = outPackage.header.globalBoundsMin;
+                outPackage.splatParams.aabbMax = outPackage.header.globalBoundsMax;
+                size_t lodCount = 0;
+                for (const auto& cm : outPackage.chunkManifests) lodCount += cm.lods.size();
+                if (outPackage.header.shRecordBytes > 0 && outPackage.header.shManifestOffset > 0)
+                {
+                    if (outPackage.header.shManifestOffset + lodCount * sizeof(SHLODRecord) > fileSize)
+                        return fail("The spherical-harmonics table extends past the end of the file. The package is truncated.");
+                    shRecords.resize(lodCount);
+                    sflwIn.seekg((std::streamoff)outPackage.header.shManifestOffset, std::ios::beg);
+                    sflwIn.read(reinterpret_cast<char*>(shRecords.data()), (std::streamsize)(sizeof(SHLODRecord) * lodCount));
+                    if (!sflwIn.good()) return fail("The spherical-harmonics table could not be read; the package is corrupt or truncated.");
+                    for (size_t r = 0; r < shRecords.size(); r++)
+                    {
+                        if (shRecords[r].compressedByteSize != 0 && shRecords[r].fileOffset + (uint64_t)shRecords[r].compressedByteSize > fileSize)
+                            return fail("A spherical-harmonics payload extends past the end of the file. The package is truncated.");
+                    }
+                }
+            }
+
             outPackage.chunkLOD0Surfels.resize(outPackage.chunkManifests.size());
             outPackage.chunkLODSurfels.resize(outPackage.chunkManifests.size());
+            outPackage.chunkLODSplats.resize(splatPackage ? outPackage.chunkManifests.size() : 0);
+            outPackage.chunkLODSH.resize(splatPackage ? outPackage.chunkManifests.size() : 0);
             outPackage.totalSurfels = 0;
             outPackage.totalCompressedBytes = 0;
+            size_t shRecordCursor = 0;
 
             for (size_t c = 0; c < outPackage.chunkManifests.size(); c++)
             {
@@ -334,6 +454,11 @@ namespace Surfels
                 if (cm.lods.empty()) continue;
 
                 outPackage.chunkLODSurfels[c].resize(cm.lods.size());
+                if (splatPackage)
+                {
+                    outPackage.chunkLODSplats[c].resize(cm.lods.size());
+                    outPackage.chunkLODSH[c].resize(cm.lods.size());
+                }
 
                 for (size_t l = 0; l < cm.lods.size(); l++)
                 {
@@ -361,20 +486,53 @@ namespace Surfels
                         return fail(buf);
                     }
 
-                    outPackage.chunkLODSurfels[c][l].resize(lodHeader.surfelCount);
-                    ByteShuffle::Unshuffle(
-                        shuffled.data(),
-                        reinterpret_cast<uint8_t*>(outPackage.chunkLODSurfels[c][l].data()),
-                        lodHeader.surfelCount,
-                        sizeof(PackedSurfelGPU)
-                    );
+                    if (splatPackage)
+                    {
+                        outPackage.chunkLODSplats[c][l].resize(lodHeader.surfelCount);
+                        ByteShuffle::Unshuffle(shuffled.data(), reinterpret_cast<uint8_t*>(outPackage.chunkLODSplats[c][l].data()), lodHeader.surfelCount, recordBytes);
+
+                        // The level's spherical-harmonics stream, when the package carries one.
+                        const size_t r = shRecordCursor++;
+                        if (r < shRecords.size() && shRecords[r].compressedByteSize > 0 && shRecords[r].uncompressedByteSize == (uint32_t)lodHeader.surfelCount * outPackage.header.shRecordBytes)
+                        {
+                            std::vector<uint8_t> shCompressed(shRecords[r].compressedByteSize);
+                            sflwIn.seekg((std::streamoff)shRecords[r].fileOffset, std::ios::beg);
+                            sflwIn.read(reinterpret_cast<char*>(shCompressed.data()), shRecords[r].compressedByteSize);
+                            if (!sflwIn.good())
+                            {
+                                char buf[160];
+                                snprintf(buf, sizeof(buf), "Chunk %zu LOD %zu spherical harmonics could not be read from the file; the package is truncated.", c, l);
+                                return fail(buf);
+                            }
+                            std::vector<uint8_t> shShuffled(shRecords[r].uncompressedByteSize);
+                            if (!ByteShuffle::DecompressShuffled(shCompressed.data(), shCompressed.size(), shShuffled.data(), shRecords[r].uncompressedByteSize))
+                            {
+                                char buf[224];
+                                snprintf(buf, sizeof(buf), "Chunk %zu LOD %zu holds spherical-harmonics data this build's codec cannot decode. The package was baked with a different codec build or is corrupt.", c, l);
+                                return fail(buf);
+                            }
+                            outPackage.chunkLODSH[c][l].resize(shRecords[r].uncompressedByteSize);
+                            ByteShuffle::Unshuffle(shShuffled.data(), outPackage.chunkLODSH[c][l].data(), lodHeader.surfelCount, outPackage.header.shRecordBytes);
+                            outPackage.totalCompressedBytes += shRecords[r].compressedByteSize;
+                        }
+                    }
+                    else
+                    {
+                        outPackage.chunkLODSurfels[c][l].resize(lodHeader.surfelCount);
+                        ByteShuffle::Unshuffle(
+                            shuffled.data(),
+                            reinterpret_cast<uint8_t*>(outPackage.chunkLODSurfels[c][l].data()),
+                            lodHeader.surfelCount,
+                            sizeof(PackedSurfelGPU)
+                        );
+                    }
                     if (l == 0)
                     {
                         outPackage.totalSurfels += lodHeader.surfelCount;
                     }
                 }
 
-                // Kept for existing callers that only ever wanted the finest level.
+                // Kept for existing callers that only ever wanted the finest level (empty on a splat package).
                 outPackage.chunkLOD0Surfels[c] = outPackage.chunkLODSurfels[c][0];
             }
 

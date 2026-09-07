@@ -41,6 +41,16 @@ set_target_properties(TestLoadPackage PROPERTIES
     DEBUG_POSTFIX "d"
 )
 
+add_executable(TestSplatCodec ${CMAKE_CURRENT_SOURCE_DIR}/TestSplatCodec.cpp)
+target_link_libraries(TestSplatCodec PRIVATE bluesec-codec)
+set_target_properties(TestSplatCodec PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    FOLDER "Tests"
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_HOME_DIRECTORY}"
+    DEBUG_POSTFIX "d"
+)
+
 add_executable(TestGeometryCull ${CMAKE_CURRENT_SOURCE_DIR}/TestGeometryCull.cpp)
 set_target_properties(TestGeometryCull PROPERTIES
     CXX_STANDARD 17

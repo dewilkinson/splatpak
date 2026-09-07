@@ -94,6 +94,7 @@ namespace Surfels
 
         // Temporal Anti-Aliasing (TAA) Descriptors
         m_resourceViewHeaps.AllocRTVDescriptor(1, &m_sceneColorRTV);
+        m_resourceViewHeaps.AllocRTVDescriptor(1, &m_sceneColorRTVUnorm);
         m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(1, &m_sceneColorSRV);
         m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(1, &m_historyColorSRV);
         m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(1, &m_historyColorUAV);
@@ -112,16 +113,20 @@ namespace Surfels
 
         m_imGui.OnCreate(pDevice, &m_uploadHeap, &m_resourceViewHeaps, &m_constantBufferRing, pSwapChain->GetFormat());
 
-        CD3DX12_ROOT_PARAMETER rootParams[6];
+        CD3DX12_ROOT_PARAMETER rootParams[10];
         rootParams[0].InitAsConstantBufferView(0, 0, D3D12_SHADER_VISIBILITY_ALL); // b0 - SurfelsCB
         rootParams[1].InitAsShaderResourceView(0, 0, D3D12_SHADER_VISIBILITY_ALL); // t0 - g_SurfelBuffer
         rootParams[2].InitAsShaderResourceView(1, 0, D3D12_SHADER_VISIBILITY_ALL); // t1 - g_RawSurfelBuffer
         rootParams[3].InitAsShaderResourceView(2, 0, D3D12_SHADER_VISIBILITY_ALL); // t2 - g_ChunkBuffer
         rootParams[4].InitAsShaderResourceView(3, 0, D3D12_SHADER_VISIBILITY_ALL); // t3 - g_SortedChunkIndices
         rootParams[5].InitAsShaderResourceView(4, 0, D3D12_SHADER_VISIBILITY_ALL); // t4 - g_OcclusionVoxelBuffer
+        rootParams[6].InitAsShaderResourceView(5, 0, D3D12_SHADER_VISIBILITY_ALL); // t5 - g_SplatBuffer (splat mode)
+        rootParams[7].InitAsShaderResourceView(6, 0, D3D12_SHADER_VISIBILITY_ALL); // t6 - g_SHBuffer
+        rootParams[8].InitAsShaderResourceView(7, 0, D3D12_SHADER_VISIBILITY_ALL); // t7 - g_SortedSplats
+        rootParams[9].InitAsShaderResourceView(8, 0, D3D12_SHADER_VISIBILITY_ALL); // t8 - g_SlotInfo
 
         CD3DX12_ROOT_SIGNATURE_DESC rsDesc = {};
-        rsDesc.NumParameters = 6;
+        rsDesc.NumParameters = 10;
         rsDesc.pParameters = rootParams;
         rsDesc.Flags = D3D12_ROOT_SIGNATURE_FLAG_NONE;
 
@@ -172,6 +177,56 @@ namespace Surfels
         CreateComputePSO("BitonicLocalMergeCS", &m_pBitonicLocalMergePSO);
         CreateComputePSO("GatherSurfelsCS", &m_pGatherSurfelsPSO);
         CreateComputePSO("GatherChunkIndicesCS", &m_pGatherChunkIndicesPSO);
+
+        // Splat mode: the render-target formats of its two blend spaces, and the per-splat depth sort.
+        {
+            const DXGI_FORMAT swapFmt = pSwapChain->GetFormat();
+            m_srgbFormat = swapFmt;
+            m_unormFormat = (swapFmt == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) ? DXGI_FORMAT_B8G8R8A8_UNORM
+                          : (swapFmt == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) ? DXGI_FORMAT_R8G8B8A8_UNORM
+                          : swapFmt;
+
+            CD3DX12_ROOT_PARAMETER sortParams[8];
+            sortParams[0].InitAsConstantBufferView(0, 0);   // b0 - SplatSortCB
+            sortParams[1].InitAsShaderResourceView(0, 0);   // t0 - splats
+            sortParams[2].InitAsShaderResourceView(1, 0);   // t1 - chunks
+            sortParams[3].InitAsShaderResourceView(2, 0);   // t2 - chunk slot bases
+            sortParams[4].InitAsUnorderedAccessView(0, 0);  // u0 - slot info
+            sortParams[5].InitAsUnorderedAccessView(1, 0);  // u1 - pairs in
+            sortParams[6].InitAsUnorderedAccessView(2, 0);  // u2 - pairs out
+            sortParams[7].InitAsUnorderedAccessView(3, 0);  // u3 - histogram
+            CD3DX12_ROOT_SIGNATURE_DESC sortRs = {};
+            sortRs.NumParameters = 8;
+            sortRs.pParameters = sortParams;
+            Microsoft::WRL::ComPtr<ID3DBlob> pSortBlob, pSortErr;
+            if (SUCCEEDED(D3D12SerializeRootSignature(&sortRs, D3D_ROOT_SIGNATURE_VERSION_1, &pSortBlob, &pSortErr)))
+                m_pDevice->GetDevice()->CreateRootSignature(0, pSortBlob->GetBufferPointer(), pSortBlob->GetBufferSize(), IID_PPV_ARGS(&m_pSplatSortRootSig));
+
+            auto CreateSortPSO = [&](const char* entryPoint, ID3D12PipelineState** ppPSO)
+            {
+                D3D12_SHADER_BYTECODE cs = {};
+                if (m_pSplatSortRootSig != nullptr && CompileShaderFromFile("SplatSortCS.hlsl", NULL, entryPoint, "-T cs_6_0", &cs) && cs.pShaderBytecode != nullptr)
+                {
+                    D3D12_COMPUTE_PIPELINE_STATE_DESC psoDesc = {};
+                    psoDesc.pRootSignature = m_pSplatSortRootSig;
+                    psoDesc.CS = cs;
+                    m_pDevice->GetDevice()->CreateComputePipelineState(&psoDesc, IID_PPV_ARGS(ppPSO));
+                }
+                else
+                {
+                    LogTransitionTrace("SurfelsRenderer::OnCreate ERROR: SplatSortCS.hlsl (%s) did not compile -- splat mode will draw in chunk order.", entryPoint);
+                }
+            };
+            CreateSortPSO("ExpandCS", &m_pSplatExpandPSO);
+            CreateSortPSO("HistogramCS", &m_pSplatHistPSO);
+            CreateSortPSO("ScanCS", &m_pSplatScanPSO);
+            CreateSortPSO("ScatterCS", &m_pSplatScatterPSO);
+
+            D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
+            rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
+            rtvHeapDesc.NumDescriptors = 1;
+            m_pDevice->GetDevice()->CreateDescriptorHeap(&rtvHeapDesc, IID_PPV_ARGS(&m_pBackBufferUnormRtvHeap));
+        }
 
         if (m_renderPath == RenderPath::MeshShaders)
         {
@@ -343,6 +398,28 @@ namespace Surfels
             makeVariant(dsEqual, blendDesc, &m_pPipelineStateCulledColor, "culled colour");
         }
 
+        // Splat mode PSOs: the fast (no depth) blend state on each of the two render-target formats.
+        {
+            auto makeSplat = [&](DXGI_FORMAT fmt, ID3D12PipelineState** ppOut, const char* name)
+            {
+                MeshShaderPipelineStateStream v = stream;
+                v.DepthStencilState = depthStencilFast;
+                v.BlendState = blendDesc;
+                D3D12_RT_FORMAT_ARRAY fmts = {};
+                fmts.NumRenderTargets = 1;
+                fmts.RTFormats[0] = fmt;
+                v.RTVFormats = fmts;
+                D3D12_PIPELINE_STATE_STREAM_DESC vd = {};
+                vd.SizeInBytes = sizeof(v);
+                vd.pPipelineStateSubobjectStream = &v;
+                HRESULT hr = device2->CreatePipelineState(&vd, IID_PPV_ARGS(ppOut));
+                if (FAILED(hr))
+                    LogTransitionTrace("SurfelsRenderer::OnCreate ERROR: CreatePipelineState(%s) failed hr=0x%08X -- splat mode unavailable on this path.", name, (unsigned int)hr);
+            };
+            makeSplat(m_unormFormat, &m_pSplatPSODisplay, "splat display");
+            makeSplat(m_srgbFormat, &m_pSplatPSOLinear, "splat linear");
+        }
+
         if (FAILED(hrMainPSO) || FAILED(hrItemPSO) || m_pPipelineState == nullptr || m_pItemPrepassPSO == nullptr)
         {
             // The driver reported mesh shaders but could not build the pipelines (typically a shader
@@ -354,6 +431,8 @@ namespace Surfels
             if (m_pPipelineStateDetachedMain) { m_pPipelineStateDetachedMain->Release(); m_pPipelineStateDetachedMain = nullptr; }
             if (m_pPipelineStateCulledDepth) { m_pPipelineStateCulledDepth->Release(); m_pPipelineStateCulledDepth = nullptr; }
             if (m_pPipelineStateCulledColor) { m_pPipelineStateCulledColor->Release(); m_pPipelineStateCulledColor = nullptr; }
+            if (m_pSplatPSODisplay) { m_pSplatPSODisplay->Release(); m_pSplatPSODisplay = nullptr; }
+            if (m_pSplatPSOLinear) { m_pSplatPSOLinear->Release(); m_pSplatPSOLinear = nullptr; }
             if (m_pItemPrepassPSO) { m_pItemPrepassPSO->Release(); m_pItemPrepassPSO = nullptr; }
             if (m_pOccluderPSO) { m_pOccluderPSO->Release(); m_pOccluderPSO = nullptr; }
             m_gpuCaps.meshPipelineFailed = true;
@@ -702,6 +781,8 @@ namespace Surfels
             create(vs, ps, noColour, depthWrite, pSwapChain->GetFormat(), &m_pPipelineStateCulledDepth, "culled depth splat");
             create(vs, ps, splatBlend, dsEqual, pSwapChain->GetFormat(), &m_pPipelineStateCulledColor, "culled colour splat");
         }
+        create(vs, ps, splatBlend, depthOff, m_unormFormat, &m_pSplatPSODisplay, "splat display");
+        create(vs, ps, splatBlend, depthOff, m_srgbFormat, &m_pSplatPSOLinear, "splat linear");
         ok = create(itemVs, itemPs, opaqueBlend, depthWrite, DXGI_FORMAT_R32_UINT, &m_pItemPrepassPSO, "item prepass") && ok;
         if (occOk)
             create(occVs, occPs, opaqueBlend, depthWrite, pSwapChain->GetFormat(), &m_pOccluderPSO, "occluder");
@@ -749,6 +830,29 @@ namespace Surfels
 
         if (m_pGPUSortPairBuffer) { m_pGPUSortPairBuffer->Release(); m_pGPUSortPairBuffer = nullptr; }
         m_sortPairBufferCapacityBytes = 0;
+
+        if (m_pSplatBuffer) { m_pSplatBuffer->Unmap(0, nullptr); m_pSplatBuffer->Release(); m_pSplatBuffer = nullptr; }
+        if (m_pSplatGpuBuffer) { m_pSplatGpuBuffer->Release(); m_pSplatGpuBuffer = nullptr; }
+        m_pSplatBufferMapped = nullptr; m_splatBufferCapacityBytes = 0;
+        if (m_pSHBuffer) { m_pSHBuffer->Unmap(0, nullptr); m_pSHBuffer->Release(); m_pSHBuffer = nullptr; }
+        if (m_pSHGpuBuffer) { m_pSHGpuBuffer->Release(); m_pSHGpuBuffer = nullptr; }
+        m_pSHBufferMapped = nullptr; m_shBufferCapacityBytes = 0;
+        if (m_pChunkSlotBaseUpload) { m_pChunkSlotBaseUpload->Unmap(0, nullptr); m_pChunkSlotBaseUpload->Release(); m_pChunkSlotBaseUpload = nullptr; }
+        if (m_pChunkSlotBaseGpu) { m_pChunkSlotBaseGpu->Release(); m_pChunkSlotBaseGpu = nullptr; }
+        m_pChunkSlotBaseMapped = nullptr;
+        if (m_pSlotInfoBuffer) { m_pSlotInfoBuffer->Release(); m_pSlotInfoBuffer = nullptr; }
+        if (m_pSplatPairsA) { m_pSplatPairsA->Release(); m_pSplatPairsA = nullptr; }
+        if (m_pSplatPairsB) { m_pSplatPairsB->Release(); m_pSplatPairsB = nullptr; }
+        if (m_pSplatHistBuffer) { m_pSplatHistBuffer->Release(); m_pSplatHistBuffer = nullptr; }
+        m_splatSortCapacitySlots = 0;
+        if (m_pSplatExpandPSO) { m_pSplatExpandPSO->Release(); m_pSplatExpandPSO = nullptr; }
+        if (m_pSplatHistPSO) { m_pSplatHistPSO->Release(); m_pSplatHistPSO = nullptr; }
+        if (m_pSplatScanPSO) { m_pSplatScanPSO->Release(); m_pSplatScanPSO = nullptr; }
+        if (m_pSplatScatterPSO) { m_pSplatScatterPSO->Release(); m_pSplatScatterPSO = nullptr; }
+        if (m_pSplatSortRootSig) { m_pSplatSortRootSig->Release(); m_pSplatSortRootSig = nullptr; }
+        if (m_pSplatPSODisplay) { m_pSplatPSODisplay->Release(); m_pSplatPSODisplay = nullptr; }
+        if (m_pSplatPSOLinear) { m_pSplatPSOLinear->Release(); m_pSplatPSOLinear = nullptr; }
+        if (m_pBackBufferUnormRtvHeap) { m_pBackBufferUnormRtvHeap->Release(); m_pBackBufferUnormRtvHeap = nullptr; }
 
         if (m_pChunkUploadBuffer) { m_pChunkUploadBuffer->Unmap(0, nullptr); m_pChunkUploadBuffer->Release(); m_pChunkUploadBuffer = nullptr; }
         m_pChunkUploadBufferMapped = nullptr;
@@ -804,6 +908,155 @@ namespace Surfels
         m_resourceViewHeaps.OnDestroy();
     }
 
+    // Splat mode: grow-only buffers of the per-frame depth sort, sized for the padded slot count.
+    void SurfelsRenderer::EnsureSplatSortBuffers(uint32_t paddedSlots)
+    {
+        if (paddedSlots <= m_splatSortCapacitySlots) return;
+        m_pDevice->GPUFlush(D3D12_COMMAND_LIST_TYPE_DIRECT);
+        if (m_pSlotInfoBuffer) { m_pSlotInfoBuffer->Release(); m_pSlotInfoBuffer = nullptr; }
+        if (m_pSplatPairsA) { m_pSplatPairsA->Release(); m_pSplatPairsA = nullptr; }
+        if (m_pSplatPairsB) { m_pSplatPairsB->Release(); m_pSplatPairsB = nullptr; }
+        if (m_pSplatHistBuffer) { m_pSplatHistBuffer->Release(); m_pSplatHistBuffer = nullptr; }
+        auto makeUav = [&](uint64_t bytes, ID3D12Resource** ppOut, const char* name)
+        {
+            CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(bytes);
+            desc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
+            ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
+                &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), D3D12_HEAP_FLAG_NONE, &desc,
+                D3D12_RESOURCE_STATE_UNORDERED_ACCESS, nullptr, IID_PPV_ARGS(ppOut)));
+            SetName(*ppOut, name);
+        };
+        const uint64_t pairBytes = (uint64_t)paddedSlots * 8u;
+        makeUav(pairBytes, &m_pSlotInfoBuffer, "SurfelsRenderer::m_pSlotInfoBuffer");
+        makeUav(pairBytes, &m_pSplatPairsA, "SurfelsRenderer::m_pSplatPairsA");
+        makeUav(pairBytes, &m_pSplatPairsB, "SurfelsRenderer::m_pSplatPairsB");
+        makeUav((uint64_t)256u * (paddedSlots / 1024u) * 4u, &m_pSplatHistBuffer, "SurfelsRenderer::m_pSplatHistBuffer");
+        m_slotInfoState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        m_splatPairsAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        m_splatSortCapacitySlots = paddedSlots;
+        m_splatSortNeedsRun = true;
+    }
+
+    // Splat mode: expands the render list into slots and sorts them far-to-near (SplatSortCS.hlsl).
+    // Leaves m_pSplatPairsA (the order) and m_pSlotInfoBuffer readable by the draw.
+    void SurfelsRenderer::RunSplatSort(ID3D12GraphicsCommandList* pCmdLst, const State* pState, XMFLOAT3 eyePos, XMFLOAT3 forward, const XMFLOAT4X4& cullViewProj)
+    {
+        static uint32_t s_sortTraceFrame = 0;
+        const bool traceThisFrame = ((s_sortTraceFrame++ % 3600) == 0); // A line a minute at most: only the "cannot run" cases are worth logging
+        if (!m_pSplatSortRootSig || !m_pSplatExpandPSO || !m_pSplatHistPSO || !m_pSplatScanPSO || !m_pSplatScatterPSO)
+        {
+            if (traceThisFrame) LogTransitionTrace("RunSplatSort: pipeline missing (rootsig %d expand %d hist %d scan %d scatter %d)", m_pSplatSortRootSig != nullptr, m_pSplatExpandPSO != nullptr, m_pSplatHistPSO != nullptr, m_pSplatScanPSO != nullptr, m_pSplatScatterPSO != nullptr);
+            return;
+        }
+        if (!m_pSplatGpuBuffer || !m_pChunkGpuBuffer || !m_pChunkSlotBaseGpu || pState->chunkCount == 0 || m_splatSlotCount == 0)
+        {
+            if (traceThisFrame) LogTransitionTrace("RunSplatSort: inputs missing (splats %d chunks %d slotBase %d chunkCount %u slots %u)", m_pSplatGpuBuffer != nullptr, m_pChunkGpuBuffer != nullptr, m_pChunkSlotBaseGpu != nullptr, pState->chunkCount, m_splatSlotCount);
+            return;
+        }
+
+        const uint32_t slotCount = m_splatSlotCount;
+        const uint32_t padded = (slotCount + 1023u) & ~1023u;
+        const uint32_t numBlocks = padded / 1024u;
+        EnsureSplatSortBuffers(padded);
+
+        auto toState = [&](ID3D12Resource* pRes, D3D12_RESOURCE_STATES& state, D3D12_RESOURCE_STATES want)
+        {
+            if (state == want) return;
+            D3D12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::Transition(pRes, state, want);
+            pCmdLst->ResourceBarrier(1, &b);
+            state = want;
+        };
+
+        if (!m_splatSortNeedsRun)
+        {
+            toState(m_pSplatPairsA, m_splatPairsAState, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+            toState(m_pSlotInfoBuffer, m_slotInfoState, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+            return;
+        }
+
+        auto sortStart = std::chrono::high_resolution_clock::now();
+        toState(m_pSplatPairsA, m_splatPairsAState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        toState(m_pSlotInfoBuffer, m_slotInfoState, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        if (m_chunkSlotBaseState == D3D12_RESOURCE_STATE_COPY_DEST)
+        {
+            D3D12_RESOURCE_BARRIER b = CD3DX12_RESOURCE_BARRIER::Transition(m_pChunkSlotBaseGpu, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+            pCmdLst->ResourceBarrier(1, &b);
+            m_chunkSlotBaseState = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+        }
+
+        struct SplatSortCB
+        {
+            XMFLOAT4X4 cullViewProj;
+            XMFLOAT3   camPos;      uint32_t totalChunks;
+            XMFLOAT3   camForward;  uint32_t slotCount;
+            XMFLOAT3   aabbMin;     uint32_t pass;
+            XMFLOAT3   aabbExtents; uint32_t numBlocks;
+            uint32_t   paddedSlotCount; uint32_t pad0, pad1, pad2;
+        };
+        auto bindCB = [&](uint32_t pass)
+        {
+            SplatSortCB* pCB = nullptr;
+            D3D12_GPU_VIRTUAL_ADDRESS addr = 0;
+            if (!m_constantBufferRing.AllocConstantBuffer(sizeof(SplatSortCB), (void**)&pCB, &addr)) return false;
+            pCB->cullViewProj = cullViewProj;
+            pCB->camPos = eyePos;           pCB->totalChunks = pState->chunkCount;
+            pCB->camForward = forward;      pCB->slotCount = slotCount;
+            pCB->aabbMin = pState->aabbMin; pCB->pass = pass;
+            pCB->aabbExtents = pState->aabbExtents; pCB->numBlocks = numBlocks;
+            pCB->paddedSlotCount = padded;  pCB->pad0 = pCB->pad1 = pCB->pad2 = 0;
+            pCmdLst->SetComputeRootConstantBufferView(0, addr);
+            return true;
+        };
+
+        pCmdLst->SetComputeRootSignature(m_pSplatSortRootSig);
+        pCmdLst->SetComputeRootShaderResourceView(1, m_pSplatGpuBuffer->GetGPUVirtualAddress());
+        pCmdLst->SetComputeRootShaderResourceView(2, m_pChunkGpuBuffer->GetGPUVirtualAddress());
+        pCmdLst->SetComputeRootShaderResourceView(3, m_pChunkSlotBaseGpu->GetGPUVirtualAddress());
+        pCmdLst->SetComputeRootUnorderedAccessView(4, m_pSlotInfoBuffer->GetGPUVirtualAddress());
+        pCmdLst->SetComputeRootUnorderedAccessView(7, m_pSplatHistBuffer->GetGPUVirtualAddress());
+
+        D3D12_RESOURCE_BARRIER uavA = CD3DX12_RESOURCE_BARRIER::UAV(m_pSplatPairsA);
+        D3D12_RESOURCE_BARRIER uavB = CD3DX12_RESOURCE_BARRIER::UAV(m_pSplatPairsB);
+        D3D12_RESOURCE_BARRIER uavHist = CD3DX12_RESOURCE_BARRIER::UAV(m_pSplatHistBuffer);
+        D3D12_RESOURCE_BARRIER uavInfo = CD3DX12_RESOURCE_BARRIER::UAV(m_pSlotInfoBuffer);
+
+        // 1. Expand the chunks into slots with their keys
+        pCmdLst->SetComputeRootUnorderedAccessView(5, m_pSplatPairsA->GetGPUVirtualAddress());
+        pCmdLst->SetComputeRootUnorderedAccessView(6, m_pSplatPairsB->GetGPUVirtualAddress());
+        if (!bindCB(0)) return;
+        pCmdLst->SetPipelineState(m_pSplatExpandPSO);
+        pCmdLst->Dispatch(pState->chunkCount, 1, 1);
+        D3D12_RESOURCE_BARRIER afterExpand[2] = { uavA, uavInfo };
+        pCmdLst->ResourceBarrier(2, afterExpand);
+
+        // 2. Four radix passes, ping-ponging A -> B -> A -> B -> A
+        for (uint32_t pass = 0; pass < 4; pass++)
+        {
+            ID3D12Resource* pIn = (pass & 1u) ? m_pSplatPairsB : m_pSplatPairsA;
+            ID3D12Resource* pOut = (pass & 1u) ? m_pSplatPairsA : m_pSplatPairsB;
+            pCmdLst->SetComputeRootUnorderedAccessView(5, pIn->GetGPUVirtualAddress());
+            pCmdLst->SetComputeRootUnorderedAccessView(6, pOut->GetGPUVirtualAddress());
+            if (!bindCB(pass)) return;
+            pCmdLst->SetPipelineState(m_pSplatHistPSO);
+            pCmdLst->Dispatch(numBlocks, 1, 1);
+            pCmdLst->ResourceBarrier(1, &uavHist);
+            pCmdLst->SetPipelineState(m_pSplatScanPSO);
+            pCmdLst->Dispatch(1, 1, 1);
+            pCmdLst->ResourceBarrier(1, &uavHist);
+            pCmdLst->SetPipelineState(m_pSplatScatterPSO);
+            pCmdLst->Dispatch(numBlocks, 1, 1);
+            D3D12_RESOURCE_BARRIER afterScatter = (pass & 1u) ? uavA : uavB;
+            pCmdLst->ResourceBarrier(1, &afterScatter);
+        }
+
+        toState(m_pSplatPairsA, m_splatPairsAState, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+        toState(m_pSlotInfoBuffer, m_slotInfoState, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+        m_splatSortNeedsRun = false;
+        m_metrics.gpuSortTimeMs = std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - sortStart).count();
+        m_metrics.isGPUSortActive = true;
+        m_metrics.wasSortedThisFrame = true;
+    }
+
     // Keeps the GPU surfel/chunk/sorted-index buffers current with pState, growing and re-uploading
     // them only when the source data pointer, count, or camera-relative sort key actually changed.
     void SurfelsRenderer::UpdateSurfelBuffers(
@@ -818,7 +1071,7 @@ namespace Surfels
         uint32_t surfelCount = pState->surfelCount;
         uint32_t renderMode = pState->renderMode;
 
-        const void* activePtr = (renderMode == 2) ? (const void*)pRawSurfels : (const void*)pSurfels;
+        const void* activePtr = (renderMode == 2) ? (const void*)pRawSurfels : (renderMode == 3) ? (const void*)pState->pSplats : (const void*)pSurfels;
 
         if (activePtr == nullptr || surfelCount == 0)
         {
@@ -1072,6 +1325,53 @@ namespace Surfels
             }
 
             m_rawSurfelBufferGPUAddress = m_pRawSurfelBuffer->GetGPUVirtualAddress();
+        }
+        else if (renderMode == 3)
+        {
+            // Mode 3: splat mode. The records and the SH stream are uploaded as they are; the per-frame
+            // order comes from the GPU sort (RunSplatSort), so nothing here depends on the camera.
+            const uint32_t splatBytes = std::max<uint32_t>(64u, surfelCount) * (uint32_t)sizeof(PackedSplatGPU);
+            const uint32_t shBytesWanted = std::max<uint32_t>(16u, surfelCount * std::max<uint32_t>(1u, pState->shRecordBytes));
+            auto growPair = [&](uint32_t bytes, ID3D12Resource*& pUpload, ID3D12Resource*& pGpu, uint8_t*& pMapped, uint32_t& capacity, const char* name) -> bool
+            {
+                if (bytes <= capacity) return false;
+                m_pDevice->GPUFlush(D3D12_COMMAND_LIST_TYPE_DIRECT);
+                FlushCopyQueue();
+                if (pUpload) { pUpload->Unmap(0, nullptr); pUpload->Release(); pUpload = nullptr; }
+                if (pGpu) { pGpu->Release(); pGpu = nullptr; }
+                pMapped = nullptr;
+                ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
+                    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD), D3D12_HEAP_FLAG_NONE, &CD3DX12_RESOURCE_DESC::Buffer(bytes),
+                    D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&pUpload)));
+                ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
+                    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), D3D12_HEAP_FLAG_NONE, &CD3DX12_RESOURCE_DESC::Buffer(bytes),
+                    D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&pGpu)));
+                SetName(pGpu, name);
+                pUpload->Map(0, nullptr, reinterpret_cast<void**>(&pMapped));
+                capacity = bytes;
+                return true;
+            };
+            bool grew = growPair(splatBytes, m_pSplatBuffer, m_pSplatGpuBuffer, m_pSplatBufferMapped, m_splatBufferCapacityBytes, "SurfelsRenderer::m_pSplatGpuBuffer");
+            grew = growPair(shBytesWanted, m_pSHBuffer, m_pSHGpuBuffer, m_pSHBufferMapped, m_shBufferCapacityBytes, "SurfelsRenderer::m_pSHGpuBuffer") || grew;
+            if (grew) { modelChanged = true; needsSort = true; }
+            const bool shChanged = (m_lastSplatSHPtr != (const void*)pState->pSplatSH);
+            m_lastSplatSHPtr = pState->pSplatSH;
+
+            if (surfelCount > 0 && pState->pSplats != nullptr && m_pSplatBufferMapped != nullptr && (modelChanged || shChanged || m_needUploadToGpu))
+            {
+                memcpy(m_pSplatBufferMapped, pState->pSplats, (size_t)surfelCount * sizeof(PackedSplatGPU));
+                if (m_pSHBufferMapped != nullptr)
+                {
+                    const size_t shBytes = (size_t)surfelCount * pState->shRecordBytes;
+                    if (pState->pSplatSH != nullptr && shBytes > 0 && shBytes <= m_shBufferCapacityBytes)
+                        memcpy(m_pSHBufferMapped, pState->pSplatSH, shBytes);
+                    else
+                        memset(m_pSHBufferMapped, 0, std::min<size_t>(shBytesWanted, m_shBufferCapacityBytes));
+                }
+                m_needUploadToGpu = true;
+            }
+            m_surfelBufferGPUAddress = m_pSplatGpuBuffer ? m_pSplatGpuBuffer->GetGPUVirtualAddress() : 0;
+            if (needsSort || modelChanged) m_splatSortNeedsRun = true;
         }
         else
         {
@@ -1397,6 +1697,21 @@ namespace Surfels
                 }
 
                 m_pChunkUploadBuffer->Map(0, nullptr, reinterpret_cast<void**>(&m_pChunkUploadBufferMapped));
+
+                // Splat mode: the first slot of every chunk, same capacity as the chunk list.
+                if (m_pChunkSlotBaseUpload) { m_pChunkSlotBaseUpload->Unmap(0, nullptr); m_pChunkSlotBaseUpload->Release(); m_pChunkSlotBaseUpload = nullptr; }
+                if (m_pChunkSlotBaseGpu) { m_pChunkSlotBaseGpu->Release(); m_pChunkSlotBaseGpu = nullptr; }
+                m_pChunkSlotBaseMapped = nullptr;
+                ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
+                    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD), D3D12_HEAP_FLAG_NONE, &CD3DX12_RESOURCE_DESC::Buffer(idxBytes),
+                    D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_pChunkSlotBaseUpload)));
+                ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
+                    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), D3D12_HEAP_FLAG_NONE, &CD3DX12_RESOURCE_DESC::Buffer(idxBytes),
+                    D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_pChunkSlotBaseGpu)));
+                SetName(m_pChunkSlotBaseGpu, "SurfelsRenderer::m_pChunkSlotBaseGpu");
+                m_chunkSlotBaseState = D3D12_RESOURCE_STATE_COPY_DEST;
+                m_pChunkSlotBaseUpload->Map(0, nullptr, reinterpret_cast<void**>(&m_pChunkSlotBaseMapped));
+
                 m_chunkBufferCapacityBytes = chunkBytes;
                 m_sortedChunkIndicesCapacityBytes = idxBytes;
                 modelChanged = true;
@@ -1415,6 +1730,19 @@ namespace Surfels
                     memset(pDstChunks + chunkCount, 0, (numChunkElements - chunkCount) * sizeof(MeshletChunkGPU));
                 }
                 m_needUploadChunksToGpu = true;
+
+                // Splat mode: slot layout of this render list (exclusive prefix of the chunks' surfel counts).
+                if (m_pChunkSlotBaseMapped != nullptr)
+                {
+                    uint32_t run = 0;
+                    for (uint32_t i = 0; i < chunkCount; i++)
+                    {
+                        m_pChunkSlotBaseMapped[i] = run;
+                        run += pState->pChunks[i].surfelCount;
+                    }
+                    m_splatSlotCount = run;
+                    m_splatSortNeedsRun = true;
+                }
 
                 if (m_pSortedChunkIndicesUploadBufferMapped != nullptr)
                 {
@@ -1521,6 +1849,7 @@ namespace Surfels
             &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET),
             D3D12_RESOURCE_STATE_RENDER_TARGET, &sceneClear);
         m_sceneColorBuffer.CreateRTV(0, &m_sceneColorRTV, 0, -1, -1, swapFormat);
+        m_sceneColorBuffer.CreateRTV(0, &m_sceneColorRTVUnorm, 0, -1, -1, DXGI_FORMAT_R8G8B8A8_UNORM); // Splat mode, display-space blending
         m_sceneColorBuffer.CreateSRV(0, &m_sceneColorSRV);
 
         m_historyColorBuffer.Init(m_pDevice, "SurfelsRenderer::m_historyColorBuffer",
@@ -1610,7 +1939,26 @@ namespace Surfels
             pCmdLst->ResourceBarrier(1, &toRtv);
         }
 
+        // Splat mode with display-space blending draws into a plain UNORM view of the target, so the stored
+        // display-space colours blend as they are (the reference viewer's behaviour); every other case uses
+        // the sRGB view, whose blending is linear.
+        const bool splatDisplayBlend = (pState->renderMode == 3 && pState->splatBlendSpace == 0);
         D3D12_CPU_DESCRIPTOR_HANDLE rtvHandle = useTemporal ? m_sceneColorRTV.GetCPU() : *pSwapChain->GetCurrentBackBufferRTV();
+        if (splatDisplayBlend)
+        {
+            if (useTemporal)
+            {
+                rtvHandle = m_sceneColorRTVUnorm.GetCPU();
+            }
+            else if (m_pBackBufferUnormRtvHeap != nullptr)
+            {
+                D3D12_RENDER_TARGET_VIEW_DESC unormRtv = {};
+                unormRtv.Format = m_unormFormat;
+                unormRtv.ViewDimension = D3D12_RTV_DIMENSION_TEXTURE2D;
+                rtvHandle = m_pBackBufferUnormRtvHeap->GetCPUDescriptorHandleForHeapStart();
+                m_pDevice->GetDevice()->CreateRenderTargetView(pBackBuffer, &unormRtv, rtvHandle);
+            }
+        }
         D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = m_depthBufferDSV.GetCPU();
         pCmdLst->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
 
@@ -1827,7 +2175,7 @@ namespace Surfels
         {
             m_cullStats.asCullingRatio = ((float)(m_cullStats.asFrustumCulledSurfels + m_cullStats.asConeCulledSurfels) / (float)m_cullStats.lodActiveSurfels) * 100.0f;
         }
-        float bytesPerSurfel = (pState->renderMode == 2) ? 40.0f : 8.0f;
+        float bytesPerSurfel = (pState->renderMode == 2) ? (float)sizeof(SurfelVertex) : (pState->renderMode == 3) ? (float)(sizeof(PackedSplatGPU) + pState->shRecordBytes) : (float)sizeof(PackedSurfelGPU);
         m_cullStats.vramBandwidthSavedMB = (float)(m_cullStats.lodPrunedSurfels + m_cullStats.asFrustumCulledSurfels + m_cullStats.asConeCulledSurfels) * bytesPerSurfel / (1024.0f * 1024.0f);
 
 
@@ -1873,7 +2221,20 @@ namespace Surfels
         pCB->autoSplatSize = pState->autoSplatSize ? 1u : 0u;
         pCB->culledPass = 0;
         pCB->autoSplatPad1[0] = 0.0f; pCB->autoSplatPad1[1] = 0.0f;
+        pCB->lodRadiusAlign[0] = 0.0f; pCB->lodRadiusAlign[1] = 0.0f;
         for (int l = 0; l < 8; l++) pCB->lodRadius[l] = pState->lodRadius[l];
+        // Splat mode
+        XMStoreFloat4x4(&pCB->view, view);
+        pCB->viewportW = (float)m_width;
+        pCB->viewportH = (float)m_height;
+        pCB->proj00 = XMVectorGetX(proj.r[0]);
+        pCB->splatScaleLog2Min = pState->splatScaleLog2Min;
+        pCB->splatScaleLog2Max = pState->splatScaleLog2Max;
+        pCB->shDegree = pState->shDegree;
+        pCB->shRecordBytes = pState->shRecordBytes;
+        pCB->splatBlendSpace = pState->splatBlendSpace;
+        pCB->camForward = forwardNorm;
+        pCB->splatSlotCount = (pState->renderMode == 3) ? m_splatSlotCount : 0;
         pCB->enableOcclusionCulling = (pState->enableOcclusionCulling && pState->occlusionVoxelCount > 0 && m_pOcclusionVoxelBuffer != nullptr) ? 1 : 0;
         pCB->showOcclusionVolumeOnly = pState->showOcclusionVolumeOnly ? 1 : 0;
 
@@ -1891,9 +2252,9 @@ namespace Surfels
             occluderBlockCount = pCB->occlusionVoxelCount;
         }
 
-        ID3D12Resource* pGpuRes = (pState->renderMode == 2) ? m_pRawSurfelGpuBuffer : m_pSurfelGpuBuffer;
-        ID3D12Resource* pGpuOutRes = (pState->renderMode == 2) ? m_pRawSurfelGpuOutBuffer : m_pSurfelGpuOutBuffer;
-        ID3D12Resource* pUploadRes = (pState->renderMode == 2) ? m_pRawSurfelBuffer : m_pSurfelBuffer;
+        ID3D12Resource* pGpuRes = (pState->renderMode == 2) ? m_pRawSurfelGpuBuffer : (pState->renderMode == 3) ? m_pSplatGpuBuffer : m_pSurfelGpuBuffer;
+        ID3D12Resource* pGpuOutRes = (pState->renderMode == 2) ? m_pRawSurfelGpuOutBuffer : (pState->renderMode == 3) ? nullptr : m_pSurfelGpuOutBuffer;
+        ID3D12Resource* pUploadRes = (pState->renderMode == 2) ? m_pRawSurfelBuffer : (pState->renderMode == 3) ? m_pSplatBuffer : m_pSurfelBuffer;
         auto dispatchStart = std::chrono::high_resolution_clock::now();
         m_metrics.uploadTimeMs = 0.0f;
         m_metrics.silhouettePrepassTimeMs = 0.0f;
@@ -1910,6 +2271,7 @@ namespace Surfels
             // Drawn whenever culling is enabled OR the user just wants to look at the volume on its
             // own -- "view only" must not require "enable culling" too, or the two together would draw
             // neither the occluder (culling off) nor the splats (view-only skips them): a blank screen.
+            if (pState->renderMode == 3) return; // Splat mode: no occlusion volume pass (and its PSO's target format may not match the splat target)
             bool wantOccluderVisible = pState->enableOcclusionCulling || pState->showOcclusionVolumeOnly;
             if (!wantOccluderVisible || pState->occlusionVoxelCount == 0 || occluderBlockCount == 0 || m_pOcclusionVoxelBuffer == nullptr || m_pOccluderPSO == nullptr)
                 return;
@@ -1947,10 +2309,12 @@ namespace Surfels
         ID3D12PipelineState* pMainSplatPSO = (pState->enableOcclusionCulling && m_pPipelineStateOcclusionTest != nullptr)
             ? m_pPipelineStateOcclusionTest
             : m_pPipelineState;
+        if (pState->renderMode == 3)
+            pMainSplatPSO = (pState->splatBlendSpace == 1 && m_pSplatPSOLinear != nullptr) ? m_pSplatPSOLinear : m_pSplatPSODisplay;
 
         // Detach Camera: the three-pass sequence needs its PSOs and a second constant buffer that only
         // differs in culledPass (the shader draws either the frozen camera's splats or the culled ones).
-        const bool detachedPasses = pState->detachCullCamera && m_pPipelineStateDetachedMain && m_pPipelineStateCulledDepth && m_pPipelineStateCulledColor;
+        const bool detachedPasses = pState->renderMode != 3 && pState->detachCullCamera && m_pPipelineStateDetachedMain && m_pPipelineStateCulledDepth && m_pPipelineStateCulledColor;
         D3D12_GPU_VIRTUAL_ADDRESS cbCulledAddress = 0;
         if (detachedPasses)
         {
@@ -1975,7 +2339,11 @@ namespace Surfels
                 {
                     Microsoft::WRL::ComPtr<ID3D12GraphicsCommandList6> cmdList6;
                     pCmdLst->QueryInterface(IID_PPV_ARGS(&cmdList6));
-                    cmdList6->DispatchMesh(asGroupCount, 1, 1);
+                    // A dispatch dimension is limited to 65535 groups; splat mode can need more (one per
+                    // 64 slots), so the count folds over y and the amplification shader unfolds it.
+                    const uint32_t gx = std::min<uint32_t>(asGroupCount, 65535u);
+                    const uint32_t gy = (asGroupCount + 65534u) / 65535u;
+                    cmdList6->DispatchMesh(gx, std::max<uint32_t>(gy, 1u), 1);
                 }
                 else
                 {
@@ -2023,10 +2391,14 @@ namespace Surfels
                     if (m_needUploadToGpu)
                     {
                         m_pCopyCmdList->CopyResource(pGpuRes, pUploadRes);
+                        if (pState->renderMode == 3 && m_pSHGpuBuffer != nullptr && m_pSHBuffer != nullptr)
+                            m_pCopyCmdList->CopyResource(m_pSHGpuBuffer, m_pSHBuffer);
                     }
                     if (m_needUploadChunksToGpu && m_pChunkGpuBuffer != nullptr && m_pChunkUploadBuffer != nullptr)
                     {
                         m_pCopyCmdList->CopyResource(m_pChunkGpuBuffer, m_pChunkUploadBuffer);
+                        if (m_pChunkSlotBaseGpu != nullptr && m_pChunkSlotBaseUpload != nullptr)
+                            m_pCopyCmdList->CopyResource(m_pChunkSlotBaseGpu, m_pChunkSlotBaseUpload);
                     }
 
                     m_pCopyCmdList->Close();
@@ -2045,6 +2417,7 @@ namespace Surfels
                             m_pChunkGpuBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
                         pCmdLst->ResourceBarrier(1, &chunkToSrv);
                         m_chunkGpuBufferState = D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE;
+                        m_chunkSlotBaseState = D3D12_RESOURCE_STATE_COMMON; // Copy-queue work leaves buffers in COMMON; they promote on first use
                     }
                 }
                 else
@@ -2057,10 +2430,22 @@ namespace Surfels
                         pCmdLst->ResourceBarrier(1, &preCopy);
 
                         pCmdLst->CopyResource(pGpuRes, pUploadRes);
+                        if (pState->renderMode == 3 && m_pSHGpuBuffer != nullptr && m_pSHBuffer != nullptr)
+                            pCmdLst->CopyResource(m_pSHGpuBuffer, m_pSHBuffer);
 
                         D3D12_RESOURCE_BARRIER postCopy = CD3DX12_RESOURCE_BARRIER::Transition(
                             pGpuRes, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
                         pCmdLst->ResourceBarrier(1, &postCopy);
+                    }
+                    if (m_needUploadChunksToGpu && m_pChunkSlotBaseGpu != nullptr && m_pChunkSlotBaseUpload != nullptr)
+                    {
+                        if (m_chunkSlotBaseState != D3D12_RESOURCE_STATE_COPY_DEST && m_chunkSlotBaseState != D3D12_RESOURCE_STATE_COMMON)
+                        {
+                            D3D12_RESOURCE_BARRIER pre = CD3DX12_RESOURCE_BARRIER::Transition(m_pChunkSlotBaseGpu, m_chunkSlotBaseState, D3D12_RESOURCE_STATE_COPY_DEST);
+                            pCmdLst->ResourceBarrier(1, &pre);
+                        }
+                        pCmdLst->CopyResource(m_pChunkSlotBaseGpu, m_pChunkSlotBaseUpload);
+                        m_chunkSlotBaseState = D3D12_RESOURCE_STATE_COMMON; // Promotes to the SRV state on first use
                     }
                     if (m_needUploadChunksToGpu && m_pChunkGpuBuffer != nullptr && m_pChunkUploadBuffer != nullptr)
                     {
@@ -2306,6 +2691,13 @@ namespace Surfels
 
                 D3D12_GPU_VIRTUAL_ADDRESS surfelAddr = pGpuRes->GetGPUVirtualAddress();
 
+                if (pState->renderMode == 3)
+                {
+                    XMFLOAT4X4 cullVP;
+                    XMStoreFloat4x4(&cullVP, pState->detachCullCamera ? cViewProj : unjitteredViewProj);
+                    RunSplatSort(pCmdLst, pState, eyePos, forwardNorm, cullVP);
+                }
+
                 DrawOccluderPass();
 
                 if (!pState->showOcclusionVolumeOnly)
@@ -2318,14 +2710,24 @@ namespace Surfels
                     pCmdLst->SetGraphicsRootShaderResourceView(3, m_pChunkGpuBuffer->GetGPUVirtualAddress());
                     pCmdLst->SetGraphicsRootShaderResourceView(4, m_pSortedChunkIndicesGpuBuffer->GetGPUVirtualAddress());
                     pCmdLst->SetGraphicsRootShaderResourceView(5, m_pOcclusionVoxelBuffer ? m_pOcclusionVoxelBuffer->GetGPUVirtualAddress() : 0);
+                    pCmdLst->SetGraphicsRootShaderResourceView(6, m_pSplatGpuBuffer ? m_pSplatGpuBuffer->GetGPUVirtualAddress() : 0);
+                    pCmdLst->SetGraphicsRootShaderResourceView(7, m_pSHGpuBuffer ? m_pSHGpuBuffer->GetGPUVirtualAddress() : 0);
+                    pCmdLst->SetGraphicsRootShaderResourceView(8, m_pSplatPairsA ? m_pSplatPairsA->GetGPUVirtualAddress() : 0);
+                    pCmdLst->SetGraphicsRootShaderResourceView(9, m_pSlotInfoBuffer ? m_pSlotInfoBuffer->GetGPUVirtualAddress() : 0);
 
-                    const uint32_t asGroupCount = (chunkCount + AS_GROUP_SIZE - 1) / AS_GROUP_SIZE;
-                    const uint32_t instances = pState->useChunkedPipeline ? chunkCount * SURFELS_PER_GROUP : pState->surfelCount;
-                    issueSplatDraws(asGroupCount, instances);
+                    const bool splatMode = (pState->renderMode == 3);
+                    const uint32_t asGroupCount = splatMode ? ((m_splatSlotCount + SURFELS_PER_GROUP - 1) / SURFELS_PER_GROUP) : ((chunkCount + AS_GROUP_SIZE - 1) / AS_GROUP_SIZE);
+                    const uint32_t instances = splatMode ? m_splatSlotCount : (pState->useChunkedPipeline ? chunkCount * SURFELS_PER_GROUP : pState->surfelCount);
+                    if (!splatMode || (m_pSplatPairsA != nullptr && m_pSlotInfoBuffer != nullptr && m_splatSlotCount > 0))
+                        issueSplatDraws(asGroupCount, instances);
 
                     auto mainDispatchEnd = std::chrono::high_resolution_clock::now();
                     m_metrics.mainDispatchTimeMs += std::chrono::duration<float, std::milli>(mainDispatchEnd - mainDispatchStart).count();
                 }
+            }
+            else if (pState->renderMode == 3)
+            {
+                // Splat mode expands the chunk list into its sort; without a chunk list there is nothing to draw.
             }
             // Execute Flat GPU LDS Key-Index Sorting Pipeline
             else if (pState->gpuRadixSort && m_pProjectKeysPSO && m_pBitonicLocalSortPSO && m_pBitonicGlobalSortPSO && m_pBitonicLocalMergePSO && m_pGatherSurfelsPSO && m_pComputeRootSignature && pGpuOutRes != nullptr && m_pGPUSortPairBuffer != nullptr)
@@ -2500,7 +2902,7 @@ namespace Surfels
             uint32_t bitmaskBytes = bitmaskDwords * sizeof(uint32_t);
 
             bool edgeNeedsRecalc = false;
-            if (pState->enableGpuSilhouetteInversion && pState->chunkCount > 0 && m_pItemPrepassPSO != nullptr && m_itemBuffer.GetResource() != nullptr)
+            if (pState->renderMode != 3 && pState->enableGpuSilhouetteInversion && pState->chunkCount > 0 && m_pItemPrepassPSO != nullptr && m_itemBuffer.GetResource() != nullptr)
             {
                 if (!m_edgeBitmaskValid ||
                     memcmp(&m_lastEdgeViewProj, &pCB->viewProj, sizeof(XMFLOAT4X4)) != 0 ||

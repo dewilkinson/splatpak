@@ -21,6 +21,8 @@ add_library(bluesec-codec STATIC
     DetailHeatmap.cpp
     CodecBuild.h
     CodecBuild.cpp
+    SplatCodec.h
+    SplatCodec.cpp
 )
 
 target_include_directories(bluesec-codec PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

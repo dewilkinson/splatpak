@@ -31,7 +31,7 @@ namespace Surfels
 
     // Magic bytes for .sflw binary stream container ("SFLW" in ASCII)
     static constexpr uint32_t SFLW_MAGIC = 0x574C4653;
-    static constexpr uint32_t SFLW_VERSION = 7; // v2 adds SFLWFileHeader::splatRadius (appended at the
+    static constexpr uint32_t SFLW_VERSION = 8; // v8 adds surfelFormat, the splat record and the SH stream (see docs/SFLW_FORMAT_SPECIFICATION.md). v2 adds SFLWFileHeader::splatRadius (appended at the
                                                  // struct's end so v1 files still read correctly -- see
                                                  // the version check in StreamPackager::LoadPackage).
                                                  // v3 adds an optional occlusion voxel array, appended
@@ -181,8 +181,76 @@ namespace Surfels
         XMFLOAT3 normal   = { 0.0f, 1.0f, 0.0f };
         XMFLOAT3 color    = { 1.0f, 1.0f, 1.0f };
         float    radius   = 0.05f;
+        // Splat mode: index of this point's entry in the source cloud's SplatAttributes array (the
+        // Gaussian's rotation, scales, opacity and spherical harmonics). Survives the decimation into
+        // coarser levels, so every level can be encoded from the original attributes. kNoSplatSource
+        // marks a point with no such entry (a plain point cloud, a synthetic cloud, a decoded surfel).
+        uint32_t sourceIndex = 0xFFFFFFFFu;
     };
-    static_assert(sizeof(SurfelVertex) == 40, "SurfelVertex size check");
+    static_assert(sizeof(SurfelVertex) == 44, "SurfelVertex size check (mirrored by RawSurfel in the shaders)");
+    static constexpr uint32_t kNoSplatSource = 0xFFFFFFFFu;
+
+    // 3D Gaussian Splatting attributes of one source point, kept alongside SurfelVertex during a bake
+    // in splat mode (SurfelVertex::sourceIndex points here). Scales and rotation are in the model's
+    // frame after the import's axis change; the spherical-harmonics coefficients have had the same
+    // change applied (see SplatCodec::ApplyAxisFlipToSH) so a shader evaluates them with a direction
+    // in that frame. sh holds the bands above the DC term, coefficient-major: sh[3 * k + c] is band
+    // coefficient k (0..14, bands 1..3 in the 3DGS order) of colour channel c. The DC colour itself is
+    // SurfelVertex::color (0.5 + C0 * f_dc, clamped to [0, 1]).
+    static constexpr uint32_t kSplatSHMaxCoefficients = 45; // 15 coefficients x 3 channels (degree 3)
+    struct SplatAttributes
+    {
+        XMFLOAT3 scale      = { 0.01f, 0.01f, 0.01f };    // Per-axis standard deviations (world units), exp() of the file's log scales
+        XMFLOAT4 rotation   = { 0.0f, 0.0f, 0.0f, 1.0f }; // Unit quaternion (x, y, z, w)
+        float    opacity    = 1.0f;                       // Sigmoid of the file's logit, 0..1
+        uint32_t bakedLevel = 0;                          // Level whose footprint these scales already describe (0 for an import; see SplatCodec::AttributesForLevel)
+        float    sh[kSplatSHMaxCoefficients] = {};
+    };
+
+    // Which per-point record a package's LOD payloads hold (SFLWFileHeader::surfelFormat, v8+).
+    enum SurfelFormat : uint32_t
+    {
+        SURFEL_FORMAT_SURFEL8  = 0, // PackedSurfelGPU: 8-byte oriented disc (every package before v8)
+        SURFEL_FORMAT_SPLAT20  = 1, // PackedSplatGPU: 20-byte 3D Gaussian, plus an optional spherical-harmonics stream
+    };
+
+    // Splat mode's per-point GPU record: a full 3D Gaussian in 20 bytes. Five little-endian 32-bit words:
+    //   word 0  bits  0..15 position x, 16..31 position y      -- 16-bit unorm inside the global bounds
+    //   word 1  bits  0..15 position z, 16..23 scale x, 24..31 scale y
+    //   word 2  bits  0..7  scale z, 8..15 opacity, 16..23 colour R, 24..31 colour G
+    //   word 3  bits  0..7  colour B, 8..15 flags, 16..31 SH scale (IEEE 754 binary16)
+    //   word 4  rotation: smallest-three unit quaternion, bits 0..1 index of the dropped (largest) component,
+    //           bits 2..11 / 12..21 / 22..31 the other three in order, 10-bit unorm over [-1/sqrt2, +1/sqrt2]
+    // Scales are 8-bit unorm over the package's [splatScaleLog2Min, splatScaleLog2Max] in log2 space.
+    // Opacity is 8-bit unorm. Colour is the DC term as 8-bit display-space RGB. The SH scale is the
+    // per-point dequantisation factor of the record's entry in the package's SH stream (0 = no SH).
+    #pragma pack(push, 1)
+    struct PackedSplatGPU
+    {
+        uint32_t word0;
+        uint32_t word1;
+        uint32_t word2;
+        uint32_t word3;
+        uint32_t word4;
+    };
+    #pragma pack(pop)
+    static_assert(sizeof(PackedSplatGPU) == 20, "PackedSplatGPU must be exactly 20 bytes");
+
+    // Splat mode: one entry per chunk LOD in the SH table at SFLWFileHeader::shManifestOffset (v8+),
+    // in the same order as the chunk manifest's LOD headers. The payload is the level's SH stream:
+    // surfelCount records of SFLWFileHeader::shRecordBytes signed bytes each, passed through the
+    // same shuffle and entropy stages as the LOD payload. A zero-length entry means no SH for that level.
+    struct SHLODRecord
+    {
+        uint64_t fileOffset;
+        uint32_t compressedByteSize;
+        uint32_t uncompressedByteSize;
+    };
+
+    inline uint32_t SurfelRecordBytes(uint32_t surfelFormat)
+    {
+        return surfelFormat == SURFEL_FORMAT_SPLAT20 ? (uint32_t)sizeof(PackedSplatGPU) : (uint32_t)sizeof(PackedSurfelGPU);
+    }
 
     // Metadata for a single chunk's LOD layer
     struct ChunkLODHeader
@@ -238,6 +306,13 @@ namespace Surfels
         uint32_t detailGridDims[3];    // v7+ only -- detail heatmap grid resolution (x, y, z); all 0 = no grid stored
         float    detailGridCellSize;   // v7+ only -- cell edge in metres; the grid's origin is globalBoundsMin
         uint64_t detailGridOffset;     // v7+ only -- absolute offset of the dims[0]*dims[1]*dims[2] uint8 score array (see DetailGrid)
+        uint32_t surfelFormat;         // v8+ only -- SurfelFormat of every LOD payload (0 = 8-byte surfel, 1 = 20-byte splat). Pre-v8 files are format 0.
+        uint32_t shDegree;             // v8+ only -- splat mode: spherical-harmonics degree stored in the SH stream (0 = DC only, 1 or 3)
+        uint32_t splatRecordBytes;     // v8+ only -- bytes per record in a LOD payload (sizeof(PackedSplatGPU) for format 1)
+        uint32_t shRecordBytes;        // v8+ only -- bytes per point in the SH stream (9 for degree 1, 45 for degree 3, 0 for none)
+        float    splatScaleLog2Min;    // v8+ only -- splat mode: log2 scale mapped to byte 0 of the record's scale fields
+        float    splatScaleLog2Max;    // v8+ only -- splat mode: log2 scale mapped to byte 255
+        uint64_t shManifestOffset;     // v8+ only -- absolute offset of the SHLODRecord table (one per chunk LOD, manifest order); 0 = no SH stream
     };
 
     // On-disk form of one ChunkManifest entry in a v4+ .sflw's embedded manifest table. The table
@@ -304,6 +379,7 @@ namespace Surfels
         if (version < 5) return offsetof(SFLWFileHeader, sourceFileBytes);
         if (version < 6) return offsetof(SFLWFileHeader, occlusionMipCount);
         if (version < 7) return offsetof(SFLWFileHeader, detailGridDims);
+        if (version < 8) return offsetof(SFLWFileHeader, surfelFormat);
         return sizeof(SFLWFileHeader);
     }
 
@@ -370,13 +446,47 @@ namespace Surfels
                 return false;
             }
         }
+        if (h.version >= 8)
+        {
+            if (h.surfelFormat != SURFEL_FORMAT_SURFEL8 && h.surfelFormat != SURFEL_FORMAT_SPLAT20)
+            {
+                snprintf(buf, sizeof(buf), "The package declares surfel format %u, which this build does not know.", h.surfelFormat);
+                outReason = buf;
+                return false;
+            }
+            if (h.splatRecordBytes != SurfelRecordBytes(h.surfelFormat))
+            {
+                snprintf(buf, sizeof(buf), "The package declares %u-byte records for surfel format %u, but that format uses %u-byte records.", h.splatRecordBytes, h.surfelFormat, SurfelRecordBytes(h.surfelFormat));
+                outReason = buf;
+                return false;
+            }
+            if (h.surfelFormat == SURFEL_FORMAT_SPLAT20)
+            {
+                if (h.shDegree > 3 || (h.shDegree != 0 && h.shRecordBytes != 3u * ((h.shDegree + 1) * (h.shDegree + 1) - 1)))
+                {
+                    snprintf(buf, sizeof(buf), "The package declares spherical-harmonics degree %u with %u-byte records, which do not agree.", h.shDegree, h.shRecordBytes);
+                    outReason = buf;
+                    return false;
+                }
+                if (h.shDegree != 0 && (h.shManifestOffset == 0 || h.shManifestOffset >= fileSize))
+                {
+                    outReason = "The spherical-harmonics table offset lies outside the file. The package is corrupt or truncated.";
+                    return false;
+                }
+                if (!(h.splatScaleLog2Max > h.splatScaleLog2Min))
+                {
+                    outReason = "The package's splat scale range is empty or inverted. The package is corrupt.";
+                    return false;
+                }
+            }
+        }
         return true;
     }
 
     // Validates every chunk's LOD table against the file size: offsets inside the file and byte sizes
     // consistent with the surfel count. Catches truncated downloads and manifests from a different
     // surfel layout before any payload is decoded.
-    inline bool ValidateSFLWManifest(const std::vector<ChunkManifest>& chunks, uint64_t fileSize, std::string& outReason)
+    inline bool ValidateSFLWManifest(const std::vector<ChunkManifest>& chunks, uint64_t fileSize, std::string& outReason, uint32_t recordBytes = (uint32_t)sizeof(PackedSurfelGPU))
     {
         char buf[256];
         if (chunks.empty())
@@ -402,9 +512,9 @@ namespace Surfels
                     outReason = buf;
                     return false;
                 }
-                if ((uint64_t)lod.uncompressedByteSize != (uint64_t)lod.surfelCount * sizeof(PackedSurfelGPU))
+                if ((uint64_t)lod.uncompressedByteSize != (uint64_t)lod.surfelCount * recordBytes)
                 {
-                    snprintf(buf, sizeof(buf), "Chunk %zu LOD %zu declares %u surfels but %u payload bytes (expected %llu). The package was written with a different surfel layout.", c, l, lod.surfelCount, lod.uncompressedByteSize, (unsigned long long)lod.surfelCount * sizeof(PackedSurfelGPU));
+                    snprintf(buf, sizeof(buf), "Chunk %zu LOD %zu declares %u surfels but %u payload bytes (expected %llu). The package was written with a different surfel layout.", c, l, lod.surfelCount, lod.uncompressedByteSize, (unsigned long long)lod.surfelCount * recordBytes);
                     outReason = buf;
                     return false;
                 }

@@ -44,14 +44,15 @@ The apps sit on AMD's [Cauldron](https://github.com/GPUOpen-LibrariesAndSDKs/Cau
 
 ### Package format (`.sflw`)
 
-A package is one self-contained binary file (format version 7):
+A package is one self-contained binary file (format version 8; the normative layout is in [`docs/SFLW_FORMAT_SPECIFICATION.md`](docs/SFLW_FORMAT_SPECIFICATION.md)):
 
 | Section | Contents |
 |---|---|
 | `SFLWFileHeader` | magic, version, chunk and LOD counts, global bounds, splat radius, the size of the original input file (so the compression ratio survives a reload), absolute offsets of the manifest, the occlusion volume with its mip table (v6+) and the detail grid (v7+) |
-| Chunk LOD payloads | one compressed blob per chunk per level, in export order |
+| Chunk LOD payloads | one compressed blob per chunk per level, in export order: 8-byte surfels (format 0) or 20-byte 3D Gaussians (format 1, v8+), each followed in splat packages by the level's spherical-harmonics stream |
 | Occlusion voxels | optional `OcclusionVoxelGPU` array holding the mip chain back to back, mip 0 first; a pre-v6 reader that draws the whole array still sees a correct volume |
 | Detail grid | optional `uint8` grid, one byte per cell over the model's bounds, read by the streaming scheduler; see `libs/bluesec-codec/DetailHeatmap.h` |
+| SH table | splat packages only (v8+): one record per chunk level giving the offset and size of its spherical-harmonics payload |
 | Manifest table | one `ChunkManifestRecord` per chunk (id, bounds, centre, radius, LOD count) followed by its `ChunkLODHeader` array (surfel count, byte sizes, payload offset, geometric error) |
 
 Every offset is absolute, so the manifest is written last and the header patched once all offsets are known. Formats 1 to 3 kept the manifest in a companion `.json`, which both apps still read when it sits next to the `.sflw`. Loading validates the header, the manifest and every payload and reports a specific reason when a file is not a valid package. See `src/SurfelsCore/WaveletTypes.h` for the structs and the version history.

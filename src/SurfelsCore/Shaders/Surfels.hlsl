@@ -20,6 +20,9 @@
 //  1. Procedural Fibonacci-sphere point-splat generation on-chip (demo/fallback mode).
 //  2. High-performance progressive streaming from a StructuredBuffer of 8-byte PackedSurfel structs.
 //  3. Normal-oriented tangent-plane discs or camera-facing billboard quads.
+//  4. Splat mode (g_RenderMode == 3): full 3D Gaussians from 20-byte PackedSplat records, drawn in
+//     per-splat depth order (SplatSortCS.hlsl) with the projection, footprint, falloff and colour
+//     evaluation of the reference PlayCanvas / SuperSplat viewer.
 
 #define SURFELS_PER_GROUP 64
 #define AS_GROUP_SIZE 32
@@ -36,6 +39,7 @@ struct RawSurfel
     float3 normal;
     float3 color;
     float  radius;
+    uint   sourceIndex; // Splat mode bookkeeping (SurfelVertex::sourceIndex); unused by the shaders
 };
 
 struct MeshletChunk
@@ -69,6 +73,23 @@ StructuredBuffer<RawSurfel>     g_RawSurfelBuffer    : register(t1);
 StructuredBuffer<MeshletChunk>  g_ChunkBuffer        : register(t2);
 StructuredBuffer<uint>          g_SortedChunkIndices : register(t3);
 StructuredBuffer<OcclusionVoxel> g_OcclusionVoxelBuffer : register(t4);
+
+// Splat mode (g_RenderMode == 3). PackedSplat is PackedSplatGPU (WaveletTypes.h): five words holding
+// a 16:16:16 position, three 8-bit log2 scales, 8-bit opacity, 8:8:8 DC colour, flags, a binary16 SH
+// scale and a smallest-three quaternion. The SH stream holds g_SHRecordBytes signed bytes per splat.
+struct PackedSplat
+{
+    uint w0; // position x | position y << 16
+    uint w1; // position z | scale x << 16 | scale y << 24
+    uint w2; // scale z | opacity << 8 | red << 16 | green << 24
+    uint w3; // blue | flags << 8 | SH scale (binary16) << 16
+    uint w4; // rotation, smallest-three: index (2 bits) | a << 2 | b << 12 | c << 22
+};
+StructuredBuffer<PackedSplat> g_SplatBuffer  : register(t5);
+ByteAddressBuffer             g_SHBuffer     : register(t6);
+StructuredBuffer<uint2>       g_SortedSplats : register(t7); // Per-frame depth order, far to near: x = key, y = slot
+StructuredBuffer<uint2>       g_SlotInfo     : register(t8); // Per slot: x = splat index, y = chunk index | SLOT_CULLED_BIT
+#define SLOT_CULLED_BIT 0x80000000u
 
 cbuffer SurfelsCB : register(b0)
 {
@@ -104,6 +125,17 @@ cbuffer SurfelsCB : register(b0)
     uint     g_CulledPass;           // Detach Camera: 0 = the splats the frozen camera sees, 1 = only the ones it culled (the red volume)
     float2   g_AutoSplatPad1;
     float4   g_LodRadius[2];         // Auto splat size: disc radius per LOD level (world units), index = lodLevel 0..7; 0 = level unknown
+    // Splat mode
+    float4x4 g_View;                 // World to view (right-handed: in front of the camera is negative z)
+    float2   g_Viewport;             // Render target size in pixels
+    float    g_Proj00;               // Projection matrix element [0][0]; focal length in pixels = g_Viewport.x * g_Proj00
+    float    g_ScaleLog2Min;         // log2 scale a scale byte of 0 decodes to
+    float    g_ScaleLog2Max;         // log2 scale a scale byte of 255 decodes to
+    uint     g_SHDegree;             // Spherical-harmonics degree in the SH stream (0 = DC only)
+    uint     g_SHRecordBytes;        // Bytes per splat in the SH stream
+    uint     g_SplatBlendSpace;      // 0 = blend the stored display-space colours as they are, 1 = decode to linear first (sRGB target)
+    float3   g_CamForward;           // Viewer forward (unit)
+    uint     g_SplatSlotCount;       // Slots in g_SortedSplats this frame
 };
 
 // Auto splat size: every disc of a level takes that level's density-derived radius (its typical point
@@ -141,6 +173,7 @@ struct VSOut
     float  isSil       : TEXCOORD1;
     float  solid       : TEXCOORD2; // 1 = sub-pixel splat drawn as an opaque dot (see SolidDot)
     float  culledTint  : TEXCOORD3; // 1 = Detach Camera: the frozen camera would have culled this splat (drawn faint)
+    float  splatAlpha  : TEXCOORD4; // Splat mode: the Gaussian's opacity (peak alpha)
 };
 
 // Quad corners in local 2D tangent space: 0(-1,-1) 1(1,-1) 2(-1,1) 3(1,1)
@@ -536,6 +569,7 @@ VSOut SplatCornerVertex(SplatData sd, uint corner, float chunkBlendWeight, float
     o.isSil = (g_HighlightSilhouette == 1) ? chunkIsSilhouette : 0.0;
     o.solid = sd.solid;
     o.culledTint = sd.culledTint;
+    o.splatAlpha = 1.0;
     return o;
 }
 
@@ -550,6 +584,228 @@ VSOut CulledSplatVertex()
     o.isSil = 0.0;
     o.solid = 0.0;
     o.culledTint = 0.0;
+    o.splatAlpha = 0.0;
+    return o;
+}
+
+// =========================================================================
+// Splat mode (g_RenderMode == 3): full 3D Gaussians, PlayCanvas / SuperSplat technique
+// =========================================================================
+
+struct GaussianSplat
+{
+    float4 clipCenter; // Centre in clip space (z clamped into the depth range)
+    float2 axis1;      // Clip-space offset of the quad's first half-axis (already scaled by uvScale)
+    float2 axis2;      // Clip-space offset of the second half-axis
+    float  uvScale;    // The corner uv's shrink factor (clipCorner): the quad is cut where alpha falls below 1/255
+    float3 color;      // Display-space colour (DC + harmonics), or linear when g_SplatBlendSpace == 1
+    float  alpha;      // Opacity
+};
+
+// Rotation matrix of a unit quaternion (x, y, z, w): mul(R, v) rotates v.
+float3x3 QuatToMat3(float4 q)
+{
+    float x = q.x, y = q.y, z = q.z, w = q.w;
+    return float3x3(
+        1.0 - 2.0 * (y * y + z * z), 2.0 * (x * y - w * z),       2.0 * (x * z + w * y),
+        2.0 * (x * y + w * z),       1.0 - 2.0 * (x * x + z * z), 2.0 * (y * z - w * x),
+        2.0 * (x * z - w * y),       2.0 * (y * z + w * x),       1.0 - 2.0 * (x * x + y * y));
+}
+
+float3 SRGBToLinear(float3 c)
+{
+    float3 lo = c / 12.92;
+    float3 hi = pow(max(c + 0.055, 0.0) / 1.055, 2.4);
+    float3 r; // Component-wise (a vector condition is not a valid ternary in every compiler)
+    r.x = (c.x <= 0.04045) ? lo.x : hi.x;
+    r.y = (c.y <= 0.04045) ? lo.y : hi.y;
+    r.z = (c.z <= 0.04045) ? lo.z : hi.z;
+    return r;
+}
+
+// One signed byte of the SH stream: coefficient k (0..44, coefficient-major, three channels each) of a splat.
+float LoadSHByte(uint splatIndex, uint k)
+{
+    uint addr = splatIndex * g_SHRecordBytes + k;
+    uint word = g_SHBuffer.Load(addr & ~3u);
+    uint b = (word >> ((addr & 3u) * 8u)) & 0xFFu;
+    return (float)((int)(b << 24) >> 24);
+}
+
+// Spherical harmonics above the DC term, the 3DGS basis and order (see graphdeco-inria sh_utils.py),
+// evaluated for a unit direction from the camera to the splat in model space.
+float3 EvalSH(uint splatIndex, float shScale, float3 dir)
+{
+    const float SH_C1 = 0.4886025119029199;
+    const float SH_C2_0 = 1.0925484305920792, SH_C2_1 = -1.0925484305920792, SH_C2_2 = 0.31539156525252005, SH_C2_3 = -1.0925484305920792, SH_C2_4 = 0.5462742152960396;
+    const float SH_C3_0 = -0.5900435899266435, SH_C3_1 = 2.890611442640554, SH_C3_2 = -0.4570457994644658, SH_C3_3 = 0.3731763325901154, SH_C3_4 = -0.4570457994644658, SH_C3_5 = 1.445305721320277, SH_C3_6 = -0.5900435899266435;
+    float x = dir.x, y = dir.y, z = dir.z;
+    float3 sh0 = float3(LoadSHByte(splatIndex, 0), LoadSHByte(splatIndex, 1), LoadSHByte(splatIndex, 2)) * shScale;
+    float3 sh1 = float3(LoadSHByte(splatIndex, 3), LoadSHByte(splatIndex, 4), LoadSHByte(splatIndex, 5)) * shScale;
+    float3 sh2 = float3(LoadSHByte(splatIndex, 6), LoadSHByte(splatIndex, 7), LoadSHByte(splatIndex, 8)) * shScale;
+    float3 result = SH_C1 * (-sh0 * y + sh1 * z - sh2 * x);
+    if (g_SHDegree > 1)
+    {
+        float xx = x * x, yy = y * y, zz = z * z, xy = x * y, yz = y * z, xz = x * z;
+        float3 c[5];
+        [unroll]
+        for (uint k = 0; k < 5; k++)
+            c[k] = float3(LoadSHByte(splatIndex, 9 + 3 * k), LoadSHByte(splatIndex, 10 + 3 * k), LoadSHByte(splatIndex, 11 + 3 * k)) * shScale;
+        result += c[0] * (SH_C2_0 * xy) + c[1] * (SH_C2_1 * yz) + c[2] * (SH_C2_2 * (2.0 * zz - xx - yy)) + c[3] * (SH_C2_3 * xz) + c[4] * (SH_C2_4 * (xx - yy));
+        if (g_SHDegree > 2)
+        {
+            float3 d[7];
+            [unroll]
+            for (uint k = 0; k < 7; k++)
+                d[k] = float3(LoadSHByte(splatIndex, 24 + 3 * k), LoadSHByte(splatIndex, 25 + 3 * k), LoadSHByte(splatIndex, 26 + 3 * k)) * shScale;
+            result += d[0] * (SH_C3_0 * y * (3.0 * xx - yy)) + d[1] * (SH_C3_1 * xy * z) + d[2] * (SH_C3_2 * y * (4.0 * zz - xx - yy))
+                    + d[3] * (SH_C3_3 * z * (2.0 * zz - 3.0 * xx - 3.0 * yy)) + d[4] * (SH_C3_4 * x * (4.0 * zz - xx - yy))
+                    + d[5] * (SH_C3_5 * z * (xx - yy)) + d[6] * (SH_C3_6 * x * (xx - 3.0 * yy));
+        }
+    }
+    return result;
+}
+
+// Decodes one Gaussian and projects it the way the reference viewer does: the 3D covariance from
+// rotation and scales, the perspective Jacobian at the splat's view-space position, a 0.3 pixel
+// dilation, the 2D eigen-decomposition, quad half-axes of 2 * sqrt(2 * lambda) pixels, and the
+// alpha-dependent shrink of the quad. Returns false when the splat is behind the camera, off screen,
+// or too faint to draw.
+bool BuildGaussianSplat(uint splatIndex, out GaussianSplat gs)
+{
+    gs.clipCenter = s_culledClipPos; gs.axis1 = float2(0.0, 0.0); gs.axis2 = float2(0.0, 0.0); gs.uvScale = 0.0; gs.color = float3(0.0, 0.0, 0.0); gs.alpha = 0.0;
+
+    PackedSplat s = g_SplatBuffer[splatIndex];
+    float3 pos = g_AABBMin + float3((s.w0 & 0xFFFFu) / 65535.0, ((s.w0 >> 16) & 0xFFFFu) / 65535.0, (s.w1 & 0xFFFFu) / 65535.0) * g_AABBExtents;
+    float3 scaleBytes = float3((s.w1 >> 16) & 0xFFu, (s.w1 >> 24) & 0xFFu, s.w2 & 0xFFu);
+    float3 scale = exp2(g_ScaleLog2Min + (scaleBytes / 255.0) * (g_ScaleLog2Max - g_ScaleLog2Min));
+    float opacity = ((s.w2 >> 8) & 0xFFu) / 255.0;
+    float3 dc = float3((s.w2 >> 16) & 0xFFu, (s.w2 >> 24) & 0xFFu, s.w3 & 0xFFu) / 255.0;
+    uint flags = (s.w3 >> 8) & 0xFFu;
+    float shScale = (flags & 1u) ? f16tof32(s.w3 >> 16) : 0.0;
+
+    if (opacity <= 1.0 / 255.0) return false;
+
+    // Smallest-three quaternion
+    uint largest = s.w4 & 3u;
+    float comps[4] = { 0.0, 0.0, 0.0, 0.0 };
+    float sumSq = 0.0;
+    uint shift = 2;
+    [unroll]
+    for (uint i = 0; i < 4; i++)
+    {
+        if (i != largest)
+        {
+            float t = ((s.w4 >> shift) & 0x3FFu) / 1023.0;
+            float v = (t * 2.0 - 1.0) * 0.70710678118;
+            comps[i] = v;
+            sumSq += v * v;
+            shift += 10;
+        }
+    }
+    comps[largest] = sqrt(saturate(1.0 - sumSq));
+    float4 q = float4(comps[0], comps[1], comps[2], comps[3]);
+
+    // Centre: behind the camera is dropped; depth is clamped into the near/far range so the quad is never clipped
+    float4 viewPos = mul(g_View, float4(pos, 1.0));
+    if (viewPos.z > 0.0) return false;
+    float4 clip = mul(g_ViewProj, float4(pos, 1.0));
+    clip.z = clamp(clip.z, 0.0, abs(clip.w));
+
+    // 3D covariance in world (= model) space, then in view space
+    float3x3 R = QuatToMat3(q);
+    float3x3 M = mul(R, float3x3(scale.x, 0.0, 0.0, 0.0, scale.y, 0.0, 0.0, 0.0, scale.z));
+    float3x3 Sigma = mul(M, transpose(M));
+    float3x3 W = (float3x3)g_View;
+    float3x3 Sv = mul(mul(W, Sigma), transpose(W));
+
+    // Perspective Jacobian at the splat, focal length in pixels = viewport width * proj[0][0]
+    float focal = g_Viewport.x * g_Proj00;
+    float3 v = viewPos.xyz;
+    float J1 = focal / v.z;
+    float2 J2 = -J1 / v.z * v.xy;
+    float3 r0 = float3(J1, 0.0, J2.x);
+    float3 r1 = float3(0.0, J1, J2.y);
+    float3 t0 = mul(Sv, r0);
+    float3 t1 = mul(Sv, r1);
+    float c00 = dot(r0, t0), c01 = dot(r0, t1), c11 = dot(r1, t1);
+
+    float diagonal1 = c00 + 0.3;
+    float offDiagonal = c01;
+    float diagonal2 = c11 + 0.3;
+    float mid = 0.5 * (diagonal1 + diagonal2);
+    float radius = length(float2((diagonal1 - diagonal2) * 0.5, offDiagonal));
+    float lambda1 = mid + radius;
+    float lambda2 = max(mid - radius, 0.1);
+
+    float vmin = min(1024.0, min(g_Viewport.x, g_Viewport.y));
+    float l1 = 2.0 * min(sqrt(2.0 * lambda1), vmin);
+    float l2 = 2.0 * min(sqrt(2.0 * lambda2), vmin);
+
+    float2 c = clip.w / g_Viewport; // One pixel in clip units at this depth
+    if (any((abs(clip.xy) - max(l1, l2) * c) > clip.w)) return false;
+
+    float2 diagonalVector = float2(offDiagonal, lambda1 - diagonal1);
+    float dvLen = length(diagonalVector);
+    diagonalVector = (dvLen > 1e-6) ? diagonalVector / dvLen : float2(1.0, 0.0);
+    float2 v1 = l1 * diagonalVector;
+    float2 v2 = l2 * float2(diagonalVector.y, -diagonalVector.x);
+
+    // Colour: DC plus the harmonics for this view direction, clamped at black
+    float3 color = dc;
+    if (g_SHDegree > 0 && shScale > 0.0 && g_SHRecordBytes > 0)
+    {
+        float3 dir = normalize(pos - g_ViewerEyePos);
+        color += EvalSH(splatIndex, shScale, dir);
+    }
+    color = max(color, 0.0);
+    if (g_SplatBlendSpace == 1) color = SRGBToLinear(color);
+
+    // Shrink the quad to where the Gaussian times opacity falls below 1/255
+    float clipS = min(1.0, sqrt(max(0.0, log(opacity * 255.0))) * 0.5);
+
+    gs.clipCenter = clip;
+    gs.axis1 = v1 * c * clipS;
+    gs.axis2 = v2 * c * clipS;
+    gs.uvScale = clipS;
+    gs.color = color;
+    gs.alpha = opacity;
+    return true;
+}
+
+// The slot's Gaussian: sorted pair -> slot info -> chunk (blend weight for the LOD dither) -> splat.
+bool SplatFromSlot(uint slot, out GaussianSplat gs, out float blendWeight)
+{
+    blendWeight = 1.0;
+    gs.clipCenter = s_culledClipPos; gs.axis1 = float2(0.0, 0.0); gs.axis2 = float2(0.0, 0.0); gs.uvScale = 0.0; gs.color = float3(0.0, 0.0, 0.0); gs.alpha = 0.0;
+    if (slot >= g_SplatSlotCount) return false;
+    uint2 pair = g_SortedSplats[slot];
+    if (pair.y >= g_SplatSlotCount) return false;
+    uint2 info = g_SlotInfo[pair.y];
+    if (info.y & SLOT_CULLED_BIT) return false;
+    if (g_UseChunkedPipeline == 1 && info.y < g_TotalChunks)
+    {
+        MeshletChunk chunk = g_ChunkBuffer[info.y];
+        blendWeight = chunk.blendWeight;
+        if (g_ShowOnlyLocked == 1 && !ChunkIsLocked(chunk)) return false;
+    }
+    if (info.x >= g_SurfelCount) return false;
+    return BuildGaussianSplat(info.x, gs);
+}
+
+VSOut GaussianCornerVertex(GaussianSplat gs, uint corner, float chunkBlendWeight)
+{
+    float2 cc = s_quadCorners[corner];
+    VSOut o;
+    o.pos = gs.clipCenter + float4(cc.x * gs.axis1 + cc.y * gs.axis2, 0.0, 0.0);
+    o.uv = (cc * gs.uvScale) * 0.5 + 0.5;
+    o.color = gs.color;
+    o.norm = float3(0.0, 0.0, 0.0);
+    o.blendWeight = chunkBlendWeight;
+    o.isSil = 0.0;
+    o.solid = 0.0;
+    o.culledTint = 0.0;
+    o.splatAlpha = gs.alpha;
     return o;
 }
 
@@ -769,25 +1025,29 @@ void mainAS(
     uint3 groupId  : SV_GroupID,
     uint  threadId : SV_GroupThreadID)
 {
-    if (g_UseChunkedPipeline == 0)
+    // The validator requires exactly one DispatchMesh per amplification shader, so every path below
+    // decides a mesh-group count and the single call at the end issues it.
+    uint meshGroups = 0;
+
+    if (g_RenderMode == 3)
+    {
+        // Splat mode: one mesh group per 64 sorted slots (see SplatSortCS.hlsl); the chunk list only
+        // contributes blend weights, culling was done per slot by the sort's expand pass. The dispatch
+        // folds group counts above 65535 over y (see issueSplatDraws in SurfelsRenderer.cpp).
+        uint linearGroup = groupId.x + groupId.y * 65535u;
+        uint groupBase = linearGroup * SURFELS_PER_GROUP;
+        if (threadId == 0) s_Payload.flatGroupIndex = linearGroup;
+        meshGroups = (groupBase < g_SplatSlotCount) ? 1 : 0;
+    }
+    else if (g_UseChunkedPipeline == 0)
     {
         // Flat Buffer Mode: 1:1 pass-through to Mesh Shader
         uint groupBase = groupId.x * SURFELS_PER_GROUP;
-        if (threadId == 0)
-        {
-            s_Payload.flatGroupIndex = groupId.x;
-            if (groupBase < g_SurfelCount)
-            {
-                DispatchMesh(1, 1, 1, s_Payload);
-            }
-            else
-            {
-                DispatchMesh(0, 1, 1, s_Payload);
-            }
-        }
-        return;
+        if (threadId == 0) s_Payload.flatGroupIndex = groupId.x;
+        meshGroups = (groupBase < g_SurfelCount) ? 1 : 0;
     }
-
+    else
+    {
     uint globalChunkIdx = groupId.x * AS_GROUP_SIZE + threadId;
     bool isVisible = false;
     uint chunkIdx = 0;
@@ -831,13 +1091,12 @@ void mainAS(
         s_Payload.chunkIndices[visibleOffset] = chunkIdx;
     }
 
-    GroupMemoryBarrierWithGroupSync();
-
-    if (threadId == 0)
-    {
-        s_Payload.flatGroupIndex = 0;
-        DispatchMesh(min(totalVisible, (uint)AS_GROUP_SIZE), 1, 1, s_Payload);
+    if (threadId == 0) s_Payload.flatGroupIndex = 0;
+    meshGroups = min(totalVisible, (uint)AS_GROUP_SIZE);
     }
+
+    GroupMemoryBarrierWithGroupSync();
+    DispatchMesh(meshGroups, 1, 1, s_Payload);
 }
 
 // =========================================================================
@@ -856,34 +1115,38 @@ void mainMS(
     uint surfelIndex = 0;
     uint groupSurfelCount = 0;
 
+    // The validator requires exactly one SetMeshOutputCounts per mesh shader: every path settles on a
+    // count first, the single call below issues it, and a group with nothing to draw emits nothing.
     float chunkBlendWeight = 1.0;
     float chunkDilationMorph = 0.0;
     float chunkIsSilhouette = 0.0;
     uint chunkLod = 0xFF;
     bool frozenCulled = false;
-    if (g_UseChunkedPipeline == 1)
+    const bool splatMode = (g_RenderMode == 3);
+    if (splatMode)
+    {
+        uint groupBase = payload.flatGroupIndex * SURFELS_PER_GROUP;
+        uint remaining = groupBase < g_SplatSlotCount ? g_SplatSlotCount - groupBase : 0;
+        groupSurfelCount = min((uint)SURFELS_PER_GROUP, remaining);
+        surfelIndex = groupBase + threadId; // A slot, not a surfel index, in splat mode
+    }
+    else if (g_UseChunkedPipeline == 1)
     {
         uint pIdx = min(groupId.x, (uint)(AS_GROUP_SIZE - 1));
         uint chunkIdx = payload.chunkIndices[pIdx];
         frozenCulled = (chunkIdx & CHUNK_FROZEN_CULLED_BIT) != 0;
         chunkIdx &= ~CHUNK_FROZEN_CULLED_BIT;
-        if (chunkIdx >= g_TotalChunks)
+        if (chunkIdx < g_TotalChunks)
         {
-            SetMeshOutputCounts(0, 0);
-            return;
-        }
-        MeshletChunk chunk = g_ChunkBuffer[chunkIdx];
-        groupSurfelCount = min((uint)SURFELS_PER_GROUP, chunk.surfelCount);
-        surfelIndex = chunk.surfelOffset + threadId;
-        chunkBlendWeight = chunk.blendWeight;
-        chunkDilationMorph = chunk.dilationMorph;
-        chunkIsSilhouette = chunk.isSilhouette;
-        chunkLod = chunk.lodLevel;
-
-        if (g_ShowOnlyLocked == 1 && !ChunkIsLocked(chunk))
-        {
-            SetMeshOutputCounts(0, 0);
-            return;
+            MeshletChunk chunk = g_ChunkBuffer[chunkIdx];
+            groupSurfelCount = min((uint)SURFELS_PER_GROUP, chunk.surfelCount);
+            surfelIndex = chunk.surfelOffset + threadId;
+            chunkBlendWeight = chunk.blendWeight;
+            chunkDilationMorph = chunk.dilationMorph;
+            chunkIsSilhouette = chunk.isSilhouette;
+            chunkLod = chunk.lodLevel;
+            if (g_ShowOnlyLocked == 1 && !ChunkIsLocked(chunk))
+                groupSurfelCount = 0;
         }
     }
     else
@@ -896,14 +1159,39 @@ void mainMS(
 
     SetMeshOutputCounts(groupSurfelCount * 4, groupSurfelCount * 2);
 
-    if (threadId >= groupSurfelCount || surfelIndex >= g_SurfelCount)
+    if (threadId >= groupSurfelCount)
         return;
 
     uint vBase = threadId * 4;
     uint pBase = threadId * 2;
 
+    if (splatMode)
+    {
+        GaussianSplat gs;
+        float bw = 1.0;
+        if (!SplatFromSlot(surfelIndex, gs, bw))
+        {
+            tris[pBase + 0] = uint3(0, 0, 0);
+            tris[pBase + 1] = uint3(0, 0, 0);
+            [unroll]
+            for (uint z = 0; z < 4; z++)
+            {
+                VSOut o = CulledSplatVertex();
+                o.pos = float4(0.0, 0.0, 0.0, 0.0);
+                verts[vBase + z] = o;
+            }
+            return;
+        }
+        [unroll]
+        for (uint c = 0; c < 4; c++)
+            verts[vBase + c] = GaussianCornerVertex(gs, c, bw);
+        tris[pBase + 0] = uint3(vBase + 0, vBase + 1, vBase + 2);
+        tris[pBase + 1] = uint3(vBase + 1, vBase + 3, vBase + 2);
+        return;
+    }
+
     SplatData sd;
-    if (!BuildSplat(surfelIndex, chunkLod, chunkBlendWeight, chunkDilationMorph, chunkIsSilhouette, frozenCulled, sd))
+    if (surfelIndex >= g_SurfelCount || !BuildSplat(surfelIndex, chunkLod, chunkBlendWeight, chunkDilationMorph, chunkIsSilhouette, frozenCulled, sd))
     {
         tris[pBase + 0] = uint3(0, 0, 0);
         tris[pBase + 1] = uint3(0, 0, 0);
@@ -947,37 +1235,28 @@ void itemMS(
 
     if (g_UseChunkedPipeline == 1)
     {
-        if (chunkIndex >= g_TotalChunks)
+        if (chunkIndex < g_TotalChunks)
         {
-            SetMeshOutputCounts(0, 0);
-            return;
+            MeshletChunk c = g_ChunkBuffer[chunkIndex];
+            // Fast normal-cone backface culling (see ChunkConeBackfacing for the close-range guard)
+            if (!ChunkConeBackfacing(c, g_ViewerEyePos))
+            {
+                groupSurfelCount = min((uint)SURFELS_PER_GROUP, c.surfelCount);
+                surfelIndex = c.surfelOffset + threadId;
+                itemLod = c.lodLevel;
+            }
         }
-        MeshletChunk c = g_ChunkBuffer[chunkIndex];
-
-        // Fast normal-cone backface culling (see ChunkConeBackfacing for the close-range guard)
-        if (ChunkConeBackfacing(c, g_ViewerEyePos))
-        {
-            SetMeshOutputCounts(0, 0);
-            return;
-        }
-
-        groupSurfelCount = min((uint)SURFELS_PER_GROUP, c.surfelCount);
-        surfelIndex = c.surfelOffset + threadId;
-        itemLod = c.lodLevel;
     }
     else
     {
         uint groupBase = chunkIndex * SURFELS_PER_GROUP;
-        if (groupBase >= g_SurfelCount)
-        {
-            SetMeshOutputCounts(0, 0);
-            return;
-        }
-        groupSurfelCount = min((uint)SURFELS_PER_GROUP, g_SurfelCount - groupBase);
+        if (groupBase < g_SurfelCount)
+            groupSurfelCount = min((uint)SURFELS_PER_GROUP, g_SurfelCount - groupBase);
         surfelIndex = groupBase + threadId;
         chunkIndex = 0;
     }
 
+    // One SetMeshOutputCounts per mesh shader (validator rule); an empty group emits nothing.
     SetMeshOutputCounts(groupSurfelCount * 4, groupSurfelCount * 2);
 
     if (threadId >= groupSurfelCount || surfelIndex >= g_SurfelCount)
@@ -1066,6 +1345,16 @@ void occluderMS(
 
 VSOut mainVS(uint vertexId : SV_VertexID, uint instanceId : SV_InstanceID)
 {
+    if (g_RenderMode == 3)
+    {
+        // Splat mode: one instance per sorted slot
+        GaussianSplat gs;
+        float bw = 1.0;
+        if (!SplatFromSlot(instanceId, gs, bw))
+            return CulledSplatVertex();
+        return GaussianCornerVertex(gs, s_quadVertexCorner[vertexId % 6], bw);
+    }
+
     uint surfelIndex = 0;
     float chunkBlendWeight = 1.0;
     float chunkDilationMorph = 0.0;
@@ -1232,6 +1521,17 @@ float4 mainPS(VSOut i) : SV_Target
                 discard;
             }
         }
+    }
+
+    if (g_RenderMode == 3)
+    {
+        // Splat mode: the reference viewer's normalised falloff over the quad (A = |uv|^2 in the
+        // shrunken corner space), reaching zero at the quad edge, times the Gaussian's opacity.
+        const float EXP4 = 0.01831563888873418; // exp(-4)
+        float alphaG = (exp(-4.0 * d) - EXP4) / (1.0 - EXP4) * i.splatAlpha;
+        if (alphaG < 1.0 / 255.0)
+            discard;
+        return float4(i.color * alphaG, alphaG);
     }
 
     // Continuous 3D Gaussian falloff:

@@ -16,6 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include "WaveletTypes.h"
+#include "../../libs/bluesec-codec/SplatCodec.h"
 
 namespace Surfels
 {
@@ -34,7 +35,12 @@ namespace Surfels
         // A splat's rendered radius is this factor times its median (2nd-smallest) Gaussian scale axis.
         static constexpr float kMedianScaleToRadiusFactor = 1.25f;
 
-        static bool LoadPLY(const std::string& filepath, std::vector<SurfelVertex>& outSurfels, double originOut[3])
+        // outSplat (optional): when the file carries 3D Gaussian Splatting fields (f_dc_*, scale_*, rot_*,
+        // opacity), every kept point's Gaussian is appended here and the point's sourceIndex refers to
+        // it -- the input of a splat-mode bake. With outSplat given the floater cull is skipped, so the
+        // large soft Gaussians that fill smooth surfaces survive. Left empty for plain point clouds.
+        static bool LoadPLY(const std::string& filepath, std::vector<SurfelVertex>& outSurfels, double originOut[3],
+                            std::vector<SplatAttributes>* outSplat = nullptr)
         {
             originOut[0] = 0.0;
             originOut[1] = 0.0;
@@ -121,6 +127,8 @@ namespace Surfels
                 int rot0Offset = -1, rot1Offset = -1, rot2Offset = -1, rot3Offset = -1;
                 int opacityOffset = -1;
                 int radOffset = -1;
+                int frestOffset[kSplatSHMaxCoefficients];
+                for (int k = 0; k < (int)kSplatSHMaxCoefficients; k++) frestOffset[k] = -1;
 
                 int currentByte = 0;
                 for (size_t i = 0; i < propertyNames.size(); i++)
@@ -162,6 +170,11 @@ namespace Surfels
                     else if (name == "rot_3") { rot3Offset = currentByte; }
                     else if (name == "opacity") { opacityOffset = currentByte; }
                     else if (name == "radius" || name == "size") { radOffset = currentByte; }
+                    else if (name.rfind("f_rest_", 0) == 0)
+                    {
+                        const int k = std::atoi(name.c_str() + 7);
+                        if (k >= 0 && k < (int)kSplatSHMaxCoefficients && propSize == 4) frestOffset[k] = currentByte;
+                    }
 
                     currentByte += propSize;
                 }
@@ -204,6 +217,14 @@ namespace Surfels
                 outSurfels.clear();
                 outSurfels.reserve(vertexCount);
 
+                // Splat mode input: the full Gaussian per point, when asked for and the file has one.
+                const bool keepSplat = outSplat != nullptr && fdc0Offset >= 0 && scale0Offset >= 0 && scale1Offset >= 0 && scale2Offset >= 0
+                                       && rot0Offset >= 0 && rot1Offset >= 0 && rot2Offset >= 0 && rot3Offset >= 0;
+                if (outSplat != nullptr) { outSplat->clear(); if (keepSplat) outSplat->reserve(vertexCount); }
+                int frestCount = 0;
+                while (frestCount < (int)kSplatSHMaxCoefficients && frestOffset[frestCount] >= 0) frestCount++;
+                const int shPerChannel = frestCount / 3; // 3DGS lays f_rest out channel-major: all of R, then all of G, then all of B
+
                 for (uint32_t i = 0; i < vertexCount; i++)
                 {
                     const uint8_t* ptr = &rawData[i * vertexStride];
@@ -244,8 +265,9 @@ namespace Surfels
                         float sortedS[3] = { s0, s1, s2 };
                         std::sort(sortedS, sortedS + 3);
 
-                        // Cull large low-opacity air floaters / background noise
-                        if (opacity < kFloaterOpacityThreshold && sortedS[1] > kFloaterScaleThreshold)
+                        // Cull large low-opacity air floaters / background noise. Not in splat mode: those
+                        // large soft Gaussians are what fills smooth surfaces and backgrounds in a 3DGS scene.
+                        if (!keepSplat && opacity < kFloaterOpacityThreshold && sortedS[1] > kFloaterScaleThreshold)
                             continue;
 
                         // Continuous surface footprint: median scale times kMedianScaleToRadiusFactor
@@ -336,6 +358,32 @@ namespace Surfels
                     else
                     {
                         v.color = XMFLOAT3(0.85f, 0.85f, 0.85f);
+                    }
+
+                    if (keepSplat)
+                    {
+                        SplatAttributes a;
+                        a.scale = XMFLOAT3(s0, s1, s2);
+                        float qw = *reinterpret_cast<const float*>(ptr + rot0Offset);
+                        float qx = *reinterpret_cast<const float*>(ptr + rot1Offset);
+                        float qy = *reinterpret_cast<const float*>(ptr + rot2Offset);
+                        float qz = *reinterpret_cast<const float*>(ptr + rot3Offset);
+                        const float ql = std::sqrt(qw * qw + qx * qx + qy * qy + qz * qz);
+                        if (ql > 1e-8f) { qw /= ql; qx /= ql; qy /= ql; qz /= ql; } else { qw = 1.0f; qx = qy = qz = 0.0f; }
+                        // The positions above were turned by a half turn about X (+Y down / +Z forward to +Y up);
+                        // the Gaussian's frame and its harmonics take the same turn.
+                        a.rotation = SplatCodec::RotateQuaternionHalfTurnX(XMFLOAT4(qx, qy, qz, qw));
+                        a.opacity = opacity;
+                        a.bakedLevel = 0;
+                        for (int c = 0; c < 3; c++)
+                            for (int k = 0; k < 15; k++)
+                            {
+                                const int idx = c * shPerChannel + k;
+                                a.sh[3 * k + c] = (k < shPerChannel && idx < frestCount) ? *reinterpret_cast<const float*>(ptr + frestOffset[idx]) : 0.0f;
+                            }
+                        SplatCodec::ApplyAxisFlipToSH(a.sh);
+                        v.sourceIndex = (uint32_t)outSplat->size();
+                        outSplat->push_back(a);
                     }
 
                     outSurfels.push_back(v);

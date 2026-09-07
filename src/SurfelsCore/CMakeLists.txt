@@ -38,6 +38,7 @@ set(sources
 set(shaders
     ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Surfels.hlsl
     ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/GPURadixSortCS.hlsl
+    ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/SplatSortCS.hlsl
     ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/CullSurfelsCS.hlsl
     ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/BuildIndirectArgsCS.hlsl
     ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/SilhouetteEdgeExtractCS.hlsl

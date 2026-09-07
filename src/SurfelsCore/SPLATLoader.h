@@ -40,7 +40,10 @@ namespace Surfels
         static_assert(sizeof(SplatRaw) == 32, "SplatRaw must be exactly 32 bytes");
 
         // Loads a binary .splat (3D Gaussian Splatting) file into SurfelVertex array
-        static bool LoadSPLAT(const std::string& filepath, std::vector<SurfelVertex>& outSurfels, double originOut[3])
+        // outSplat (optional): every point's Gaussian (scale, rotation, opacity; the format has no harmonics),
+        // the input of a splat-mode bake. Each point's sourceIndex refers to its entry.
+        static bool LoadSPLAT(const std::string& filepath, std::vector<SurfelVertex>& outSurfels, double originOut[3],
+                              std::vector<SplatAttributes>* outSplat = nullptr)
         {
             originOut[0] = 0.0;
             originOut[1] = 0.0;
@@ -84,6 +87,7 @@ namespace Surfels
                 }
             }
 
+            if (outSplat != nullptr) { outSplat->clear(); outSplat->reserve(splatCount); }
             for (size_t i = 0; i < splatCount; i++)
             {
                 const auto& raw = rawSplats[i];
@@ -135,6 +139,17 @@ namespace Surfels
                 // 4. Effective splat radius (average of major scale axes)
                 float avgScale = (std::abs(raw.scale[0]) + std::abs(raw.scale[1]) + std::abs(raw.scale[2])) / 3.0f;
                 v.radius = std::max(kMinSplatRadius, std::min(kMaxSplatRadius, avgScale));
+
+                if (outSplat != nullptr)
+                {
+                    SplatAttributes a;
+                    a.scale = XMFLOAT3(std::abs(raw.scale[0]), std::abs(raw.scale[1]), std::abs(raw.scale[2]));
+                    a.rotation = XMFLOAT4(qi, qj, qk, qr);
+                    a.opacity = raw.rgba[3] / 255.0f;
+                    a.bakedLevel = 0;
+                    v.sourceIndex = (uint32_t)outSplat->size();
+                    outSplat->push_back(a);
+                }
 
                 outSurfels[i] = v;
             }

@@ -32,6 +32,7 @@ struct RawSurfel
     float3 normal;
     float3 color;
     float  radius;
+    uint   sourceIndex; // Splat mode bookkeeping (SurfelVertex::sourceIndex); unused by the shaders
 };
 
 StructuredBuffer<PackedSurfel> g_InputSurfels    : register(t0);

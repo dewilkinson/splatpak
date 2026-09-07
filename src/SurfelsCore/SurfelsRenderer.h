@@ -32,13 +32,22 @@ namespace Surfels
             bool     autoRotate  = false;
             float    time        = 0.0f;
 
-            uint32_t renderMode  = 1; // 0 = Sphere, 1 = Quantized (8-byte), 2 = Raw Float32
+            uint32_t renderMode  = 1; // 0 = Sphere, 1 = Quantized (8-byte), 2 = Raw Float32, 3 = Splat mode (20-byte Gaussians, see pSplats)
             uint32_t orientMode  = 0; // 0 = Normal-Oriented Tangent Discs (standard default; 1 = Camera-Facing Billboards)
             XMFLOAT3 aabbMin     = { -40.0f, -2.0f, -80.0f };
             XMFLOAT3 aabbExtents = { 80.0f, 30.0f, 160.0f };
 
             const PackedSurfelGPU* pSurfels    = nullptr;
             const SurfelVertex*    pRawSurfels = nullptr;
+            // Splat mode (renderMode 3): the 20-byte Gaussian records and their spherical-harmonics stream
+            // (surfelCount * shRecordBytes bytes, may be null), plus the decode parameters from the package.
+            const PackedSplatGPU*  pSplats     = nullptr;
+            const uint8_t*         pSplatSH    = nullptr;
+            uint32_t shDegree          = 0;
+            uint32_t shRecordBytes     = 0;
+            float    splatScaleLog2Min = -14.0f;
+            float    splatScaleLog2Max = 2.0f;
+            uint32_t splatBlendSpace   = 0; // 0 = display space (as the reference viewer), 1 = linear (sRGB target)
             const MeshletChunkGPU* pChunks     = nullptr;
             uint32_t surfelCount      = 0;
             uint32_t chunkCount       = 0;
@@ -199,7 +208,20 @@ namespace Surfels
             uint32_t   autoSplatSize;         // Auto splat size on/off (see State)
             uint32_t   culledPass;            // Detach Camera: 0 = draw the splats the frozen camera sees, 1 = draw only the ones it culled (the red volume)
             float      autoSplatPad1[2];
+            float      lodRadiusAlign[2];     // Pads to the next 16-byte row: the shader's float4 g_LodRadius[2] starts on one, so without this every field from here on was read 8 bytes off
             float      lodRadius[8];          // Disc radius per LOD level, world units (two float4 rows in the shader)
+            // Splat mode
+            XMFLOAT4X4 view;
+            float      viewportW;
+            float      viewportH;
+            float      proj00;
+            float      splatScaleLog2Min;
+            float      splatScaleLog2Max;
+            uint32_t   shDegree;
+            uint32_t   shRecordBytes;
+            uint32_t   splatBlendSpace;
+            XMFLOAT3   camForward;
+            uint32_t   splatSlotCount;
         };
 
         CAULDRON_DX12::Device* m_pDevice = nullptr;
@@ -222,6 +244,13 @@ namespace Surfels
         ID3D12PipelineState* m_pPipelineStateCulledDepth = nullptr;  // No colour writes, depth LESS test + write
         ID3D12PipelineState* m_pPipelineStateCulledColor = nullptr;  // Blend, depth EQUAL test, no write
         ID3D12PipelineState* m_pOccluderPSO = nullptr; // Solid depth-writing interior occlusion volume cubes (occluderMS/occluderPS)
+        // Splat mode: same shaders (mainAS/MS/PS branch on g_RenderMode == 3), premultiplied blend, no depth. Two
+        // render-target formats: a plain UNORM view for display-space blending (the reference viewer's
+        // behaviour), the swapchain's sRGB view for linear-space blending.
+        ID3D12PipelineState* m_pSplatPSODisplay = nullptr;
+        ID3D12PipelineState* m_pSplatPSOLinear = nullptr;
+        DXGI_FORMAT          m_unormFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
+        DXGI_FORMAT          m_srgbFormat = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 
         RenderPath      m_renderPath = RenderPath::MeshShaders;
         int             m_renderPathOverride = -1;
@@ -256,6 +285,38 @@ namespace Surfels
         uint8_t*                   m_pRawSurfelBufferMapped = nullptr;
         uint32_t                   m_rawSurfelBufferCapacityBytes = 0;
         D3D12_GPU_VIRTUAL_ADDRESS  m_rawSurfelBufferGPUAddress = 0;
+
+        // Splat mode buffers: the records, the SH stream, and the per-frame depth sort (SplatSortCS.hlsl).
+        ID3D12Resource*            m_pSplatBuffer = nullptr;       // Upload
+        ID3D12Resource*            m_pSplatGpuBuffer = nullptr;
+        uint8_t*                   m_pSplatBufferMapped = nullptr;
+        uint32_t                   m_splatBufferCapacityBytes = 0;
+        ID3D12Resource*            m_pSHBuffer = nullptr;          // Upload
+        ID3D12Resource*            m_pSHGpuBuffer = nullptr;
+        uint8_t*                   m_pSHBufferMapped = nullptr;
+        uint32_t                   m_shBufferCapacityBytes = 0;
+        const void*                m_lastSplatSHPtr = nullptr;
+        ID3D12Resource*            m_pChunkSlotBaseUpload = nullptr; // First slot of every chunk (exclusive prefix of surfelCount)
+        uint32_t*                  m_pChunkSlotBaseMapped = nullptr;
+        ID3D12Resource*            m_pChunkSlotBaseGpu = nullptr;
+        D3D12_RESOURCE_STATES      m_chunkSlotBaseState = D3D12_RESOURCE_STATE_COPY_DEST;
+        uint32_t                   m_splatSlotCount = 0;             // Sum of the render list's surfel counts
+        bool                       m_splatSortNeedsRun = true;
+        ID3D12RootSignature*       m_pSplatSortRootSig = nullptr;
+        ID3D12PipelineState*       m_pSplatExpandPSO = nullptr;
+        ID3D12PipelineState*       m_pSplatHistPSO = nullptr;
+        ID3D12PipelineState*       m_pSplatScanPSO = nullptr;
+        ID3D12PipelineState*       m_pSplatScatterPSO = nullptr;
+        ID3D12Resource*            m_pSlotInfoBuffer = nullptr;      // uint2 per padded slot
+        ID3D12Resource*            m_pSplatPairsA = nullptr;         // uint2 (key, slot) per padded slot; the sorted result after four passes
+        ID3D12Resource*            m_pSplatPairsB = nullptr;
+        ID3D12Resource*            m_pSplatHistBuffer = nullptr;     // 256 x blocks
+        uint32_t                   m_splatSortCapacitySlots = 0;
+        D3D12_RESOURCE_STATES      m_slotInfoState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        D3D12_RESOURCE_STATES      m_splatPairsAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
+        ID3D12DescriptorHeap*      m_pBackBufferUnormRtvHeap = nullptr; // One UNORM view of the current back buffer (display-space blending without TAA)
+        void EnsureSplatSortBuffers(uint32_t paddedSlots);
+        void RunSplatSort(ID3D12GraphicsCommandList* pCmdLst, const State* pState, XMFLOAT3 eyePos, XMFLOAT3 forward, const XMFLOAT4X4& cullViewProj);
 
         CAULDRON_DX12::Texture     m_depthBuffer;
         CAULDRON_DX12::DSV         m_depthBufferDSV;
@@ -370,6 +431,7 @@ namespace Surfels
         // Temporal Anti-Aliasing & Dither Transition Resolver
         CAULDRON_DX12::Texture     m_sceneColorBuffer;
         CAULDRON_DX12::RTV         m_sceneColorRTV;
+        CAULDRON_DX12::RTV         m_sceneColorRTVUnorm; // Same texture, plain UNORM view: splat mode's display-space blending target
         CAULDRON_DX12::CBV_SRV_UAV m_sceneColorSRV;
 
         CAULDRON_DX12::Texture     m_historyColorBuffer;

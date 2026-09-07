@@ -1101,12 +1101,44 @@ namespace Surfels
         m_rendererOctreeChunks.clear();
         m_chunks.clear();
 
+        // Splat packages (surfel format 1) decode through SplatCodec: every level's records become
+        // surfels plus their Gaussians, the latter appended to m_splatAttributes with each surfel's
+        // sourceIndex pointing at its own entry, so re-encoding any level (preview, streaming, re-save)
+        // reads the attributes the package carried.
+        const bool splatPkg = m_loadedPackage.IsSplatPackage();
+        m_splatAttributes.clear();
+        m_sourceHasSplatAttributes = splatPkg;
+        m_splatMode = splatPkg;
+        if (splatPkg)
+        {
+            m_splatParams = m_loadedPackage.splatParams;
+            m_splatSHQuality = (m_splatParams.shDegree >= 3) ? 1 : 0;
+        }
+        std::vector<SurfelVertex> decodedLOD0; // Splat packages: LOD 0 across every chunk, in chunk order
+        auto decodeSplatLevel = [&](size_t c, size_t l, std::vector<SurfelVertex>& outSurfels)
+        {
+            std::vector<SplatAttributes> attrs;
+            const std::vector<uint8_t>& sh = m_loadedPackage.chunkLODSH[c][l];
+            SplatCodec::Decode(m_loadedPackage.chunkLODSplats[c][l], sh.empty() ? nullptr : sh.data(), sh.size(),
+                               m_loadedPackage.splatParams, (uint32_t)l, (uint32_t)m_splatAttributes.size(), outSurfels, attrs);
+            m_splatAttributes.insert(m_splatAttributes.end(), attrs.begin(), attrs.end());
+        };
+
         for (size_t c = 0; c < m_loadedPackage.chunkManifests.size(); c++)
         {
             const auto& cm = m_loadedPackage.chunkManifests[c];
             const auto& surfels = m_loadedPackage.chunkLOD0Surfels[c];
 
-            m_rendererSurfels.insert(m_rendererSurfels.end(), surfels.begin(), surfels.end());
+            std::vector<SurfelVertex> chunkDecoded;
+            if (splatPkg)
+            {
+                if (!m_loadedPackage.chunkLODSplats[c].empty()) decodeSplatLevel(c, 0, chunkDecoded);
+                decodedLOD0.insert(decodedLOD0.end(), chunkDecoded.begin(), chunkDecoded.end());
+            }
+            else
+            {
+                m_rendererSurfels.insert(m_rendererSurfels.end(), surfels.begin(), surfels.end());
+            }
 
             // Octree bounding boxes for visualizer
             ChunkData cd;
@@ -1119,12 +1151,12 @@ namespace Surfels
             // The chunk's points too: Save Compressed Package re-runs the wavelet pipeline over m_chunks,
             // and with only the bounds filled in (as this used to do) every chunk decomposed to nothing,
             // so a package re-saved from a loaded package came out with a single level.
-            cd.surfels = Quantizer::UnquantizeSurfels(surfels, m_aabbMin, m_aabbMax);
+            cd.surfels = splatPkg ? std::move(chunkDecoded) : Quantizer::UnquantizeSurfels(surfels, m_aabbMin, m_aabbMax);
             m_chunks.push_back(cd);
         }
 
-        // Unquantize surfels to raw format
-        m_rendererRawSurfels = Quantizer::UnquantizeSurfels(m_rendererSurfels, m_aabbMin, m_aabbMax);
+        // Unquantize surfels to raw format (splat packages were decoded above)
+        m_rendererRawSurfels = splatPkg ? std::move(decodedLOD0) : Quantizer::UnquantizeSurfels(m_rendererSurfels, m_aabbMin, m_aabbMax);
 
         // Detail heatmap: v7+ packages carry the one baked from the original cloud; older ones get a
         // grid rebuilt here from the reconstructed LOD 0 (same measures, slightly lossier input).
@@ -1181,23 +1213,38 @@ namespace Surfels
         for (size_t lvl = 0; lvl < numLODs; lvl++)
         {
             std::vector<PackedSurfelGPU> levelPacked;
+            std::vector<SurfelVertex> levelDecoded; // Splat packages
             float errorSum = 0.0f;
             size_t errorCount = 0;
 
             for (size_t c = 0; c < m_loadedPackage.chunkManifests.size(); c++)
             {
                 const auto& cm = m_loadedPackage.chunkManifests[c];
-                if (lvl >= cm.lods.size() || lvl >= m_loadedPackage.chunkLODSurfels[c].size()) continue;
-
-                const auto& levelSurfels = m_loadedPackage.chunkLODSurfels[c][lvl];
-                levelPacked.insert(levelPacked.end(), levelSurfels.begin(), levelSurfels.end());
+                if (lvl >= cm.lods.size()) continue;
+                if (splatPkg)
+                {
+                    if (lvl >= m_loadedPackage.chunkLODSplats[c].size()) continue;
+                    if (lvl > 0)
+                    {
+                        std::vector<SurfelVertex> tmp;
+                        decodeSplatLevel(c, lvl, tmp);
+                        levelDecoded.insert(levelDecoded.end(), tmp.begin(), tmp.end());
+                    }
+                }
+                else
+                {
+                    if (lvl >= m_loadedPackage.chunkLODSurfels[c].size()) continue;
+                    const auto& levelSurfels = m_loadedPackage.chunkLODSurfels[c][lvl];
+                    levelPacked.insert(levelPacked.end(), levelSurfels.begin(), levelSurfels.end());
+                }
                 errorSum += cm.lods[lvl].geometricError;
                 errorCount++;
             }
 
             WaveletLODLevel wLod;
             wLod.level = (int)lvl;
-            wLod.surfels = Quantizer::UnquantizeSurfels(levelPacked, m_aabbMin, m_aabbMax);
+            // Level 0 of a splat package was decoded once already (the renderer's raw points, meshlet-ordered)
+            wLod.surfels = splatPkg ? (lvl == 0 ? m_rendererRawSurfels : std::move(levelDecoded)) : Quantizer::UnquantizeSurfels(levelPacked, m_aabbMin, m_aabbMax);
             wLod.geometricError = errorCount > 0 ? (errorSum / (float)errorCount) : 0.0f;
             m_waveletResult.lodLevels.push_back(std::move(wLod));
         }
@@ -1247,7 +1294,7 @@ namespace Surfels
         m_state.chunkCount = (uint32_t)m_rendererMeshletChunks.size();
         m_state.aabbMin = m_aabbMin;
         m_state.aabbExtents = m_extents;
-        m_state.renderMode = m_enableQuantization ? 1 : 2;
+        m_state.renderMode = m_splatMode ? 3 : (m_enableQuantization ? 1 : 2);
 
         if (m_pRenderer)
         {
@@ -1268,7 +1315,8 @@ namespace Surfels
         m_statusMessage = "Loading 3D Gaussian Splat (.splat)...";
         double origin[3] = { 0, 0, 0 };
         std::vector<SurfelVertex> loadedPoints;
-        if (!SPLATLoader::LoadSPLAT(filepath, loadedPoints, origin))
+        std::vector<SplatAttributes> splatAttrs;
+        if (!SPLATLoader::LoadSPLAT(filepath, loadedPoints, origin, &splatAttrs))
         {
             m_statusMessage = "Failed to load SPLAT: " + filepath;
             m_statusIsSuccess = false;
@@ -1276,6 +1324,9 @@ namespace Surfels
         }
 
         m_rawSurfels = std::move(loadedPoints);
+        m_splatAttributes = std::move(splatAttrs);
+        m_sourceHasSplatAttributes = !m_splatAttributes.empty();
+        m_splatMode = m_sourceHasSplatAttributes; // A 3DGS source bakes as Gaussians unless switched off on the Generator tab
         m_loadedFilePath = filepath;
         m_isLoadedFromSFLW = false;
         strncpy_s(m_inputPathBuf, sizeof(m_inputPathBuf), filepath.c_str(), _TRUNCATE);
@@ -1305,7 +1356,8 @@ namespace Surfels
         m_statusMessage = "Loading PLY point cloud...";
         double origin[3] = { 0, 0, 0 };
         std::vector<SurfelVertex> loadedPoints;
-        if (!PLYLoader::LoadPLY(filepath, loadedPoints, origin))
+        std::vector<SplatAttributes> splatAttrs;
+        if (!PLYLoader::LoadPLY(filepath, loadedPoints, origin, &splatAttrs))
         {
             m_statusMessage = "Failed to load PLY: " + filepath;
             m_statusIsSuccess = false;
@@ -1313,6 +1365,9 @@ namespace Surfels
         }
 
         m_rawSurfels = std::move(loadedPoints);
+        m_splatAttributes = std::move(splatAttrs);
+        m_sourceHasSplatAttributes = !m_splatAttributes.empty();
+        m_splatMode = m_sourceHasSplatAttributes; // A 3DGS source bakes as Gaussians unless switched off on the Generator tab
         m_loadedFilePath = filepath;
         m_isLoadedFromSFLW = false;
         strncpy_s(m_inputPathBuf, sizeof(m_inputPathBuf), filepath.c_str(), _TRUNCATE);
@@ -1396,6 +1451,9 @@ namespace Surfels
 
         // Fallback to procedural generator if disk file is missing
         m_rawSurfels = SyntheticGenerator::GenerateUrbanStreetScene(count);
+        m_splatAttributes.clear();
+        m_sourceHasSplatAttributes = false;
+        m_splatMode = false;
         m_loadedFilePath = "Synthetic Benchmark (" + std::to_string(count / 1000) + "K points)";
         m_isLoadedFromSFLW = false;
         m_sourceFileBytes = 0;
@@ -1485,6 +1543,17 @@ namespace Surfels
         float deadbandMeters = m_deadbandThresholdMM / 1000.0f;
         m_waveletResult = LiftingWavelet::DecomposeChunk(m_rawSurfels, m_maxLODLevels, deadbandMeters);
 
+        // Splat mode: the encode parameters every level shares (positions span the model bounds; the
+        // scale range covers every source Gaussian plus the growth of the coarser levels). The packager
+        // derives the same values from the same inputs when the package is written.
+        if (m_splatAttributes.empty()) { m_sourceHasSplatAttributes = false; m_splatMode = false; }
+        m_splatParams = SplatEncodeParams{};
+        m_splatParams.shDegree = SplatSHDegree();
+        m_splatParams.aabbMin = m_aabbMin;
+        m_splatParams.aabbMax = m_aabbMax;
+        if (m_splatMode)
+            SplatCodec::ComputeScaleRange(m_splatAttributes, (uint32_t)m_maxLODLevels, m_splatParams.scaleLog2Min, m_splatParams.scaleLog2Max);
+
         // Lowering "Max Wavelet LODs" can shrink lodLevels below the previously
         // selected index. BuildUI() and the LOD export menu items index
         // m_waveletResult.lodLevels[m_selectedPreviewLOD] directly (unclamped) every
@@ -1493,20 +1562,32 @@ namespace Surfels
         m_selectedPreviewLOD = 0; // Default to LOD 0 (100% full dataset)
 
         // Compression estimates
-        size_t totalRawPackedBytes = m_rawSurfels.size() * sizeof(PackedSurfelGPU);
-        auto packedLOD0 = Quantizer::QuantizeSurfels(m_rawSurfels, m_aabbMin, m_aabbMax);
-        auto shuffled = ByteShuffle::Shuffle(reinterpret_cast<const uint8_t*>(packedLOD0.data()), packedLOD0.size(), sizeof(PackedSurfelGPU));
-        auto compressed = ByteShuffle::CompressShuffled(shuffled);
+        // Compressed size of one level as the package would hold it (records, plus the SH stream in splat mode).
+        auto estimateLevel = [&](const std::vector<SurfelVertex>& surfels, uint32_t level) -> size_t
+        {
+            if (m_splatMode)
+            {
+                std::vector<PackedSplatGPU> records;
+                std::vector<uint8_t> sh;
+                EncodeSplatLevel(surfels, level, records, sh);
+                size_t bytes = ByteShuffle::CompressShuffled(ByteShuffle::Shuffle(reinterpret_cast<const uint8_t*>(records.data()), records.size(), sizeof(PackedSplatGPU))).size();
+                const uint32_t shBytes = SplatCodec::SHRecordBytes(m_splatParams.shDegree);
+                if (shBytes > 0 && !sh.empty())
+                    bytes += ByteShuffle::CompressShuffled(ByteShuffle::Shuffle(sh.data(), records.size(), shBytes)).size();
+                return bytes;
+            }
+            auto packed = Quantizer::QuantizeSurfels(surfels, m_aabbMin, m_aabbMax);
+            return ByteShuffle::CompressShuffled(ByteShuffle::Shuffle(reinterpret_cast<const uint8_t*>(packed.data()), packed.size(), sizeof(PackedSurfelGPU))).size();
+        };
+        const size_t compressedLOD0Bytes = estimateLevel(m_rawSurfels, 0);
 
         // Package-size estimate: every LOD level ships in full inside the .sflw, so sum them all (the
         // header, manifest and occlusion volume are negligible next to the payloads). The ratio shown
         // is therefore the original file against the file that will be written.
-        size_t packageBytes = sizeof(SFLWFileHeader) + compressed.size();
+        size_t packageBytes = sizeof(SFLWFileHeader) + compressedLOD0Bytes;
         for (size_t lvl = 1; lvl < m_waveletResult.lodLevels.size(); lvl++)
         {
-            auto packedLvl = Quantizer::QuantizeSurfels(m_waveletResult.lodLevels[lvl].surfels, m_aabbMin, m_aabbMax);
-            auto shuffledLvl = ByteShuffle::Shuffle(reinterpret_cast<const uint8_t*>(packedLvl.data()), packedLvl.size(), sizeof(PackedSurfelGPU));
-            packageBytes += ByteShuffle::CompressShuffled(shuffledLvl).size();
+            packageBytes += estimateLevel(m_waveletResult.lodLevels[lvl].surfels, (uint32_t)lvl);
         }
         m_compressedSizeMB = (float)packageBytes / (1024.0f * 1024.0f);
         m_compressionRatio = m_rawFileSizeMB > 0.0f ? (m_rawFileSizeMB / std::max(0.001f, m_compressedSizeMB)) : 1.0f;
@@ -1567,6 +1648,8 @@ namespace Surfels
                 m_residentLODs[lodIdx].rawSurfels = std::move(lodPoints);
                 SpatialOctree::PartitionIntoMeshletChunks(m_residentLODs[lodIdx].rawSurfels, m_residentLODs[lodIdx].meshletChunks, 64, m_enableMortonOrder);
                 m_residentLODs[lodIdx].packedSurfels = Quantizer::QuantizeSurfels(m_residentLODs[lodIdx].rawSurfels, m_aabbMin, m_aabbMax);
+                if (m_splatMode)
+                    EncodeSplatLevel(m_residentLODs[lodIdx].rawSurfels, (uint32_t)lodIdx, m_residentLODs[lodIdx].splats, m_residentLODs[lodIdx].splatSH);
             }
         }
         else
@@ -1575,7 +1658,25 @@ namespace Surfels
             m_residentLODs[0].rawSurfels = !m_rawSurfels.empty() ? m_rawSurfels : m_rendererRawSurfels;
             SpatialOctree::PartitionIntoMeshletChunks(m_residentLODs[0].rawSurfels, m_residentLODs[0].meshletChunks, 64, m_enableMortonOrder);
             m_residentLODs[0].packedSurfels = Quantizer::QuantizeSurfels(m_residentLODs[0].rawSurfels, m_aabbMin, m_aabbMax);
+            if (m_splatMode)
+                EncodeSplatLevel(m_residentLODs[0].rawSurfels, 0, m_residentLODs[0].splats, m_residentLODs[0].splatSH);
         }
+    }
+
+    // Splat mode: one level's records and SH stream from its points and the source Gaussians.
+    void SurfelsApp::EncodeSplatLevel(const std::vector<SurfelVertex>& surfels, uint32_t level, std::vector<PackedSplatGPU>& outRecords, std::vector<uint8_t>& outSH) const
+    {
+        SplatCodec::Encode(surfels, m_splatAttributes, level, m_splatParams, outRecords, outSH);
+    }
+
+    // Splat mode: the renderer state that does not depend on which level or stream is active.
+    void SurfelsApp::ApplySplatRenderState()
+    {
+        m_state.shDegree = m_splatParams.shDegree;
+        m_state.shRecordBytes = SplatCodec::SHRecordBytes(m_splatParams.shDegree);
+        m_state.splatScaleLog2Min = m_splatParams.scaleLog2Min;
+        m_state.splatScaleLog2Max = m_splatParams.scaleLog2Max;
+        m_state.splatBlendSpace = (uint32_t)m_splatBlendSpace;
     }
 
     // Refreshes the CPU-side preview buffer for the currently selected LOD level
@@ -1612,7 +1713,17 @@ namespace Surfels
         m_state.chunkCount = (uint32_t)resident.meshletChunks.size();
         m_state.useChunkedPipeline = m_useChunkedPipeline;
 
-        if (m_enableQuantization)
+        if (m_splatMode)
+        {
+            m_state.renderMode = 3; // Splat mode: 20-byte Gaussians
+            ApplySplatRenderState();
+            m_state.pSplats = resident.splats.data();
+            m_state.pSplatSH = resident.splatSH.empty() ? nullptr : resident.splatSH.data();
+            m_state.pSurfels = nullptr;
+            m_state.pRawSurfels = nullptr;
+            m_state.surfelCount = (uint32_t)resident.splats.size();
+        }
+        else if (m_enableQuantization)
         {
             m_state.renderMode = 1; // Quantized 8-byte GPU stream
             m_state.pSurfels = resident.packedSurfels.data();
@@ -1651,7 +1762,10 @@ namespace Surfels
         // m_occlusionVoxels is already current: the occlusion sliders rebuild it live, and any pending
         // chunking/wavelet change is applied the moment its slider is released (before a click on Save
         // can land), so nothing exported here can be stale.
-        if (StreamPackager::PackageDataset(outputPath, m_chunks, m_maxLODLevels, deadbandMeters, m_state.splatRadius, m_occlusionVoxels, m_sourceFileBytes, &m_occlusionMips, &m_detailGrid))
+        SplatBakeInput splatInput;
+        splatInput.attributes = &m_splatAttributes;
+        splatInput.shDegree = SplatSHDegree();
+        if (StreamPackager::PackageDataset(outputPath, m_chunks, m_maxLODLevels, deadbandMeters, m_state.splatRadius, m_occlusionVoxels, m_sourceFileBytes, &m_occlusionMips, &m_detailGrid, m_splatMode ? &splatInput : nullptr))
         {
             std::ifstream pkg(outputPath + ".sflw", std::ios::ate | std::ios::binary);
             if (pkg.is_open())
@@ -2023,7 +2137,17 @@ namespace Surfels
 
         if (m_enableStreamingSimulation)
         {
-            if (m_enableQuantization)
+            if (m_splatMode)
+            {
+                m_state.renderMode = 3;
+                ApplySplatRenderState();
+                m_state.pSplats = m_unifiedSplats.empty() ? nullptr : m_unifiedSplats.data();
+                m_state.pSplatSH = m_unifiedSH.empty() ? nullptr : m_unifiedSH.data();
+                m_state.pSurfels = nullptr;
+                m_state.pRawSurfels = nullptr;
+                m_state.surfelCount = (uint32_t)m_unifiedSplats.size();
+            }
+            else if (m_enableQuantization)
             {
                 m_state.renderMode = 1;
                 m_state.pSurfels = !m_unifiedPackedSurfels.empty() ? m_unifiedPackedSurfels.data() : m_rendererSurfels.data();
@@ -2051,7 +2175,17 @@ namespace Surfels
                 m_state.pChunks = resident.meshletChunks.data();
                 m_state.chunkCount = (uint32_t)resident.meshletChunks.size();
 
-                if (m_enableQuantization)
+                if (m_splatMode)
+                {
+                    m_state.renderMode = 3;
+                    ApplySplatRenderState();
+                    m_state.pSplats = resident.splats.data();
+                    m_state.pSplatSH = resident.splatSH.empty() ? nullptr : resident.splatSH.data();
+                    m_state.pSurfels = nullptr;
+                    m_state.pRawSurfels = nullptr;
+                    m_state.surfelCount = (uint32_t)resident.splats.size();
+                }
+                else if (m_enableQuantization)
                 {
                     m_state.renderMode = 1;
                     m_state.pSurfels = resident.packedSurfels.data();
@@ -2263,6 +2397,24 @@ namespace Surfels
                     m_pipelineNeedsUpdate = true;
                 }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Maximum number of multi-resolution LOD decimation levels in the wavelet pyramid. Applied when the slider is released.");
+
+                if (m_sourceHasSplatAttributes)
+                {
+                    if (ImGui::Checkbox("Gaussian Splat Mode (full 3DGS record)", &m_splatMode))
+                    {
+                        m_pipelineNeedsUpdate = true;
+                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bakes and draws every point as the 3D Gaussian the source describes: its three scales and rotation, its opacity, an 8-bit colour and, optionally, its spherical harmonics. 20 bytes per point plus the harmonics, against 8 bytes for a surfel, in exchange for the look of a reference splat viewer. Off: the 8-byte oriented-disc surfel.");
+                    if (m_splatMode)
+                    {
+                        static const char* s_shNames[] = { "Low (degree 1, 9 bytes per splat)", "High (degree 3, 45 bytes per splat)" };
+                        if (ImGui::Combo("SH Quality", &m_splatSHQuality, s_shNames, IM_ARRAYSIZE(s_shNames)))
+                        {
+                            m_pipelineNeedsUpdate = true;
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("How much of the view-dependent colour (spherical harmonics) the package keeps. Low keeps the first band, which carries most of the tint shift with viewing angle; High keeps all three bands the source has, at five times the harmonics bytes.");
+                    }
+                }
 
                 if (ImGui::SliderFloat("Deadband Zero (mm)", &m_deadbandThresholdMM, 0.0f, 50.0f, "%.1f mm"))
                 {
@@ -2528,6 +2680,12 @@ namespace Surfels
                     if (ImGui::Combo("Surfel Orientation", &orientIdx, s_orientNames, IM_ARRAYSIZE(s_orientNames)))
                     {
                         m_state.orientMode = (uint32_t)orientIdx;
+                    }
+                    if (m_splatMode)
+                    {
+                        static const char* s_blendNames[] = { "Display space (reference viewer)", "Linear (sRGB target)" };
+                        ImGui::Combo("Splat Blending", &m_splatBlendSpace, s_blendNames, IM_ARRAYSIZE(s_blendNames));
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where the Gaussians are blended. Display space blends the stored colours as they are, which is what the training rasterizer and SuperSplat do. Linear decodes them first and lets the sRGB target encode the result: physically tidier, slightly different from the reference.");
                     }
                     ImGui::SliderFloat("Splat Radius Scale", &m_state.splatRadius, 0.10f, 10.0f, "%.2fx");
                     ImGui::Checkbox("Auto Splat Size (per-level density)", &m_autoSplatSize);
@@ -2924,14 +3082,17 @@ namespace Surfels
         if (ImGui::CollapsingHeader("4-Tier Compression Results", ImGuiTreeNodeFlags_DefaultOpen))
         {
             uint32_t pointCount = (uint32_t)(!m_rendererSurfels.empty() ? m_rendererSurfels.size() : m_rawSurfels.size());
-            float tier2MB = (pointCount * 8.0f) / (1024.0f * 1024.0f);
+            const float bytesPerPoint = (float)BytesPerRenderPoint();
+            float tier2MB = (pointCount * bytesPerPoint) / (1024.0f * 1024.0f);
             float tier2Reduction = (tier2MB > 0.001f && m_rawFileSizeMB > 0.0f) ? (m_rawFileSizeMB / tier2MB) : 31.0f;
 
             ImGui::Text("Raw Point Cloud:      %.2f MB (100%%)", m_rawFileSizeMB);
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Uncompressed input point cloud dataset (248 bytes/splat uncompressed 3D Gaussian baseline).");
 
-            ImGui::Text("Tier 2 (8-Byte GPU):  %.2f MB (%.1fx reduction)", tier2MB, tier2Reduction);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 2 Quantization: 8-byte packed GPU format (10:10:10:2 position, Oct16 normal, RGB565 color).");
+            ImGui::Text("Tier 2 (%u-Byte GPU):  %.2f MB (%.1fx reduction)", (unsigned)bytesPerPoint, tier2MB, tier2Reduction);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip(m_splatMode
+                ? "Tier 2 Quantization, splat mode: 20-byte Gaussian record (16:16:16 position, 8-bit log scales, opacity, 8:8:8 colour, quaternion) plus the spherical-harmonics stream."
+                : "Tier 2 Quantization: 8-byte packed GPU format (10:10:10:2 position, Oct16 normal, RGB565 color).");
 
             ImGui::Text("Tier 3 (Morton Swizzle):  Contiguous 8-channel planes");
             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 3 Morton Swizzle & Transposition: Interleaves 3D spatial coordinate bits via Z-order curve and transposes 8-byte structures into 8 contiguous channels to maximize entropy redundancy.");
@@ -3295,7 +3456,7 @@ namespace Surfels
             const auto& lodData = m_residentLODs[lodIdx];
             uint32_t totalBlocks = (uint32_t)lodData.meshletChunks.size();
             size_t totalPts = lodData.rawSurfels.size();
-            float totalMB = (float)(totalPts * (m_enableQuantization ? sizeof(PackedSurfelGPU) : sizeof(SurfelVertex))) / (1024.0f * 1024.0f);
+            float totalMB = (float)(totalPts * (BytesPerRenderPoint())) / (1024.0f * 1024.0f);
 
             // Segments count doubles for each row down (width divides by 2)
             int numSegments = baseSegments * (1 << rowIdx);
@@ -3742,6 +3903,7 @@ namespace Surfels
         if (m_showHeatmapWireframe)        add(ImVec4(0.92f, 0.82f, 0.60f, 1.0f), "RENDERER: Cube Outlines enabled");
         if (m_showOctreeVisualizer)        add(ImVec4(1.00f, 0.75f, 0.20f, 1.0f), "RENDERER: Macro Clusters enabled");
         if (m_showGlobalBounds)            add(ImVec4(0.40f, 0.60f, 1.00f, 1.0f), "RENDERER: Global Model Bounds enabled");
+        if (m_state.renderMode == 3)       add(ImVec4(0.55f, 0.85f, 1.00f, 1.0f), "SPLAT: 3D Gaussian mode, SH degree %u, %s-space blending", m_splatParams.shDegree, m_splatBlendSpace == 1 ? "linear" : "display");
         if (m_showCulledChunks)            add(ImVec4(0.80f, 0.80f, 0.80f, 1.0f), "RENDERER: Show Culled Chunks enabled");
         if (m_detachCamera)                add(ImVec4(0.30f, 0.90f, 1.00f, 1.0f), "RENDERER: Detach Camera (frozen culling frustum) enabled");
         if (m_freezeRenderingAndMemory)    add(ImVec4(0.55f, 0.75f, 1.00f, 1.0f), "STREAMING: Freeze Rendering & Memory enabled");

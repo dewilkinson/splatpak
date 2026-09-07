@@ -15,6 +15,7 @@
 #include "../../libs/bluesec-codec/DetailHeatmap.h"
 #include "../../libs/bluesec-codec/StreamOrder.h"
 #include "../../libs/bluesec-codec/CodecBuild.h"
+#include "../../libs/bluesec-codec/SplatCodec.h"
 #include "stdafx.h"
 #include "SurfelsRenderer.h"
 #include "SyntheticGenerator.h"
@@ -252,10 +253,25 @@ namespace Surfels
         {
             std::vector<SurfelVertex> rawSurfels;
             std::vector<PackedSurfelGPU> packedSurfels;
+            std::vector<PackedSplatGPU> splats;   // Splat mode: the level's 20-byte Gaussian records
+            std::vector<uint8_t>        splatSH;  // Splat mode: the level's spherical-harmonics stream
             std::vector<MeshletChunkGPU> meshletChunks;
         };
         std::vector<ResidentLOD> m_residentLODs;
         void PrecacheResidentLODs();
+
+        // Splat mode: the imported cloud's full Gaussians (SurfelVertex::sourceIndex refers here), the
+        // bake settings, and the encode parameters every level shares (see SplatCodec).
+        std::vector<SplatAttributes> m_splatAttributes;
+        bool     m_sourceHasSplatAttributes = false; // The loaded source carried scales/rotations/opacities (a 3DGS .ply or .splat)
+        bool     m_splatMode                = false; // Bake and draw as 3D Gaussians (surfel format 1) instead of 8-byte surfels
+        int      m_splatSHQuality           = 0;     // 0 = low (spherical-harmonics degree 1), 1 = high (degree 3)
+        int      m_splatBlendSpace          = 0;     // 0 = display-space blending (as the reference viewer), 1 = linear
+        SplatEncodeParams m_splatParams;
+        uint32_t SplatSHDegree() const { return m_splatSHQuality == 1 ? 3u : 1u; }
+        size_t   BytesPerRenderPoint() const { return m_splatMode ? (sizeof(PackedSplatGPU) + SplatCodec::SHRecordBytes(m_splatParams.shDegree)) : (m_enableQuantization ? sizeof(PackedSurfelGPU) : sizeof(SurfelVertex)); }
+        void     EncodeSplatLevel(const std::vector<SurfelVertex>& surfels, uint32_t level, std::vector<PackedSplatGPU>& outRecords, std::vector<uint8_t>& outSH) const;
+        void     ApplySplatRenderState();
 
         // Progressive Network Streaming & Bandwidth Throttle Simulator
         struct StreamChunk
@@ -411,6 +427,8 @@ namespace Surfels
         std::vector<StreamChunk*>             m_rendererSourceChunks; // Source chunk pointers corresponding to m_rendererMeshletChunks
         std::vector<PackedSurfelGPU>          m_unifiedPackedSurfels; // Global zero-copy packed surfel buffer
         std::vector<SurfelVertex>            m_unifiedRawSurfels;    // Global zero-copy raw surfel buffer
+        std::vector<PackedSplatGPU>          m_unifiedSplats;        // Splat mode: global zero-copy Gaussian records (same offsets as the packed buffer)
+        std::vector<uint8_t>                 m_unifiedSH;            // Splat mode: their spherical-harmonics stream
         std::vector<size_t>                   m_lodTotalSurfels;   // Total surfels per LOD level
         std::vector<size_t>                   m_lodResidentSurfels;// Resident surfels per LOD level
 
