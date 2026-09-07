@@ -10,7 +10,7 @@
 #include <cmath>
 #include <algorithm>
 #include <unordered_map>
-#include "../../src/DX12/Wavelet/WaveletTypes.h"
+#include "WaveletTypes.h"
 
 namespace Surfels
 {

@@ -1,9 +1,9 @@
 # bluesec-codec
 
-This directory holds the algorithmic core of Surfels: the lifting-wavelet LOD decomposition
-(`LiftingWavelet.h`/`.cpp`), the compression codec (`ByteShuffle.h`/`.cpp`), and the interior
-occlusion volume generator (`OcclusionVolume.h`/`.cpp`). It builds as a single static library,
-`bluesec-codec`, that `SplatLab`, `Surfels_DX12`, and the console test tools link against.
+The streaming order and heatmap scoring moved here on 2026-09-07 (the 1.2 branch). Until then they
+lived inside the app source and were published as Apache-2.0 in the public mirror; the sync script
+now strips them from every public revision (scripts/public-history-scrub.py), but versions of the
+public repository cloned before that date still carry that code under that license.
 
 ## Licensing boundary
 

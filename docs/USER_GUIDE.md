@@ -25,10 +25,10 @@ flowchart LR
 
 The same renderer is also available as separate components for situations in which only one half is required:
 
-- **Surfels_DX12** is the standalone viewer. It contains no preprocessing interface. On launch it loads the `scene.sflw` package located beside the executable (or in a `models/` folder nearby) and streams it; if no package is present, it generates a synthetic benchmark package on first run. It is intended for viewer-only distributions and for observing the runtime in isolation. The script `bin/launch.cmd` starts it.
-- **The preprocessor on its own.** SplatLab accepts a file path on its command line. Dropping a point cloud onto `SplatLab.exe` (or onto `bin/launch_surfellab.cmd`) opens it directly in the Surfel Generator tab. A package exported from there may be copied beside `Surfels_DX12.exe` as `scene.sflw`, after which the standalone viewer will load it.
+- **Surfels_DX12** is the standalone viewer. It is SplatLab's Renderer and Streaming tabs without the Surfel Generator tab: the same window, controls, banners and dialogs, with the raw point cloud items removed from the File menu. It is intended for viewer-only distributions. It accepts a `.sflw` path on its command line (drop a package onto `Surfels_DX12.exe` or onto `bin/launch.cmd`) and otherwise opens the `startup_dataset` named in `config.json`, exactly as SplatLab does; File > Open Compressed Model (Ctrl+O) loads another package.
+- **The preprocessor on its own.** SplatLab accepts a file path on its command line. Dropping a point cloud onto `SplatLab.exe` (or onto `bin/launch_surfellab.cmd`) opens it directly in the Surfel Generator tab. A package exported from there can be opened in the standalone viewer.
 
-Both programs share one code base for the renderer and the streaming manager, so the image shown in SplatLab's Renderer tab is the image the standalone viewer produces.
+Both programs are the same application code in two modes, built from one library, so the image shown in SplatLab's Renderer tab is the image the standalone viewer produces.
 
 ## Getting Started
 
@@ -51,6 +51,12 @@ The output is a single `.sflw` file. It may be inspected in the Renderer tab, re
 Whenever a toggle that alters what the viewport shows is active (a debug view such as **View Occlusion Volume Only**, an isolation mode such as **Show ONLY Locked Chunks**, a tint or overlay such as **Highlight Edge Chunks** or the heatmap cubes, a detached culling camera, frozen rendering, a manually selected LOD level, or a forced occlusion mip), a banner at the top-left of the viewport lists each one as **TAB NAME: feature enabled** (for example `RENDERER: View Occlusion Volume Only enabled`), one per row in its own colour. If the model looks wrong, read the banner first: it names the tab and the toggle responsible, and switching that toggle off restores the normal picture. A **Reset View** button in the bottom-left corner of the viewport returns the camera to the launch view (default angle, centred on the model, fitted between the panels). A faint reminder of the camera controls sits in the bottom-right corner of the viewport: left-drag or the Left/Right arrows rotate, the mouse wheel, right-drag, W/S or Up/Down zoom, and Shift with any drag or with the arrow keys pans. The **Show Camera Control Hints** checkbox in the Renderer tab's viewport section hides it, and the choice is remembered in `config.json`.
 
 Tab **2. Renderer** is where the model is examined. The most useful controls are:
+
+- **Auto Distance LOD** — the default mode. Camera distance selects the detail level per chunk, so the model refines automatically as the camera approaches.
+- **Dithered LOD Transitions** — replaces the abrupt switch between levels with a soft dissolve.
+- **Refinement Visualizer** — a visualizer for progressive loading, on by default. Every chunk that arrives is filled with a semi-transparent tint; the newest chunks, which form the leading edge of the growing model, glow bright and then settle to the regular tint before fading out. Three sliders set the fade duration, the glow intensity, and the hue (rotate it for green, blue or magenta). Press **Evict** on the residency panel and watch the model grow back in the streaming order. While it is on, the top-left banner says so.
+- **GPU Silhouette Edge Refinement** — keeps outlines crisp even while the interior of the model is coarse. This is the mechanism that allows distant objects to retain sharp edges.
+- **Splat Radius Scale** — larger splats fill gaps in sparse data but appear blobby at close range. A value of 1.0× is the recommended starting point.
 
 The **Interior Occlusion Volume** section has a **Show Occlusion Volume** checkbox, on by default, which draws the volume and depth-tests the surfels against it. Enabling generation on the Surfel Generator tab, or moving its Shave slider, also switches it on, so the volume is visible as soon as it exists. **View Occlusion Volume Only** displays the blocky solid alone so that it can be compared against the model. While **Detach Camera** is on, the volume is culled against the frozen camera just as the surfels are: only its faces turned toward that camera, on cubes inside its frustum, are drawn, so from the side both the model and the volume appear as the open shell the detached camera saw. The shape and colour of the volume are fixed when it is baked on the Surfel Generator tab; the Renderer tab offers no control that would alter them, and a note beneath the checkboxes directs the user back to the Surfel Generator tab for the Shave and colour sliders.
 
@@ -95,6 +101,13 @@ The panel is ordered, top to bottom, roughly by how often each section is consul
 - **Edges appear blocky at close range.** Raising **Silhouette LOD Bias**, or confirming that GPU Silhouette Edge Refinement is enabled, corrects this.
 
 ## Glossary
+
+- **Chunk** — a spatial cube of surfels; the unit of streaming.
+- **Surfel** — a coloured, oriented disc or point standing in for a small patch of surface; the three-dimensional analogue of a pixel.
+- **LOD (Level of Detail)** — a coarser or finer version of the same chunk. The wavelet pyramid holds several.
+- **Silhouette chunk** — a chunk that lies on the model's outline from the camera's point of view. Such chunks are refined first.
+- **Streaming order** — after the coarse envelope and the silhouette chunks, the streaming scheduler (part of the proprietary `bluesec-codec` core) decides which blocks stream next. The model is wrapped in a bounding octahedron and every block belongs to the face in front of it; each frame the faces the camera can see stream together, faces out of view wait, and a face starts streaming the moment it comes into view. The scheduler reads a coarse detail grid baked into the package (v7+) so that some regions of the model can be favoured over others; how it scores and orders them is not part of the public source. The Streaming tab shows the octahedron as two diamonds: green for the four upper faces and pastel blue for the four lower ones, both seen from above, with the visible faces lit, an inner triangle in each face growing as its blocks arrive, and a yellow dot marking the camera's direction. The Renderer tab's **Heatmap Source** control can colour the cluster cubes by the detail grid, and the Streaming tab's **Prioritize View Frustum & Proximity** checkbox decides whether the current view is allowed to reorder the scheduler's ranking (on: in-view regions first) or not (off: the scheduler's model-wide order). Builds that run the open stand-in codec instead of the proprietary one stream in plain chunk order and say so in a red `CODEC:` banner row at the top-left of the viewport, which also names the other features the stand-in lacks.
+- **Decay** — the simulated cache eviction that drains unused detail out of memory.
 
 ## Appendix: Lifting Wavelet Compression
 

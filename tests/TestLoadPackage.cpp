@@ -6,7 +6,7 @@
 // check StreamPackager::LoadPackage without needing the full viewer or preprocessor app.
 
 #include <iostream>
-#include "../tools/SurfelsPreprocess/StreamPackager.h"
+#include "../src/SurfelsCore/StreamPackager.h"
 
 int main()
 {

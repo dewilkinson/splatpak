@@ -20,7 +20,7 @@
 #include <cstdint>
 #include <wincodec.h>
 #include <shlwapi.h>
-#include "../../src/DX12/Wavelet/WaveletTypes.h"
+#include "WaveletTypes.h"
 
 #pragma comment(lib, "Windowscodecs.lib")
 #pragma comment(lib, "Shlwapi.lib")

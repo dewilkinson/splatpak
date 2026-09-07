@@ -16,7 +16,7 @@
 #include <vector>
 #include "SpatialOctree.h"
 #include "Quantizer.h"
-#include "DetailHeatmap.h"
+#include "../../libs/bluesec-codec/DetailHeatmap.h"
 #include "../../libs/bluesec-codec/LiftingWavelet.h"
 #include "../../libs/bluesec-codec/ByteShuffle.h"
 
@@ -170,7 +170,7 @@ namespace Surfels
             }
 
             // Detail heatmap grid (v7+, optional): one byte per cell, written after the occlusion voxels.
-            // The streamer reads it back to order chunk delivery by detail (see DetailHeatmap.h).
+            // The streamer reads it back as an input to its delivery order (see StreamOrder.h).
             header.detailGridDims[0] = header.detailGridDims[1] = header.detailGridDims[2] = 0;
             header.detailGridCellSize = 0.0f;
             header.detailGridOffset = 0;
@@ -237,23 +237,44 @@ namespace Surfels
             size_t totalCompressedBytes = 0;
         };
 
-        static bool LoadPackage(const std::string& inputPath, SFLWPackageData& outPackage)
+        // Loads a package into memory. On failure returns false and, when outError is given, fills it
+        // with a one-paragraph explanation of what is wrong with the file (bad signature, newer format
+        // version, truncation, a payload the linked codec cannot decode, ...) that the caller can put in
+        // front of the user. Every check goes through the shared validators in WaveletTypes.h so the
+        // standalone viewer's StreamingManager reports the same faults the same way.
+        static bool LoadPackage(const std::string& inputPath, SFLWPackageData& outPackage, std::string* outError = nullptr)
         {
             std::string sflwPath, jsonPath;
             ResolvePackagePaths(inputPath, sflwPath, jsonPath);
 
+            auto fail = [&](const std::string& reason) -> bool
+            {
+                std::cerr << "LoadPackage: " << sflwPath << ": " << reason << std::endl;
+                if (outError) *outError = reason;
+                return false;
+            };
+
             std::ifstream sflwIn(sflwPath, std::ios::binary);
             if (!sflwIn.is_open())
             {
-                std::cerr << "Failed to open .sflw file: " << sflwPath << std::endl;
-                return false;
+                return fail("The file could not be opened: " + sflwPath);
             }
 
+            sflwIn.seekg(0, std::ios::end);
+            const uint64_t fileSize = (uint64_t)sflwIn.tellg();
+            sflwIn.seekg(0, std::ios::beg);
+
+            // One full-struct read; a shorter (older-version) header legitimately reads fewer bytes,
+            // so clear the resulting failbit and let the validator decide from gcount() and version.
+            outPackage.header = {};
             sflwIn.read(reinterpret_cast<char*>(&outPackage.header), sizeof(SFLWFileHeader));
-            if (outPackage.header.magic != SFLW_MAGIC)
+            const size_t headerBytesRead = (size_t)sflwIn.gcount();
+            sflwIn.clear();
+
+            std::string reason;
+            if (!ValidateSFLWHeader(outPackage.header, headerBytesRead, fileSize, reason))
             {
-                std::cerr << "Invalid SFLW magic header in " << sflwPath << std::endl;
-                return false;
+                return fail(reason);
             }
 
             // splatRadius was appended to SFLWFileHeader in version 2. A version-1 file is shorter than
@@ -290,14 +311,16 @@ namespace Surfels
             {
                 if (!ReadEmbeddedManifest(sflwIn, outPackage.header, outPackage.chunkManifests))
                 {
-                    std::cerr << "Failed to read embedded manifest in " << sflwPath << std::endl;
-                    return false;
+                    return fail("The embedded chunk manifest could not be read; the package is corrupt or truncated.");
                 }
             }
             else if (!ParseLegacyJsonManifest(jsonPath, outPackage.chunkManifests))
             {
-                std::cerr << "Failed to open/parse companion .json manifest for pre-v4 package: " << jsonPath << std::endl;
-                return false;
+                return fail("This is a pre-v4 package and its companion manifest " + jsonPath + " is missing or unreadable.");
+            }
+            if (!ValidateSFLWManifest(outPackage.chunkManifests, fileSize, reason))
+            {
+                return fail(reason);
             }
 
             outPackage.chunkLOD0Surfels.resize(outPackage.chunkManifests.size());
@@ -319,21 +342,35 @@ namespace Surfels
                     std::vector<uint8_t> compressedBytes(lodHeader.compressedByteSize);
                     sflwIn.seekg(lodHeader.fileOffset, std::ios::beg);
                     sflwIn.read(reinterpret_cast<char*>(compressedBytes.data()), lodHeader.compressedByteSize);
-
-                    std::vector<uint8_t> shuffled(lodHeader.uncompressedByteSize);
-                    if (ByteShuffle::DecompressShuffled(compressedBytes.data(), compressedBytes.size(), shuffled.data(), lodHeader.uncompressedByteSize))
+                    if (!sflwIn.good())
                     {
-                        outPackage.chunkLODSurfels[c][l].resize(lodHeader.surfelCount);
-                        ByteShuffle::Unshuffle(
-                            shuffled.data(),
-                            reinterpret_cast<uint8_t*>(outPackage.chunkLODSurfels[c][l].data()),
-                            lodHeader.surfelCount,
-                            sizeof(PackedSurfelGPU)
-                        );
-                        if (l == 0)
-                        {
-                            outPackage.totalSurfels += lodHeader.surfelCount;
-                        }
+                        char buf[160];
+                        snprintf(buf, sizeof(buf), "Chunk %zu LOD %zu could not be read from the file; the package is truncated.", c, l);
+                        return fail(buf);
+                    }
+
+                    // A payload the linked codec rejects used to be skipped silently, leaving that LOD
+                    // empty and the model full of holes. It is the signature of a package baked with the
+                    // other codec build (proprietary vs. open stand-in) or of corrupt data -- fail loudly.
+                    std::vector<uint8_t> shuffled(lodHeader.uncompressedByteSize);
+                    if (!ByteShuffle::DecompressShuffled(compressedBytes.data(), compressedBytes.size(), shuffled.data(), lodHeader.uncompressedByteSize))
+                    {
+                        char buf[224];
+                        snprintf(buf, sizeof(buf), "Chunk %zu LOD %zu holds compressed data this build's codec cannot decode (%u -> %u bytes). The package was baked with a different codec build or is corrupt.",
+                            c, l, lodHeader.compressedByteSize, lodHeader.uncompressedByteSize);
+                        return fail(buf);
+                    }
+
+                    outPackage.chunkLODSurfels[c][l].resize(lodHeader.surfelCount);
+                    ByteShuffle::Unshuffle(
+                        shuffled.data(),
+                        reinterpret_cast<uint8_t*>(outPackage.chunkLODSurfels[c][l].data()),
+                        lodHeader.surfelCount,
+                        sizeof(PackedSurfelGPU)
+                    );
+                    if (l == 0)
+                    {
+                        outPackage.totalSurfels += lodHeader.surfelCount;
                     }
                 }
 

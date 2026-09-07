@@ -1,4 +1,4 @@
-// PreprocessRenderer.cpp
+// SurfelsRenderer.cpp
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
@@ -6,7 +6,7 @@
 // recording for the main mesh-shader splat pass, the GPU silhouette item-prepass, the
 // interior occlusion volume pass, the GPU bitonic depth sort, and TAA resolve.
 
-#include "PreprocessRenderer.h"
+#include "SurfelsRenderer.h"
 #include <d3dx12.h>
 #include "Misc/Error.h"
 
@@ -37,7 +37,10 @@ namespace Surfels
 
     // One-time setup: every root signature, PSO (splat/item-prepass/occluder/GPU-sort compute/TAA),
     // and the dedicated copy queue used for async surfel/chunk uploads.
-    void PreprocessRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
+    static const char* g_appTitle = "SplatLab";
+    void SurfelsRenderer::SetAppTitle(const char* title) { g_appTitle = (title && *title) ? title : "SplatLab"; }
+
+    void SurfelsRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
     {
         m_pDevice = pDevice;
 
@@ -76,7 +79,7 @@ namespace Surfels
                 }
             }
             SetLegacyShaderCompiler(m_renderPath == RenderPath::VertexShadersSM5);
-            LogTransitionTrace("PreprocessRenderer::OnCreate GPU: mesh shaders %s, highest shader model 0x%02X -> %s%s",
+            LogTransitionTrace("SurfelsRenderer::OnCreate GPU: mesh shaders %s, highest shader model 0x%02X -> %s%s",
                 m_gpuCaps.meshShaders ? "yes" : "no", m_gpuCaps.highestShaderModel, GetRenderPathDescription(), m_renderPathForced ? " (forced by config)" : "");
         }
 
@@ -265,7 +268,7 @@ namespace Surfels
         occluderShadersOk = (CompileShaderFromFile("Surfels.hlsl", NULL, "occluderPS", "-T ps_6_5", &occluderPs) && occluderPs.pShaderBytecode != nullptr) && occluderShadersOk;
         if (!occluderShadersOk)
         {
-            LogTransitionTrace("PreprocessRenderer::OnCreate ERROR: Failed to compile occluderMS/occluderPS -- occlusion volume feature will be a silent no-op.");
+            LogTransitionTrace("SurfelsRenderer::OnCreate ERROR: Failed to compile occluderMS/occluderPS -- occlusion volume feature will be a silent no-op.");
         }
 
         MeshShaderPipelineStateStream occluderStream = {};
@@ -286,7 +289,7 @@ namespace Surfels
         HRESULT hrOccluderPSO = device2->CreatePipelineState(&occluderStreamDesc, IID_PPV_ARGS(&m_pOccluderPSO));
         if (FAILED(hrOccluderPSO))
         {
-            LogTransitionTrace("PreprocessRenderer::OnCreate ERROR: CreatePipelineState(occluder) failed hr=0x%08X -- occlusion volume feature will be a silent no-op.", (unsigned int)hrOccluderPSO);
+            LogTransitionTrace("SurfelsRenderer::OnCreate ERROR: CreatePipelineState(occluder) failed hr=0x%08X -- occlusion volume feature will be a silent no-op.", (unsigned int)hrOccluderPSO);
         }
 
         // Depth-test-only variant of the main splat pipeline: same mainAS/mainMS/mainPS as m_pPipelineState,
@@ -309,7 +312,7 @@ namespace Surfels
         HRESULT hrOcclusionTestPSO = device2->CreatePipelineState(&occlusionTestStreamDesc, IID_PPV_ARGS(&m_pPipelineStateOcclusionTest));
         if (FAILED(hrOcclusionTestPSO))
         {
-            LogTransitionTrace("PreprocessRenderer::OnCreate ERROR: CreatePipelineState(occlusionTest) failed hr=0x%08X -- occlusion culling will silently do nothing on the main splat pass.", (unsigned int)hrOcclusionTestPSO);
+            LogTransitionTrace("SurfelsRenderer::OnCreate ERROR: CreatePipelineState(occlusionTest) failed hr=0x%08X -- occlusion culling will silently do nothing on the main splat pass.", (unsigned int)hrOcclusionTestPSO);
         }
 
         if (FAILED(hrMainPSO) || FAILED(hrItemPSO) || m_pPipelineState == nullptr || m_pItemPrepassPSO == nullptr)
@@ -317,7 +320,7 @@ namespace Surfels
             // The driver reported mesh shaders but could not build the pipelines (typically a shader
             // model it cannot actually compile): fall back to the vertex-shader path instead of running
             // with null pipeline states.
-            LogTransitionTrace("PreprocessRenderer::OnCreate ERROR: mesh-shader pipeline creation failed (main hr=0x%08X, item hr=0x%08X) -- falling back to vertex shaders", (unsigned int)hrMainPSO, (unsigned int)hrItemPSO);
+            LogTransitionTrace("SurfelsRenderer::OnCreate ERROR: mesh-shader pipeline creation failed (main hr=0x%08X, item hr=0x%08X) -- falling back to vertex shaders", (unsigned int)hrMainPSO, (unsigned int)hrItemPSO);
             if (m_pPipelineState) { m_pPipelineState->Release(); m_pPipelineState = nullptr; }
             if (m_pPipelineStateOcclusionTest) { m_pPipelineStateOcclusionTest->Release(); m_pPipelineStateOcclusionTest = nullptr; }
             if (m_pItemPrepassPSO) { m_pItemPrepassPSO->Release(); m_pItemPrepassPSO = nullptr; }
@@ -336,7 +339,7 @@ namespace Surfels
             const char* why = forced ? "bypassed by \"render_path\" in config.json" : (m_gpuCaps.meshPipelineFailed ? "reported by the driver, but its pipelines could not be created" : "not provided by this GPU or driver");
             char msg[1024];
             snprintf(msg, sizeof(msg),
-                "SplatLab is running without DirectX 12 mesh shaders (Shader Model 6.5).\n\n"
+                "%s is running without DirectX 12 mesh shaders (Shader Model 6.5).\n\n"
                 "Hardware stages not in use (%s):\n"
                 "    - Amplification (task) shader stage\n"
                 "    - Mesh shader stage\n"
@@ -344,11 +347,14 @@ namespace Surfels
                 "\nRender path: %s.\n\n"
                 "The picture is the same, but frame rates are lower. The banner at the top left of the viewport "
                 "lists the stages the fallback is standing in for while it is active.%s",
+                g_appTitle,
                 why,
                 (m_renderPath == RenderPath::VertexShadersSM5) ? "    - Shader Model 6 (DXIL) shader compiler\n" : "",
                 GetRenderPathDescription(),
                 forced ? "\n\nSet \"render_path\" to \"auto\" in config.json to use the best path this GPU supports." : "\n\nFor full performance use a GPU with D3D12 Mesh Shader Tier 1 (GeForce RTX 20 series or newer, Radeon RX 6000 or newer, Intel Arc) and a current driver.");
-            MessageBoxA(NULL, msg, "SplatLab - Mesh shader fallback engaged", MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+            char title[128];
+            snprintf(title, sizeof(title), "%s - Mesh shader fallback engaged", g_appTitle);
+            MessageBoxA(NULL, msg, title, MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
         }
 
         // Create Silhouette Edge Extraction and Clear Compute Shaders
@@ -375,15 +381,15 @@ namespace Surfels
 
         if (SUCCEEDED(m_pDevice->GetDevice()->CreateCommandQueue(&copyQueueDesc, IID_PPV_ARGS(&m_pCopyQueue))))
         {
-            SetName(m_pCopyQueue, "PreprocessRenderer::m_pCopyQueue");
+            SetName(m_pCopyQueue, "SurfelsRenderer::m_pCopyQueue");
             m_pDevice->GetDevice()->CreateCommandAllocator(D3D12_COMMAND_LIST_TYPE_COPY, IID_PPV_ARGS(&m_pCopyAllocator));
-            SetName(m_pCopyAllocator, "PreprocessRenderer::m_pCopyAllocator");
+            SetName(m_pCopyAllocator, "SurfelsRenderer::m_pCopyAllocator");
             m_pDevice->GetDevice()->CreateCommandList(0, D3D12_COMMAND_LIST_TYPE_COPY, m_pCopyAllocator, nullptr, IID_PPV_ARGS(&m_pCopyCmdList));
-            SetName(m_pCopyCmdList, "PreprocessRenderer::m_pCopyCmdList");
+            SetName(m_pCopyCmdList, "SurfelsRenderer::m_pCopyCmdList");
             m_pCopyCmdList->Close();
 
             m_pDevice->GetDevice()->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_pCopyFence));
-            SetName(m_pCopyFence, "PreprocessRenderer::m_pCopyFence");
+            SetName(m_pCopyFence, "SurfelsRenderer::m_pCopyFence");
             m_copyFenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
             m_copyFenceValue = 0;
         }
@@ -437,7 +443,7 @@ namespace Surfels
         }
     }
 
-    void PreprocessRenderer::FlushCopyQueue()
+    void SurfelsRenderer::FlushCopyQueue()
     {
         if (!m_pCopyQueue || !m_pCopyFence) return;
 
@@ -463,7 +469,7 @@ namespace Surfels
     // scans, and mixing mips per chunk would open seams where a coarse block's buried face meets a
     // neighbouring chunk that eroded that cell away. A screen-space rule also sidesteps the mismatch
     // between cube size (doubles per mip) and surfel spacing (~1.4x per decimation level).
-    uint32_t PreprocessRenderer::SelectOcclusionMip(const State* pState, const OcclusionMipTable& mips, const XMFLOAT3& eyePos)
+    uint32_t SurfelsRenderer::SelectOcclusionMip(const State* pState, const OcclusionMipTable& mips, const XMFLOAT3& eyePos)
     {
         if (mips.mipCount == 0)
         {
@@ -503,7 +509,7 @@ namespace Surfels
 
         if (mip != m_activeOcclusionMip)
         {
-            LogTransitionTrace("PreprocessRenderer: occlusion volume mip %u -> %u (%u blocks, cell %.4f m = %.1f px at %.2f m%s)",
+            LogTransitionTrace("SurfelsRenderer: occlusion volume mip %u -> %u (%u blocks, cell %.4f m = %.1f px at %.2f m%s)",
                 m_activeOcclusionMip, mip, mips.blockCount[mip], mips.cellSize[mip], cellPixels(mip), dist,
                 pState->occlusionMipOverride >= 0 ? ", forced" : "");
         }
@@ -515,7 +521,7 @@ namespace Surfels
     // Occlusion voxel data only changes when a new dataset is loaded/exported, unlike the surfel/chunk
     // buffers which churn every frame -- so unlike those, this is a plain upload-heap resource read
     // directly as an SRV rather than a default-heap buffer kept current via the copy queue.
-    void PreprocessRenderer::UpdateOcclusionVoxelBuffer(const State* pState)
+    void SurfelsRenderer::UpdateOcclusionVoxelBuffer(const State* pState)
     {
         // The vector keeps its capacity across rebuilds, so a rebuild that produces the same block
         // count (a colour grade, say) leaves pointer and count unchanged -- the version counter is what
@@ -558,7 +564,7 @@ namespace Surfels
             CD3DX12_RESOURCE_DESC bufDesc = CD3DX12_RESOURCE_DESC::Buffer(neededBytes);
             m_pDevice->GetDevice()->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &bufDesc,
                 D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_pOcclusionVoxelBuffer));
-            SetName(m_pOcclusionVoxelBuffer, "PreprocessRenderer::m_pOcclusionVoxelBuffer");
+            SetName(m_pOcclusionVoxelBuffer, "SurfelsRenderer::m_pOcclusionVoxelBuffer");
             m_pOcclusionVoxelBuffer->Map(0, nullptr, reinterpret_cast<void**>(&m_pOcclusionVoxelBufferMapped));
             m_occlusionVoxelBufferCapacityBytes = neededBytes;
         }
@@ -574,7 +580,7 @@ namespace Surfels
     // Surfels.hlsl, mainVS/itemVS/occluderVS), built as classic graphics pipeline states with no input
     // layout (the shaders read the surfel buffers by SV_InstanceID). Targets are vs_6_0/ps_6_0; in
     // legacy-compiler mode (SetLegacyShaderCompiler) they become vs_5_1/ps_5_1 automatically.
-    void PreprocessRenderer::CreateVertexShaderPipelines(SwapChain* pSwapChain)
+    void SurfelsRenderer::CreateVertexShaderPipelines(SwapChain* pSwapChain)
     {
         DefineList defines;
         defines["SURFELS_NO_MESH_SHADERS"] = "1";
@@ -588,13 +594,15 @@ namespace Surfels
         occOk = (CompileShaderFromFile("Surfels.hlsl", &defines, "occluderPS", "-T ps_6_0", &occPs) && occPs.pShaderBytecode != nullptr) && occOk;
         if (!mainOk || !itemOk)
         {
-            LogTransitionTrace("PreprocessRenderer::CreateVertexShaderPipelines ERROR: fallback shaders failed to compile (main %d, item %d)", mainOk ? 1 : 0, itemOk ? 1 : 0);
-            MessageBoxA(NULL, "SplatLab could not compile its vertex-shader fallback for this GPU.\nThe trace log next to the executable holds the compiler output.", "SplatLab", MB_ICONERROR);
+            LogTransitionTrace("SurfelsRenderer::CreateVertexShaderPipelines ERROR: fallback shaders failed to compile (main %d, item %d)", mainOk ? 1 : 0, itemOk ? 1 : 0);
+            char msg[256];
+            snprintf(msg, sizeof(msg), "%s could not compile its vertex-shader fallback for this GPU.\nThe trace log next to the executable holds the compiler output.", g_appTitle);
+            MessageBoxA(NULL, msg, g_appTitle, MB_ICONERROR);
             exit(1);
         }
         if (!occOk)
         {
-            LogTransitionTrace("PreprocessRenderer::CreateVertexShaderPipelines ERROR: occluder fallback shaders failed to compile -- occlusion volume feature will be a silent no-op.");
+            LogTransitionTrace("SurfelsRenderer::CreateVertexShaderPipelines ERROR: occluder fallback shaders failed to compile -- occlusion volume feature will be a silent no-op.");
         }
 
         CD3DX12_RASTERIZER_DESC rasterizer(D3D12_DEFAULT);
@@ -644,7 +652,7 @@ namespace Surfels
             d.SampleDesc = DXGI_SAMPLE_DESC{ 1, 0 };
             HRESULT hr = m_pDevice->GetDevice()->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(ppOut));
             if (FAILED(hr))
-                LogTransitionTrace("PreprocessRenderer::CreateVertexShaderPipelines ERROR: %s PSO failed hr=0x%08X", name, (unsigned int)hr);
+                LogTransitionTrace("SurfelsRenderer::CreateVertexShaderPipelines ERROR: %s PSO failed hr=0x%08X", name, (unsigned int)hr);
             return SUCCEEDED(hr);
         };
 
@@ -655,13 +663,15 @@ namespace Surfels
             create(occVs, occPs, opaqueBlend, depthWrite, pSwapChain->GetFormat(), &m_pOccluderPSO, "occluder");
         if (!ok)
         {
-            MessageBoxA(NULL, "SplatLab could not create its vertex-shader fallback pipelines on this GPU.\nThe trace log next to the executable holds the details.", "SplatLab", MB_ICONERROR);
+            char msg[256];
+            snprintf(msg, sizeof(msg), "%s could not create its vertex-shader fallback pipelines on this GPU.\nThe trace log next to the executable holds the details.", g_appTitle);
+            MessageBoxA(NULL, msg, g_appTitle, MB_ICONERROR);
             exit(1);
         }
-        LogTransitionTrace("PreprocessRenderer: vertex-shader render path ready: %s", GetRenderPathDescription());
+        LogTransitionTrace("SurfelsRenderer: vertex-shader render path ready: %s", GetRenderPathDescription());
     }
 
-    const char* PreprocessRenderer::GetRenderPathDescription() const
+    const char* SurfelsRenderer::GetRenderPathDescription() const
     {
         switch (m_renderPath)
         {
@@ -671,7 +681,7 @@ namespace Surfels
         }
     }
 
-    void PreprocessRenderer::OnDestroy()
+    void SurfelsRenderer::OnDestroy()
     {
         FlushCopyQueue();
         if (m_copyFenceEvent) { CloseHandle(m_copyFenceEvent); m_copyFenceEvent = nullptr; }
@@ -749,7 +759,7 @@ namespace Surfels
 
     // Keeps the GPU surfel/chunk/sorted-index buffers current with pState, growing and re-uploading
     // them only when the source data pointer, count, or camera-relative sort key actually changed.
-    void PreprocessRenderer::UpdateSurfelBuffers(
+    void SurfelsRenderer::UpdateSurfelBuffers(
         const State* pState,
         XMFLOAT3 eyePos,
         XMFLOAT3 forward)
@@ -814,7 +824,7 @@ namespace Surfels
                     D3D12_RESOURCE_STATE_GENERIC_READ,
                     nullptr,
                     IID_PPV_ARGS(&m_pRawSurfelBuffer)));
-                SetName(m_pRawSurfelBuffer, "PreprocessRenderer::m_pRawSurfelBuffer");
+                SetName(m_pRawSurfelBuffer, "SurfelsRenderer::m_pRawSurfelBuffer");
 
                 CD3DX12_RESOURCE_DESC gpuBufDesc = CD3DX12_RESOURCE_DESC::Buffer(requiredBytes);
                 gpuBufDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -825,7 +835,7 @@ namespace Surfels
                     D3D12_RESOURCE_STATE_COPY_DEST,
                     nullptr,
                     IID_PPV_ARGS(&m_pRawSurfelGpuBuffer)));
-                SetName(m_pRawSurfelGpuBuffer, "PreprocessRenderer::m_pRawSurfelGpuBuffer");
+                SetName(m_pRawSurfelGpuBuffer, "SurfelsRenderer::m_pRawSurfelGpuBuffer");
 
                 ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
                     &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
@@ -834,7 +844,7 @@ namespace Surfels
                     D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE,
                     nullptr,
                     IID_PPV_ARGS(&m_pRawSurfelGpuOutBuffer)));
-                SetName(m_pRawSurfelGpuOutBuffer, "PreprocessRenderer::m_pRawSurfelGpuOutBuffer");
+                SetName(m_pRawSurfelGpuOutBuffer, "SurfelsRenderer::m_pRawSurfelGpuOutBuffer");
 
                 uint32_t pairBytes = numElements * sizeof(uint32_t) * 2;
                 if (pairBytes > m_sortPairBufferCapacityBytes)
@@ -849,7 +859,7 @@ namespace Surfels
                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                         nullptr,
                         IID_PPV_ARGS(&m_pGPUSortPairBuffer)));
-                    SetName(m_pGPUSortPairBuffer, "PreprocessRenderer::m_pGPUSortPairBuffer");
+                    SetName(m_pGPUSortPairBuffer, "SurfelsRenderer::m_pGPUSortPairBuffer");
                     m_sortPairBufferCapacityBytes = pairBytes;
                 }
 
@@ -1040,7 +1050,7 @@ namespace Surfels
                     D3D12_RESOURCE_STATE_GENERIC_READ,
                     nullptr,
                     IID_PPV_ARGS(&m_pSurfelBuffer)));
-                SetName(m_pSurfelBuffer, "PreprocessRenderer::m_pSurfelBuffer");
+                SetName(m_pSurfelBuffer, "SurfelsRenderer::m_pSurfelBuffer");
 
                 CD3DX12_RESOURCE_DESC gpuBufDesc = CD3DX12_RESOURCE_DESC::Buffer(requiredBytes);
                 gpuBufDesc.Flags = D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS;
@@ -1051,7 +1061,7 @@ namespace Surfels
                     D3D12_RESOURCE_STATE_COPY_DEST,
                     nullptr,
                     IID_PPV_ARGS(&m_pSurfelGpuBuffer)));
-                SetName(m_pSurfelGpuBuffer, "PreprocessRenderer::m_pSurfelGpuBuffer");
+                SetName(m_pSurfelGpuBuffer, "SurfelsRenderer::m_pSurfelGpuBuffer");
 
                 ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
                     &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT),
@@ -1060,7 +1070,7 @@ namespace Surfels
                     D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE,
                     nullptr,
                     IID_PPV_ARGS(&m_pSurfelGpuOutBuffer)));
-                SetName(m_pSurfelGpuOutBuffer, "PreprocessRenderer::m_pSurfelGpuOutBuffer");
+                SetName(m_pSurfelGpuOutBuffer, "SurfelsRenderer::m_pSurfelGpuOutBuffer");
 
                 uint32_t pairBytes = numElements * sizeof(uint32_t) * 2;
                 if (pairBytes > m_sortPairBufferCapacityBytes)
@@ -1075,7 +1085,7 @@ namespace Surfels
                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                         nullptr,
                         IID_PPV_ARGS(&m_pGPUSortPairBuffer)));
-                    SetName(m_pGPUSortPairBuffer, "PreprocessRenderer::m_pGPUSortPairBuffer");
+                    SetName(m_pGPUSortPairBuffer, "SurfelsRenderer::m_pGPUSortPairBuffer");
                     m_sortPairBufferCapacityBytes = pairBytes;
                 }
 
@@ -1284,7 +1294,7 @@ namespace Surfels
                     D3D12_RESOURCE_STATE_GENERIC_READ,
                     nullptr,
                     IID_PPV_ARGS(&m_pChunkUploadBuffer)));
-                SetName(m_pChunkUploadBuffer, "PreprocessRenderer::m_pChunkUploadBuffer");
+                SetName(m_pChunkUploadBuffer, "SurfelsRenderer::m_pChunkUploadBuffer");
 
                 CD3DX12_RESOURCE_DESC chunkGpuDesc = CD3DX12_RESOURCE_DESC::Buffer(chunkBytes);
                 ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
@@ -1294,7 +1304,7 @@ namespace Surfels
                     D3D12_RESOURCE_STATE_COPY_DEST,
                     nullptr,
                     IID_PPV_ARGS(&m_pChunkGpuBuffer)));
-                SetName(m_pChunkGpuBuffer, "PreprocessRenderer::m_pChunkGpuBuffer");
+                SetName(m_pChunkGpuBuffer, "SurfelsRenderer::m_pChunkGpuBuffer");
                 m_chunkGpuBufferState = D3D12_RESOURCE_STATE_COPY_DEST;
 
                 uint32_t idxBytes = numChunkElements * sizeof(uint32_t);
@@ -1308,7 +1318,7 @@ namespace Surfels
                     D3D12_RESOURCE_STATE_COPY_DEST,
                     nullptr,
                     IID_PPV_ARGS(&m_pSortedChunkIndicesGpuBuffer)));
-                SetName(m_pSortedChunkIndicesGpuBuffer, "PreprocessRenderer::m_pSortedChunkIndicesGpuBuffer");
+                SetName(m_pSortedChunkIndicesGpuBuffer, "SurfelsRenderer::m_pSortedChunkIndicesGpuBuffer");
                 m_sortedChunkIndicesState = D3D12_RESOURCE_STATE_COPY_DEST;
 
                 if (m_pSortedChunkIndicesUploadBuffer) { m_pSortedChunkIndicesUploadBuffer->Unmap(0, nullptr); m_pSortedChunkIndicesUploadBuffer->Release(); m_pSortedChunkIndicesUploadBuffer = nullptr; }
@@ -1319,7 +1329,7 @@ namespace Surfels
                     D3D12_RESOURCE_STATE_GENERIC_READ,
                     nullptr,
                     IID_PPV_ARGS(&m_pSortedChunkIndicesUploadBuffer)));
-                SetName(m_pSortedChunkIndicesUploadBuffer, "PreprocessRenderer::m_pSortedChunkIndicesUploadBuffer");
+                SetName(m_pSortedChunkIndicesUploadBuffer, "SurfelsRenderer::m_pSortedChunkIndicesUploadBuffer");
                 m_pSortedChunkIndicesUploadBuffer->Map(0, nullptr, reinterpret_cast<void**>(&m_pSortedChunkIndicesUploadBufferMapped));
 
                 uint32_t pairBytes = numChunkElements * sizeof(uint32_t) * 2;
@@ -1335,7 +1345,7 @@ namespace Surfels
                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                         nullptr,
                         IID_PPV_ARGS(&m_pGPUSortPairBuffer)));
-                    SetName(m_pGPUSortPairBuffer, "PreprocessRenderer::m_pGPUSortPairBuffer");
+                    SetName(m_pGPUSortPairBuffer, "SurfelsRenderer::m_pGPUSortPairBuffer");
                     m_sortPairBufferCapacityBytes = pairBytes;
                 }
 
@@ -1419,7 +1429,7 @@ namespace Surfels
     }
 
     // (Re)creates the depth buffer and every TAA/item-prepass texture at the new swapchain size
-    void PreprocessRenderer::OnCreateWindowSizeDependentResources(SwapChain* pSwapChain, uint32_t width, uint32_t height)
+    void SurfelsRenderer::OnCreateWindowSizeDependentResources(SwapChain* pSwapChain, uint32_t width, uint32_t height)
     {
         m_width = width;
         m_height = height;
@@ -1428,20 +1438,20 @@ namespace Surfels
         DXGI_FORMAT typelessFormat = (swapFormat == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB || swapFormat == DXGI_FORMAT_B8G8R8A8_UNORM) ? DXGI_FORMAT_B8G8R8A8_TYPELESS : DXGI_FORMAT_R8G8B8A8_TYPELESS;
         DXGI_FORMAT unormFormat = (swapFormat == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB || swapFormat == DXGI_FORMAT_B8G8R8A8_UNORM) ? DXGI_FORMAT_B8G8R8A8_UNORM : DXGI_FORMAT_R8G8B8A8_UNORM;
 
-        m_depthBuffer.InitDepthStencil(m_pDevice, "PreprocessRenderer::m_depthBuffer", &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_D32_FLOAT, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL), 1.0f);
+        m_depthBuffer.InitDepthStencil(m_pDevice, "SurfelsRenderer::m_depthBuffer", &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_D32_FLOAT, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL), 1.0f);
         m_depthBuffer.CreateDSV(0, &m_depthBufferDSV);
 
         // Optimized Item Buffer (R32_UINT) and Item Depth Buffer (D32_FLOAT) for GPU Silhouette Inversion
         m_itemWidth = std::clamp(width / 4, 320u, 480u);
         m_itemHeight = std::clamp(height / 4, 180u, 270u);
 
-        m_itemBuffer.InitRenderTarget(m_pDevice, "PreprocessRenderer::m_itemBuffer",
+        m_itemBuffer.InitRenderTarget(m_pDevice, "SurfelsRenderer::m_itemBuffer",
             &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R32_UINT, m_itemWidth, m_itemHeight, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET | D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
             D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
         m_itemBuffer.CreateRTV(0, &m_itemRTV);
         m_itemBuffer.CreateSRV(0, &m_itemSRV);
 
-        m_itemDepthBuffer.InitDepthStencil(m_pDevice, "PreprocessRenderer::m_itemDepthBuffer",
+        m_itemDepthBuffer.InitDepthStencil(m_pDevice, "SurfelsRenderer::m_itemDepthBuffer",
             &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_D32_FLOAT, m_itemWidth, m_itemHeight, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL), 1.0f);
         m_itemDepthBuffer.CreateDSV(0, &m_itemDepthDSV);
         m_itemDepthBuffer.CreateSRV(0, &m_itemDepthSRV);
@@ -1460,19 +1470,19 @@ namespace Surfels
         sceneClear.Color[2] = 0.0f;
         sceneClear.Color[3] = 1.0f;
 
-        m_sceneColorBuffer.Init(m_pDevice, "PreprocessRenderer::m_sceneColorBuffer",
+        m_sceneColorBuffer.Init(m_pDevice, "SurfelsRenderer::m_sceneColorBuffer",
             &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET),
             D3D12_RESOURCE_STATE_RENDER_TARGET, &sceneClear);
         m_sceneColorBuffer.CreateRTV(0, &m_sceneColorRTV, 0, -1, -1, swapFormat);
         m_sceneColorBuffer.CreateSRV(0, &m_sceneColorSRV);
 
-        m_historyColorBuffer.Init(m_pDevice, "PreprocessRenderer::m_historyColorBuffer",
+        m_historyColorBuffer.Init(m_pDevice, "SurfelsRenderer::m_historyColorBuffer",
             &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
             D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, nullptr);
         m_historyColorBuffer.CreateSRV(0, &m_historyColorSRV);
         m_historyColorBuffer.CreateUAV(0, &m_historyColorUAV);
 
-        m_resolvedColorBuffer.Init(m_pDevice, "PreprocessRenderer::m_resolvedColorBuffer",
+        m_resolvedColorBuffer.Init(m_pDevice, "SurfelsRenderer::m_resolvedColorBuffer",
             &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
             D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, nullptr);
         m_resolvedColorBuffer.CreateSRV(0, &m_resolvedColorSRV);
@@ -1493,7 +1503,7 @@ namespace Surfels
     }
 
     // Releases the depth buffer and every TAA/item-prepass texture
-    void PreprocessRenderer::OnDestroyWindowSizeDependentResources()
+    void SurfelsRenderer::OnDestroyWindowSizeDependentResources()
     {
         m_sceneColorBuffer.OnDestroy();
         m_historyColorBuffer.OnDestroy();
@@ -1503,11 +1513,11 @@ namespace Surfels
         m_depthBuffer.OnDestroy();
     }
 
-    void PreprocessRenderer::OnUpdateDisplayDependentResources(SwapChain* /*pSwapChain*/) {}
+    void SurfelsRenderer::OnUpdateDisplayDependentResources(SwapChain* /*pSwapChain*/) {}
 
     // The whole frame: upload surfel/chunk/occlusion buffers, run the silhouette prepass and GPU sort
     // if needed, draw the occluder + main splat passes, then resolve TAA and draw ImGui on top.
-    void PreprocessRenderer::OnRender(State* pState, SwapChain* pSwapChain)
+    void SurfelsRenderer::OnRender(State* pState, SwapChain* pSwapChain)
     {
         static uint32_t s_frameCounter = 0;
         s_frameCounter++;
@@ -1778,7 +1788,7 @@ namespace Surfels
         D3D12_GPU_VIRTUAL_ADDRESS cbAddress = 0;
         if (!m_constantBufferRing.AllocConstantBuffer(sizeof(SurfelsCB), (void**)&pCB, &cbAddress))
         {
-            Trace("PreprocessRenderer: failed to allocate frame constant buffer, skipping draw\n");
+            Trace("SurfelsRenderer: failed to allocate frame constant buffer, skipping draw\n");
 
             D3D12_RESOURCE_BARRIER toPresent = CD3DX12_RESOURCE_BARRIER::Transition(pBackBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
             pCmdLst->ResourceBarrier(1, &toPresent);
@@ -2441,7 +2451,7 @@ namespace Surfels
                         D3D12_RESOURCE_STATE_UNORDERED_ACCESS,
                         nullptr,
                         IID_PPV_ARGS(&m_pSilhouetteBitmaskGpuBuffer)));
-                    SetName(m_pSilhouetteBitmaskGpuBuffer, "PreprocessRenderer::m_pSilhouetteBitmaskGpuBuffer");
+                    SetName(m_pSilhouetteBitmaskGpuBuffer, "SurfelsRenderer::m_pSilhouetteBitmaskGpuBuffer");
 
                     ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
                         &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK),
@@ -2450,7 +2460,7 @@ namespace Surfels
                         D3D12_RESOURCE_STATE_COPY_DEST,
                         nullptr,
                         IID_PPV_ARGS(&m_pSilhouetteReadbackBuffer)));
-                    SetName(m_pSilhouetteReadbackBuffer, "PreprocessRenderer::m_pSilhouetteReadbackBuffer");
+                    SetName(m_pSilhouetteReadbackBuffer, "SurfelsRenderer::m_pSilhouetteReadbackBuffer");
 
                     D3D12_UNORDERED_ACCESS_VIEW_DESC uavView = {};
                     uavView.Format = DXGI_FORMAT_UNKNOWN;
@@ -2596,7 +2606,7 @@ namespace Surfels
 
                 if (pState->chunkCount == 0 || groupCount == 0)
                 {
-                    LogTransitionTrace("PreprocessRenderer::OnRender WARNING: chunkCount=%u, surfelCount=%u, groupCount=%u, useChunkedPipeline=%d",
+                    LogTransitionTrace("SurfelsRenderer::OnRender WARNING: chunkCount=%u, surfelCount=%u, groupCount=%u, useChunkedPipeline=%d",
                         pState->chunkCount, surfelCount, groupCount, pState->useChunkedPipeline ? 1 : 0);
                 }
 

@@ -1,15 +1,16 @@
-// PreprocessRenderer.h
+// SurfelsRenderer.h
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// GPU-side renderer for SplatLab: owns every root signature, PSO, and GPU
-// buffer, and exposes a single State snapshot + OnRender() entry point that
-// PreprocessApp drives once per frame. See PreprocessRenderer.cpp for the implementation.
+// GPU-side renderer shared by SplatLab and the standalone viewer: owns every root
+// signature, PSO, and GPU buffer, and exposes a single State snapshot + OnRender()
+// entry point that SurfelsApp drives once per frame. See SurfelsRenderer.cpp for the
+// implementation.
 
 #pragma once
-#include "../../src/DX12/stdafx.h"
+#include "stdafx.h"
 #include "base/Texture.h"
-#include "../../src/DX12/Wavelet/WaveletTypes.h"
+#include "WaveletTypes.h"
 
 #include "PostProc/PostProcCS.h"
 
@@ -17,7 +18,7 @@ namespace Surfels
 {
     void LogTransitionTrace(const char* fmt, ...);
 
-    class PreprocessRenderer
+    class SurfelsRenderer
     {
     public:
         struct State
@@ -118,6 +119,10 @@ namespace Surfels
         bool IsRenderPathForced() const { return m_renderPathForced; }
         const GpuCapabilities& GetGpuCapabilities() const { return m_gpuCaps; }
         const char* GetRenderPathDescription() const;
+
+        // Product name used in the renderer's own dialogs (mesh-shader fallback notice, pipeline
+        // failures). Set by SurfelsApp before OnCreate; defaults to "SplatLab".
+        static void SetAppTitle(const char* title);
         void OnDestroy();
 
         void OnCreateWindowSizeDependentResources(CAULDRON_DX12::SwapChain* pSwapChain, uint32_t width, uint32_t height);

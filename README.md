@@ -13,20 +13,24 @@ pair each frame, directly from a `StructuredBuffer` of packed surfels.
 
 | Surfel Generator | Renderer | Streaming |
 |---|---|---|
+| ![Surfel Generator tab: preprocessing parameters and the baked occlusion volume](docs/images/sl-01.png) | ![Renderer tab: runtime LOD, refinement visualizer and occlusion volume controls](docs/images/sl-02.png) | ![Streaming tab: the bounding octahedron glyph, network profiles and the LOD residency graph](docs/images/sl-03.png) |
+
+The Cthulhu Statue scan (3.3 M points, 748 MB raw) streamed from a 44 MB `.sflw` package: the Surfel Generator tab bakes the package, the Renderer tab drives LOD and the visualizers, and the Streaming tab shows the bounding octahedron and per-level residency.
 
 **Core pieces:**
 
 Built on top of AMD's [Cauldron](https://github.com/GPUOpen-LibrariesAndSDKs/Cauldron)
 framework (vendored as a git submodule under `libs/cauldron`) for device/
 swapchain/ImGui bootstrap — Cauldron ships no sample apps of its own, so
-`src/DX12/` and `tools/SurfelsPreprocess/` are written directly against its
+`src/SurfelsCore/` is written directly against its
 `FrameworkWindows` API.
 
 ## Solution & Workspace Structure
 
 The solution is organized into Solution Explorer folders:
 
-1. **`SplatLab` (Tools)** — source in `tools/SurfelsPreprocess/`. The primary
+1. **`SplatLab` (Tools)** — `tools/SurfelsPreprocess/main.cpp`, a few lines that
+   start the shared app in `surfels_core` (below) in Studio mode. The primary
    application: preprocessor and viewer in one window, and the default startup
    project. This is what the User Guide describes.
    - Loaders for binary and ASCII `.ply` and for `.splat` (3D Gaussian Splat)
@@ -43,12 +47,13 @@ The solution is organized into Solution Explorer folders:
      file onto the executable). With no argument it loads the startup dataset
      from `config.json` (`startup_dataset`, default `assets/cthulu/cthulu.sflw`).
 
-2. **`Surfels_DX12` (Apps)** — source in `src/DX12/`. The standalone viewer,
-   with no preprocessing UI. Loads `scene.sflw` from its working directory (or
-   a `models/` folder near it) and streams it; if none is found it generates a
-   synthetic benchmark package on first launch. It shares the renderer and
-   streaming manager with SplatLab but omits the silhouette prepass, TAA,
-   occlusion volume, and streaming-simulator UI.
+2. **`Surfels_DX12` (Apps)** — `src/DX12/main.cpp`, the same few lines starting
+   the shared app in Viewer mode. The standalone viewer: SplatLab's Renderer and
+   Streaming tabs with the Surfel Generator tab, its menu items and shortcuts
+   hidden. Same renderer, same render-path fallback, same streaming simulator,
+   TAA, silhouette prepass and occlusion volume, by construction rather than by
+   keeping two copies in step. Accepts a `.sflw` path on the command line and
+   otherwise loads the `startup_dataset` from `config.json`, exactly like SplatLab.
 
 3. **Tests** — `tests/`. Small standalone console executables, each built as its
    own target: `TestBitonicCPU` (CPU reference for the bitonic sort network),
@@ -61,22 +66,32 @@ The solution is organized into Solution Explorer folders:
    would export for a `.ply` with default settings, occlusion volume included;
    used to regenerate the bundled assets).
 
-4. **`bluesec-codec` (Core)** — source in `libs/bluesec-codec/`. A static library holding the
-   lifting-wavelet decomposition, the byte-shuffle/RLE codec, and the interior occlusion
-   volume generator: the three pieces of this project judged distinctive enough to be
-   worth keeping as compiled objects rather than open source, even within this repo. Each
+4. **`surfels_core` (Core)** — `src/SurfelsCore/`. The static library both executables
+   are built from: the app shell (`SurfelsApp`, with its Studio / Viewer mode), the
+   renderer (`SurfelsRenderer`), the `.ply` / `.splat` / `.sog` loaders, the octree,
+   quantizer and packager, the `.sflw` types and format validators (`WaveletTypes.h`),
+   the HLSL shaders (copied to `bin/ShaderLibDX` at build time), and the shared
+   `WinMain` body with its crash-dump handlers (`AppEntry.cpp`). Anything both apps
+   need belongs here, so it is written once. The console test tools include its
+   headers directly; they need no GPU or Cauldron.
+
+5. **`bluesec-codec` (Core)** — source in `libs/bluesec-codec/`. A static library holding the
+   lifting-wavelet decomposition, the byte-shuffle/RLE codec, the interior occlusion
+   volume generator, and the streaming scheduler's ordering with the detail grid it reads:
+   the pieces of this project judged distinctive enough to be worth keeping as compiled
+   objects rather than open source, even within this repo. Each
    module is a public header (data structures and function declarations only) plus a
    `.cpp` implementation; `SplatLab`, `Surfels_DX12`, and the console test tools all link
    against it. **This subtree is explicitly not covered by the repository's top-level
    Apache-2.0 `LICENSE`** — see `libs/bluesec-codec/README.md` for the licensing boundary
    and its limits (a static library keeps source out of ordinary distribution; it doesn't
    protect against disassembly of a shipped binary, and the GPU-side shader source under
-   `src/DX12/Shaders/` still ships as plain text in `bin/ShaderLibDX/` regardless).
+   `src/SurfelsCore/Shaders/` still ships as plain text in `bin/ShaderLibDX/` regardless).
 
-5. **Docs** — a build-nothing target that lists `README.md` and
+6. **Docs** — a build-nothing target that lists `README.md` and
    `docs/USER_GUIDE.md` in Solution Explorer for editing.
 
-6. **ThirdParty/Cauldron** — every vendored Cauldron target, swept into one folder.
+7. **ThirdParty/Cauldron** — every vendored Cauldron target, swept into one folder.
 
 ### Public repository
 
@@ -93,7 +108,11 @@ couple of private-repo-specific README passages, builds the result, regenerates 
 bundled example packages with it, runs the stress test, and pushes). Pass `--no-push` to
 inspect the result first, or `--no-prebuilt-codec` to publish a stand-in-only build. The
 script's own header comment documents each step and the config that needs updating if a
-proprietary module is ever renamed or moved again.
+proprietary module is ever renamed or moved again. Since 2026-09-07 the sync also rewrites the
+contents of past revisions (`scripts/public-history-scrub.py`): the streaming scheduler's
+ordering and the detail-grid scoring lived inside the app source before they moved into
+`bluesec-codec`, so those functions, the paragraphs describing them and the commit messages
+naming them are removed from every public commit, not only the current one.
 
 ### Package format (`.sflw`)
 
@@ -101,14 +120,16 @@ A package is a single self-contained binary file (format version 5):
 
 | Section | Contents |
 |---|---|
+| `SFLWFileHeader` | magic, version, chunk count, LOD count, global bounds, splat radius, absolute offsets of the occlusion volume and manifest, the byte size of the original input file (so the compression ratio shown is always source file vs package file), and the occlusion volume's mip table (mip count, blocks per mip, cell size per mip; v6+), and the detail grid's dimensions, cell size and offset (v7+) |
 | Chunk LOD payloads | one compressed blob per chunk per LOD level, in export order |
 | Occlusion voxels | optional `OcclusionVoxelGPU` array (only when a volume was baked) holding the mip chain back to back, mip 0 first; the header's mip table says where each mip starts, and a pre-v6 reader that draws the whole array still sees a correct volume because every coarser mip lies inside mip 0's skin |
+| Detail grid | optional `uint8` grid (v7+), one byte per cell over the model's bounds, an input to the streaming scheduler's delivery order; see `libs/bluesec-codec/DetailHeatmap.h` |
 | Manifest table | one `ChunkManifestRecord` per chunk (id, bounds, centre, radius, LOD count) followed by its `ChunkLODHeader` array (surfel count, byte sizes, payload offset, geometric error) |
 
 Every payload offset is absolute, so the manifest is written last and the
 header patched once all offsets are known. Packages written by format versions
 1–3 kept the manifest in a companion `.json`; both apps still load those if the
-`.json` sits next to the `.sflw`. See `src/DX12/Wavelet/WaveletTypes.h` for the
+`.json` sits next to the `.sflw`. See `src/SurfelsCore/WaveletTypes.h` for the
 structs and version history.
 
 ### Helper scripts
@@ -225,7 +246,7 @@ Diolez is CC BY-NC 4.0 (attribution required, **non-commercial use only**).
 - The chunk codec is a byte-shuffle plus run-length byte coder, not a real
   entropy coder. `ZstdDecompressor.h` is named for the intended eventual
   replacement and today just wraps `ByteShuffle`.
-- No Agility SDK opt-in (see the comment in `SurfelsSample.cpp`) — uses
+- No Agility SDK opt-in (see the comment in `AppEntry.cpp`) — uses
   whatever D3D12 runtime Windows provides.
 - Both apps call `InitDirectXCompiler()` (from `Common/base/DXCHelper.h`)
   before `CreateShaderCache()` — easy to miss since the current

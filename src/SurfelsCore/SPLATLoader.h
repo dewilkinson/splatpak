@@ -12,7 +12,7 @@
 #include <string>
 #include <iostream>
 #include <cmath>
-#include "../../src/DX12/Wavelet/WaveletTypes.h"
+#include "WaveletTypes.h"
 
 namespace Surfels
 {

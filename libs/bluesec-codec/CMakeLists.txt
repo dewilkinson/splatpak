@@ -15,6 +15,12 @@ add_library(bluesec-codec STATIC
     ByteShuffle.cpp
     OcclusionVolume.h
     OcclusionVolume.cpp
+    StreamOrder.h
+    StreamOrder.cpp
+    DetailHeatmap.h
+    DetailHeatmap.cpp
+    CodecBuild.h
+    CodecBuild.cpp
 )
 
 target_include_directories(bluesec-codec PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})

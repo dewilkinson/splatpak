@@ -44,6 +44,7 @@ set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /DEB
 
 add_subdirectory(libs/cauldron)
 add_subdirectory(libs/bluesec-codec)
+add_subdirectory(src/SurfelsCore)   # surfels_core: everything both executables share (must precede them)
 add_subdirectory(src/DX12)
 add_subdirectory(tools/SurfelsPreprocess)
 add_subdirectory(tests)

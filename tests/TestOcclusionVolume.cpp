@@ -10,7 +10,7 @@
 #include <iostream>
 #include <string>
 #include <vector>
-#include "../tools/SurfelsPreprocess/StreamPackager.h"
+#include "../src/SurfelsCore/StreamPackager.h"
 #include "../libs/bluesec-codec/OcclusionVolume.h"
 
 int main(int argc, char** argv)

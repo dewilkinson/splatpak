@@ -1,17 +1,22 @@
-// PreprocessApp.h
+// SurfelsApp.h
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// The SplatLab app shell: owns the whole offline preprocessing pipeline (load ->
-// octree chunk -> wavelet decompose -> quantize -> export) plus the runtime streaming
-// simulation and every ImGui panel. PreprocessRenderer handles the actual GPU work; this
-// class is everything else -- UI, file I/O, and the streaming/decay/silhouette simulation.
+// The shared app shell behind both executables. In Studio mode it is SplatLab: the whole
+// offline preprocessing pipeline (load -> octree chunk -> wavelet decompose -> quantize ->
+// export) plus the runtime streaming simulation and every ImGui panel. In Viewer mode it is
+// the standalone Surfels viewer: the same class with the Surfel Generator tab, its menu items
+// and its shortcuts hidden, so the viewer is SplatLab's Renderer and Streaming tabs by
+// construction rather than a second copy of them. SurfelsRenderer handles the actual GPU work;
+// this class is everything else -- UI, file I/O, and the streaming/decay/silhouette simulation.
 
 #pragma once
 #include "../../libs/bluesec-codec/OcclusionVolume.h"
-#include "DetailHeatmap.h"
-#include "../../src/DX12/stdafx.h"
-#include "PreprocessRenderer.h"
+#include "../../libs/bluesec-codec/DetailHeatmap.h"
+#include "../../libs/bluesec-codec/StreamOrder.h"
+#include "../../libs/bluesec-codec/CodecBuild.h"
+#include "stdafx.h"
+#include "SurfelsRenderer.h"
 #include "SyntheticGenerator.h"
 #include "PLYLoader.h"
 #include "SPLATLoader.h"
@@ -29,10 +34,19 @@ namespace Surfels
     void LogTransitionTrace(const char* fmt, ...);
     void LogD3D12Messages();
 
-    class PreprocessApp : public CAULDRON_DX12::FrameworkWindows
+    class SurfelsApp : public CAULDRON_DX12::FrameworkWindows
     {
     public:
-        explicit PreprocessApp(LPCSTR name);
+        // Which product this instance is (see the file header). Viewer hides everything that only
+        // makes sense with a raw point cloud loaded: the generator tab, Open Raw / Generate Benchmark /
+        // Save Package, and Ctrl+O opens a .sflw instead of a .ply.
+        enum class Mode { Studio, Viewer };
+
+        explicit SurfelsApp(LPCSTR name, Mode mode = Mode::Studio);
+
+        Mode        GetMode() const      { return m_mode; }
+        bool        IsViewerOnly() const { return m_mode == Mode::Viewer; }
+        const char* AppTitle() const     { return m_mode == Mode::Viewer ? "Surfels Viewer" : "SplatLab"; } // Dialog titles
 
         void OnParseCommandLine(LPSTR lpCmdLine, uint32_t* pWidth, uint32_t* pHeight) override;
         void OnCreate() override;
@@ -81,8 +95,9 @@ namespace Surfels
         std::string OpenFileDialog(const char* filter, const char* title = "Open File", const char* defaultExt = nullptr);
         std::string SaveFileDialog(const char* filter, const char* defaultExt = "sflw", const char* title = "Save File");
 
-        PreprocessRenderer*       m_pRenderer = nullptr;
-        PreprocessRenderer::State m_state;
+        Mode                      m_mode = Mode::Studio;
+        SurfelsRenderer*          m_pRenderer = nullptr;
+        SurfelsRenderer::State    m_state;
         PendingAction             m_pendingAction = PendingAction::None;
 
         // Set once a GPU device-removed/suspended HRESULT is caught. Once true, every
@@ -184,7 +199,7 @@ namespace Surfels
         float m_autoLODCooldownTimer = 0.0f;  // Blocks auto-LOD from advancing another level until the in-flight dither transition has had time to settle
         bool  m_autoRotate           = false; // Disabled by default
         bool  m_showControlHints     = true;  // Viewport: draw the faint rotate/zoom/pan reminder at the bottom-right (see DrawControlHints); saved in config.json
-        int         m_renderPathOverride = -1;     // Config "render_path": -1 auto, else PreprocessRenderer::RenderPath to force (testing)
+        int         m_renderPathOverride = -1;     // Config "render_path": -1 auto, else SurfelsRenderer::RenderPath to force (testing)
         std::string m_renderPathConfig = "auto";  // The config value as written back (auto / mesh / vs6 / vs5)
         ImFont* m_pHintFont          = nullptr; // Proportional font for that reminder (Segoe UI, registered in OnCreate before the atlas is built); nullptr = default font
         bool  m_gpuRadixSort         = true;  // Checkbox: "GPU Radix Sort" under Accelerators (Enabled by default)
@@ -243,7 +258,8 @@ namespace Surfels
             float    radius = 0.0f;
             XMFLOAT3 avgNormal = { 0, 1, 0 };      // Representative surface normal for silhouette edge testing
             float    normalSpread = 0.0f;          // Normal angular variation
-            float    detailScore = 0.0f;           // 0..1 from the detail heatmap over this block's bounds (see DetailHeatmap.h): streams after the edge chunks in descending order of this
+            float    detailScore = 0.0f;           // 0..1 from the package's detail grid over this block's bounds (DetailGrid::SampleBox); an input to the streaming order
+            uint8_t  octahedronFace = 0;           // Face (0..7) of the bounding octahedron this block was assigned by StreamOrder::Build
             std::vector<SurfelVertex>   rawSurfels;
             std::vector<PackedSurfelGPU> packedSurfels;
             size_t   byteSize = 0;
@@ -256,6 +272,7 @@ namespace Surfels
             bool     isResident = false;
             bool     isEvictionPending = false;    // Marked for eviction: waiting for parent demotion transition to complete
             bool     isLockedInTransition = false; // Locked against eviction while transition is running in either direction
+            bool     hasRefined = false;           // Has refined into its children (CASE 2) since they last arrived. Only then does dropping back to this node (CASE 1) evict them; children that came in ahead of need and were never shown stay resident for when the view gets closer
             bool     refinedBySilhouette = false;  // The refinement into its children was edge-driven (this node sits at or below the target level). When the flag drops and it demotes, the children are kept resident: evicting them only made the face lists re-stream them for the next flag, which flashed the visible faces while spinning
             bool     isSilhouette = false;         // Active in-view silhouette edge chunk (locked against eviction)
             float    transitionProgress = 0.0f;   // 0.0 (Parent Level N Solid) <-> 1.0 (Children Level N-1 Solid)
@@ -280,6 +297,7 @@ namespace Surfels
 
         enum class StreamingPolicy
         {
+            Conservative = 0, // The view's own requests cover only visible chunks + a local neighbour buffer, and detail the view drops back from is evicted. The scheduler's face streams run in both policies (see StreamOrder.h)
             Greedy       = 1  // Refines visible chunks first, then continues pre-fetching remaining background chunks
         };
 
@@ -360,20 +378,16 @@ namespace Surfels
 
         std::vector<std::vector<StreamChunk>> m_lodStreamChunks; // Chunks grouped by LOD level for O(1) equalizer
         std::vector<StreamChunk*>             m_allStreamChunkPtrs; // Flat list of pointers for priority sorting
-
-        // Bounding octahedron streaming. The model is wrapped in a regular octahedron: eight triangular
-        // faces whose outward normals are the eight sign combinations of (1,1,1)/sqrt3, one per octant.
-        // Every block belongs to the face in front of it -- the octant of its position around the model
-        // found (a 3D dot product against the direction to the eye) and their lists are multiplexed,
-        // that the delivery simulator consumes right after the edge chunks (UpdateStreamingSimulation).
-        // faces already streaming, rather than queueing behind them.
-        static constexpr int kOctahedronFaces = 8; // Face index = (nx>=0) | (ny>=0)<<1 | (nz>=0)<<2
-        static constexpr int kMaxStreamLevels = 8;
-        std::vector<StreamChunk*> m_scratchLoadList;                // This frame's multiplexed load list (visible faces, interleaved)
-        std::vector<size_t>       m_faceDrainBuckets[kOctahedronFaces]; // Scratch: demand-queue entries of the tier being drained, bucketed by face
+        // Streaming order (libs/bluesec-codec/StreamOrder.h): which face of the bounding octahedron each
+        // block belongs to, the per-face delivery lists, face visibility, and the dealing of a frame's
+        // bandwidth across faces. The app owns the blocks (handle = index into m_allStreamChunkPtrs) and
+        // asks the scheduler for this frame's load list; the rules live in the codec library.
+        StreamOrder               m_streamOrder;
+        std::vector<uint32_t>     m_scratchLoadHandles;               // This frame's load list from the scheduler (block handles)
+        std::vector<StreamChunk*> m_scratchLoadList;                  // The same list as chunk pointers, in delivery order
+        std::vector<size_t>       m_faceDrainBuckets[kOctahedronFaces]; // Scratch: demand-queue entries of the tier being delivered, bucketed by face
         // TIER 1 (silhouette edges and the bootstrap envelope) bypasses the capped demand queue: those requests
-        // go straight into a queue per octahedron face, and the delivery simulator drains the eight queues
-        // model -- the faces filled one after another however the drain was interleaved.
+        // go straight into a queue per face, and the delivery simulator serves the eight queues through the
         static constexpr size_t   kMaxEdgeQueuePerFace = 8192;
         std::vector<ChunkRequest> m_faceEdgeQueue[kOctahedronFaces];
         size_t                    m_faceEdgeHead[kOctahedronFaces] = {};
@@ -383,14 +397,9 @@ namespace Surfels
         uint32_t                  m_redeliveredBlocks = 0;             // Diagnostic: distinct blocks delivered more than once since the last reset
         void  ClearFaceEdgeQueues();                                // Drops every queued edge request (streaming reset)
         void  HealStaleRequestFlags();                              // Periodic safety net: clears isRequested / isEvictionPending on non-resident blocks no queue holds, so a lost request cannot leave a permanent hole
-        float    m_faceFacing[kOctahedronFaces] = {};                  // dot(face normal, direction to camera), this frame
-        uint8_t  m_visibleFaceMask = 0xFF;                          // Bit i = face i visible this frame
-        uint32_t m_faceRemaining[kOctahedronFaces] = {};               // Non-resident blocks per face (UI; recounted periodically)
-        uint32_t m_faceTotal[kOctahedronFaces] = {};                   // Blocks per face (UI: fill progress in the glyph)
-        uint32_t m_residencyEpoch = 0;                              // Bumped whenever any block stops being resident (evict, reset, decay), invalidating the cursors
-        float    m_camDir[3] = { 1.0f, 0.0f, 0.0f };                   // Unit direction from the model centre to the camera, this frame (glyph marker)
+        uint32_t m_residencyEpoch = 0;                              // Bumped whenever any block stops being resident (evict, reset, decay); the scheduler restarts its cursors on a change
         void  DrawOctahedronGlyph();                                   // Streaming tab: the octahedron's upper and lower faces, visible ones lit, each with its fill progress
-        DetailGrid                            m_detailGrid;         // Detail heatmap for the loaded model: from the package (v7+) or built from LOD 0 on load / preprocess; written into exported packages
+        DetailGrid                            m_detailGrid;         // Detail grid for the loaded model: from the package (v7+) or built from LOD 0 on load / preprocess; written into exported packages
         std::vector<StreamChunk*>             m_rendererSourceChunks; // Source chunk pointers corresponding to m_rendererMeshletChunks
         std::vector<PackedSurfelGPU>          m_unifiedPackedSurfels; // Global zero-copy packed surfel buffer
         std::vector<SurfelVertex>            m_unifiedRawSurfels;    // Global zero-copy raw surfel buffer

@@ -1,12 +1,12 @@
-// PreprocessApp.cpp
+// SurfelsApp.cpp
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
 // Implements the SplatLab app shell: file I/O, the wavelet preprocessing
 // pipeline, the streaming/decay/silhouette simulation, and every ImGui panel. See
-// PreprocessApp.h for the class overview and PreprocessRenderer.cpp for the GPU side.
+// SurfelsApp.h for the class overview and SurfelsRenderer.cpp for the GPU side.
 
-#include "PreprocessApp.h"
+#include "SurfelsApp.h"
 #include <chrono>
 #include <cfloat>
 #include "../../libs/bluesec-codec/OcclusionVolume.h"
@@ -74,14 +74,16 @@ namespace Surfels
         g_pInfoQueue->ClearStoredMessages();
     }
 
-    PreprocessApp::PreprocessApp(LPCSTR name) : CAULDRON_DX12::FrameworkWindows(name)
+    SurfelsApp::SurfelsApp(LPCSTR name, Mode mode) : CAULDRON_DX12::FrameworkWindows(name), m_mode(mode)
     {
+        if (m_mode == Mode::Viewer) m_activeTab = 1; // No generator tab in the viewer: open on the Renderer tab
+
         // Diagnostic note: temporarily forcing m_isGpuValidationLayerEnabled = true (both configs)
         // masked the LOD-transition GPU hang instead of reporting it -- GPU validation's extra
         // CPU/GPU synchronization gave the async copy queue enough time to finish before its upload
         // buffers were freed during a chunk-buffer resize, papering over the race without fixing it.
         // Root cause (missing wait on m_pCopyQueue before releasing its source buffers) is fixed in
-        // PreprocessRenderer::FlushCopyQueue() and its call sites; restored to normal here since GPU
+        // SurfelsRenderer::FlushCopyQueue() and its call sites; restored to normal here since GPU
         // validation has real overhead and should not ship.
 #if defined(_DEBUG)
         m_isCpuValidationLayerEnabled = true;
@@ -94,7 +96,7 @@ namespace Surfels
     }
 
     // Sets the initial window size and disables vsync/validation layers before device creation
-    void PreprocessApp::OnParseCommandLine(LPSTR lpCmdLine, uint32_t* pWidth, uint32_t* pHeight)
+    void SurfelsApp::OnParseCommandLine(LPSTR lpCmdLine, uint32_t* pWidth, uint32_t* pHeight)
     {
         *pWidth = 1440;
         *pHeight = 900;
@@ -117,7 +119,7 @@ namespace Surfels
     // was launched -- bin/ from the launch scripts, the repo root or a build sub-folder from Visual
     // Studio, anywhere at all from a shortcut -- so the executable's own location is the one anchor
     // that is always right. Absolute paths are returned as-is.
-    std::vector<std::string> PreprocessApp::ResolveRelativeCandidates(const std::string& relativePath) const
+    std::vector<std::string> SurfelsApp::ResolveRelativeCandidates(const std::string& relativePath) const
     {
         std::vector<std::string> out;
         if (relativePath.empty()) return out;
@@ -142,7 +144,7 @@ namespace Surfels
     // launch configuration this project ships -- the launch scripts, Visual Studio's
     // VS_DEBUGGER_WORKING_DIRECTORY, and a normal Explorer double-click all agree on that). Falls back
     // to the current working directory if the executable's own path can't be read for some reason.
-    std::string PreprocessApp::GetProjectRootFolder() const
+    std::string SurfelsApp::GetProjectRootFolder() const
     {
         char exePath[MAX_PATH] = {};
         if (GetModuleFileNameA(nullptr, exePath, MAX_PATH) > 0)
@@ -166,7 +168,7 @@ namespace Surfels
 
     // Open/Save dialogs start in whichever folder the user last browsed to (if it's still there),
     // so re-opening the dialog picks up where they left off; otherwise the project root.
-    std::string PreprocessApp::GetDialogDefaultFolder() const
+    std::string SurfelsApp::GetDialogDefaultFolder() const
     {
         if (!m_lastDialogFolder.empty() && GetFileAttributesA(m_lastDialogFolder.c_str()) != INVALID_FILE_ATTRIBUTES)
         {
@@ -178,7 +180,7 @@ namespace Surfels
     // Called after a successful (non-cancelled) Open/Save dialog. If the user browsed to a different
     // folder than the one currently remembered, updates it and writes config.json immediately (not
     // deferred to app shutdown) so the choice survives even if the app is closed abnormally.
-    void PreprocessApp::RememberDialogFolder(const std::string& filePath)
+    void SurfelsApp::RememberDialogFolder(const std::string& filePath)
     {
         if (filePath.empty()) return;
         size_t slash = filePath.find_last_of("\\/");
@@ -190,7 +192,7 @@ namespace Surfels
     }
 
     // Reads config.json/surfels_config.ini for dev mode, the startup dataset path, and other app settings
-    void PreprocessApp::LoadConfigFile()
+    void SurfelsApp::LoadConfigFile()
     {
         std::vector<std::string> configPaths;
         for (const char* name : { "config.json", "surfels_config.ini", "config.ini" })
@@ -281,7 +283,7 @@ namespace Surfels
                     // Render path (JSON or INI): "auto" (default), "mesh", "vs6" (vertex shaders, Shader
                     // Model 6.0) or "vs5" (vertex shaders through the legacy Shader Model 5.1 compiler).
                     // Anything but auto forces that fallback on capable hardware, for testing; a path the
-                    // hardware cannot run is ignored. See PreprocessRenderer::RenderPath.
+                    // hardware cannot run is ignored. See SurfelsRenderer::RenderPath.
                     {
                         size_t rPos = line.find("\"render_path\":");
                         size_t eqPos = std::string::npos;
@@ -375,7 +377,7 @@ namespace Surfels
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
     // Persists the current config-file-backed settings back to disk
-    void PreprocessApp::SaveConfigFile()
+    void SurfelsApp::SaveConfigFile()
     {
         std::ofstream out("config.json");
         if (out.is_open())
@@ -397,7 +399,7 @@ namespace Surfels
     }
 
     // Boots the renderer, loads config, and auto-loads the startup dataset (or waits for the user to pick one)
-    void PreprocessApp::OnCreate()
+    void SurfelsApp::OnCreate()
     {
         {
             FILE* fp = fopen(kTraceLogFilename, "w");
@@ -407,7 +409,9 @@ namespace Surfels
                 fclose(fp);
             }
         }
-        LogTransitionTrace("PreprocessApp::OnCreate initialized.");
+        LogTransitionTrace("SurfelsApp::OnCreate initialized (%s mode).", m_mode == Mode::Viewer ? "Viewer" : "Studio");
+        SurfelsRenderer::SetAppTitle(AppTitle()); // The renderer's own dialogs name the product too
+        LogTransitionTrace("Codec build: %s%s%s", CodecBuild::Name(), CodecBuild::IsProprietary() ? "" : " -- ", CodecBuild::MissingFeatures());
 
         LoadConfigFile();
         InitDirectXCompiler();
@@ -425,7 +429,7 @@ namespace Surfels
             if (screenDc) ReleaseDC(NULL, screenDc);
             m_pHintFont = fontIo.Fonts->AddFontFromFileTTF("C:\\Windows\\Fonts\\segoeui.ttf", 17.0f * dpiScale);
         }
-        m_pRenderer = new PreprocessRenderer();
+        m_pRenderer = new SurfelsRenderer();
         m_pRenderer->SetRenderPathOverride(m_renderPathOverride);
         m_pRenderer->OnCreate(&m_device, &m_swapChain);
         {
@@ -501,7 +505,8 @@ namespace Surfels
                 char cwd[MAX_PATH] = {};
                 GetCurrentDirectoryA(MAX_PATH, cwd);
                 LogTransitionTrace("Startup: no dataset loaded -- '%s' not found relative to cwd '%s' or the executable", m_startupDatasetPath.c_str(), cwd);
-                m_statusMessage = "Ready. Use File -> Open to load a .ply or .splat dataset.";
+                m_statusMessage = IsViewerOnly() ? "Ready. Use File -> Open to load a .sflw package."
+                                                 : "Ready. Use File -> Open to load a .ply or .splat dataset.";
                 m_statusIsSuccess = true;
             }
         }
@@ -510,7 +515,7 @@ namespace Surfels
     }
 
     // Saves the config file and tears down the renderer
-    void PreprocessApp::OnDestroy()
+    void SurfelsApp::OnDestroy()
     {
         ImGUI_Shutdown();
 
@@ -526,7 +531,7 @@ namespace Surfels
         }
         catch (...)
         {
-            Trace("PreprocessApp::OnDestroy: GPUFlush failed (device suspended/removed?); skipping flush and tearing down anyway\n");
+            Trace("SurfelsApp::OnDestroy: GPUFlush failed (device suspended/removed?); skipping flush and tearing down anyway\n");
         }
 
         m_pRenderer->OnDestroyWindowSizeDependentResources();
@@ -538,7 +543,7 @@ namespace Surfels
     }
 
     // Forwards raw window messages to ImGui
-    bool PreprocessApp::OnEvent(MSG msg)
+    bool SurfelsApp::OnEvent(MSG msg)
     {
         if (ImGUI_WndProcHandler(msg.hwnd, msg.message, msg.wParam, msg.lParam))
             return true;
@@ -548,10 +553,10 @@ namespace Surfels
             bool ctrlPressed = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
             if (ctrlPressed && msg.wParam == 'O')
             {
-                m_pendingAction = PendingAction::OpenFile;
+                m_pendingAction = IsViewerOnly() ? PendingAction::OpenCompressedFile : PendingAction::OpenFile;
                 return true;
             }
-            else if (ctrlPressed && msg.wParam == 'E' && !m_rawSurfels.empty())
+            else if (ctrlPressed && msg.wParam == 'E' && !m_rawSurfels.empty() && !IsViewerOnly())
             {
                 m_pendingAction = PendingAction::ExportStream;
                 return true;
@@ -561,7 +566,7 @@ namespace Surfels
     }
 
     // Recreates window-size-dependent renderer resources
-    void PreprocessApp::OnResize(bool resizeRender)
+    void SurfelsApp::OnResize(bool resizeRender)
     {
         if (m_pRenderer)
             m_pRenderer->OnCreateWindowSizeDependentResources(&m_swapChain, m_Width, m_Height);
@@ -584,21 +589,21 @@ namespace Surfels
         }
     }
 
-    void PreprocessApp::ApplyFitDistance()
+    void SurfelsApp::ApplyFitDistance()
     {
         m_distance = FitDistanceForViewport();
         m_lastFitDistance = m_distance;
     }
 
     // Rebuilds display-dependent renderer resources (e.g. after a format change)
-    void PreprocessApp::OnUpdateDisplay()
+    void SurfelsApp::OnUpdateDisplay()
     {
         if (m_pRenderer)
             m_pRenderer->OnUpdateDisplayDependentResources(&m_swapChain);
     }
 
     // Clears every in-memory dataset/streaming structure back to the empty state
-    void PreprocessApp::CloseDataset()
+    void SurfelsApp::CloseDataset()
     {
         m_rawSurfels.clear();
         m_chunks.clear();
@@ -630,7 +635,7 @@ namespace Surfels
     }
 
     // Shows a standard Win32 "Open File" dialog; returns the chosen path, or empty if cancelled
-    std::string PreprocessApp::OpenFileDialog(const char* filter, const char* title, const char* defaultExt)
+    std::string SurfelsApp::OpenFileDialog(const char* filter, const char* title, const char* defaultExt)
     {
         char currentDir[MAX_PATH] = "";
         GetCurrentDirectoryA(MAX_PATH, currentDir);
@@ -762,7 +767,7 @@ namespace Surfels
     }
 
     // Shows a standard Win32 "Save File" dialog; returns the chosen path, or empty if cancelled
-    std::string PreprocessApp::SaveFileDialog(const char* filter, const char* defaultExt, const char* title)
+    std::string SurfelsApp::SaveFileDialog(const char* filter, const char* defaultExt, const char* title)
     {
         char currentDir[MAX_PATH] = "";
         GetCurrentDirectoryA(MAX_PATH, currentDir);
@@ -891,7 +896,7 @@ namespace Surfels
     }
 
     // Dispatches to the right loader (PLY/SPLAT/SFLW) based on the file's extension
-    bool PreprocessApp::LoadFile(const std::string& filepath)
+    bool SurfelsApp::LoadFile(const std::string& filepath)
     {
         std::string lowerPath = filepath;
         std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::tolower);
@@ -909,16 +914,31 @@ namespace Surfels
         }
     }
 
-    // Loads a pre-compressed .sflw package and restores the full multi-LOD chunk hierarchy from it
-    bool PreprocessApp::LoadSFLWFile(const std::string& filepath)
+    // Loads a pre-compressed .sflw package and restores the full multi-LOD chunk hierarchy from it.
+    // An invalid package (bad signature, newer format version, truncated file, payload the linked codec
+    // cannot decode) raises a Retry / Cancel dialog that explains the fault and how to re-bake; Retry
+    // re-reads the file, which is what a user wants after re-copying or re-saving it.
+    bool SurfelsApp::LoadSFLWFile(const std::string& filepath)
     {
-        m_statusMessage = "Loading compressed surfel stream package (.sflw)...";
-        if (!StreamPackager::LoadPackage(filepath, m_loadedPackage))
+        for (;;)
         {
-            m_statusMessage = "Failed to load compressed package: " + filepath;
+            m_statusMessage = "Loading compressed surfel stream package (.sflw)...";
+            std::string reason;
+            if (StreamPackager::LoadPackage(filepath, m_loadedPackage, &reason))
+                break;
+
+            m_statusMessage = "Failed to load compressed package: " + filepath + " -- " + reason;
             m_statusIsSuccess = false;
-            LogTransitionTrace("LoadSFLWFile: LoadPackage failed for '%s'", filepath.c_str());
-            return false;
+            LogTransitionTrace("LoadSFLWFile: LoadPackage failed for '%s': %s", filepath.c_str(), reason.c_str());
+
+            const std::string dialogText =
+                std::string(AppTitle()) + " could not load this package:\n\n" + filepath + "\n\n" + reason + "\n\n" +
+                SFLWRebakeAdvice() + "\n\nRetry loads the file again. Cancel leaves the current model in place.";
+            const std::string dialogTitle = std::string(AppTitle()) + " - Invalid .sflw Package";
+            const int choice = MessageBoxA(nullptr, dialogText.c_str(), dialogTitle.c_str(), MB_RETRYCANCEL | MB_ICONWARNING);
+            if (choice != IDRETRY)
+                return false;
+            LogTransitionTrace("LoadSFLWFile: user chose Retry for '%s'", filepath.c_str());
         }
         LogTransitionTrace("LoadSFLWFile: '%s' v%u: %zu chunks, %llu LOD0 surfels, %zu baked occluder blocks in %u mips, source %llu bytes",
             filepath.c_str(), m_loadedPackage.header.version, m_loadedPackage.chunkManifests.size(),
@@ -952,7 +972,7 @@ namespace Surfels
 
         // Splat sizing & orientation: restore the radius the package was exported with (see
         // StreamPackager::PackageDataset/LoadPackage). Packages older than SFLW v2 didn't store this,
-        // and LoadPackage already falls back to 1.0 (PreprocessRenderer::State's own default) in that case.
+        // and LoadPackage already falls back to 1.0 (SurfelsRenderer::State's own default) in that case.
         m_state.splatRadius = m_loadedPackage.header.splatRadius;
         m_state.orientMode = 0; // Default to Normal-Oriented Surface Tangent Discs, same as a raw PLY/SPLAT load
 
@@ -1135,7 +1155,7 @@ namespace Surfels
     }
 
     // Loads a raw .splat point cloud and runs it through the octree/wavelet preprocessing pipeline
-    bool PreprocessApp::LoadSPLATFile(const std::string& filepath)
+    bool SurfelsApp::LoadSPLATFile(const std::string& filepath)
     {
         m_statusMessage = "Loading 3D Gaussian Splat (.splat)...";
         double origin[3] = { 0, 0, 0 };
@@ -1172,7 +1192,7 @@ namespace Surfels
     }
 
     // Loads a raw .ply point cloud and runs it through the octree/wavelet preprocessing pipeline
-    bool PreprocessApp::LoadPLYFile(const std::string& filepath)
+    bool SurfelsApp::LoadPLYFile(const std::string& filepath)
     {
         m_statusMessage = "Loading PLY point cloud...";
         double origin[3] = { 0, 0, 0 };
@@ -1210,7 +1230,7 @@ namespace Surfels
     }
 
     // Loads the built-in benchmark dataset, generating it from scratch if not found on disk
-    void PreprocessApp::GenerateSyntheticScene(uint32_t count)
+    void SurfelsApp::GenerateSyntheticScene(uint32_t count)
     {
         m_statusMessage = "Loading synthetic benchmark...";
         LoadConfigFile(); // Refresh config from disk
@@ -1279,7 +1299,7 @@ namespace Surfels
     }
 
     // Re-chunks and re-decomposes the loaded raw point cloud after a preprocessing parameter changes
-    void PreprocessApp::RecomputeWaveletHierarchy()
+    void SurfelsApp::RecomputeWaveletHierarchy()
     {
         if (m_rawSurfels.empty()) return;
         m_occlusionGrid.valid = false; // Points/AABB may change below; the cached voxelization is stale
@@ -1344,7 +1364,8 @@ namespace Surfels
         m_state.splatRadius = 1.0f;
         m_state.orientMode  = 0; // Default to Normal-Oriented Surface Tangent Discs
 
-        // the edge chunks) and ships inside the exported package. See DetailHeatmap.h.
+        // Detail grid over the raw cloud: an input to the streaming order (see StreamOrder.h) that ships
+        // inside the exported package.
         m_detailGrid = DetailGrid::Build(m_rawSurfels, m_aabbMin, m_aabbMax);
         LogTransitionTrace("DetailHeatmap: %ux%ux%u cells (%.4f m), %u occupied, built from %zu raw points",
             m_detailGrid.nx, m_detailGrid.ny, m_detailGrid.nz, m_detailGrid.cellSize, m_detailGrid.occupiedCells, m_rawSurfels.size());
@@ -1396,7 +1417,7 @@ namespace Surfels
     }
 
     // Pre-quantizes and pre-chunks every LOD level up front, for instant hitch-free LOD switching later
-    void PreprocessApp::PrecacheResidentLODs()
+    void SurfelsApp::PrecacheResidentLODs()
     {
         m_residentLODs.clear();
         if (m_rawSurfels.empty() && m_rendererRawSurfels.empty()) return;
@@ -1450,7 +1471,7 @@ namespace Surfels
     }
 
     // Refreshes the CPU-side preview buffer for the currently selected LOD level
-    void PreprocessApp::UpdatePreviewSurfels()
+    void SurfelsApp::UpdatePreviewSurfels()
     {
         LogTransitionTrace("UpdatePreviewSurfels: m_selectedPreviewLOD=%d, m_autoLOD=%d, isStreaming=%d",
             m_selectedPreviewLOD, m_autoLOD ? 1 : 0, m_enableStreamingSimulation ? 1 : 0);
@@ -1512,7 +1533,7 @@ namespace Surfels
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
     // Runs the full wavelet pipeline over m_chunks and writes the resulting single-file .sflw package
-    void PreprocessApp::ProcessAndExport(const std::string& outputPath)
+    void SurfelsApp::ProcessAndExport(const std::string& outputPath)
     {
         if (m_rawSurfels.empty()) return;
 
@@ -1541,7 +1562,7 @@ namespace Surfels
     }
 
     // Executes whatever file-dialog/action was queued this frame (kept off the ImGui callback stack)
-    void PreprocessApp::ExecutePendingAction()
+    void SurfelsApp::ExecutePendingAction()
     {
         if (m_pendingAction == PendingAction::None)
             return;
@@ -1664,7 +1685,7 @@ namespace Surfels
     }
 
     // Mouse-orbit/zoom camera, for both the active viewing camera and the (optional) frozen culling camera
-    void PreprocessApp::UpdateCamera(const ImGuiIO& io)
+    void SurfelsApp::UpdateCamera(const ImGuiIO& io)
     {
         const float cy = cosf(m_pitch), sy = sinf(m_pitch);
         const float sx = sinf(m_yaw), cx = cosf(m_yaw);
@@ -1939,7 +1960,7 @@ namespace Surfels
     }
 
     // The entire ImGui frame: the left tool tabs (Generator/Renderer/Streaming) and the right statistics panel
-    void PreprocessApp::BuildUI()
+    void SurfelsApp::BuildUI()
     {
         // Draw 3D Octree Bounding Cubes with Dotted Mid-Gray Lines onto the 3D viewport
         DrawOctreeVisualizer();
@@ -1949,15 +1970,17 @@ namespace Surfels
         {
             if (ImGui::BeginMenu("File"))
             {
-                if (ImGui::MenuItem("Open Raw Point Cloud... (PLY / SPLAT)", "Ctrl+O"))
+                // Studio only: raw point clouds and the benchmark feed the generator tab, which the
+                // viewer does not have.
+                if (!IsViewerOnly() && ImGui::MenuItem("Open Raw Point Cloud... (PLY / SPLAT)", "Ctrl+O"))
                 {
                     m_pendingAction = PendingAction::OpenFile;
                 }
-                if (ImGui::MenuItem("Open Compressed Model... (.sflw)", "Ctrl+L"))
+                if (ImGui::MenuItem("Open Compressed Model... (.sflw)", IsViewerOnly() ? "Ctrl+O" : "Ctrl+L"))
                 {
                     m_pendingAction = PendingAction::OpenCompressedFile;
                 }
-                if (ImGui::MenuItem("Generate Synthetic Benchmark", "Ctrl+G"))
+                if (!IsViewerOnly() && ImGui::MenuItem("Generate Synthetic Benchmark", "Ctrl+G"))
                 {
                     m_pendingAction = PendingAction::GenerateBenchmark;
                 }
@@ -1965,7 +1988,7 @@ namespace Surfels
                 ImGui::Separator();
                 bool hasModel = !m_rawSurfels.empty();
 
-                if (ImGui::MenuItem("Save Compressed Package (.sflw)...", "Ctrl+S", false, hasModel))
+                if (!IsViewerOnly() && ImGui::MenuItem("Save Compressed Package (.sflw)...", "Ctrl+S", false, hasModel))
                 {
                     m_pendingAction = PendingAction::ExportStream;
                 }
@@ -2007,7 +2030,7 @@ namespace Surfels
 
             if (ImGui::BeginMenu("Help"))
             {
-                if (ImGui::MenuItem("About Surfel Generator..."))
+                if (ImGui::MenuItem(IsViewerOnly() ? "About Surfels Viewer..." : "About Surfel Generator..."))
                 {
                     m_showAboutDialog = true;
                 }
@@ -2029,26 +2052,25 @@ namespace Surfels
         ImGui::SetNextWindowSize(ImVec2(leftPanelWidth, panelHeight), ImGuiCond_Always);
         ImGui::Begin("##LeftPanel", nullptr, ImGuiWindowFlags_NoCollapse);
 
-        // Tab Selector Buttons
-        float tabWidth = (ImGui::GetContentRegionAvailWidth() - 12.0f) / 3.0f;
-        ImGui::PushStyleColor(ImGuiCol_Button, m_activeTab == 0 ? ImVec4(0.18f, 0.45f, 0.75f, 1.0f) : ImVec4(0.22f, 0.22f, 0.25f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_Text, m_activeTab == 0 ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
-        if (ImGui::Button("1. Surfel Generator", ImVec2(tabWidth, 28))) m_activeTab = 0;
-        ImGui::PopStyleColor(2);
-
-        ImGui::SameLine();
-
-        ImGui::PushStyleColor(ImGuiCol_Button, m_activeTab == 1 ? ImVec4(0.18f, 0.45f, 0.75f, 1.0f) : ImVec4(0.22f, 0.22f, 0.25f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_Text, m_activeTab == 1 ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
-        if (ImGui::Button("2. Renderer", ImVec2(tabWidth, 28))) m_activeTab = 1;
-        ImGui::PopStyleColor(2);
-
-        ImGui::SameLine();
-
-        ImGui::PushStyleColor(ImGuiCol_Button, m_activeTab == 2 ? ImVec4(0.18f, 0.45f, 0.75f, 1.0f) : ImVec4(0.22f, 0.22f, 0.25f, 1.0f));
-        ImGui::PushStyleColor(ImGuiCol_Text, m_activeTab == 2 ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
-        if (ImGui::Button("3. Streaming", ImVec2(tabWidth, 28))) m_activeTab = 2;
-        ImGui::PopStyleColor(2);
+        // Tab Selector Buttons. Studio shows the three numbered tabs; the viewer has no generator, so
+        // it shows Renderer and Streaming, unnumbered, across the same width.
+        {
+            struct TabDef { const char* label; int index; };
+            const TabDef studioTabs[] = { { "1. Surfel Generator", 0 }, { "2. Renderer", 1 }, { "3. Streaming", 2 } };
+            const TabDef viewerTabs[] = { { "Renderer", 1 }, { "Streaming", 2 } };
+            const TabDef* tabs    = IsViewerOnly() ? viewerTabs : studioTabs;
+            const int     numTabs = IsViewerOnly() ? 2 : 3;
+            const float   tabWidth = (ImGui::GetContentRegionAvailWidth() - 6.0f * (numTabs - 1)) / (float)numTabs;
+            for (int t = 0; t < numTabs; t++)
+            {
+                if (t > 0) ImGui::SameLine();
+                const bool active = (m_activeTab == tabs[t].index);
+                ImGui::PushStyleColor(ImGuiCol_Button, active ? ImVec4(0.18f, 0.45f, 0.75f, 1.0f) : ImVec4(0.22f, 0.22f, 0.25f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_Text, active ? ImVec4(1.0f, 1.0f, 1.0f, 1.0f) : ImVec4(0.7f, 0.7f, 0.7f, 1.0f));
+                if (ImGui::Button(tabs[t].label, ImVec2(tabWidth, 28))) m_activeTab = tabs[t].index;
+                ImGui::PopStyleColor(2);
+            }
+        }
 
         ImGui::Separator();
 
@@ -2430,7 +2452,7 @@ namespace Surfels
                         m_swapChain.SetVSync(m_vsync);
                     }
 
-                    if (m_pRenderer && m_pRenderer->GetRenderPath() != PreprocessRenderer::RenderPath::MeshShaders)
+                    if (m_pRenderer && m_pRenderer->GetRenderPath() != SurfelsRenderer::RenderPath::MeshShaders)
                     {
                         // No amplification (task) shader stage on this render path: the control is greyed out and
                         // inert. Chunk backface culling still happens, per splat in the vertex shader, always on.
@@ -2592,6 +2614,7 @@ namespace Surfels
                         {
                             RebuildHeatmapClusterCubes();
                         }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("What the cluster cubes colour by. Point Density: points per cube. Detail (Stream Order): the detail grid baked into the package, which the streaming scheduler reads when it decides what to deliver next: hottest cubes first.");
                     }
                     if (m_showClusterHeatmap)
                     {
@@ -2641,7 +2664,9 @@ namespace Surfels
                         m_isStreamingPaused ? "[PAUSED]" : "[STREAMING]");
 
                     ImGui::Checkbox("Prioritize View Frustum & Proximity", &m_prioritizeFrustumAndProximity);
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: within the detail ordering, blocks inside the view frustum are delivered before those outside it (then the neighbour band, then the rest), with view-centre and proximity breaking near-ties. Off: the pure detail ranking, model-wide, regardless of the camera.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: blocks inside the view frustum are delivered before those outside it (then the neighbour band, then the rest). Off: the scheduler's model-wide order, regardless of the camera.");
+                    ImGui::TextDisabled("Order: base envelope > edge chunks > visible octahedron faces > rest");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The two coarsest levels always land first so there is a solid envelope. Silhouette edge chunks come next. Then the streaming scheduler serves the faces of the bounding octahedron the camera can see, together, while faces out of view wait their turn; the remaining view requests follow.");
                     DrawOctahedronGlyph();
                     ImGui::TextDisabled("Re-deliveries since reset: %u blocks streamed more than once (%u extra deliveries)", m_redeliveredBlocks, m_extraDeliveries);
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Diagnostic. A block counts here when it is delivered, later evicted, and delivered again. With a still camera this should stay at zero; it rises only when something evicts blocks the view still wants (decay, or a demotion that used to evict).");
@@ -2785,7 +2810,7 @@ namespace Surfels
                 ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "  • Occlusion Volume Pass:            %.2f ms  (mip %u of %u)", m_pRenderer->GetSmoothOccluderMs(), m_pRenderer->GetActiveOcclusionMip(), m_occlusionMips.mipCount);
             }
 
-            ImGui::Text(m_pRenderer->GetRenderPath() == PreprocessRenderer::RenderPath::MeshShaders ? "  • Main Splat Mesh Shader Dispatch:  %.2f ms" : "  • Main Splat Vertex Shader Draw:    %.2f ms", m_pRenderer->GetSmoothMainDispatchMs());
+            ImGui::Text(m_pRenderer->GetRenderPath() == SurfelsRenderer::RenderPath::MeshShaders ? "  • Main Splat Mesh Shader Dispatch:  %.2f ms" : "  • Main Splat Vertex Shader Draw:    %.2f ms", m_pRenderer->GetSmoothMainDispatchMs());
 
             if (m_enableTemporalFiltering)
             {
@@ -3098,9 +3123,9 @@ namespace Surfels
         {
             ImGui::SetNextWindowSize(ImVec2(480, 280), ImGuiCond_FirstUseEver);
             ImGui::SetNextWindowPos(ImVec2(((float)m_Width - 480) * 0.5f, ((float)m_Height - 280) * 0.5f), ImGuiCond_FirstUseEver);
-            if (ImGui::Begin("About Surfel Generator", &m_showAboutDialog, ImGuiWindowFlags_NoCollapse))
+            if (ImGui::Begin(IsViewerOnly() ? "About Surfels Viewer" : "About Surfel Generator", &m_showAboutDialog, ImGuiWindowFlags_NoCollapse))
             {
-                ImGui::TextColored(ImVec4(0.3f, 0.85f, 1.0f, 1.0f), "Surfel Generator & Splat Cruncher");
+                ImGui::TextColored(ImVec4(0.3f, 0.85f, 1.0f, 1.0f), IsViewerOnly() ? "Surfels Viewer" : "Surfel Generator & Splat Cruncher");
                 ImGui::Separator();
                 ImGui::Spacing();
 
@@ -3109,11 +3134,14 @@ namespace Surfels
                 ImGui::Text("Version:      v1.1.0");
                 ImGui::Text("Date:         September 7, 2026");
                 if (m_pRenderer) ImGui::Text("GPU path:     %s", m_pRenderer->GetRenderPathDescription());
+                ImGui::Text("Codec:        %s%s%s", CodecBuild::Name(), CodecBuild::IsProprietary() ? "" : " -- ", CodecBuild::MissingFeatures());
                 ImGui::Spacing();
                 ImGui::Separator();
                 ImGui::Spacing();
 
-                ImGui::TextWrapped("A multi-resolution point cloud preprocessor and progressive wavelet streaming pipeline built for high-performance DirectX 12 Mesh Shader surfel rendering.");
+                ImGui::TextWrapped(IsViewerOnly()
+                    ? "The standalone viewer for .sflw surfel packages: progressive wavelet streaming with high-performance DirectX 12 Mesh Shader surfel rendering. The same renderer and streaming tabs as SplatLab, without the generator."
+                    : "A multi-resolution point cloud preprocessor and progressive wavelet streaming pipeline built for high-performance DirectX 12 Mesh Shader surfel rendering.");
                 ImGui::Spacing();
                 ImGui::TextDisabled("(c) 2026 Blueshell LLC. All rights reserved.");
 
@@ -3134,7 +3162,7 @@ namespace Surfels
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
     // Draws the per-LOD-level residency bar graph plus the Evict/Decay Rate/Policy controls beside it
-    void PreprocessApp::DrawLODResidencyEqualizer()
+    void SurfelsApp::DrawLODResidencyEqualizer()
     {
         if (m_residentLODs.empty())
         {
@@ -3474,6 +3502,7 @@ namespace Surfels
         }
         if (ImGui::IsItemHovered())
         {
+            ImGui::SetTooltip("Conservative Mode: the view's own requests cover only visible chunks + a local neighbour buffer, and detail the view drops back from is evicted.\nThe scheduler's face streams keep running in both policies.");
         }
         ImGui::SameLine();
         if (ImGui::RadioButton("Greedy##Eq", &policyRadio2, 1))
@@ -3492,13 +3521,14 @@ namespace Surfels
     // Refinement visualizer controls on the Renderer tab (idSuffix keeps the widget IDs distinct should the
     // block ever be drawn in a second place): the arrival-glow checkbox, and when it is on, the fade
     // duration, glow intensity and hue sliders.
-    void PreprocessApp::DrawRefinementVisualizerControls(const char* idSuffix)
+    void SurfelsApp::DrawRefinementVisualizerControls(const char* idSuffix)
     {
         std::string label = std::string("Refinement Visualizer") + idSuffix;
         if (ImGui::Checkbox(label.c_str(), &m_showChunkStream))
         {
             m_streamStateDirty = true;
         }
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Visualizer for progressive loading: every chunk that arrives is filled with a semi-transparent tint. The newest chunks -- the leading edge of the growing model -- glow bright, then settle to the regular tint and fade out over the duration below. Press Evict to watch the whole model grow back in the scheduler's order. Named in the top-left banner while it is on.");
         if (!m_showChunkStream) return;
         ImGui::Indent(12.0f);
         ImGui::PushItemWidth(150.0f);
@@ -3514,26 +3544,21 @@ namespace Surfels
 
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
-    // [Removed from the public history: proprietary streaming-order code, now in libs/gstx/StreamOrder]
-
-    // [Removed from the public history: proprietary streaming-order code, now in libs/gstx/StreamOrder]
-
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
-
-    // [Removed from the public history: proprietary streaming-order code, now in libs/gstx/StreamOrder]
 
     // Streaming tab: the bounding octahedron as two diamonds. Seen from above, an octahedron projects to
     // a square standing on a corner whose diagonals split it into its four upper faces; the left diamond
     // (green) shows those, the right one (pastel blue) the four lower faces, both with +X right and +Z
     // down. Visible faces are lit, brighter the more directly they face the camera, hidden faces dim; a
     // yellow dot marks the camera's direction on whichever half it lies in (a dim dot on the other).
-    void PreprocessApp::DrawOctahedronGlyph()
+    void SurfelsApp::DrawOctahedronGlyph()
     {
         uint32_t visible = 0;
-        for (int f = 0; f < kOctahedronFaces; f++) if (m_visibleFaceMask & (1u << f)) visible++;
+        for (int f = 0; f < kOctahedronFaces; f++) if (m_streamOrder.VisibleFaceMask() & (1u << f)) visible++;
         ImGui::TextDisabled("Bounding octahedron: %u of %d faces visible, %zu blocks in this frame's scratch load list", visible, kOctahedronFaces, m_scratchLoadList.size());
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Faces of the octahedron around the model that the camera can currently see. Each owns the part of the model behind it; the scheduler streams the visible faces together and the hidden ones afterwards, so the model completes in the background. The inner triangles show each face's fill progress.");
 
         const float R = 30.0f;
         ImDrawList* dl = ImGui::GetWindowDrawList();
@@ -3551,8 +3576,8 @@ namespace Surfels
                 if (((f & 2) != 0) != upper) continue;
                 const float sx = (f & 1) ? 1.0f : -1.0f, sz = (f & 4) ? 1.0f : -1.0f;
                 ImVec2 px(c.x + sx * R, c.y), pz(c.x, c.y + sz * R);
-                const bool vis = (m_visibleFaceMask & (1u << f)) != 0;
-                const float t = vis ? std::max(0.0f, std::min(1.0f, (m_faceFacing[f] + 0.15f) / 1.15f)) : 0.0f;
+                const bool vis = (m_streamOrder.VisibleFaceMask() & (1u << f)) != 0;
+                const float t = vis ? std::max(0.0f, std::min(1.0f, (m_streamOrder.FaceFacing(f) + 0.15f) / 1.15f)) : 0.0f;
                 // Bevelled look: each face is shaded as one side of a low pyramid seen from above, lit from
                 // the upper left (both halves are drawn that way so they read alike); its two ridge edges
                 // (centre to rim) are light on the lit side and dark on the shaded side, its rim edge dark.
@@ -3567,7 +3592,7 @@ namespace Surfels
                 // Fill opacity is the face's residency: 0% with nothing loaded, 80% with every block loaded,
                 // every grade between. The outline and cross bars below are always fully opaque.
                 float done = 0.0f;
-                if (m_faceTotal[f] > 0) done = 1.0f - (float)std::min(m_faceRemaining[f], m_faceTotal[f]) / (float)m_faceTotal[f];
+                if (m_streamOrder.FaceTotal(f) > 0) done = 1.0f - (float)std::min(m_streamOrder.FaceRemaining(f), m_streamOrder.FaceTotal(f)) / (float)m_streamOrder.FaceTotal(f);
                 const ImU32 fill = shaded(shade, (int)(204.0f * std::max(0.0f, std::min(1.0f, done))));
                 if (pass == 1)
                 {
@@ -3583,9 +3608,9 @@ namespace Surfels
                 dl->AddTriangleFilled(c, px, pz, fill);
             }
             // Camera marker: its horizontal direction, on this half if the camera is on this side of the equator.
-            const bool camHere = (m_camDir[1] >= 0.0f) == upper;
-            const float h = sqrtf(m_camDir[0] * m_camDir[0] + m_camDir[2] * m_camDir[2]);
-            const float mx = (h > 1e-4f) ? m_camDir[0] / h : 0.0f, mz = (h > 1e-4f) ? m_camDir[2] / h : 0.0f;
+            const bool camHere = (m_streamOrder.CameraDirection()[1] >= 0.0f) == upper;
+            const float h = sqrtf(m_streamOrder.CameraDirection()[0] * m_streamOrder.CameraDirection()[0] + m_streamOrder.CameraDirection()[2] * m_streamOrder.CameraDirection()[2]);
+            const float mx = (h > 1e-4f) ? m_streamOrder.CameraDirection()[0] / h : 0.0f, mz = (h > 1e-4f) ? m_streamOrder.CameraDirection()[2] / h : 0.0f;
             const float reach = std::min(1.0f, h + 0.15f) * (R + 6.0f); // Toward the centre as the camera goes overhead
             dl->AddCircleFilled(ImVec2(c.x + mx * reach, c.y + mz * reach), camHere ? 3.5f : 2.0f, camHere ? IM_COL32(255, 220, 90, 255) : IM_COL32(255, 220, 90, 90));
         };
@@ -3599,7 +3624,7 @@ namespace Surfels
             {
                 char b[96];
                 snprintf(b, sizeof(b), "\n  face %d (%c%c%c): %u / %u, %zu edge requests %s", f, (f & 1) ? '+' : '-', (f & 2) ? '+' : '-', (f & 4) ? '+' : '-',
-                    m_faceRemaining[f], m_faceTotal[f], m_faceEdgeQueue[f].size() - m_faceEdgeHead[f], (m_visibleFaceMask & (1u << f)) ? "(visible)" : "");
+                    m_streamOrder.FaceRemaining(f), m_streamOrder.FaceTotal(f), m_faceEdgeQueue[f].size() - m_faceEdgeHead[f], (m_streamOrder.VisibleFaceMask() & (1u << f)) ? "(visible)" : "");
                 tip += b;
             }
             ImGui::SetTooltip("%s", tip.c_str());
@@ -3614,7 +3639,7 @@ namespace Surfels
     // wrong, the reason is written on the screen. Draws nothing when no such mode is active. Ordinary
     // quality/performance settings (TAA, dithering, cone culling, the occlusion volume itself) are not
     // listed -- they are the normal picture, not a departure from it.
-    void PreprocessApp::DrawRenderModeBanner(float leftPanelWidth, float rightPanelWidth)
+    void SurfelsApp::DrawRenderModeBanner(float leftPanelWidth, float rightPanelWidth)
     {
         struct ModeLine { char text[128]; ImVec4 color; };
         ModeLine lines[16];
@@ -3645,9 +3670,11 @@ namespace Surfels
         if (m_enableStreamingSimulation && !m_unthrottledBandwidth) add(ImVec4(1.00f, 0.80f, 0.30f, 1.0f), "STREAMING: Bandwidth throttle %.1f MB/s enabled", m_bandwidthThrottleMBps);
         if (!m_autoLOD)                    add(ImVec4(0.50f, 1.00f, 0.50f, 1.0f), "RENDERER: Manual LOD %d enabled", m_selectedPreviewLOD);
         if (m_occlusionMipOverride >= 0)   add(ImVec4(1.00f, 0.55f, 0.80f, 1.0f), "RENDERER: Occlusion Volume Mip %d forced enabled", m_occlusionMipOverride);
+        // The open stand-in codec is a different product: say so on every frame, in one short row.
+        if (!CodecBuild::IsProprietary()) add(ImVec4(1.00f, 0.35f, 0.35f, 1.0f), "CODEC: %s (%s)", CodecBuild::Name(), CodecBuild::MissingFeatures());
         // Hardware fallbacks: one row per GPU stage the render path is not using, so a screenshot from a
-        // machine without mesh shaders says exactly which stages it lacks (PreprocessRenderer::RenderPath).
-        if (m_pRenderer && m_pRenderer->GetRenderPath() != PreprocessRenderer::RenderPath::MeshShaders)
+        // machine without mesh shaders says exactly which stages it lacks (SurfelsRenderer::RenderPath).
+        if (m_pRenderer && m_pRenderer->GetRenderPath() != SurfelsRenderer::RenderPath::MeshShaders)
         {
             const auto& caps = m_pRenderer->GetGpuCapabilities();
             const ImVec4 hw(1.00f, 0.40f, 0.30f, 1.0f);
@@ -3655,7 +3682,7 @@ namespace Surfels
             const char* why = forced ? "bypassed (forced)" : (caps.meshPipelineFailed ? "pipeline failed" : "unavailable");
             add(hw, "RENDERER: Amplification shader %s, VS chunk culling enabled", why);
             add(hw, "RENDERER: Mesh shader %s, instanced VS splats enabled", why);
-            if (m_pRenderer->GetRenderPath() == PreprocessRenderer::RenderPath::VertexShadersSM5)
+            if (m_pRenderer->GetRenderPath() == SurfelsRenderer::RenderPath::VertexShadersSM5)
                 add(hw, "RENDERER: Shader Model 6 %s, SM 5.1 legacy compiler enabled", (forced && caps.shaderModel6) ? "bypassed (forced)" : "unavailable");
         }
         if (count == 0) return;
@@ -3691,7 +3718,7 @@ namespace Surfels
     // top/bottom of the canvas (below the menu bar, above the status bar) -- and never past it. The
     // margin is one centimetre on the actual display (from its DPI). Found by bisection on the distance
     // against the projected box corners, so the result is exact for the view that will be shown.
-    float PreprocessApp::FitDistanceForViewport() const
+    float SurfelsApp::FitDistanceForViewport() const
     {
         if (!(m_extents.x > 1e-6f || m_extents.y > 1e-6f || m_extents.z > 1e-6f)) return 25.0f;
         // The startup dataset loads before the window has been sized (OnCreate runs ahead of the first
@@ -3763,7 +3790,7 @@ namespace Surfels
     // "Reset View" button in the bottom-left corner of the viewport (just right of the left panel, just
     // above the status bar): puts the camera back to the launch view -- the default orbit angle, centred
     // on the model, at the distance that fits it between the control panels.
-    void PreprocessApp::DrawResetViewButton(float leftPanelWidth)
+    void SurfelsApp::DrawResetViewButton(float leftPanelWidth)
     {
         const float x = 10.0f + leftPanelWidth + 10.0f;
         const float y = (float)m_Height - 32.0f - 6.0f;
@@ -3796,7 +3823,7 @@ namespace Surfels
     // control. The bindings listed must match UpdateCamera: left-drag or Left/Right arrows orbit; the
     // wheel, right-drag, W/S, Up/Down, PageUp/PageDown and +/- zoom; Shift with any drag or with the
     // arrow keys pans.
-    void PreprocessApp::DrawControlHints(float leftPanelWidth, float rightPanelWidth)
+    void SurfelsApp::DrawControlHints(float leftPanelWidth, float rightPanelWidth)
     {
         if (!m_showControlHints) return; // "Show Camera Control Hints" unchecked on the Renderer tab's viewport section
 
@@ -3846,7 +3873,7 @@ namespace Surfels
     // the viewer shows exactly what was packaged and offers nothing that would change it. "View
     // Occlusion Volume Only" is intentionally independent of "Show Occlusion Volume" -- wanting to
     // just look at the volume shouldn't require also turning on splat culling against it.
-    void PreprocessApp::DrawOcclusionVolumeControls()
+    void SurfelsApp::DrawOcclusionVolumeControls()
     {
         ImGui::Checkbox("Show Occlusion Volume", &m_enableOcclusionCulling);
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Draws the baked interior occlusion volume (%zu cubes) and depth-tests the splats against it, so far-side surfels don't show through gaps in the near side. On by default.", m_occlusionVoxels.size());
@@ -3856,7 +3883,7 @@ namespace Surfels
 
         // Mip chain (v6+ packages): which level the renderer is drawing, with a manual override for
         // comparing levels. Automatic selection is by projected cell size (see
-        // PreprocessRenderer::SelectOcclusionMip), never by per-chunk surfel LOD.
+        // SurfelsRenderer::SelectOcclusionMip), never by per-chunk surfel LOD.
         if (m_occlusionMips.mipCount > 1)
         {
             const uint32_t activeMip = m_pRenderer ? m_pRenderer->GetActiveOcclusionMip() : 0;
@@ -3882,7 +3909,7 @@ namespace Surfels
 
     // Thin wrappers over the header-only generator in OcclusionVolume.h, which holds the algorithm
     // and its documentation; these just route app state in and the trace log out.
-    XMFLOAT3 PreprocessApp::GradeOcclusionColor(const XMFLOAT3& rgb) const
+    XMFLOAT3 SurfelsApp::GradeOcclusionColor(const XMFLOAT3& rgb) const
     {
         OcclusionVolume::ColorGrade grade{ m_occlusionHueShift, m_occlusionSaturation, m_occlusionBrightness };
         return OcclusionVolume::GradeColor(grade, rgb);
@@ -3892,7 +3919,7 @@ namespace Surfels
     // off. Called live from the Surfel Generator sliders (the bake is grid work over the raw points --
     // fast enough to drag) and on every full pipeline recompute. A freshly baked volume is switched on
     // straight away so the change is visible without also hunting for the Renderer-tab toggle.
-    void PreprocessApp::RefreshOcclusionVolume()
+    void SurfelsApp::RefreshOcclusionVolume()
     {
         if (m_generateOcclusionVolume)
         {
@@ -3911,7 +3938,7 @@ namespace Surfels
         m_occlusionVoxelsVersion++;
     }
 
-    void PreprocessApp::BuildOcclusionGrid()
+    void SurfelsApp::BuildOcclusionGrid()
     {
         const auto& sourcePoints = !m_rawSurfels.empty() ? m_rawSurfels : m_rendererRawSurfels;
         std::string trace;
@@ -3919,7 +3946,7 @@ namespace Surfels
         if (!trace.empty()) LogTransitionTrace("%s", trace.c_str());
     }
 
-    void PreprocessApp::BuildOcclusionVolume()
+    void SurfelsApp::BuildOcclusionVolume()
     {
         if (!m_occlusionGrid.valid) BuildOcclusionGrid();
         OcclusionVolume::ColorGrade grade{ m_occlusionHueShift, m_occlusionSaturation, m_occlusionBrightness };
@@ -3929,7 +3956,7 @@ namespace Surfels
     }
 
     // Voxelizes the loaded point cloud into a density heatmap for the cluster-cube visualizer
-    void PreprocessApp::RebuildHeatmapClusterCubes()
+    void SurfelsApp::RebuildHeatmapClusterCubes()
     {
         m_heatmapClusterCubes.clear();
         const auto& sourcePoints = !m_rawSurfels.empty() ? m_rawSurfels : m_rendererRawSurfels;
@@ -4078,7 +4105,7 @@ namespace Surfels
     }
 
     // Draws the ImGui-drawlist wireframe/heatmap overlay for the octree and cluster-cube visualizers
-    void PreprocessApp::DrawOctreeVisualizer()
+    void SurfelsApp::DrawOctreeVisualizer()
     {
         if (!m_showClusterHeatmap && !m_showOctreeVisualizer && !m_showGlobalBounds && !m_detachCamera && !m_highlightSilhouetteChunks)
             return;
@@ -4639,8 +4666,8 @@ namespace Surfels
         }
     }
 
-    // Per-frame entry point: builds the UI, advances the streaming simulation and camera, then hands off to PreprocessRenderer
-    void PreprocessApp::OnRender()
+    // Per-frame entry point: builds the UI, advances the streaming simulation and camera, then hands off to SurfelsRenderer
+    void SurfelsApp::OnRender()
     {
         // Safely execute any modal/file operations before beginning the ImGui frame
         ExecutePendingAction();
@@ -4722,7 +4749,7 @@ namespace Surfels
             ImGui::EndFrame();
             LogD3D12Messages();
             HRESULT removeReason = m_device.GetDevice() ? m_device.GetDevice()->GetDeviceRemovedReason() : E_FAIL;
-            LogTransitionTrace("!!! PreprocessApp::OnRender std::exception: '%s', deviceRemovedReason=0x%08X !!!", e.what(), (uint32_t)removeReason);
+            LogTransitionTrace("!!! SurfelsApp::OnRender std::exception: '%s', deviceRemovedReason=0x%08X !!!", e.what(), (uint32_t)removeReason);
             if (removeReason != S_OK)
             {
                 std::stringstream ss;
@@ -4735,7 +4762,7 @@ namespace Surfels
             ImGui::EndFrame();
             LogD3D12Messages();
             HRESULT removeReason = m_device.GetDevice() ? m_device.GetDevice()->GetDeviceRemovedReason() : E_FAIL;
-            LogTransitionTrace("!!! PreprocessApp::OnRender UNKNOWN EXCEPTION CAUGHT, deviceRemovedReason=0x%08X !!!", (uint32_t)removeReason);
+            LogTransitionTrace("!!! SurfelsApp::OnRender UNKNOWN EXCEPTION CAUGHT, deviceRemovedReason=0x%08X !!!", (uint32_t)removeReason);
             if (removeReason != S_OK)
             {
                 std::stringstream ss;
@@ -4744,7 +4771,7 @@ namespace Surfels
             }
             else
             {
-                Trace("PreprocessApp::OnRender: transient render/present glitch; continuing on next frame.\n");
+                Trace("SurfelsApp::OnRender: transient render/present glitch; continuing on next frame.\n");
             }
         }
     }
@@ -4756,7 +4783,7 @@ namespace Surfels
     // pipeline to draw, the in-app status message text is never actually presented once we're in this
     // state, so surface the failure via a plain Win32 message box instead (needs no GPU), then exit
     // cleanly rather than leave the user staring at an unresponsive window.
-    void PreprocessApp::ReportDeviceLostAndExit(const std::string& message)
+    void SurfelsApp::ReportDeviceLostAndExit(const std::string& message)
     {
         if (m_deviceLost) return; // Already reported/exiting -- avoid stacking duplicate dialogs
         m_deviceLost = true;
@@ -4766,7 +4793,8 @@ namespace Surfels
         Trace("%s\n", message.c_str());
 
         std::string dialogText = message + "\n\nThe application cannot recover from this and will now close.";
-        MessageBoxA(nullptr, dialogText.c_str(), "SplatLab - GPU Device Lost", MB_OK | MB_ICONERROR);
+        const std::string dialogTitle = std::string(AppTitle()) + " - GPU Device Lost";
+        MessageBoxA(nullptr, dialogText.c_str(), dialogTitle.c_str(), MB_OK | MB_ICONERROR);
         PostQuitMessage(0);
     }
 }

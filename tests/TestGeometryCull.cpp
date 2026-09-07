@@ -9,7 +9,7 @@
 #include <vector>
 #include <cassert>
 #include <DirectXMath.h>
-#include "../src/DX12/Wavelet/WaveletTypes.h"
+#include "../src/SurfelsCore/WaveletTypes.h"
 
 using namespace DirectX;
 using namespace Surfels;

@@ -11,7 +11,7 @@
 #include <cmath>
 #include <algorithm>
 #include <string>
-#include "../../src/DX12/Wavelet/WaveletTypes.h"
+#include "WaveletTypes.h"
 
 namespace Surfels
 {

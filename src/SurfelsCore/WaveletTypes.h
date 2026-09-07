@@ -9,6 +9,7 @@
 
 #pragma once
 #include <cstdint>
+#include <cstddef>
 #include <cmath>
 #include <algorithm>
 #include <string>
@@ -54,11 +55,12 @@ namespace Surfels
                                                  // reader draws the whole array and still sees a correct
                                                  // volume, because every coarser mip lies strictly inside
                                                  // mip 0's skin (see OcclusionMipTable).
-                                                 // v7 adds the detail heatmap grid (detailGridDims,
+                                                 // v7 adds the detail grid (detailGridDims,
                                                  // detailGridCellSize, detailGridOffset): one byte per
-                                                 // cell scoring how much fine detail each region of the
-                                                 // model holds, stored after the occlusion voxels, which
-                                                 // first (see DetailHeatmap.h). Older readers ignore it.
+                                                 // cell over the model's bounds, stored after the
+                                                 // occlusion voxels, an input to the streaming order
+                                                 // (libs/bluesec-codec/DetailHeatmap.h). Older readers
+                                                 // ignore it.
 
     // Upper bound on the occlusion volume mip chain: mip 0 plus up to three coarser levels. Blocks fall
     // by roughly 4x per level (the skin is a surface), so the whole chain costs about a third more than
@@ -66,7 +68,7 @@ namespace Surfels
     static constexpr uint32_t kMaxOcclusionMips = 4;
 
     #pragma pack(push, 1)
-    // One baked occluder block of the interior occlusion volume (see PreprocessApp::BuildOcclusionVolume).
+    // One baked occluder block of the interior occlusion volume (see SurfelsApp::BuildOcclusionVolume).
     // The volume is a closed voxel solid -- every fine grid cell that cannot be reached from outside the
     // model without crossing a surfel-occupied cell (the surfel-occupied shell plus everything it
     // encloses) -- eroded by a baked number of cell layers so it sits just inside the surfel shell, and
@@ -100,7 +102,7 @@ namespace Surfels
     // in-memory result of OcclusionVolume::Bake). Mip 0 is the finest volume -- the level-0 skin, sitting
     // one below it and can never protrude, and its exposed-face masks are recomputed against its own
     // solid. The renderer draws exactly ONE mip per frame, chosen so a cell still covers a few pixels at
-    // the model's nearest point (see PreprocessRenderer): at distance the fine skin is sub-pixel work and,
+    // the model's nearest point (see SurfelsRenderer): at distance the fine skin is sub-pixel work and,
     // worse, too tight for the big coarse-LOD splats it is paired with (a tangent disc sags below a
     // curved surface by ~r^2 / 2R, and gets clipped once that exceeds the skin's erosion margin), so the
     // cube size and the erosion margin grow together with the surfel LOD in view.
@@ -288,6 +290,141 @@ namespace Surfels
             outChunks.push_back(std::move(cm));
         }
         return true;
+    }
+
+    // ---- .sflw format validation --------------------------------------------------------------
+    // Shared by every loader (StreamPackager::LoadPackage for SplatLab and the tests, StreamingManager
+    // for the standalone viewer) so a bad package is diagnosed the same way everywhere. Each check
+    // fills outReason with a sentence a user can act on; the caller decides how to show it.
+
+    // Bytes a writer of the given format version put in its header: the struct grew by appending
+    // fields, so a v1..v6 header is shorter than sizeof(SFLWFileHeader). Anything below this is a
+    // truncated file, not an old one.
+    inline size_t SFLWHeaderBytesForVersion(uint32_t version)
+    {
+        if (version < 2) return offsetof(SFLWFileHeader, splatRadius);
+        if (version < 3) return offsetof(SFLWFileHeader, occlusionVoxelCount);
+        if (version < 4) return offsetof(SFLWFileHeader, manifestOffset);
+        if (version < 5) return offsetof(SFLWFileHeader, sourceFileBytes);
+        if (version < 6) return offsetof(SFLWFileHeader, occlusionMipCount);
+        if (version < 7) return offsetof(SFLWFileHeader, detailGridDims);
+        return sizeof(SFLWFileHeader);
+    }
+
+    // Validates a header that was read with one sizeof(SFLWFileHeader)-byte read (headerBytesRead is
+    // that read's gcount()). Only fields that exist in the file's own version are inspected -- the
+    // version-gated fields are zeroed by the caller afterwards exactly as before.
+    inline bool ValidateSFLWHeader(const SFLWFileHeader& h, size_t headerBytesRead, uint64_t fileSize, std::string& outReason)
+    {
+        char buf[256];
+        if (headerBytesRead < 8)
+        {
+            outReason = "The file is too small to be a .sflw package (it has no header).";
+            return false;
+        }
+        if (h.magic != SFLW_MAGIC)
+        {
+            snprintf(buf, sizeof(buf), "Not a .sflw package: the file signature is 0x%08X, expected 0x%08X (\"SFLW\").", h.magic, SFLW_MAGIC);
+            outReason = buf;
+            return false;
+        }
+        if (h.version == 0)
+        {
+            outReason = "The package header carries format version 0, which no SplatLab build has ever written.";
+            return false;
+        }
+        if (h.version > SFLW_VERSION)
+        {
+            snprintf(buf, sizeof(buf), "The package uses .sflw format version %u, but this build only reads up to version %u. It was written by a newer SplatLab.", h.version, SFLW_VERSION);
+            outReason = buf;
+            return false;
+        }
+        if (headerBytesRead < SFLWHeaderBytesForVersion(h.version))
+        {
+            snprintf(buf, sizeof(buf), "The file is truncated: a version %u header needs %zu bytes but only %zu were present.", h.version, SFLWHeaderBytesForVersion(h.version), headerBytesRead);
+            outReason = buf;
+            return false;
+        }
+        if (h.numChunks == 0)
+        {
+            outReason = "The package header lists zero chunks, so there is nothing to render.";
+            return false;
+        }
+        if (h.numChunks > 16u * 1024u * 1024u)
+        {
+            snprintf(buf, sizeof(buf), "The package header lists %u chunks, which is not a plausible count -- the header is corrupt.", h.numChunks);
+            outReason = buf;
+            return false;
+        }
+        if (h.version >= 4)
+        {
+            if (h.manifestOffset == 0 || h.manifestOffset >= fileSize)
+            {
+                snprintf(buf, sizeof(buf), "The chunk manifest offset (%llu) lies outside the file (%llu bytes). The package is corrupt or truncated.", (unsigned long long)h.manifestOffset, (unsigned long long)fileSize);
+                outReason = buf;
+                return false;
+            }
+        }
+        if (h.version >= 3 && h.occlusionVoxelCount > 0)
+        {
+            const uint64_t end = h.occlusionVoxelOffset + (uint64_t)h.occlusionVoxelCount * sizeof(OcclusionVoxelGPU);
+            if (h.occlusionVoxelOffset == 0 || end > fileSize)
+            {
+                outReason = "The occlusion volume data extends past the end of the file. The package is corrupt or truncated.";
+                return false;
+            }
+        }
+        return true;
+    }
+
+    // Validates every chunk's LOD table against the file size: offsets inside the file and byte sizes
+    // consistent with the surfel count. Catches truncated downloads and manifests from a different
+    // surfel layout before any payload is decoded.
+    inline bool ValidateSFLWManifest(const std::vector<ChunkManifest>& chunks, uint64_t fileSize, std::string& outReason)
+    {
+        char buf[256];
+        if (chunks.empty())
+        {
+            outReason = "The chunk manifest is empty.";
+            return false;
+        }
+        for (size_t c = 0; c < chunks.size(); c++)
+        {
+            const ChunkManifest& cm = chunks[c];
+            if (cm.lods.empty())
+            {
+                snprintf(buf, sizeof(buf), "Chunk %zu has no LOD levels.", c);
+                outReason = buf;
+                return false;
+            }
+            for (size_t l = 0; l < cm.lods.size(); l++)
+            {
+                const ChunkLODHeader& lod = cm.lods[l];
+                if (lod.fileOffset + (uint64_t)lod.compressedByteSize > fileSize)
+                {
+                    snprintf(buf, sizeof(buf), "Chunk %zu LOD %zu (%u bytes at offset %llu) extends past the end of the %llu-byte file. The package is truncated.", c, l, lod.compressedByteSize, (unsigned long long)lod.fileOffset, (unsigned long long)fileSize);
+                    outReason = buf;
+                    return false;
+                }
+                if ((uint64_t)lod.uncompressedByteSize != (uint64_t)lod.surfelCount * sizeof(PackedSurfelGPU))
+                {
+                    snprintf(buf, sizeof(buf), "Chunk %zu LOD %zu declares %u surfels but %u payload bytes (expected %llu). The package was written with a different surfel layout.", c, l, lod.surfelCount, lod.uncompressedByteSize, (unsigned long long)lod.surfelCount * sizeof(PackedSurfelGPU));
+                    outReason = buf;
+                    return false;
+                }
+            }
+        }
+        return true;
+    }
+
+    // The advice appended to every "invalid package" report. Both loaders share it so the wording
+    // stays identical in the SplatLab dialog, the standalone viewer's dialog, and the console tools.
+    inline const char* SFLWRebakeAdvice()
+    {
+        return "If the file was copied or downloaded, retry with a fresh copy. Otherwise re-bake it: open the original "
+               ".ply or .splat in SplatLab's Surfel Generator and use Save Compressed Package (.sflw). Packages "
+               "written by the proprietary codec and by the open stand-in codec are not interchangeable, so a "
+               "package must be baked with the same codec build that will read it.";
     }
 
     // Parses the companion .json manifest that v1-v3 packages shipped alongside their .sflw. Only

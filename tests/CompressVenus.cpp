@@ -1,4 +1,4 @@
-// CompressVenus.cpp
+﻿// CompressVenus.cpp
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
@@ -12,9 +12,9 @@
 #include <fstream>
 #include <string>
 #include <vector>
-#include "../tools/SurfelsPreprocess/PLYLoader.h"
-#include "../tools/SurfelsPreprocess/SpatialOctree.h"
-#include "../tools/SurfelsPreprocess/StreamPackager.h"
+#include "../src/SurfelsCore/PLYLoader.h"
+#include "../src/SurfelsCore/SpatialOctree.h"
+#include "../src/SurfelsCore/StreamPackager.h"
 #include "../libs/bluesec-codec/OcclusionVolume.h"
 
 int main(int argc, char** argv)
@@ -50,7 +50,7 @@ int main(int argc, char** argv)
     }
     float maxDim = std::max(maxP.x - minP.x, std::max(maxP.y - minP.y, maxP.z - minP.z));
 
-    // Same automatic defaults SplatLab applies when a .ply is opened (PreprocessApp::RecomputeWaveletHierarchy)
+    // Same automatic defaults SplatLab applies when a .ply is opened (SurfelsApp::RecomputeWaveletHierarchy)
     float chunkSize = std::max(0.10f, maxDim / 4.0f);              // ~4x4x4 chunks per model
     uint32_t maxLODs = surfels.size() > 2000000 ? 5 : surfels.size() > 500000 ? 4 : surfels.size() > 100000 ? 3 : 2;
     float deadbandMeters = std::max(0.5f, maxDim * 1.5f) / 1000.0f; // Deadband scales with model size
@@ -59,7 +59,7 @@ int main(int argc, char** argv)
     std::cout << "Loaded " << surfels.size() << " points, extent " << maxDim << ". chunk=" << chunkSize
               << " lods=" << maxLODs << " deadband=" << deadbandMeters * 1000.0f << "mm" << std::endl;
 
-    // Detail heatmap (v7+): the streaming order, baked from the original cloud (see DetailHeatmap.h)
+    // Detail grid (v7+): an input to the streaming order, baked from the original cloud (libs/bluesec-codec/DetailHeatmap.h)
     Surfels::DetailGrid detailGrid = Surfels::DetailGrid::Build(surfels, minP, maxP);
     std::cout << "Detail heatmap: detail grid " << detailGrid.nx << "x" << detailGrid.ny << "x" << detailGrid.nz
               << " cells (" << detailGrid.cellSize << " m), " << detailGrid.occupiedCells << " occupied" << std::endl;
