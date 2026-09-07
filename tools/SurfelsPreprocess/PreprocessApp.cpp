@@ -3397,8 +3397,15 @@ namespace Surfels
         ImGui::Spacing();
         ImGui::Separator();
 
-        // Control buttons directly under the residency indicators
-        if (ImGui::Button("Evict", ImVec2(70.0f, 0.0f)))
+        // Control buttons directly under the residency indicators. Evict is the one destructive button
+        // here (it scrubs every level but the two pinned coarsest ones), so it is red.
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.62f, 0.14f, 0.14f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.80f, 0.20f, 0.20f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, ImVec4(0.95f, 0.30f, 0.25f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.95f, 0.95f, 1.0f));
+        const bool evictPressed = ImGui::Button("Evict", ImVec2(70.0f, 0.0f));
+        ImGui::PopStyleColor(4);
+        if (evictPressed)
         {
             ClearResidentStream();
         }
