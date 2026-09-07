@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.24)
 # Vulkan SDK is never required just to build this sample.
 set(GFX_API "DX12")
 
-project(Surfels_${GFX_API})
+project(SurfelsPrivate_${GFX_API})
 
 if(MSVC_TOOLSET_VERSION VERSION_LESS 142)
     message(FATAL_ERROR "Cannot find MSVC toolset version 142 or greater. Please make sure Visual Studio 2019 or newer is installed")
@@ -48,6 +48,22 @@ add_subdirectory(src/SurfelsCore)   # surfels_core: everything both executables 
 add_subdirectory(src/DX12)
 add_subdirectory(tools/SurfelsPreprocess)
 add_subdirectory(tests)
+
+# Never run a stale binary: before any executable links, every .exe/.pdb in bin/ is deleted (both
+# configurations -- an old Debug build next to a fresh Release one is exactly the trap this closes).
+# One custom target that every executable depends on, so it runs once per build invocation, ahead of
+# the links, whether the whole solution or a single project is built. The cost is a relink of each
+# target built, since its output is always gone.
+add_custom_target(clean_stale_binaries
+    COMMAND ${CMAKE_COMMAND} -DBIN_DIR=${CMAKE_HOME_DIRECTORY}/bin -P ${CMAKE_SOURCE_DIR}/cmake/CleanStaleBinaries.cmake
+    COMMENT "Removing stale executables from bin/"
+)
+set_target_properties(clean_stale_binaries PROPERTIES FOLDER "Core")
+foreach(_exe SplatLab Surfels_DX12 CompressVenus TestGPUSort TestBitonicCPU TestLoadPackage TestSplatCodec TestGeometryCull TestOcclusionVolume)
+    if(TARGET ${_exe})
+        add_dependencies(${_exe} clean_stale_binaries)
+    endif()
+endforeach()
 
 # Without this, Visual Studio picks the alphabetically-first project as the
 # startup project, which is ALL_BUILD (or Docs) - neither is runnable, so F5
