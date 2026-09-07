@@ -249,6 +249,9 @@ namespace Surfels
         // behaviour), the swapchain's sRGB view for linear-space blending.
         ID3D12PipelineState* m_pSplatPSODisplay = nullptr;
         ID3D12PipelineState* m_pSplatPSOLinear = nullptr;
+        ID3D12PipelineState* m_pSplatPSODisplayDepth = nullptr; // Same, depth-tested (no write) against the occlusion volume
+        ID3D12PipelineState* m_pSplatPSOLinearDepth = nullptr;
+        ID3D12PipelineState* m_pOccluderPSOUnorm = nullptr;     // The occluder on the UNORM target of display-space splat blending
         DXGI_FORMAT          m_unormFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
         DXGI_FORMAT          m_srgbFormat = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
 

@@ -346,6 +346,23 @@ namespace Surfels
         {
             LogTransitionTrace("SurfelsRenderer::OnCreate ERROR: CreatePipelineState(occluder) failed hr=0x%08X -- occlusion volume feature will be a silent no-op.", (unsigned int)hrOccluderPSO);
         }
+        {
+            // Splat mode with display-space blending draws into a plain UNORM view; the occluder that
+            // writes depth for it needs a matching render-target format.
+            const DXGI_FORMAT swapFmtNow = pSwapChain->GetFormat();
+            const DXGI_FORMAT unormNow = (swapFmtNow == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB) ? DXGI_FORMAT_B8G8R8A8_UNORM
+                                       : (swapFmtNow == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) ? DXGI_FORMAT_R8G8B8A8_UNORM : swapFmtNow;
+            MeshShaderPipelineStateStream occluderUnorm = occluderStream;
+            D3D12_RT_FORMAT_ARRAY unormFormats = {};
+            unormFormats.NumRenderTargets = 1;
+            unormFormats.RTFormats[0] = unormNow;
+            occluderUnorm.RTVFormats = unormFormats;
+            D3D12_PIPELINE_STATE_STREAM_DESC occluderUnormDesc = {};
+            occluderUnormDesc.SizeInBytes = sizeof(occluderUnorm);
+            occluderUnormDesc.pPipelineStateSubobjectStream = &occluderUnorm;
+            if (FAILED(device2->CreatePipelineState(&occluderUnormDesc, IID_PPV_ARGS(&m_pOccluderPSOUnorm))))
+                LogTransitionTrace("SurfelsRenderer::OnCreate ERROR: CreatePipelineState(occluder UNORM) failed -- splat mode draws without the occlusion volume when blending in display space.");
+        }
 
         // Depth-test-only variant of the main splat pipeline: same mainAS/mainMS/mainPS as m_pPipelineState,
         // but tests (does not write) depth so splats behind the occluder volume above get discarded, while
@@ -418,6 +435,24 @@ namespace Surfels
             };
             makeSplat(m_unormFormat, &m_pSplatPSODisplay, "splat display");
             makeSplat(m_srgbFormat, &m_pSplatPSOLinear, "splat linear");
+            // Depth-tested variants (no write): splats behind the interior occlusion volume are rejected
+            auto makeSplatDepth = [&](DXGI_FORMAT fmt, ID3D12PipelineState** ppOut, const char* name)
+            {
+                MeshShaderPipelineStateStream v = stream;
+                v.DepthStencilState = depthStencilOcclusionTest;
+                v.BlendState = blendDesc;
+                D3D12_RT_FORMAT_ARRAY fmts = {};
+                fmts.NumRenderTargets = 1;
+                fmts.RTFormats[0] = fmt;
+                v.RTVFormats = fmts;
+                D3D12_PIPELINE_STATE_STREAM_DESC vd = {};
+                vd.SizeInBytes = sizeof(v);
+                vd.pPipelineStateSubobjectStream = &v;
+                if (FAILED(device2->CreatePipelineState(&vd, IID_PPV_ARGS(ppOut))))
+                    LogTransitionTrace("SurfelsRenderer::OnCreate ERROR: CreatePipelineState(%s) failed -- splat mode will not depth-test against the occlusion volume.", name);
+            };
+            makeSplatDepth(m_unormFormat, &m_pSplatPSODisplayDepth, "splat display depth");
+            makeSplatDepth(m_srgbFormat, &m_pSplatPSOLinearDepth, "splat linear depth");
         }
 
         if (FAILED(hrMainPSO) || FAILED(hrItemPSO) || m_pPipelineState == nullptr || m_pItemPrepassPSO == nullptr)
@@ -433,6 +468,9 @@ namespace Surfels
             if (m_pPipelineStateCulledColor) { m_pPipelineStateCulledColor->Release(); m_pPipelineStateCulledColor = nullptr; }
             if (m_pSplatPSODisplay) { m_pSplatPSODisplay->Release(); m_pSplatPSODisplay = nullptr; }
             if (m_pSplatPSOLinear) { m_pSplatPSOLinear->Release(); m_pSplatPSOLinear = nullptr; }
+            if (m_pSplatPSODisplayDepth) { m_pSplatPSODisplayDepth->Release(); m_pSplatPSODisplayDepth = nullptr; }
+            if (m_pSplatPSOLinearDepth) { m_pSplatPSOLinearDepth->Release(); m_pSplatPSOLinearDepth = nullptr; }
+            if (m_pOccluderPSOUnorm) { m_pOccluderPSOUnorm->Release(); m_pOccluderPSOUnorm = nullptr; }
             if (m_pItemPrepassPSO) { m_pItemPrepassPSO->Release(); m_pItemPrepassPSO = nullptr; }
             if (m_pOccluderPSO) { m_pOccluderPSO->Release(); m_pOccluderPSO = nullptr; }
             m_gpuCaps.meshPipelineFailed = true;
@@ -783,9 +821,14 @@ namespace Surfels
         }
         create(vs, ps, splatBlend, depthOff, m_unormFormat, &m_pSplatPSODisplay, "splat display");
         create(vs, ps, splatBlend, depthOff, m_srgbFormat, &m_pSplatPSOLinear, "splat linear");
+        create(vs, ps, splatBlend, depthTestOnly, m_unormFormat, &m_pSplatPSODisplayDepth, "splat display depth");
+        create(vs, ps, splatBlend, depthTestOnly, m_srgbFormat, &m_pSplatPSOLinearDepth, "splat linear depth");
         ok = create(itemVs, itemPs, opaqueBlend, depthWrite, DXGI_FORMAT_R32_UINT, &m_pItemPrepassPSO, "item prepass") && ok;
         if (occOk)
+        {
             create(occVs, occPs, opaqueBlend, depthWrite, pSwapChain->GetFormat(), &m_pOccluderPSO, "occluder");
+            create(occVs, occPs, opaqueBlend, depthWrite, m_unormFormat, &m_pOccluderPSOUnorm, "occluder UNORM");
+        }
         if (!ok)
         {
             char msg[256];
@@ -852,6 +895,9 @@ namespace Surfels
         if (m_pSplatSortRootSig) { m_pSplatSortRootSig->Release(); m_pSplatSortRootSig = nullptr; }
         if (m_pSplatPSODisplay) { m_pSplatPSODisplay->Release(); m_pSplatPSODisplay = nullptr; }
         if (m_pSplatPSOLinear) { m_pSplatPSOLinear->Release(); m_pSplatPSOLinear = nullptr; }
+        if (m_pSplatPSODisplayDepth) { m_pSplatPSODisplayDepth->Release(); m_pSplatPSODisplayDepth = nullptr; }
+        if (m_pSplatPSOLinearDepth) { m_pSplatPSOLinearDepth->Release(); m_pSplatPSOLinearDepth = nullptr; }
+        if (m_pOccluderPSOUnorm) { m_pOccluderPSOUnorm->Release(); m_pOccluderPSOUnorm = nullptr; }
         if (m_pBackBufferUnormRtvHeap) { m_pBackBufferUnormRtvHeap->Release(); m_pBackBufferUnormRtvHeap = nullptr; }
 
         if (m_pChunkUploadBuffer) { m_pChunkUploadBuffer->Unmap(0, nullptr); m_pChunkUploadBuffer->Release(); m_pChunkUploadBuffer = nullptr; }
@@ -2271,7 +2317,9 @@ namespace Surfels
             // Drawn whenever culling is enabled OR the user just wants to look at the volume on its
             // own -- "view only" must not require "enable culling" too, or the two together would draw
             // neither the occluder (culling off) nor the splats (view-only skips them): a blank screen.
-            if (pState->renderMode == 3) return; // Splat mode: no occlusion volume pass (and its PSO's target format may not match the splat target)
+            // Splat mode with display-space blending draws into the UNORM view: use the occluder PSO built for it
+            ID3D12PipelineState* pOccluderPSO = splatDisplayBlend ? m_pOccluderPSOUnorm : m_pOccluderPSO;
+            if (pOccluderPSO == nullptr) return;
             bool wantOccluderVisible = pState->enableOcclusionCulling || pState->showOcclusionVolumeOnly;
             if (!wantOccluderVisible || pState->occlusionVoxelCount == 0 || occluderBlockCount == 0 || m_pOcclusionVoxelBuffer == nullptr || m_pOccluderPSO == nullptr)
                 return;
@@ -2279,7 +2327,7 @@ namespace Surfels
             auto occluderStart = std::chrono::high_resolution_clock::now();
 
             pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
-            pCmdLst->SetPipelineState(m_pOccluderPSO);
+            pCmdLst->SetPipelineState(pOccluderPSO);
             pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
             pCmdLst->SetGraphicsRootShaderResourceView(1, 0); // Unused by occluderMS/PS
             pCmdLst->SetGraphicsRootShaderResourceView(2, 0); // Unused by occluderMS/PS
@@ -2310,7 +2358,12 @@ namespace Surfels
             ? m_pPipelineStateOcclusionTest
             : m_pPipelineState;
         if (pState->renderMode == 3)
-            pMainSplatPSO = (pState->splatBlendSpace == 1 && m_pSplatPSOLinear != nullptr) ? m_pSplatPSOLinear : m_pSplatPSODisplay;
+        {
+            const bool linear = (pState->splatBlendSpace == 1 && m_pSplatPSOLinear != nullptr);
+            const bool occlude = pState->enableOcclusionCulling && pState->occlusionVoxelCount > 0 && m_pOcclusionVoxelBuffer != nullptr;
+            pMainSplatPSO = linear ? ((occlude && m_pSplatPSOLinearDepth) ? m_pSplatPSOLinearDepth : m_pSplatPSOLinear)
+                                   : ((occlude && m_pSplatPSODisplayDepth) ? m_pSplatPSODisplayDepth : m_pSplatPSODisplay);
+        }
 
         // Detach Camera: the three-pass sequence needs its PSOs and a second constant buffer that only
         // differs in culledPass (the shader draws either the frozen camera's splats or the culled ones).
