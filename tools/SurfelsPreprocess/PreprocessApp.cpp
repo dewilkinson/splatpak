@@ -988,6 +988,10 @@ namespace Surfels
             cd.aabbMin = cm.aabbMin;
             cd.aabbMax = cm.aabbMax;
             m_rendererOctreeChunks.push_back(cd);
+            // The chunk's points too: Save Compressed Package re-runs the wavelet pipeline over m_chunks,
+            // and with only the bounds filled in (as this used to do) every chunk decomposed to nothing,
+            // so a package re-saved from a loaded package came out with a single level.
+            cd.surfels = Quantizer::UnquantizeSurfels(surfels, m_aabbMin, m_aabbMax);
             m_chunks.push_back(cd);
         }
 
@@ -1036,6 +1040,14 @@ namespace Surfels
         for (const auto& cm : m_loadedPackage.chunkManifests)
         {
             numLODs = std::max(numLODs, cm.lods.size());
+        }
+        // The Max Wavelet LODs control follows the package, so a re-save reproduces the same hierarchy
+        // instead of whatever the slider last held (levels = Max Wavelet LODs + 1).
+        if (numLODs >= 2) m_maxLODLevels = (int)numLODs - 1;
+        {
+            size_t chunkPoints = 0;
+            for (const auto& cd : m_chunks) chunkPoints += cd.surfels.size();
+            LogTransitionTrace("LoadSFLW: %zu chunks carry %zu points for re-export, %zu levels in package, Max Wavelet LODs set to %d", m_chunks.size(), chunkPoints, numLODs, m_maxLODLevels);
         }
 
         for (size_t lvl = 0; lvl < numLODs; lvl++)
