@@ -3117,6 +3117,10 @@ namespace Surfels
 
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
+
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
+
     // Draws the per-LOD-level residency bar graph plus the Evict/Decay Rate/Policy controls beside it
     void PreprocessApp::DrawLODResidencyEqualizer()
     {
@@ -3408,11 +3412,21 @@ namespace Surfels
         if (ImGui::SliderFloat("##DecaySlider", &m_streamDecayRate, 0.0f, kMaxDecayRate, "Decay Rate: %.2f"))
         {
             m_streamStateDirty = true;
+            CalibrateDecay();
         }
         if (ImGui::IsItemHovered())
         {
             float drainSeconds = DecayFullDrainSeconds();
-            if (m_streamDecayRate <= 0.0f)
+            if (m_enableStreamDecay && m_streamDecayRate > 0.0f && m_decayBytesPerSec > 0.0f)
+            {
+                const float inflow = m_unthrottledBandwidth ? 0.0f : m_bandwidthThrottleMBps;
+                const float outflowMB = m_decayBytesPerSec / (1024.0f * 1024.0f);
+                char ref[48];
+                if (m_decayReferenceBandwidthBps > 0.0f) snprintf(ref, sizeof(ref), "%.1f MB/s", m_decayReferenceBandwidthBps / (1024.0f * 1024.0f)); else snprintf(ref, sizeof(ref), "Full");
+                ImGui::SetTooltip("Decay outflow %.1f MB/s, fixed when the toggle or slider last changed (reference bandwidth %s: a full drain of every evictable level in ~%.1f s at that bandwidth).\nThe bandwidth throttle is now the knob: current inflow %s, so the net drain is %.1f MB/s.",
+                    outflowMB, ref, drainSeconds, m_unthrottledBandwidth ? "Full (uncapped)" : "", outflowMB - inflow);
+            }
+            else if (m_streamDecayRate <= 0.0f)
                 ImGui::SetTooltip("0 = no decay. Drag right to drain unused detail out of memory.\nIndependent of bandwidth: at 10 it clears everything but the two pinned\ncoarsest levels in %.0f s on any bandwidth setting.", kDecayFullDrainSecondsAtMaxRate);
             else
                 ImGui::SetTooltip("Full drain of all evictable levels in ~%.1f s, on any bandwidth setting.\nAt 10 it clears everything but the two pinned coarsest levels in %.0f s.",
@@ -3423,6 +3437,7 @@ namespace Surfels
         if (ImGui::Checkbox("Decay", &m_enableStreamDecay))
         {
             m_streamStateDirty = true;
+            CalibrateDecay();
         }
         if (ImGui::IsItemHovered())
         {

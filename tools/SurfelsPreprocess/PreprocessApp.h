@@ -283,7 +283,7 @@ namespace Surfels
             Greedy       = 1  // Refines visible chunks first, then continues pre-fetching remaining background chunks
         };
 
-        StreamingPolicy m_streamingPolicy           = StreamingPolicy::Greedy; // Greedy (default) or Conservative
+        StreamingPolicy m_streamingPolicy           = StreamingPolicy::Conservative; // Conservative (default) or Greedy
         float  m_conservativeNeighborBufferMargin   = 1.35f;  // Frustum margin for pre-fetching local neighbors in conservative mode
         bool   m_enableDitheredTransitions  = true;   // Stochastic screen-space Bayer dithering for smooth LOD transitions
         bool   m_demoteChunks               = false;  // Off: a node that has refined into its children stays refined when the zoom target coarsens or its edge flag drops (only Decay-marked children demote). On: the v1.2.0 handshake, children cross-fade back to the parent and are evicted
@@ -317,7 +317,16 @@ namespace Surfels
                                                         // cancels out. Scales linearly below max (5.0 = twice as long).
                                                         // See the decay budget calculation in UpdateStreamingSimulation.
         static constexpr float kMaxDecayRate                    = 10.0f; // Slider maximum
-        static constexpr float kDecayFullDrainSecondsAtMaxRate  = 3.0f;  // Full-drain time at rate 10, independent of bandwidth
+        static constexpr float kDecayFullDrainSecondsAtMaxRate  = 10.0f; // Full-drain time at rate 10, independent of bandwidth
+        // Decay is a fixed outflow in bytes per second, set only when the toggle or the slider changes
+        // (or a model loads): rate 10 = the whole evictable set in kDecayFullDrainSecondsAtMaxRate at the
+        // bandwidth in force at that moment (the reference bandwidth, added to the outflow so the NET
+        // drain at that bandwidth takes exactly that long; Full = no inflow term). Changing the bandwidth
+        // afterwards does not touch it, so the throttle becomes the knob for the net eviction rate.
+        float  m_decayBytesPerSec = 0.0f;
+        float  m_decayReferenceBandwidthBps = 0.0f;                     // 0 = Full (uncapped) was the reference
+        void   CalibrateDecay();
+        float  EvictableStreamBytes() const;                            // Everything but the two pinned coarsest levels
         float  DecayFullDrainSeconds() const;                            // Implied full-drain time for the current slider value (0 when decay is off)
         bool   m_isStreamingPaused          = false;  // Pause/Resume packet streaming
         float  m_simulatedBytesDelivered    = 0.0f;   // Transferred bytes accumulator
