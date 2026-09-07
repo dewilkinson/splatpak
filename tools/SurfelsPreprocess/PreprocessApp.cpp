@@ -2599,6 +2599,8 @@ namespace Surfels
                     ImGui::Checkbox("Prioritize View Frustum & Proximity", &m_prioritizeFrustumAndProximity);
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: within the detail ordering, blocks inside the view frustum are delivered before those outside it (then the neighbour band, then the rest), with view-centre and proximity breaking near-ties. Off: the pure detail ranking, model-wide, regardless of the camera.");
                     DrawOctahedronGlyph();
+                    ImGui::TextDisabled("Re-deliveries since reset: %u blocks streamed more than once (%u extra deliveries)", m_redeliveredBlocks, m_extraDeliveries);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Diagnostic. A block counts here when it is delivered, later evicted, and delivered again. With a still camera this should stay at zero; it rises only when something evicts blocks the view still wants (decay, or a demotion that used to evict).");
 
                     // Bandwidth Preset Buttons
                     ImGui::Text("Network Profiles:");

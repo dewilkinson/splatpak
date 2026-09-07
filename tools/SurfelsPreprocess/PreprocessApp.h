@@ -251,6 +251,7 @@ namespace Surfels
             bool     isRequested = false;
             bool     isEdgeQueued = false;         // Has an entry in one of the per-face edge queues (m_faceEdgeQueue); cleared when that entry is consumed
             uint32_t lastRequestFrame = 0;         // m_streamFrame of the traversal's most recent request for this block; an edge-queue entry not re-requested for a while is stale and dropped
+            uint32_t deliveryCount = 0;            // Deliveries since the last streaming reset (diagnostic: > 1 means the block was evicted and streamed again)
             bool     isDelivered = false;
             bool     isResident = false;
             bool     isEvictionPending = false;    // Marked for eviction: waiting for parent demotion transition to complete
@@ -353,6 +354,8 @@ namespace Surfels
         std::vector<ChunkRequest> m_faceEdgeQueue[kOctahedronFaces];
         size_t                    m_faceEdgeHead[kOctahedronFaces] = {};
         uint32_t                  m_streamFrame = 0;                   // Counts UpdateStreamingSimulation calls (request staleness)
+        uint32_t                  m_extraDeliveries = 0;               // Diagnostic: deliveries of blocks that had already been delivered since the last reset (re-streamed after an eviction)
+        uint32_t                  m_redeliveredBlocks = 0;             // Diagnostic: distinct blocks delivered more than once since the last reset
         void  ClearFaceEdgeQueues();                                // Drops every queued edge request (streaming reset)
         float    m_faceFacing[kOctahedronFaces] = {};                  // dot(face normal, direction to camera), this frame
         uint8_t  m_visibleFaceMask = 0xFF;                          // Bit i = face i visible this frame
