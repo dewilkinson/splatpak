@@ -22,6 +22,13 @@ namespace Surfels
 {
     static constexpr const char* kTraceLogFilename = "lod_transition_trace.log";
 
+    // Splat packages: the Gaussian level 0 (the reference 3DGS rendering of the finest level, with the
+    // level 1 -> 0 opacity hand-over in UpdateStreamingSimulation) is switched off for now. A 3DGS source
+    // still bakes as Gaussians (the 20-byte records and the SH stream carry the colours), but every level
+    // draws as discs (kSplatDiscMinLevel = 0 in Surfels.hlsl), and Match Level 0 Softness, which refers to
+    // the Gaussian level 0, is greyed out. Set true, and kSplatDiscMinLevel back to 1, to restore it.
+    static constexpr bool kSplatGaussianLevel0 = false;
+
     // Appends one timestamped line to the trace log -- the app's primary debugging aid for streaming/LOD issues
     void LogTransitionTrace(const char* fmt, ...)
     {
@@ -336,6 +343,19 @@ namespace Surfels
                         }
                     }
 
+                    // Splat mode, Match Level 0 Softness on/off (JSON or INI); see ComputeSplatSoftness.
+                    {
+                        size_t hPos = line.find("\"splat_disc_match_level0\":");
+                        size_t eqPos = std::string::npos;
+                        if (hPos != std::string::npos) eqPos = line.find(':', hPos);
+                        else if (line.find("splat_disc_match_level0=") != std::string::npos) eqPos = line.find('=');
+                        if (eqPos != std::string::npos)
+                        {
+                            std::string val = line.substr(eqPos + 1);
+                            m_splatDiscMatchLevel0 = !(val.find("false") != std::string::npos || val.find('0') != std::string::npos);
+                        }
+                    }
+
                     // Render path (JSON or INI): "auto" (default), "mesh", "vs6" (vertex shaders, Shader
                     // Model 6.0) or "vs5" (vertex shaders through the legacy Shader Model 5.1 compiler).
                     // Anything but auto forces that fallback on capable hardware, for testing; a path the
@@ -449,6 +469,7 @@ namespace Surfels
             out << "  \"default_deadband_mm\": 3.0,\n";
             out << "  \"occlusion_shave_bias\": " << m_occlusionShaveBiasCells << ",\n";
             out << "  \"show_control_hints\": " << (m_showControlHints ? "true" : "false") << ",\n";
+            out << "  \"splat_disc_match_level0\": " << (m_splatDiscMatchLevel0 ? "true" : "false") << ",\n";
             out << "  \"render_path\": \"" << m_renderPathConfig << "\",\n";
             out << "  \"last_dialog_folder\": \"" << m_lastDialogFolder << "\"\n";
             out << "}\n";
@@ -1181,6 +1202,9 @@ namespace Surfels
             64,
             m_enableMortonOrder
         );
+        // Splat mode: dilationMorph is the level 0 Gaussian fade-in weight (see AppendChunkToRenderer);
+        // chunks resident at load show Gaussians at once, so they carry 1
+        if (m_splatMode) for (auto& mc : m_rendererMeshletChunks) mc.dilationMorph = 1.0f;
 
         // Re-quantize to guarantee exact alignment with meshlet ordering
         m_rendererSurfels = Quantizer::QuantizeSurfels(m_rendererRawSurfels, m_aabbMin, m_aabbMax);
@@ -1649,7 +1673,10 @@ namespace Surfels
                 SpatialOctree::PartitionIntoMeshletChunks(m_residentLODs[lodIdx].rawSurfels, m_residentLODs[lodIdx].meshletChunks, 64, m_enableMortonOrder);
                 m_residentLODs[lodIdx].packedSurfels = Quantizer::QuantizeSurfels(m_residentLODs[lodIdx].rawSurfels, m_aabbMin, m_aabbMax);
                 if (m_splatMode)
+                {
                     EncodeSplatLevel(m_residentLODs[lodIdx].rawSurfels, (uint32_t)lodIdx, m_residentLODs[lodIdx].splats, m_residentLODs[lodIdx].splatSH);
+                    for (auto& mc : m_residentLODs[lodIdx].meshletChunks) mc.dilationMorph = 1.0f; // Resident at load: Gaussians at once (level 0 fade-in weight, see AppendChunkToRenderer)
+                }
             }
         }
         else
@@ -1659,7 +1686,10 @@ namespace Surfels
             SpatialOctree::PartitionIntoMeshletChunks(m_residentLODs[0].rawSurfels, m_residentLODs[0].meshletChunks, 64, m_enableMortonOrder);
             m_residentLODs[0].packedSurfels = Quantizer::QuantizeSurfels(m_residentLODs[0].rawSurfels, m_aabbMin, m_aabbMax);
             if (m_splatMode)
+            {
                 EncodeSplatLevel(m_residentLODs[0].rawSurfels, 0, m_residentLODs[0].splats, m_residentLODs[0].splatSH);
+                for (auto& mc : m_residentLODs[0].meshletChunks) mc.dilationMorph = 1.0f; // Resident at load: Gaussians at once (level 0 fade-in weight, see AppendChunkToRenderer)
+            }
         }
     }
 
@@ -2577,11 +2607,13 @@ namespace Surfels
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off: once a chunk has refined into its children it stays refined when you zoom out or its edge flag drops, so detail never fades back to the coarser level (Decay still reclaims memory). On: children cross-fade back to the parent and are evicted, as in v1.2.0.");
 
                     ImGui::Separator();
+#if 0 // DYNAMIC SILHOUETTE: GPU silhouette chunk processing switched off for now (re-enable by restoring this block)
                     if (ImGui::Checkbox("Highlight Edge Chunks", &m_highlightSilhouetteChunks))
                     {
                         m_streamStateDirty = true;
                     }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Visualizer toggle: highlights the active silhouette edge chunks.");
+#endif // DYNAMIC SILHOUETTE
 
                     DrawRefinementVisualizerControls("##Renderer");
 
@@ -2591,6 +2623,7 @@ namespace Surfels
                     }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Isolates active dynamic workload: hides static model geometry and renders ONLY chunks that are currently locked in transition or detected on the silhouette edge.");
 
+#if 0 // DYNAMIC SILHOUETTE: GPU silhouette chunk processing switched off for now (re-enable by restoring this block)
                     uint32_t liveEdgeChunks = 0;
                     uint32_t totalActiveChunks = 0;
                     if (m_enableStreamingSimulation)
@@ -2654,6 +2687,7 @@ namespace Surfels
                         }
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Unloads and immediately refreshes ONLY the silhouette edge chunks without touching or waving the rest of the model.");
                     }
+#endif // DYNAMIC SILHOUETTE
 
                 }
 
@@ -2686,6 +2720,19 @@ namespace Surfels
                         static const char* s_blendNames[] = { "Display space (reference viewer)", "Linear (sRGB target)" };
                         ImGui::Combo("Splat Blending", &m_splatBlendSpace, s_blendNames, IM_ARRAYSIZE(s_blendNames));
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where the Gaussians are blended. Display space blends the stored colours as they are, which is what the training rasterizer and SuperSplat do. Linear decodes them first and lets the sRGB target encode the result: physically tidier, slightly different from the reference.");
+                        // Greyed out while kSplatGaussianLevel0 is false (it refers to the Gaussian level 0): shown, but
+                        // edits go to a copy and are dropped; the saved value still sizes the discs of every level
+                        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, kSplatGaussianLevel0 ? 1.0f : 0.45f);
+                        bool matchShown = m_splatDiscMatchLevel0;
+                        if (ImGui::Checkbox("Match Level 0 Softness", &matchShown) && kSplatGaussianLevel0)
+                        {
+                            m_splatDiscMatchLevel0 = matchShown;
+                            SaveConfigFile();
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Sizes the coarse levels' discs from the level 0 Gaussians themselves: the median footprint of the level 0 records relative to their spacing gives a softness ratio, and every disc level takes the radius that gives its discs the same ratio to their own spacing, so a streamed model reads as one surface and the hand-over from discs to Gaussians is less visible. Discs of level 1 and up also take an opacity floor so a low-opacity record does not read as a hole. Off: discs are 1.5 x the level spacing with the record's opacity as is. Remembered across sessions.");
+                        ImGui::TextDisabled("Level 0 softness %.2f x spacing -> disc radius %.2f x spacing", m_splatSoftnessRatio, m_splatDiscMatchFactor);
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The level 0 records' median in-plane footprint sqrt(s_max x s_mid) divided by the level 0 point spacing, and the disc radius factor sqrt(8) x that ratio (a disc with the splat falloff of radius R is a Gaussian of sigma R / sqrt(8)), clamped to 1.5..4.0.");
+                        ImGui::PopStyleVar();
                     }
                     ImGui::SliderFloat("Splat Radius Scale", &m_state.splatRadius, 0.10f, 10.0f, "%.2fx");
                     ImGui::Checkbox("Auto Splat Size (per-level density)", &m_autoSplatSize);
@@ -2906,6 +2953,10 @@ namespace Surfels
                     DrawOctahedronGlyph();
                     ImGui::TextDisabled("Re-deliveries since reset: %u blocks streamed more than once (%u extra deliveries)", m_redeliveredBlocks, m_extraDeliveries);
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Diagnostic. A block counts here when it is delivered, later evicted, and delivered again. With a still camera this should stay at zero; it rises only when something evicts blocks the view still wants (decay, or a demotion that used to evict).");
+                    if (m_refineStartBudget == UINT32_MAX)
+                        ImGui::TextDisabled("Active transitions: %u. Refinement starts deferred: %u (budget unlimited)", m_lastActiveTransitions, m_refineStartsDeferred);
+                    else
+                        ImGui::TextDisabled("Active transitions: %u. Refinement starts deferred: %u (budget %u chunks)", m_lastActiveTransitions, m_refineStartsDeferred, m_refineStartBudget);
 
                     // Bandwidth Preset Buttons
                     ImGui::Text("Network Profiles:");
@@ -3036,10 +3087,12 @@ namespace Surfels
                 ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "  • CPU Radix Depth Sort (16-Bit):    %.2f ms", metrics.cpuSortTimeMs);
             }
 
+#if 0 // DYNAMIC SILHOUETTE: GPU silhouette chunk processing switched off for now (re-enable by restoring this block)
             if (m_enableSilhouetteLOD0 || m_highlightSilhouetteChunks)
             {
                 ImGui::TextColored(ImVec4(0.85f, 0.55f, 0.98f, 1.0f), "  • Silhouette Item Prepass:          %.2f ms", m_pRenderer->GetSmoothSilhouettePrepassMs());
             }
+#endif // DYNAMIC SILHOUETTE
 
             if (m_enableOcclusionCulling)
             {
@@ -3783,6 +3836,46 @@ namespace Surfels
 
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
+    // Splat mode: how soft the level 0 Gaussians are relative to their point spacing, so the coarse levels'
+    // discs can be sized to read the same (Match Level 0 Softness). The footprint of a record is
+    // sqrt(s_max x s_mid), the in-plane extent of a flat Gaussian (its smallest scale is the thickness),
+    // decoded from the scale bytes as the shader does; the median over a sample of up to 64k level 0
+    // records is divided by the level 0 spacing to give the softness ratio (a median so a few huge
+    // floaters cannot inflate it). A disc with the splat falloff exp(-4 (r/R)^2) is a Gaussian of sigma
+    // R / sqrt(8), so the disc radius factor that matches is sqrt(8) x ratio, clamped to 1.5..4.0: below
+    // 1.5 the discs would be narrower than the fixed rule, above 4 the fill cost (radius squared) is too
+    // high on dense views. Runs right after ComputeLodSpacing; the values are reset first, so a package
+    // without level 0 Gaussians leaves the fixed 1.5.
+    void SurfelsApp::ComputeSplatSoftness()
+    {
+        m_splatLevel0Footprint = 0.0f;
+        m_splatSoftnessRatio = 0.0f;
+        m_splatDiscMatchFactor = 1.5f;
+        if (!m_splatMode || m_residentLODs.empty() || m_residentLODs[0].splats.empty() || m_lodSpacing.empty()) return;
+        const std::vector<PackedSplatGPU>& records = m_residentLODs[0].splats;
+        const size_t total = records.size();
+        const size_t samples = std::min<size_t>(total, 65536);
+        const size_t stride = std::max<size_t>(1, total / samples);
+        const float log2Min = m_splatParams.scaleLog2Min, log2Max = m_splatParams.scaleLog2Max;
+        std::vector<float> footprints; footprints.reserve(samples);
+        for (size_t i = 0; i < total; i += stride)
+        {
+            const PackedSplatGPU& s = records[i];
+            // The three scale bytes as BuildGaussianSplat reads them: word1 bits 16..23, 24..31, word2 bits 0..7
+            float sc[3] = { (float)((s.word1 >> 16) & 0xFFu), (float)((s.word1 >> 24) & 0xFFu), (float)(s.word2 & 0xFFu) };
+            for (float& v : sc) v = exp2f(log2Min + (v / 255.0f) * (log2Max - log2Min));
+            std::sort(sc, sc + 3);
+            footprints.push_back(sqrtf(sc[2] * sc[1]));
+        }
+        if (footprints.empty()) return;
+        std::nth_element(footprints.begin(), footprints.begin() + footprints.size() / 2, footprints.end());
+        m_splatLevel0Footprint = footprints[footprints.size() / 2];
+        const float spacing0 = m_lodSpacing[0];
+        m_splatSoftnessRatio = (spacing0 > 0.0f) ? m_splatLevel0Footprint / spacing0 : 0.0f;
+        m_splatDiscMatchFactor = std::clamp(sqrtf(8.0f) * m_splatSoftnessRatio, 1.5f, 4.0f);
+        LogTransitionTrace("SplatSoftness: level 0 median footprint %.5f, spacing %.5f, ratio %.2f, disc radius factor %.2f", m_splatLevel0Footprint, spacing0, m_splatSoftnessRatio, m_splatDiscMatchFactor);
+    }
+
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
@@ -3903,7 +3996,7 @@ namespace Surfels
         if (m_showHeatmapWireframe)        add(ImVec4(0.92f, 0.82f, 0.60f, 1.0f), "RENDERER: Cube Outlines enabled");
         if (m_showOctreeVisualizer)        add(ImVec4(1.00f, 0.75f, 0.20f, 1.0f), "RENDERER: Macro Clusters enabled");
         if (m_showGlobalBounds)            add(ImVec4(0.40f, 0.60f, 1.00f, 1.0f), "RENDERER: Global Model Bounds enabled");
-        if (m_state.renderMode == 3)       add(ImVec4(0.55f, 0.85f, 1.00f, 1.0f), "SPLAT: 3D Gaussian mode, SH degree %u, %s-space blending", m_splatParams.shDegree, m_splatBlendSpace == 1 ? "linear" : "display");
+        if (m_state.renderMode == 3)       add(ImVec4(0.55f, 0.85f, 1.00f, 1.0f), kSplatGaussianLevel0 ? "SPLAT: 3D Gaussian mode, SH degree %u, %s-space blending, levels 1+ as discs" : "SPLAT: 3D Gaussian package, SH degree %u, %s-space blending, every level as discs (Gaussian level 0 off)", m_splatParams.shDegree, m_splatBlendSpace == 1 ? "linear" : "display");
         if (m_showCulledChunks)            add(ImVec4(0.80f, 0.80f, 0.80f, 1.0f), "RENDERER: Show Culled Chunks enabled");
         if (m_detachCamera)                add(ImVec4(0.30f, 0.90f, 1.00f, 1.0f), "RENDERER: Detach Camera (frozen culling frustum) enabled");
         if (m_freezeRenderingAndMemory)    add(ImVec4(0.55f, 0.75f, 1.00f, 1.0f), "STREAMING: Freeze Rendering & Memory enabled");
@@ -4944,7 +5037,19 @@ namespace Surfels
         m_state.arrivalGlowHue = m_arrivalGlowHue;
         m_state.autoSplatSize = m_autoSplatSize;
         for (int l = 0; l < 8; l++) m_state.lodRadius[l] = (l < (int)m_lodSpacing.size()) ? m_lodSpacing[l] * m_autoSplatCoverage : 0.0f;
-        m_state.enableGpuSilhouetteInversion = m_enableSilhouetteLOD0 || m_highlightSilhouetteChunks;
+        // Splat mode: every level (kSplatDiscMinLevel and up; 0 while kSplatGaussianLevel0 is false) draws as camera-facing discs of
+        // the level's point spacing times kSplatDiscCoverage (neither the Coverage slider nor Auto Splat Size
+        // applies); 0 = no measurement, the level draws Gaussians. 1.5 overlaps neighbouring discs enough that
+        // the bounded Gaussian falloff blends them into a surface instead of a speckle of rimmed dots. With
+        // Match Level 0 Softness on the factor is the one derived from the level 0 Gaussians instead (1.5 until
+        // a splat package has been measured; see ComputeSplatSoftness) and the discs of level 1 and up take an
+        // opacity floor of 0.5: coarse records already carry the bake's opacity boost, so the floor only catches
+        // the sparse low tail that reads as holes, while overlapping neighbours still set the surface density.
+        static const float kSplatDiscCoverage = 1.5f;
+        const float splatDiscFactor = m_splatDiscMatchLevel0 ? m_splatDiscMatchFactor : kSplatDiscCoverage;
+        for (int l = 0; l < 8; l++) m_state.splatDiscRadius[l] = (l < (int)m_lodSpacing.size()) ? m_lodSpacing[l] * splatDiscFactor : 0.0f;
+        m_state.splatDiscOpacityFloor = m_splatDiscMatchLevel0 ? 0.5f : 0.0f;
+        m_state.enableGpuSilhouetteInversion = false; // DYNAMIC SILHOUETTE switched off for now; was: m_enableSilhouetteLOD0 || m_highlightSilhouetteChunks
         m_state.silhouetteDepthThreshold = m_silhouetteDepthThreshold;
         m_state.enableTemporalFiltering = m_enableTemporalFiltering;
         m_state.temporalBlendWeight = m_temporalBlendWeight;

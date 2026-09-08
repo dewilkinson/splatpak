@@ -167,7 +167,7 @@ namespace Surfels
         uint32_t surfelCount = 0;
         float    blendWeight = 1.0f; // 1.0f = 100% solid opacity
         uint32_t lodLevel = 0;
-        float    dilationMorph = 0.0f; // Morph dilation factor for silhouette reconstruction
+        float    dilationMorph = 0.0f; // Morph dilation factor for silhouette reconstruction; splat mode: the level 0 Gaussian fade-in weight instead (0 = discs, 1 = Gaussians; see SurfelsApp::UpdateStreamingSimulation)
         float    isSilhouette = 0.0f;  // 1.0f if silhouette chunk, 0.0f otherwise
         XMFLOAT3 coneAxis = { 0.0f, 1.0f, 0.0f }; // Average unit normal vector of cluster
         float    coneCutoff = -1.0f;              // cos(theta_max) of cluster normal cone (-1.0 = cone culling disabled)

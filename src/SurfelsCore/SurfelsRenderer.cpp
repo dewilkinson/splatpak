@@ -2269,6 +2269,9 @@ namespace Surfels
         pCB->autoSplatPad1[0] = 0.0f; pCB->autoSplatPad1[1] = 0.0f;
         pCB->lodRadiusAlign[0] = 0.0f; pCB->lodRadiusAlign[1] = 0.0f;
         for (int l = 0; l < 8; l++) pCB->lodRadius[l] = pState->lodRadius[l];
+        for (int l = 0; l < 8; l++) pCB->splatDiscRadius[l] = pState->splatDiscRadius[l];
+        pCB->splatDiscOpacityFloor = pState->splatDiscOpacityFloor;
+        pCB->splatDiscPad[0] = 0.0f; pCB->splatDiscPad[1] = 0.0f; pCB->splatDiscPad[2] = 0.0f;
         // Splat mode
         XMStoreFloat4x4(&pCB->view, view);
         pCB->viewportW = (float)m_width;
@@ -2947,6 +2950,7 @@ namespace Surfels
 
             D3D12_GPU_VIRTUAL_ADDRESS drawSurfelAddr = (pDrawSurfelRes != nullptr) ? pDrawSurfelRes->GetGPUVirtualAddress() : m_surfelBufferGPUAddress;
 
+#if 0 // DYNAMIC SILHOUETTE: GPU silhouette chunk processing switched off for now (re-enable by restoring this block)
             // -------------------------------------------------------------------------
             // GPU ITEM PREPASS & SILHOUETTE EDGE EXTRACTION (Option 2)
             // -------------------------------------------------------------------------
@@ -3127,6 +3131,7 @@ namespace Surfels
                 auto silhouettePrepassEnd = std::chrono::high_resolution_clock::now();
                 m_metrics.silhouettePrepassTimeMs = std::chrono::duration<float, std::milli>(silhouettePrepassEnd - silhouettePrepassStart).count();
             }
+#endif // DYNAMIC SILHOUETTE
 
             DrawOccluderPass();
 

@@ -67,6 +67,8 @@ namespace Surfels
             float    arrivalGlowHue = 0.0f;       // Hue rotation in degrees applied to the glow colours (0 = orange)
             bool     autoSplatSize = true;        // Disc radius from each level's point spacing (lodRadius) instead of the size classes
             float    lodRadius[8] = {};           // Auto splat size: disc radius per LOD level, world units (0 = unknown level)
+            float    splatDiscRadius[8] = {};     // Splat mode: camera-facing disc radius per level for level 2 and up, world units (0 = draw Gaussians)
+            float    splatDiscOpacityFloor = 0.0f; // Splat mode: opacity floor for the discs of level 1 and up (Match Level 0 Softness; 0 = the record's opacity as is)
             bool     enableConeCulling = true; // Task Shader (mainAS) backface normal cone culling
             bool     useCopyQueue = true; // Dedicated DX12 Hardware DMA Copy Queue for asynchronous PCIe transfers
             bool     enableGpuSilhouetteInversion = true; // GPU Chunk-ID & Depth Discontinuity Edge Inversion
@@ -222,7 +224,12 @@ namespace Surfels
             uint32_t   splatBlendSpace;
             XMFLOAT3   camForward;
             uint32_t   splatSlotCount;
+            float      splatDiscRadius[8];    // Splat mode: camera-facing disc radius per level for level 2 and up, world units (two float4 rows in the shader; splatSlotCount ends a 16-byte row, so no padding)
+            float      splatDiscOpacityFloor; // Splat mode: opacity floor for the discs of level 1 and up (see State)
+            float      splatDiscPad[3];       // Pads to a whole 16-byte row (float3 g_SplatDiscPad in the shader)
         };
+        static_assert(offsetof(SurfelsCB, splatDiscRadius) % 16 == 0, "SurfelsCB::splatDiscRadius must start a 16-byte row: the shader reads it as float4 g_SplatDiscRadius[2]");
+        static_assert(sizeof(SurfelsCB) % 16 == 0, "SurfelsCB must be a whole number of 16-byte rows");
 
         CAULDRON_DX12::Device* m_pDevice = nullptr;
 

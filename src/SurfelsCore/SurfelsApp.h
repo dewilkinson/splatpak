@@ -300,7 +300,9 @@ namespace Surfels
             bool     refinedBySilhouette = false;  // The refinement into its children was edge-driven (this node sits at or below the target level). When the flag drops and it demotes, the children are kept resident: evicting them only made the face lists re-stream them for the next flag, which flashed the visible faces while spinning
             bool     isSilhouette = false;         // Active in-view silhouette edge chunk (locked against eviction)
             float    transitionProgress = 0.0f;   // 0.0 (Parent Level N Solid) <-> 1.0 (Children Level N-1 Solid)
-            float    streamWaveTimer = 0.0f;      // Active chunk streaming lavender wavefront timer (3.0s -> 0.0s)
+            float    streamWaveTimer = 0.0f;      // Arrival glow (Refinement Visualizer) countdown, m_chunkStreamDuration -> 0; started by the chunk's first draw after delivery (see streamWavePending)
+            bool     streamWavePending = false;   // Delivered but not yet drawn: the arrival glow is armed and starts on the first draw, so a chunk whose refinement start the pacing defers (levels 1 and 0 at high bandwidth) still glows when it appears instead of expiring unseen
+            uint32_t deliverySeq = 0;             // Order of delivery by the stream (1 = first delivered this session; 0 = resident at load). The refinement pacing admits waiting groups in this order so the model grows back in the scheduler's order, not the traversal's
             float    silhouetteHysteresisTimer = 0.0f; // Hysteresis hold time (seconds) to eliminate refinement/demotion thrashing
             bool     renderedLastFrame = false;    // Visited by the previous frame's traversal: rendered, or refined in place of by its children. Only such "active" chunks may keep an edge flag; anything the traversal never reached (a level outside the active range) is cleared before the next traversal. Clearing on "not rendered" alone made a refined edge parent lose its flag, re-render, get re-detected and refine again every other frame -- a whole-model flicker
             uint32_t globalSurfelOffset = 0;      // Zero-copy offset into m_unifiedPackedSurfels / m_unifiedRawSurfels
@@ -333,6 +335,14 @@ namespace Surfels
         float  m_autoSplatCoverage   = 1.2f;   // Disc radius as a multiple of the level's typical point spacing
         std::vector<float> m_lodSpacing;       // Per LOD level: median nearest-neighbour distance of its points (world units), from ComputeLodSpacing
         void   ComputeLodSpacing();           // Fills m_lodSpacing from the resident level point sets (after a load or a preprocess)
+        // Splat mode, Match Level 0 Softness (Renderer tab, saved in config.json): the coarse levels' discs take
+        // the radius factor derived from the level 0 Gaussians (ComputeSplatSoftness) instead of the fixed 1.5,
+        // and discs of level 1 and up take an opacity floor (State::splatDiscOpacityFloor). Off: 1.5, no floor.
+        bool   m_splatDiscMatchLevel0 = true;
+        float  m_splatLevel0Footprint = 0.0f;  // Median in-plane footprint sqrt(s_max x s_mid) of the level 0 records, world units (0 = not a splat package)
+        float  m_splatSoftnessRatio   = 0.0f;  // m_splatLevel0Footprint / m_lodSpacing[0]: how soft the level 0 Gaussians are relative to their spacing
+        float  m_splatDiscMatchFactor = 1.5f;  // clamp(sqrt(8) x ratio, 1.5, 4.0): the disc radius as a multiple of the level spacing that gives the same softness
+        void   ComputeSplatSoftness();        // Fills the three values above from m_residentLODs[0].splats and m_lodSpacing[0] (right after ComputeLodSpacing)
         // Frame budget for the stats panel (CPU wall clock per frame, EMA-smoothed): where the frame time
         // actually goes, as opposed to the command-recording stage costs the renderer reports.
         float  m_frameSimMs = 0.0f, m_frameTraversalMs = 0.0f, m_frameUiMs = 0.0f, m_frameRenderMs = 0.0f, m_framePresentMs = 0.0f;
@@ -417,6 +427,17 @@ namespace Surfels
         size_t                    m_faceEdgeHead[kOctahedronFaces] = {};
         uint32_t                  m_streamFrame = 0;                   // Counts UpdateStreamingSimulation calls (request staleness)
         uint32_t                  m_edgeRefineStartsThisFrame = 0;     // Edge-driven refinements into already-resident children begun this frame (capped, see kEdgeRefineStartsPerFrame)
+        float                     m_traverseSplatFade = 1.0f;          // Splat mode: opacity weight the traversal hands the chunks it appends during a level 1 -> 0 hand-over (parent 1 - t, children t; see CASE 2 and AppendChunkToRenderer); 1 otherwise
+        uint32_t                  m_splatLevel0Waiting = 0;            // Splat mode, this frame's traversal: nodes on the path to level 0 (target level 0) still waiting for children to arrive
+        uint32_t                  m_splatLevel0Starts = 0;             // Splat mode, this frame's traversal: level 1 -> 0 hand-overs begun (traced when non-zero)
+        bool                      m_splatLevel0AllArrived = false;     // Splat mode, from the previous frame: nothing on the path to level 0 is still streaming, so the level 1 -> 0 hand-overs may begin, all in the same frame (the whole level 0 fades in at once)
+        // Refinement pacing (see UpdateStreamingSimulation): new cross-fades started this frame, the frame's
+        // budget of starts (UINT32_MAX = unlimited), and the starts deferred to a later frame by the budget.
+        uint32_t                  m_refineStartsThisFrame = 0, m_refineStartBudget = 0, m_refineStartsDeferred = 0;
+        uint32_t                  m_deliverySeqCounter = 0;            // Last StreamChunk::deliverySeq handed out
+        std::vector<std::pair<uint32_t, uint32_t>> m_refineDeferred;  // Groups the pacing deferred this frame: (rank = the children's latest deliverySeq, start cost in chunks); sorted at the next frame's start to set m_refineAdmitSeqLimit
+        uint32_t                  m_refineAdmitSeqLimit = 0;           // This frame a deferred group may start only if its rank is at or below this (delivery order); UINT32_MAX = no ordering (budget unlimited)
+        float                     m_refinePacingTraceTimer = 0.0f;     // Once-per-second trace line while starts are being deferred
         uint32_t                  m_extraDeliveries = 0;               // Diagnostic: deliveries of blocks that had already been delivered since the last reset (re-streamed after an eviction)
         uint32_t                  m_redeliveredBlocks = 0;             // Diagnostic: distinct blocks delivered more than once since the last reset
         void  ClearFaceEdgeQueues();                                // Drops every queued edge request (streaming reset)

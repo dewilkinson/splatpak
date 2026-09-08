@@ -52,7 +52,7 @@ struct MeshletChunk
     uint   surfelCount;
     float  blendWeight;
     uint   lodLevel;
-    float  dilationMorph; // Morph dilation factor for silhouette reconstruction
+    float  dilationMorph; // Morph dilation factor for silhouette reconstruction; splat mode (g_RenderMode == 3): the chunk's opacity weight for the level 1 -> 0 hand-over instead (0 = invisible .. 1 = the records' opacity, see BuildGaussianSplat)
     float  isSilhouette;  // 1.0 if silhouette chunk, 0.0 otherwise
     float3 coneAxis;      // Average unit normal vector of cluster
     float  coneCutoff;    // cos(theta_max) of cluster normal cone (-1.0 = disabled)
@@ -136,6 +136,9 @@ cbuffer SurfelsCB : register(b0)
     uint     g_SplatBlendSpace;      // 0 = blend the stored display-space colours as they are, 1 = decode to linear first (sRGB target)
     float3   g_CamForward;           // Viewer forward (unit)
     uint     g_SplatSlotCount;       // Slots in g_SortedSplats this frame
+    float4   g_SplatDiscRadius[2];   // Splat mode: camera-facing disc radius per level for level kSplatDiscMinLevel and up (world units), index = lodLevel 0..7; 0 = draw Gaussians
+    float    g_SplatDiscOpacityFloor; // Splat mode: opacity floor for the discs of level 1 and up (Match Level 0 Softness; 0 = the record's opacity as is)
+    float3   g_SplatDiscPad;
 };
 
 // Auto splat size: every disc of a level takes that level's density-derived radius (its typical point
@@ -152,6 +155,12 @@ float AutoSplatRadius(uint lod, float classRadius, float classScale)
     return (lr > 0.0) ? g_Radius * lr * min(classScale, 2.5) : classRadius;
 }
 
+// Splat mode: chunks at this level and above draw as camera-facing discs of the level's point spacing
+// (g_SplatDiscRadius) instead of projected Gaussians (see BuildGaussianSplat). Fixed by design: no control.
+// 0 for now: every level, level 0 included, draws as discs; the Gaussian level 0 is switched off (see
+// kSplatGaussianLevel0 in SurfelsApp.cpp). 1 restores it.
+static const uint kSplatDiscMinLevel = 0;
+
 // Hue/saturation/value to RGB, hue in degrees (wraps).
 float3 HsvToRgb(float h, float s, float v)
 {
@@ -161,6 +170,25 @@ float3 HsvToRgb(float h, float s, float v)
     float3 rgb = (hp < 1.0) ? float3(c, x, 0) : (hp < 2.0) ? float3(x, c, 0) : (hp < 3.0) ? float3(0, c, x)
                : (hp < 4.0) ? float3(0, x, c) : (hp < 5.0) ? float3(x, 0, c) : float3(c, 0, x);
     return rgb + (v - c);
+}
+
+// Streaming arrival glow (Refinement Visualizer): w is the chunk's wave, 0.95 (just delivered) -> 0
+// (faded). Newly added chunks -- the leading edge of the growing model -- flash bright, then settle to
+// a regular semi-transparent fill that fades out at the end of its life. Shared by the disc modes
+// (BuildSplat, with the surfel's directional lighting) and the splat mode's colour (SplatColor, lighting 1),
+// so the Gaussians and the coarse-level discs take the same tint.
+void ArrivalGlow(inout float3 color, float w, float lighting)
+{
+    float life = saturate(w / 0.95);                 // 1 = just arrived, 0 = expired
+    float glow = life * life;                        // Bright peak at the leading edge, still strong at mid-life
+    // Colours are orange by default (hue ~24 degrees); the Hue slider rotates both the regular
+    // fill and the hot leading-edge colour together, Intensity scales the fill opacity and bloom.
+    float3 regularTint = HsvToRgb(24.0 + g_ArrivalGlowHue, 0.96, 1.0);
+    float3 hotTint     = HsvToRgb(24.0 + g_ArrivalGlowHue, 0.55, 1.0);
+    float3 tint = lerp(regularTint, hotTint, glow);
+    float opacity = saturate(0.60 * g_ArrivalGlowIntensity) * smoothstep(0.0, 0.25, life); // Semi-transparent fill; fades out over the last quarter
+    color = lerp(color, tint * (lighting + 0.35 * glow), opacity);
+    color += hotTint * (glow * 0.55 * g_ArrivalGlowIntensity); // Emissive bloom on the newest chunks
 }
 
 struct VSOut
@@ -174,6 +202,7 @@ struct VSOut
     float  solid       : TEXCOORD2; // 1 = sub-pixel splat drawn as an opaque dot (see SolidDot)
     float  culledTint  : TEXCOORD3; // 1 = Detach Camera: the frozen camera would have culled this splat (drawn faint)
     float  splatAlpha  : TEXCOORD4; // Splat mode: the Gaussian's opacity (peak alpha)
+    float  disc        : TEXCOORD5; // Splat mode: 1 = camera-facing disc of a coarse level (see BuildGaussianSplat), 0 = Gaussian
 };
 
 // Quad corners in local 2D tangent space: 0(-1,-1) 1(1,-1) 2(-1,1) 3(1,1)
@@ -522,19 +551,8 @@ bool BuildSplat(uint surfelIndex, uint lod, float chunkBlendWeight, float chunkD
         }
         else if (g_ShowChunkStream == 1)
         {
-            // Streaming arrival glow (Refinement Visualizer): w runs 0.95 (just delivered) -> 0 (faded).
-            // Newly added chunks -- the leading edge of the growing model -- flash bright, then settle to
-            // a regular semi-transparent fill that fades out at the end of its life.
-            float life = saturate(w / 0.95);                 // 1 = just arrived, 0 = expired
-            float glow = life * life;                        // Bright peak at the leading edge, still strong at mid-life
-            // Colours are orange by default (hue ~24 degrees); the Hue slider rotates both the regular
-            // fill and the hot leading-edge colour together, Intensity scales the fill opacity and bloom.
-            float3 regularTint = HsvToRgb(24.0 + g_ArrivalGlowHue, 0.96, 1.0);
-            float3 hotTint     = HsvToRgb(24.0 + g_ArrivalGlowHue, 0.55, 1.0);
-            float3 tint = lerp(regularTint, hotTint, glow);
-            float opacity = saturate(0.60 * g_ArrivalGlowIntensity) * smoothstep(0.0, 0.25, life); // Semi-transparent fill; fades out over the last quarter
-            litColor = lerp(litColor, tint * (lighting + 0.35 * glow), opacity);
-            litColor += hotTint * (glow * 0.55 * g_ArrivalGlowIntensity); // Emissive bloom on the newest chunks
+            // Streaming arrival glow (Refinement Visualizer): w runs 0.95 (just delivered) -> 0 (faded)
+            ArrivalGlow(litColor, w, lighting);
         }
     }
 
@@ -570,6 +588,7 @@ VSOut SplatCornerVertex(SplatData sd, uint corner, float chunkBlendWeight, float
     o.solid = sd.solid;
     o.culledTint = sd.culledTint;
     o.splatAlpha = 1.0;
+    o.disc = 0.0;
     return o;
 }
 
@@ -585,6 +604,7 @@ VSOut CulledSplatVertex()
     o.solid = 0.0;
     o.culledTint = 0.0;
     o.splatAlpha = 0.0;
+    o.disc = 0.0;
     return o;
 }
 
@@ -600,7 +620,18 @@ struct GaussianSplat
     float  uvScale;    // The corner uv's shrink factor (clipCorner): the quad is cut where alpha falls below 1/255
     float3 color;      // Display-space colour (DC + harmonics), or linear when g_SplatBlendSpace == 1
     float  alpha;      // Opacity
+    float  disc;       // 1 = camera-facing disc of a coarse level (kSplatDiscMinLevel and up), 0 = Gaussian
+    float  solid;      // Disc: 1 = sub-pixel disc drawn as an opaque dot (see SolidDot)
 };
+
+// Splat mode falloff over the quad: the reference viewer's normalised Gaussian of the squared distance x
+// in the shrunken corner space, reaching zero at the quad edge (x = 1). Shared by the Gaussians and the
+// coarse-level discs.
+float SplatFalloff(float x)
+{
+    const float EXP4 = 0.01831563888873418; // exp(-4)
+    return (exp(-4.0 * x) - EXP4) / (1.0 - EXP4);
+}
 
 // Rotation matrix of a unit quaternion (x, y, z, w): mul(R, v) rotates v.
 float3x3 QuatToMat3(float4 q)
@@ -666,14 +697,41 @@ float3 EvalSH(uint splatIndex, float shScale, float3 dir)
     return result;
 }
 
+// A splat's colour for this view: DC plus the harmonics for the view direction, clamped at black,
+// decoded to linear when blending in linear space. Shared by the Gaussian and the disc path. wave is
+// the chunk's arrival-glow wave (MeshletChunk.isSilhouette, 0 when not chunked): with Show Streaming
+// Arrivals on, a chunk that has just been delivered (0 < wave < 0.99) takes the disc modes' arrival
+// glow in display space, before the linear conversion; exactly 1 is the edge highlight, which splat
+// mode does not draw. Otherwise the colour is the reference viewer's, untouched.
+float3 SplatColor(uint splatIndex, float3 pos, float3 dc, float shScale, float wave)
+{
+    float3 color = dc;
+    if (g_SHDegree > 0 && shScale > 0.0 && g_SHRecordBytes > 0)
+    {
+        float3 dir = normalize(pos - g_ViewerEyePos);
+        color += EvalSH(splatIndex, shScale, dir);
+    }
+    color = max(color, 0.0);
+    if (g_ShowChunkStream == 1 && wave > 0.0 && wave < 0.99) ArrivalGlow(color, wave, 1.0);
+    if (g_SplatBlendSpace == 1) color = SRGBToLinear(color);
+    return color;
+}
+
 // Decodes one Gaussian and projects it the way the reference viewer does: the 3D covariance from
 // rotation and scales, the perspective Jacobian at the splat's view-space position, a 0.3 pixel
 // dilation, the 2D eigen-decomposition, quad half-axes of 2 * sqrt(2 * lambda) pixels, and the
 // alpha-dependent shrink of the quad. Returns false when the splat is behind the camera, off screen,
-// or too faint to draw.
-bool BuildGaussianSplat(uint splatIndex, out GaussianSplat gs)
+// or too faint to draw. lod is the chunk's level: at kSplatDiscMinLevel and above the splat is a
+// camera-facing disc of the level's point spacing instead (see below); level 0 is always a Gaussian.
+// fade is the chunk's opacity weight for the level 1 -> 0 hand-over (MeshletChunk.dilationMorph in
+// splat mode): the level 1 parent's discs carry 1 - t and the level 0 children's Gaussians t while
+// the cross-fade runs, so the two layers' weights sum to one at every pixel (no stipple, no loss of
+// coverage) and the Gaussians' tails grow in with t instead of appearing at full strength. At fade 1
+// (every chunk outside that hand-over) the paths run exactly as before. wave is the chunk's
+// arrival-glow wave for SplatColor (0 when not chunked or not just delivered: no glow).
+bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, out GaussianSplat gs)
 {
-    gs.clipCenter = s_culledClipPos; gs.axis1 = float2(0.0, 0.0); gs.axis2 = float2(0.0, 0.0); gs.uvScale = 0.0; gs.color = float3(0.0, 0.0, 0.0); gs.alpha = 0.0;
+    gs.clipCenter = s_culledClipPos; gs.axis1 = float2(0.0, 0.0); gs.axis2 = float2(0.0, 0.0); gs.uvScale = 0.0; gs.color = float3(0.0, 0.0, 0.0); gs.alpha = 0.0; gs.disc = 0.0; gs.solid = 0.0;
 
     PackedSplat s = g_SplatBuffer[splatIndex];
     float3 pos = g_AABBMin + float3((s.w0 & 0xFFFFu) / 65535.0, ((s.w0 >> 16) & 0xFFFFu) / 65535.0, (s.w1 & 0xFFFFu) / 65535.0) * g_AABBExtents;
@@ -685,6 +743,53 @@ bool BuildGaussianSplat(uint splatIndex, out GaussianSplat gs)
     float shScale = (flags & 1u) ? f16tof32(s.w3 >> 16) : 0.0;
 
     if (opacity <= 1.0 / 255.0) return false;
+
+    // Centre: behind the camera is dropped; depth is clamped into the near/far range so the quad is never clipped
+    float4 viewPos = mul(g_View, float4(pos, 1.0));
+    if (viewPos.z > 0.0) return false;
+    float4 clip = mul(g_ViewProj, float4(pos, 1.0));
+    clip.z = clamp(clip.z, 0.0, abs(clip.w));
+
+    // Coarse levels (kSplatDiscMinLevel and up): a camera-facing disc of the level's point spacing in
+    // place of the projected Gaussian, so a coarse level has no Gaussian bloom past the model's rim.
+    // The record's scale and rotation are not used. Both tangents are perpendicular to the view
+    // direction, so every corner shares the centre's clip w and z and the corner placement in
+    // GaussianCornerVertex (centre plus clip-space half-axes) is exact. A level without a measured
+    // spacing (radius 0) falls through to the Gaussian.
+    float discR = (lod >= kSplatDiscMinLevel && lod < 8) ? g_SplatDiscRadius[lod >> 2][lod & 3] : 0.0;
+    if (discR > 0.0)
+    {
+        float3 tX = g_CamRight * discR;
+        float3 tY = g_CamUp * discR;
+        float solid;
+        SolidDot(max(0.1f, clip.w), tX, tY, solid); // The disc modes' call: distance = the clip w (view depth)
+        float2 axis1 = mul(g_ViewProj, float4(tX, 0.0)).xy;
+        float2 axis2 = mul(g_ViewProj, float4(tY, 0.0)).xy;
+        if (any((abs(clip.xy) - (abs(axis1) + abs(axis2))) > clip.w)) return false;
+
+        gs.clipCenter = clip;
+        gs.axis1 = axis1;
+        gs.axis2 = axis2;
+        gs.uvScale = 1.0;
+        gs.color = SplatColor(splatIndex, pos, dc, shScale, wave);
+        // Match Level 0 Softness: the discs (level 1 and up) take the opacity floor so a low-opacity record
+        // does not read as a hole. A level 1 parent handing over to level 0 fades out by the chunk weight
+        // (a sub-pixel disc drops its opaque-dot rule while fading so it can fade at all).
+        float discAlpha = max(opacity, g_SplatDiscOpacityFloor);
+        if (fade < 0.999) { discAlpha *= saturate(fade); solid = 0.0; }
+        gs.alpha = discAlpha;
+        gs.disc = 1.0;
+        gs.solid = solid;
+        return true;
+    }
+
+    // Level 1 -> 0 hand-over: a level 0 child's Gaussians fade in by the chunk weight; the alpha-dependent
+    // quad shrink below trims the quad with it. Every other level 0 chunk (fade 1) keeps the record's opacity.
+    if (fade < 0.999)
+    {
+        opacity *= saturate(fade);
+        if (opacity <= 1.0 / 255.0) return false;
+    }
 
     // Smallest-three quaternion
     uint largest = s.w4 & 3u;
@@ -705,12 +810,6 @@ bool BuildGaussianSplat(uint splatIndex, out GaussianSplat gs)
     }
     comps[largest] = sqrt(saturate(1.0 - sumSq));
     float4 q = float4(comps[0], comps[1], comps[2], comps[3]);
-
-    // Centre: behind the camera is dropped; depth is clamped into the near/far range so the quad is never clipped
-    float4 viewPos = mul(g_View, float4(pos, 1.0));
-    if (viewPos.z > 0.0) return false;
-    float4 clip = mul(g_ViewProj, float4(pos, 1.0));
-    clip.z = clamp(clip.z, 0.0, abs(clip.w));
 
     // 3D covariance in world (= model) space, then in view space
     float3x3 R = QuatToMat3(q);
@@ -752,14 +851,7 @@ bool BuildGaussianSplat(uint splatIndex, out GaussianSplat gs)
     float2 v2 = l2 * float2(diagonalVector.y, -diagonalVector.x);
 
     // Colour: DC plus the harmonics for this view direction, clamped at black
-    float3 color = dc;
-    if (g_SHDegree > 0 && shScale > 0.0 && g_SHRecordBytes > 0)
-    {
-        float3 dir = normalize(pos - g_ViewerEyePos);
-        color += EvalSH(splatIndex, shScale, dir);
-    }
-    color = max(color, 0.0);
-    if (g_SplatBlendSpace == 1) color = SRGBToLinear(color);
+    float3 color = SplatColor(splatIndex, pos, dc, shScale, wave);
 
     // Shrink the quad to where the Gaussian times opacity falls below 1/255
     float clipS = min(1.0, sqrt(max(0.0, log(opacity * 255.0))) * 0.5);
@@ -777,20 +869,26 @@ bool BuildGaussianSplat(uint splatIndex, out GaussianSplat gs)
 bool SplatFromSlot(uint slot, out GaussianSplat gs, out float blendWeight)
 {
     blendWeight = 1.0;
-    gs.clipCenter = s_culledClipPos; gs.axis1 = float2(0.0, 0.0); gs.axis2 = float2(0.0, 0.0); gs.uvScale = 0.0; gs.color = float3(0.0, 0.0, 0.0); gs.alpha = 0.0;
+    gs.clipCenter = s_culledClipPos; gs.axis1 = float2(0.0, 0.0); gs.axis2 = float2(0.0, 0.0); gs.uvScale = 0.0; gs.color = float3(0.0, 0.0, 0.0); gs.alpha = 0.0; gs.disc = 0.0; gs.solid = 0.0;
     if (slot >= g_SplatSlotCount) return false;
     uint2 pair = g_SortedSplats[slot];
     if (pair.y >= g_SplatSlotCount) return false;
     uint2 info = g_SlotInfo[pair.y];
     if (info.y & SLOT_CULLED_BIT) return false;
+    uint lod = 0;     // The chunk's level (0 when the pipeline is not chunked): coarse levels draw as discs
+    float fade = 1.0; // The chunk's opacity weight for the level 1 -> 0 hand-over (1 when not chunked)
+    float wave = 0.0; // The chunk's arrival-glow wave (0 when not chunked; see SplatColor)
     if (g_UseChunkedPipeline == 1 && info.y < g_TotalChunks)
     {
         MeshletChunk chunk = g_ChunkBuffer[info.y];
         blendWeight = chunk.blendWeight;
+        lod = chunk.lodLevel;
+        fade = chunk.dilationMorph;
+        wave = chunk.isSilhouette;
         if (g_ShowOnlyLocked == 1 && !ChunkIsLocked(chunk)) return false;
     }
     if (info.x >= g_SurfelCount) return false;
-    return BuildGaussianSplat(info.x, gs);
+    return BuildGaussianSplat(info.x, lod, fade, wave, gs);
 }
 
 VSOut GaussianCornerVertex(GaussianSplat gs, uint corner, float chunkBlendWeight)
@@ -803,9 +901,10 @@ VSOut GaussianCornerVertex(GaussianSplat gs, uint corner, float chunkBlendWeight
     o.norm = float3(0.0, 0.0, 0.0);
     o.blendWeight = chunkBlendWeight;
     o.isSil = 0.0;
-    o.solid = 0.0;
+    o.solid = gs.solid;
     o.culledTint = 0.0;
     o.splatAlpha = gs.alpha;
+    o.disc = gs.disc;
     return o;
 }
 
@@ -1525,10 +1624,17 @@ float4 mainPS(VSOut i) : SV_Target
 
     if (g_RenderMode == 3)
     {
+        // Coarse-level disc (BuildGaussianSplat): the disc modes' falloff across the disc times the
+        // record's opacity; a sub-pixel disc is an opaque dot. The d > 1 discard above clips it at the rim.
+        // A sub-pixel disc (SolidDot) is an opaque dot so a far level covers as a surface.
+        if (i.disc > 0.5 && i.solid > 0.5)
+            return float4(i.color, 1.0);
+
         // Splat mode: the reference viewer's normalised falloff over the quad (A = |uv|^2 in the
         // shrunken corner space), reaching zero at the quad edge, times the Gaussian's opacity.
-        const float EXP4 = 0.01831563888873418; // exp(-4)
-        float alphaG = (exp(-4.0 * d) - EXP4) / (1.0 - EXP4) * i.splatAlpha;
+        // A coarse-level disc uses the same falloff: its quad is the disc itself (uvScale 1), so the
+        // alpha reaches zero exactly at the disc edge with no rim ring and nothing past the radius.
+        float alphaG = SplatFalloff(d) * i.splatAlpha;
         if (alphaG < 1.0 / 255.0)
             discard;
         return float4(i.color * alphaG, alphaG);
