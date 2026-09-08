@@ -267,6 +267,12 @@ namespace Surfels
         bool     m_splatMode                = false; // Bake and draw as 3D Gaussians (surfel format 1) instead of 8-byte surfels
         int      m_splatSHQuality           = 0;     // 0 = low (spherical-harmonics degree 1), 1 = high (degree 3)
         int      m_splatBlendSpace          = 0;     // 0 = display-space blending (as the reference viewer), 1 = linear
+        // Draw Splats as Surfels (Renderer tab, saved in config.json as splat_draw_as_surfels): a splat package is
+        // drawn through the surfel pipeline as opaque, depth-tested discs (render mode 4; Auto Splat Size, Coverage,
+        // Splat Radius Scale and Surfel Orientation apply, the dither dissolves between two surfaces). Off: the
+        // sorted Gaussian pipeline (render mode 3) with Splat Blending and the coarse-level discs as before.
+        bool     m_splatDrawAsSurfels       = true;
+        uint32_t SplatRenderMode() const { return m_splatDrawAsSurfels ? 4u : 3u; }
         SplatEncodeParams m_splatParams;
         uint32_t SplatSHDegree() const { return m_splatSHQuality == 1 ? 3u : 1u; }
         size_t   BytesPerRenderPoint() const { return m_splatMode ? (sizeof(PackedSplatGPU) + SplatCodec::SHRecordBytes(m_splatParams.shDegree)) : (m_enableQuantization ? sizeof(PackedSurfelGPU) : sizeof(SurfelVertex)); }
@@ -327,7 +333,7 @@ namespace Surfels
             Greedy       = 1  // Refines visible chunks first, then continues pre-fetching remaining background chunks
         };
 
-        StreamingPolicy m_streamingPolicy           = StreamingPolicy::Conservative; // Conservative (default) or Greedy
+        StreamingPolicy m_streamingPolicy           = StreamingPolicy::Greedy; // Greedy (default) or Conservative
         float  m_conservativeNeighborBufferMargin   = 1.35f;  // Frustum margin for pre-fetching local neighbors in conservative mode
         bool   m_enableDitheredTransitions  = true;   // Stochastic screen-space Bayer dithering for smooth LOD transitions
         bool   m_demoteChunks               = false;  // Off: a node that has refined into its children stays refined when the zoom target coarsens or its edge flag drops (only Decay-marked children demote). On: the v1.2.0 handshake, children cross-fade back to the parent and are evicted

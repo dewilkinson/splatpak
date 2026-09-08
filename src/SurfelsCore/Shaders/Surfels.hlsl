@@ -23,6 +23,10 @@
 //  4. Splat mode (g_RenderMode == 3): full 3D Gaussians from 20-byte PackedSplat records, drawn in
 //     per-splat depth order (SplatSortCS.hlsl) with the projection, footprint, falloff and colour
 //     evaluation of the reference PlayCanvas / SuperSplat viewer.
+//  5. Splats as surfels (g_RenderMode == 4): the same 20-byte records drawn through the surfel
+//     pipeline as opaque, depth-tested discs (chunk sort, no blending): the disc lies in the plane
+//     of the record's two largest scales, is sized like a surfel's disc (Auto Splat Size applies) and
+//     carries the record's baked colour with its harmonics, unlit (see BuildSplat).
 
 #define SURFELS_PER_GROUP 64
 #define AS_GROUP_SIZE 32
@@ -52,7 +56,7 @@ struct MeshletChunk
     uint   surfelCount;
     float  blendWeight;
     uint   lodLevel;
-    float  dilationMorph; // Morph dilation factor for silhouette reconstruction; splat mode (g_RenderMode == 3): the chunk's opacity weight for the level 1 -> 0 hand-over instead (0 = invisible .. 1 = the records' opacity, see BuildGaussianSplat)
+    float  dilationMorph; // Morph dilation factor for silhouette reconstruction; splat mode (g_RenderMode == 3): the chunk's opacity weight for the level 1 -> 0 hand-over instead (0 = invisible .. 1 = the records' opacity, see BuildGaussianSplat); mode 4 carries the surfel value (0 for a splat package)
     float  isSilhouette;  // 1.0 if silhouette chunk, 0.0 otherwise
     float3 coneAxis;      // Average unit normal vector of cluster
     float  coneCutoff;    // cos(theta_max) of cluster normal cone (-1.0 = disabled)
@@ -101,7 +105,7 @@ cbuffer SurfelsCB : register(b0)
     float3   g_ViewerEyePos;
     float    g_SphereRadius;
     uint     g_SurfelCount;
-    uint     g_RenderMode; // 0 = Procedural Sphere, 1 = Quantized 8-Byte, 2 = Raw Float32 Points
+    uint     g_RenderMode; // 0 = Procedural Sphere, 1 = Quantized 8-Byte, 2 = Raw Float32 Points, 3 = Splat mode (sorted Gaussians from the 20-byte records), 4 = the 20-byte records as opaque discs through the surfel pipeline
     uint     g_OrientMode; // 0 = Normal-Oriented Discs, 1 = Camera-Facing Billboards
     uint     g_TotalChunks;
     float3   g_AABBMin;
@@ -391,6 +395,62 @@ void SolidDot(float distToCam, inout float3 tangentX, inout float3 tangentY, out
     }
 }
 
+// Splat mode helpers defined below with the Gaussian path; declared here for the mode-4 disc branches.
+float3x3 QuatToMat3(float4 q);
+float3 SplatColor(uint splatIndex, float3 pos, float3 dc, float shScale, float wave, bool toLinear);
+
+// The 20-byte record of splat splatIndex (PackedSplat, see WaveletTypes.h): world position, the three
+// scales, opacity, DC colour, the SH scale (0 when the record carries no harmonics) and the unit rotation
+// quaternion (x, y, z, w) from its smallest-three encoding. Shared by the Gaussian path
+// (BuildGaussianSplat) and the disc path of mode 4 (BuildSplat, BuildItemSplat).
+void DecodePackedSplat(uint splatIndex, out float3 pos, out float3 scale, out float opacity, out float3 dc, out float shScale, out float4 q)
+{
+    PackedSplat s = g_SplatBuffer[splatIndex];
+    pos = g_AABBMin + float3((s.w0 & 0xFFFFu) / 65535.0, ((s.w0 >> 16) & 0xFFFFu) / 65535.0, (s.w1 & 0xFFFFu) / 65535.0) * g_AABBExtents;
+    float3 scaleBytes = float3((s.w1 >> 16) & 0xFFu, (s.w1 >> 24) & 0xFFu, s.w2 & 0xFFu);
+    scale = exp2(g_ScaleLog2Min + (scaleBytes / 255.0) * (g_ScaleLog2Max - g_ScaleLog2Min));
+    opacity = ((s.w2 >> 8) & 0xFFu) / 255.0;
+    dc = float3((s.w2 >> 16) & 0xFFu, (s.w2 >> 24) & 0xFFu, s.w3 & 0xFFu) / 255.0;
+    uint flags = (s.w3 >> 8) & 0xFFu;
+    shScale = (flags & 1u) ? f16tof32(s.w3 >> 16) : 0.0;
+
+    // Smallest-three quaternion
+    uint largest = s.w4 & 3u;
+    float comps[4] = { 0.0, 0.0, 0.0, 0.0 };
+    float sumSq = 0.0;
+    uint shift = 2;
+    [unroll]
+    for (uint i = 0; i < 4; i++)
+    {
+        if (i != largest)
+        {
+            float t = ((s.w4 >> shift) & 0x3FFu) / 1023.0;
+            float v = (t * 2.0 - 1.0) * 0.70710678118;
+            comps[i] = v;
+            sumSq += v * v;
+            shift += 10;
+        }
+    }
+    comps[largest] = sqrt(saturate(1.0 - sumSq));
+    q = float4(comps[0], comps[1], comps[2], comps[3]);
+}
+
+// Mode 4: the disc a Gaussian record draws as. Its normal is the world direction of the record's
+// smallest-scale axis: column k of R (mul(R, e_k), the axis directions of the covariance M = R * S), so
+// the disc lies in the plane of the two largest scales. The base radius is the Gaussian's in-plane
+// footprint at two sigma, 2 sqrt(s_max s_mid), so with Auto Splat Size off each record keeps its own
+// size; Auto Splat Size (the default) replaces it with the level's spacing times Coverage. The
+// normal's sign is arbitrary (a Gaussian has none); it only orients the disc.
+void SplatRecordDisc(float3 scale, float4 q, out float3 normal, out float baseRadius)
+{
+    float3x3 R = QuatToMat3(q);
+    uint k = (scale.x <= scale.y && scale.x <= scale.z) ? 0u : (scale.y <= scale.z ? 1u : 2u);
+    normal = float3(R[0][k], R[1][k], R[2][k]);
+    float sMax = max(scale.x, max(scale.y, scale.z));
+    float sMid = max(min(scale.x, scale.y), min(max(scale.x, scale.y), scale.z));
+    baseRadius = 2.0 * sqrt(sMax * sMid) * g_Radius;
+}
+
 // Decodes surfel surfelIndex for the active render mode, applies the detached-camera shading (what the
 // frozen camera would have culled is kept, flat dark grey), the dilation morph, lighting and the edge /
 // arrival tints. frozenCulled: the whole chunk was outside the frozen camera's frustum or normal cone.
@@ -443,6 +503,39 @@ bool BuildSplat(uint surfelIndex, uint lod, float chunkBlendWeight, float chunkD
 
         SplatTangents(normal, splatRadius, tangentX, tangentY);
         SolidDot(distToCam, tangentX, tangentY, solid);
+    }
+    else if (g_RenderMode == 4)
+    {
+        // 4. Splat package drawn as surfels: the 20-byte Gaussian record as an opaque disc (see
+        // SplatRecordDisc). The records the sorted pipeline never draws (opacity below 1/255) are
+        // skipped; every other record is drawn fully opaque. The colour is the record's baked radiance
+        // (DC plus the harmonics for this view), display space as a surfel's stored colour, unlit.
+        float3 pos, scale, dc;
+        float opacity, shScale;
+        float4 q;
+        DecodePackedSplat(surfelIndex, pos, scale, opacity, dc, shScale, q);
+        if (opacity <= 1.0 / 255.0)
+        {
+            sd.worldPos = pos; sd.normal = float3(0.0, 0.0, 0.0); sd.litColor = float3(0.0, 0.0, 0.0); sd.tangentX = float3(0.0, 0.0, 0.0); sd.tangentY = float3(0.0, 0.0, 0.0); sd.solid = 0.0; sd.culledTint = 0.0;
+            return false;
+        }
+        worldPos = pos;
+        float baseRadius;
+        SplatRecordDisc(scale, q, normal, baseRadius);
+        float splatRadius = AutoSplatRadius(lod, baseRadius, 1.0);
+
+        float4 clipCenter = mul(g_ViewProj, float4(worldPos, 1.0));
+        float distToCam = max(0.1f, clipCenter.w);
+        float minCoverageRadius = distToCam * 0.00015f;
+        splatRadius = max(splatRadius, minCoverageRadius);
+
+        SplatTangents(normal, splatRadius, tangentX, tangentY);
+        SolidDot(distToCam, tangentX, tangentY, solid);
+        // Colour after the tangents so the rotation matrix is dead before the harmonics are read
+        color = SplatColor(surfelIndex, pos, dc, shScale, 0.0, false);
+        // No lighting (the lighting block below takes a zero normal as lighting 1) and no Detach Camera
+        // back-side grey: the colour is baked radiance and the normal's sign is arbitrary.
+        normal = float3(0.0, 0.0, 0.0);
     }
     else
     {
@@ -698,12 +791,13 @@ float3 EvalSH(uint splatIndex, float shScale, float3 dir)
 }
 
 // A splat's colour for this view: DC plus the harmonics for the view direction, clamped at black,
-// decoded to linear when blending in linear space. Shared by the Gaussian and the disc path. wave is
-// the chunk's arrival-glow wave (MeshletChunk.isSilhouette, 0 when not chunked): with Show Streaming
-// Arrivals on, a chunk that has just been delivered (0 < wave < 0.99) takes the disc modes' arrival
-// glow in display space, before the linear conversion; exactly 1 is the edge highlight, which splat
-// mode does not draw. Otherwise the colour is the reference viewer's, untouched.
-float3 SplatColor(uint splatIndex, float3 pos, float3 dc, float shScale, float wave)
+// decoded to linear when toLinear is set (mode 3 blending in linear space; mode 4 never, the surfel
+// pipeline draws display-space colours). Shared by the Gaussian, the coarse-level disc and the mode-4
+// disc paths. wave is the chunk's arrival-glow wave (MeshletChunk.isSilhouette, 0 when not chunked):
+// with Show Streaming Arrivals on, a chunk that has just been delivered (0 < wave < 0.99) takes the
+// disc modes' arrival glow in display space, before the linear conversion; exactly 1 is the edge
+// highlight, which splat mode does not draw. Otherwise the colour is the reference viewer's, untouched.
+float3 SplatColor(uint splatIndex, float3 pos, float3 dc, float shScale, float wave, bool toLinear)
 {
     float3 color = dc;
     if (g_SHDegree > 0 && shScale > 0.0 && g_SHRecordBytes > 0)
@@ -713,7 +807,7 @@ float3 SplatColor(uint splatIndex, float3 pos, float3 dc, float shScale, float w
     }
     color = max(color, 0.0);
     if (g_ShowChunkStream == 1 && wave > 0.0 && wave < 0.99) ArrivalGlow(color, wave, 1.0);
-    if (g_SplatBlendSpace == 1) color = SRGBToLinear(color);
+    if (toLinear) color = SRGBToLinear(color);
     return color;
 }
 
@@ -733,14 +827,10 @@ bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, out G
 {
     gs.clipCenter = s_culledClipPos; gs.axis1 = float2(0.0, 0.0); gs.axis2 = float2(0.0, 0.0); gs.uvScale = 0.0; gs.color = float3(0.0, 0.0, 0.0); gs.alpha = 0.0; gs.disc = 0.0; gs.solid = 0.0;
 
-    PackedSplat s = g_SplatBuffer[splatIndex];
-    float3 pos = g_AABBMin + float3((s.w0 & 0xFFFFu) / 65535.0, ((s.w0 >> 16) & 0xFFFFu) / 65535.0, (s.w1 & 0xFFFFu) / 65535.0) * g_AABBExtents;
-    float3 scaleBytes = float3((s.w1 >> 16) & 0xFFu, (s.w1 >> 24) & 0xFFu, s.w2 & 0xFFu);
-    float3 scale = exp2(g_ScaleLog2Min + (scaleBytes / 255.0) * (g_ScaleLog2Max - g_ScaleLog2Min));
-    float opacity = ((s.w2 >> 8) & 0xFFu) / 255.0;
-    float3 dc = float3((s.w2 >> 16) & 0xFFu, (s.w2 >> 24) & 0xFFu, s.w3 & 0xFFu) / 255.0;
-    uint flags = (s.w3 >> 8) & 0xFFu;
-    float shScale = (flags & 1u) ? f16tof32(s.w3 >> 16) : 0.0;
+    float3 pos, scale, dc;
+    float opacity, shScale;
+    float4 q;
+    DecodePackedSplat(splatIndex, pos, scale, opacity, dc, shScale, q);
 
     if (opacity <= 1.0 / 255.0) return false;
 
@@ -771,7 +861,7 @@ bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, out G
         gs.axis1 = axis1;
         gs.axis2 = axis2;
         gs.uvScale = 1.0;
-        gs.color = SplatColor(splatIndex, pos, dc, shScale, wave);
+        gs.color = SplatColor(splatIndex, pos, dc, shScale, wave, g_SplatBlendSpace == 1);
         // Match Level 0 Softness: the discs (level 1 and up) take the opacity floor so a low-opacity record
         // does not read as a hole. A level 1 parent handing over to level 0 fades out by the chunk weight
         // (a sub-pixel disc drops its opaque-dot rule while fading so it can fade at all).
@@ -790,26 +880,6 @@ bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, out G
         opacity *= saturate(fade);
         if (opacity <= 1.0 / 255.0) return false;
     }
-
-    // Smallest-three quaternion
-    uint largest = s.w4 & 3u;
-    float comps[4] = { 0.0, 0.0, 0.0, 0.0 };
-    float sumSq = 0.0;
-    uint shift = 2;
-    [unroll]
-    for (uint i = 0; i < 4; i++)
-    {
-        if (i != largest)
-        {
-            float t = ((s.w4 >> shift) & 0x3FFu) / 1023.0;
-            float v = (t * 2.0 - 1.0) * 0.70710678118;
-            comps[i] = v;
-            sumSq += v * v;
-            shift += 10;
-        }
-    }
-    comps[largest] = sqrt(saturate(1.0 - sumSq));
-    float4 q = float4(comps[0], comps[1], comps[2], comps[3]);
 
     // 3D covariance in world (= model) space, then in view space
     float3x3 R = QuatToMat3(q);
@@ -851,7 +921,7 @@ bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, out G
     float2 v2 = l2 * float2(diagonalVector.y, -diagonalVector.x);
 
     // Colour: DC plus the harmonics for this view direction, clamped at black
-    float3 color = SplatColor(splatIndex, pos, dc, shScale, wave);
+    float3 color = SplatColor(splatIndex, pos, dc, shScale, wave, g_SplatBlendSpace == 1);
 
     // Shrink the quad to where the Gaussian times opacity falls below 1/255
     float clipS = min(1.0, sqrt(max(0.0, log(opacity * 255.0))) * 0.5);
@@ -970,6 +1040,24 @@ void BuildItemSplat(uint surfelIndex, uint lod, out float3 worldPos, out float3 
             tangentX = g_CamRight * splatRadius;
             tangentY = g_CamUp * splatRadius;
         }
+    }
+    else if (g_RenderMode == 4)
+    {
+        // Splat package drawn as surfels: the record's disc (see SplatRecordDisc and BuildSplat)
+        float3 pos, scale, dc;
+        float opacity, shScale;
+        float4 q;
+        DecodePackedSplat(surfelIndex, pos, scale, opacity, dc, shScale, q);
+        worldPos = pos;
+        float baseRadius;
+        SplatRecordDisc(scale, q, normal, baseRadius);
+        float splatRadius = AutoSplatRadius(lod, baseRadius, 1.0);
+
+        float4 clipCenter = mul(g_ViewProj, float4(worldPos, 1.0));
+        float distToCam = max(0.1f, clipCenter.w);
+        splatRadius = max(splatRadius, distToCam * 0.00075f); // ~1 px minimum, item prepass only (see above)
+
+        SplatTangents(normal, splatRadius, tangentX, tangentY);
     }
     else
     {

@@ -32,14 +32,14 @@ namespace Surfels
             bool     autoRotate  = false;
             float    time        = 0.0f;
 
-            uint32_t renderMode  = 1; // 0 = Sphere, 1 = Quantized (8-byte), 2 = Raw Float32, 3 = Splat mode (20-byte Gaussians, see pSplats)
+            uint32_t renderMode  = 1; // 0 = Sphere, 1 = Quantized (8-byte), 2 = Raw Float32, 3 = Splat mode (20-byte Gaussians, see pSplats), 4 = splat records through the surfel pipeline (opaque discs, chunk sort)
             uint32_t orientMode  = 0; // 0 = Normal-Oriented Tangent Discs (standard default; 1 = Camera-Facing Billboards)
             XMFLOAT3 aabbMin     = { -40.0f, -2.0f, -80.0f };
             XMFLOAT3 aabbExtents = { 80.0f, 30.0f, 160.0f };
 
             const PackedSurfelGPU* pSurfels    = nullptr;
             const SurfelVertex*    pRawSurfels = nullptr;
-            // Splat mode (renderMode 3): the 20-byte Gaussian records and their spherical-harmonics stream
+            // Splat mode (renderMode 3 and 4): the 20-byte Gaussian records and their spherical-harmonics stream
             // (surfelCount * shRecordBytes bytes, may be null), plus the decode parameters from the package.
             const PackedSplatGPU*  pSplats     = nullptr;
             const uint8_t*         pSplatSH    = nullptr;

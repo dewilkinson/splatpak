@@ -356,6 +356,19 @@ namespace Surfels
                         }
                     }
 
+                    // Splat mode, Draw Splats as Surfels on/off (JSON or INI); see SplatRenderMode.
+                    {
+                        size_t hPos = line.find("\"splat_draw_as_surfels\":");
+                        size_t eqPos = std::string::npos;
+                        if (hPos != std::string::npos) eqPos = line.find(':', hPos);
+                        else if (line.find("splat_draw_as_surfels=") != std::string::npos) eqPos = line.find('=');
+                        if (eqPos != std::string::npos)
+                        {
+                            std::string val = line.substr(eqPos + 1);
+                            m_splatDrawAsSurfels = !(val.find("false") != std::string::npos || val.find('0') != std::string::npos);
+                        }
+                    }
+
                     // Render path (JSON or INI): "auto" (default), "mesh", "vs6" (vertex shaders, Shader
                     // Model 6.0) or "vs5" (vertex shaders through the legacy Shader Model 5.1 compiler).
                     // Anything but auto forces that fallback on capable hardware, for testing; a path the
@@ -470,6 +483,7 @@ namespace Surfels
             out << "  \"occlusion_shave_bias\": " << m_occlusionShaveBiasCells << ",\n";
             out << "  \"show_control_hints\": " << (m_showControlHints ? "true" : "false") << ",\n";
             out << "  \"splat_disc_match_level0\": " << (m_splatDiscMatchLevel0 ? "true" : "false") << ",\n";
+            out << "  \"splat_draw_as_surfels\": " << (m_splatDrawAsSurfels ? "true" : "false") << ",\n";
             out << "  \"render_path\": \"" << m_renderPathConfig << "\",\n";
             out << "  \"last_dialog_folder\": \"" << m_lastDialogFolder << "\"\n";
             out << "}\n";
@@ -1202,9 +1216,9 @@ namespace Surfels
             64,
             m_enableMortonOrder
         );
-        // Splat mode: dilationMorph is the level 0 Gaussian fade-in weight (see AppendChunkToRenderer);
-        // chunks resident at load show Gaussians at once, so they carry 1
-        if (m_splatMode) for (auto& mc : m_rendererMeshletChunks) mc.dilationMorph = 1.0f;
+        // Sorted Gaussian pipeline: dilationMorph is the level 0 Gaussian fade-in weight (see AppendChunkToRenderer);
+        // chunks resident at load show Gaussians at once, so they carry 1. Drawn as surfels: the surfel value (0).
+        if (m_splatMode && !m_splatDrawAsSurfels) for (auto& mc : m_rendererMeshletChunks) mc.dilationMorph = 1.0f;
 
         // Re-quantize to guarantee exact alignment with meshlet ordering
         m_rendererSurfels = Quantizer::QuantizeSurfels(m_rendererRawSurfels, m_aabbMin, m_aabbMax);
@@ -1318,7 +1332,7 @@ namespace Surfels
         m_state.chunkCount = (uint32_t)m_rendererMeshletChunks.size();
         m_state.aabbMin = m_aabbMin;
         m_state.aabbExtents = m_extents;
-        m_state.renderMode = m_splatMode ? 3 : (m_enableQuantization ? 1 : 2);
+        m_state.renderMode = m_splatMode ? SplatRenderMode() : (m_enableQuantization ? 1 : 2);
 
         if (m_pRenderer)
         {
@@ -1675,7 +1689,7 @@ namespace Surfels
                 if (m_splatMode)
                 {
                     EncodeSplatLevel(m_residentLODs[lodIdx].rawSurfels, (uint32_t)lodIdx, m_residentLODs[lodIdx].splats, m_residentLODs[lodIdx].splatSH);
-                    for (auto& mc : m_residentLODs[lodIdx].meshletChunks) mc.dilationMorph = 1.0f; // Resident at load: Gaussians at once (level 0 fade-in weight, see AppendChunkToRenderer)
+                    if (!m_splatDrawAsSurfels) for (auto& mc : m_residentLODs[lodIdx].meshletChunks) mc.dilationMorph = 1.0f; // Resident at load, sorted Gaussians: Gaussians at once (level 0 fade-in weight, see AppendChunkToRenderer); drawn as surfels: the surfel value (0)
                 }
             }
         }
@@ -1688,7 +1702,7 @@ namespace Surfels
             if (m_splatMode)
             {
                 EncodeSplatLevel(m_residentLODs[0].rawSurfels, 0, m_residentLODs[0].splats, m_residentLODs[0].splatSH);
-                for (auto& mc : m_residentLODs[0].meshletChunks) mc.dilationMorph = 1.0f; // Resident at load: Gaussians at once (level 0 fade-in weight, see AppendChunkToRenderer)
+                if (!m_splatDrawAsSurfels) for (auto& mc : m_residentLODs[0].meshletChunks) mc.dilationMorph = 1.0f; // Resident at load, sorted Gaussians: Gaussians at once (level 0 fade-in weight, see AppendChunkToRenderer); drawn as surfels: the surfel value (0)
             }
         }
     }
@@ -1745,7 +1759,7 @@ namespace Surfels
 
         if (m_splatMode)
         {
-            m_state.renderMode = 3; // Splat mode: 20-byte Gaussians
+            m_state.renderMode = SplatRenderMode(); // Splat mode: 20-byte Gaussians, as surfels (4) or sorted Gaussians (3)
             ApplySplatRenderState();
             m_state.pSplats = resident.splats.data();
             m_state.pSplatSH = resident.splatSH.empty() ? nullptr : resident.splatSH.data();
@@ -2169,7 +2183,7 @@ namespace Surfels
         {
             if (m_splatMode)
             {
-                m_state.renderMode = 3;
+                m_state.renderMode = SplatRenderMode();
                 ApplySplatRenderState();
                 m_state.pSplats = m_unifiedSplats.empty() ? nullptr : m_unifiedSplats.data();
                 m_state.pSplatSH = m_unifiedSH.empty() ? nullptr : m_unifiedSH.data();
@@ -2207,7 +2221,7 @@ namespace Surfels
 
                 if (m_splatMode)
                 {
-                    m_state.renderMode = 3;
+                    m_state.renderMode = SplatRenderMode();
                     ApplySplatRenderState();
                     m_state.pSplats = resident.splats.data();
                     m_state.pSplatSH = resident.splatSH.empty() ? nullptr : resident.splatSH.data();
@@ -2717,9 +2731,25 @@ namespace Surfels
                     }
                     if (m_splatMode)
                     {
+                        if (ImGui::Checkbox("Draw Splats as Surfels", &m_splatDrawAsSurfels))
+                        {
+                            // The render mode follows SplatRenderMode() at the next state selection; re-stamp the chunks'
+                            // dilationMorph now (the sorted pipeline's fade weight, or the surfel value) without a re-partition
+                            const float morph = m_splatDrawAsSurfels ? 0.0f : 1.0f;
+                            for (auto& mc : m_rendererMeshletChunks) mc.dilationMorph = morph;
+                            for (auto& lod : m_residentLODs) for (auto& mc : lod.meshletChunks) mc.dilationMorph = morph;
+                            m_streamStateDirty = true;
+                            SaveConfigFile();
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Draws the package's Gaussians as opaque, depth-tested discs through the surfel pipeline: no per-frame sort, no blending. Auto Splat Size and its Coverage, Splat Radius Scale and Surfel Orientation apply (Normal-Oriented uses each Gaussian's own orientation), and the dithered level transitions dissolve between two surfaces instead of sparkling. The colour is the record's base colour plus its harmonics, unlit. Off restores the sorted Gaussian pipeline. Remembered across sessions.");
                         static const char* s_blendNames[] = { "Display space (reference viewer)", "Linear (sRGB target)" };
-                        ImGui::Combo("Splat Blending", &m_splatBlendSpace, s_blendNames, IM_ARRAYSIZE(s_blendNames));
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where the Gaussians are blended. Display space blends the stored colours as they are, which is what the training rasterizer and SuperSplat do. Linear decodes them first and lets the sRGB target encode the result: physically tidier, slightly different from the reference.");
+                        // Greyed out while the package is drawn as surfels (nothing is blended): shown, edits are dropped
+                        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, m_splatDrawAsSurfels ? 0.45f : 1.0f);
+                        int blendShown = m_splatBlendSpace;
+                        if (ImGui::Combo("Splat Blending", &blendShown, s_blendNames, IM_ARRAYSIZE(s_blendNames)) && !m_splatDrawAsSurfels)
+                            m_splatBlendSpace = blendShown;
+                        ImGui::PopStyleVar();
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where the Gaussians are blended. Display space blends the stored colours as they are, which is what the training rasterizer and SuperSplat do. Linear decodes them first and lets the sRGB target encode the result: physically tidier, slightly different from the reference. No effect while Draw Splats as Surfels is on.");
                         // Greyed out while kSplatGaussianLevel0 is false (it refers to the Gaussian level 0): shown, but
                         // edits go to a copy and are dropped; the saved value still sizes the discs of every level
                         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, kSplatGaussianLevel0 ? 1.0f : 0.45f);
@@ -2778,6 +2808,17 @@ namespace Surfels
                         ImGui::Checkbox("Meshlet Backface Cone Culling (Task Shader)", &fixedOn);
                         ImGui::PopStyleVar();
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Unavailable on this GPU path (%s): there is no amplification (task) shader stage. Chunk backface culling runs per splat in the vertex shader instead and is always on.", m_pRenderer->GetRenderPathDescription());
+                    }
+                    else if (m_splatMode && SplatRenderMode() == 4)
+                    {
+                        // Splat package drawn as surfels: cone culling is off (the chunk cones come from placeholder
+                        // normals; see SurfelsRenderer). Greyed out; edits go to a copy and are dropped.
+                        bool coneShown = m_enableConeCulling;
+                        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.45f);
+                        ImGui::Checkbox("Meshlet Backface Cone Culling (Task Shader)", &coneShown);
+                        ImGui::PopStyleVar();
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Task Shader (mainAS) culls ~50% of meshlet chunks facing away from the camera before mesh shaders and rasterization ever execute. Off for a splat package drawn as surfels: its chunk normal cones are placeholders.");
+                        ImGui::TextDisabled("off for splat packages drawn as surfels");
                     }
                     else
                     {
@@ -3996,6 +4037,7 @@ namespace Surfels
         if (m_showHeatmapWireframe)        add(ImVec4(0.92f, 0.82f, 0.60f, 1.0f), "RENDERER: Cube Outlines enabled");
         if (m_showOctreeVisualizer)        add(ImVec4(1.00f, 0.75f, 0.20f, 1.0f), "RENDERER: Macro Clusters enabled");
         if (m_showGlobalBounds)            add(ImVec4(0.40f, 0.60f, 1.00f, 1.0f), "RENDERER: Global Model Bounds enabled");
+        if (m_state.renderMode == 4)       add(ImVec4(0.55f, 0.85f, 1.00f, 1.0f), "SPLAT: 3D Gaussian package drawn as surfels, SH degree %u, opaque discs", m_splatParams.shDegree);
         if (m_state.renderMode == 3)       add(ImVec4(0.55f, 0.85f, 1.00f, 1.0f), kSplatGaussianLevel0 ? "SPLAT: 3D Gaussian mode, SH degree %u, %s-space blending, levels 1+ as discs" : "SPLAT: 3D Gaussian package, SH degree %u, %s-space blending, every level as discs (Gaussian level 0 off)", m_splatParams.shDegree, m_splatBlendSpace == 1 ? "linear" : "display");
         if (m_showCulledChunks)            add(ImVec4(0.80f, 0.80f, 0.80f, 1.0f), "RENDERER: Show Culled Chunks enabled");
         if (m_detachCamera)                add(ImVec4(0.30f, 0.90f, 1.00f, 1.0f), "RENDERER: Detach Camera (frozen culling frustum) enabled");
