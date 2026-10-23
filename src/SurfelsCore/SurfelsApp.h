@@ -269,9 +269,9 @@ namespace Surfels
         int      m_splatBlendSpace          = 0;     // 0 = display-space blending (as the reference viewer), 1 = linear
         // Draw Splats as Surfels (Renderer tab, saved in config.json as splat_draw_as_surfels): a splat package is
         // drawn through the surfel pipeline as opaque, depth-tested discs (render mode 4; Auto Splat Size, Coverage,
-        // Splat Radius Scale and Surfel Orientation apply, the dither dissolves between two surfaces). Off: the
-        // sorted Gaussian pipeline (render mode 3) with Splat Blending and the coarse-level discs as before.
-        bool     m_splatDrawAsSurfels       = true;
+        // Splat Radius Scale and Surfel Orientation apply, the dither dissolves between two surfaces). Off (the
+        // default): the sorted Gaussian pipeline (render mode 3) with Splat Blending, Gaussians at level 0 and discs above.
+        bool     m_splatDrawAsSurfels       = false;
         uint32_t SplatRenderMode() const { return m_splatDrawAsSurfels ? 4u : 3u; }
         SplatEncodeParams m_splatParams;
         uint32_t SplatSHDegree() const { return m_splatSHQuality == 1 ? 3u : 1u; }

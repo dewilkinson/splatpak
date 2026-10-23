@@ -161,9 +161,10 @@ float AutoSplatRadius(uint lod, float classRadius, float classScale)
 
 // Splat mode: chunks at this level and above draw as camera-facing discs of the level's point spacing
 // (g_SplatDiscRadius) instead of projected Gaussians (see BuildGaussianSplat). Fixed by design: no control.
-// 0 for now: every level, level 0 included, draws as discs; the Gaussian level 0 is switched off (see
-// kSplatGaussianLevel0 in SurfelsApp.cpp). 1 restores it.
-static const uint kSplatDiscMinLevel = 0;
+// 1 (the default): levels 1 and up draw as discs and level 0 as true Gaussians, with the level 1 -> 0
+// opacity hand-over (see kSplatGaussianLevel0 in SurfelsApp.cpp, which must agree). 0 draws every level,
+// level 0 included, as discs.
+static const uint kSplatDiscMinLevel = 1;
 
 // Hue/saturation/value to RGB, hue in degrees (wraps).
 float3 HsvToRgb(float h, float s, float v)

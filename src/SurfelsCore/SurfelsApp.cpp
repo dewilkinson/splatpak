@@ -23,11 +23,11 @@ namespace Surfels
     static constexpr const char* kTraceLogFilename = "lod_transition_trace.log";
 
     // Splat packages: the Gaussian level 0 (the reference 3DGS rendering of the finest level, with the
-    // level 1 -> 0 opacity hand-over in UpdateStreamingSimulation) is switched off for now. A 3DGS source
-    // still bakes as Gaussians (the 20-byte records and the SH stream carry the colours), but every level
-    // draws as discs (kSplatDiscMinLevel = 0 in Surfels.hlsl), and Match Level 0 Softness, which refers to
-    // the Gaussian level 0, is greyed out. Set true, and kSplatDiscMinLevel back to 1, to restore it.
-    static constexpr bool kSplatGaussianLevel0 = false;
+    // level 1 -> 0 opacity hand-over in UpdateStreamingSimulation) is on: full Gaussian splat rendering is
+    // the default. Levels 1 and up draw as discs (kSplatDiscMinLevel = 1 in Surfels.hlsl, which must agree),
+    // and Match Level 0 Softness sizes them from the level 0 Gaussians. Set false, and kSplatDiscMinLevel to
+    // 0, to draw every level as discs.
+    static constexpr bool kSplatGaussianLevel0 = true;
 
     // Appends one timestamped line to the trace log -- the app's primary debugging aid for streaming/LOD issues
     void LogTransitionTrace(const char* fmt, ...)
