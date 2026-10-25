@@ -1514,6 +1514,7 @@ namespace Surfels
         m_sourceHasSplatAttributes = !m_splatAttributes.empty();
         m_splatMode = m_sourceHasSplatAttributes; // A 3DGS source bakes as Gaussians unless switched off on the Generator tab
         m_loadedFilePath = filepath;
+        m_rendererSourceDescription = filepath; // The viewport draws the raw cloud now (Input Model Metrics)
         m_isLoadedFromSFLW = false;
         strncpy_s(m_inputPathBuf, sizeof(m_inputPathBuf), filepath.c_str(), _TRUNCATE);
 
@@ -1555,6 +1556,7 @@ namespace Surfels
         m_sourceHasSplatAttributes = !m_splatAttributes.empty();
         m_splatMode = m_sourceHasSplatAttributes; // A 3DGS source bakes as Gaussians unless switched off on the Generator tab
         m_loadedFilePath = filepath;
+        m_rendererSourceDescription = filepath; // The viewport draws the raw cloud now (Input Model Metrics)
         m_isLoadedFromSFLW = false;
         strncpy_s(m_inputPathBuf, sizeof(m_inputPathBuf), filepath.c_str(), _TRUNCATE);
 
@@ -1629,6 +1631,7 @@ namespace Surfels
             else if (LoadFile(foundPath))
             {
                 m_loadedFilePath = "Synthetic Benchmark (" + foundPath + ")";
+                m_rendererSourceDescription = m_loadedFilePath;
                 m_statusMessage = "Successfully loaded benchmark dataset (" + std::to_string(m_rawSurfels.size()) + " points from " + foundPath + ").";
                 m_statusIsSuccess = true;
                 return;
@@ -1641,6 +1644,7 @@ namespace Surfels
         m_sourceHasSplatAttributes = false;
         m_splatMode = false;
         m_loadedFilePath = "Synthetic Benchmark (" + std::to_string(count / 1000) + "K points)";
+        m_rendererSourceDescription = m_loadedFilePath;
         m_isLoadedFromSFLW = false;
         m_sourceFileBytes = 0;
         m_rawFileSizeMB = (m_rawSurfels.size() * sizeof(SurfelVertex)) / (1024.0f * 1024.0f);
