@@ -1722,11 +1722,17 @@ float4 SplatVizShade(VSOut i, float d)
         markColor = saturate(i.color * 1.6 + 0.15);
         a = max(mark, f * i.splatAlpha * 0.35);
     }
-    else // 3: a dot of about two pixels at the centre over a faint fill
+    else // 3: a round dot about three pixels across at the centre, over a faint fill
     {
-        const float r = sqrt(d);
-        const float w = max(fwidth(r), 1e-4);
-        mark = 1.0 - saturate((r - 2.0 * w) / w);
+        // The distance to the centre in screen pixels: the quad's uv is affine in screen space, so its
+        // per-pixel derivatives are constant and inverting them maps this pixel's uv offset to pixels.
+        // (Thresholding sqrt(d) against fwidth broke at the centre itself: the cone's gradient flips sign
+        // there, so 2x2 quads straddling it measured almost no change and cut a gap through every dot.)
+        const float2 c = i.uv * 2.0 - 1.0;
+        const float2 cx = ddx(c), cy = ddy(c);
+        const float det = cx.x * cy.y - cx.y * cy.x;
+        const float2 px = (abs(det) > 1e-12) ? float2(cy.y * c.x - cy.x * c.y, cx.x * c.y - cx.y * c.x) / det : float2(1e6, 1e6);
+        mark = 1.0 - saturate(length(px) - 1.0);
         markColor = float3(1.0, 0.95, 0.4);
         a = max(mark, f * i.splatAlpha * 0.25);
     }
