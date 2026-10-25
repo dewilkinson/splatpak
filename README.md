@@ -2,7 +2,7 @@
 
 > Want to use the app? Start with the [User Guide](docs/USER_GUIDE.md). This README covers the architecture and the build.
 
-Surfels is a DirectX 12 renderer and toolchain for very large point clouds and Gaussian splat scans. A scan of millions of points is packaged once into a compact, multi-resolution `.sflw` file, then streamed and drawn on the GPU as surfels: small oriented, coloured discs standing in for patches of surface. Every splat is generated, culled, sorted and cross-faded on the GPU each frame, straight from a buffer of packed surfels. There is no vertex or index buffer in the pipeline.
+SplatLab is a DirectX 12 renderer and toolchain for streaming very large 3D Gaussian Splatting scenes. A scan of millions of Gaussians (or a plain point cloud, which gets a Gaussian at each point) is packaged once into a compact, multi-resolution `.sflw` file, then streamed and drawn on the GPU as sorted, alpha-blended 3D Gaussians. Every splat is culled, sorted and cross-faded on the GPU each frame, straight from a buffer of packed 20-byte records. There is no vertex or index buffer in the pipeline.
 
 ## Screenshots
 
@@ -108,7 +108,7 @@ Both example scans come from [SuperSplat](https://superspl.at) and carry their a
 
 ## Where this goes next
 
-Real scene geometry is the normal path today. The obvious next step toward a surfel global-illumination renderer is an irradiance accumulation and shading pass; splats currently get per-surfel colour with a flat two-sided diffuse term and no global illumination.
+Splats are drawn the way a reference 3DGS viewer draws them: per-splat colour from the spherical harmonics, no relighting and no global illumination. Relighting Gaussians in the host scene is the obvious next step.
 
 ## Contributing
 
