@@ -4,14 +4,14 @@ This guide explains how to use SplatLab. For the architecture and build instruct
 
 ## Overview
 
-SplatLab turns large point clouds and Gaussian splat scans into compact, multi-resolution packages, then streams and renders them on the GPU. A scan of a few million points becomes a single `.sflw` file that opens in seconds, loads coarse-to-fine as you look at it, and stays sharp where it matters.
+SplatLab turns large point clouds and Gaussian splat scans into compact, multi-resolution packages, then streams and renders them on the GPU. A scan of a few million points becomes a single `.gstx` file that opens in seconds, loads coarse-to-fine as you look at it, and stays sharp where it matters.
 
 A few concepts carry through the whole application:
 
 - **Gaussian (splat).** A small, soft, coloured 3D ellipsoid with a position, three scales, a rotation, an opacity and optionally view-dependent colour (spherical harmonics). Everything SplatLab renders is made of them: a 3D Gaussian Splatting scene supplies its own, and a plain point cloud gets one at each point.
 - **Chunk.** A spatial cube of Gaussians, a few thousand at most. Chunks are the unit of streaming: they arrive, refine and leave memory independently.
-- **LOD pyramid.** Every chunk exists at several levels of detail, from a coarse envelope of a few points to the full-resolution scan. The .SFLW Bake tab builds the pyramid once, using a wavelet decomposition that keeps shape while it halves the point count (see the appendix).
-- **Package (`.sflw`).** One self-contained file holding every level of every chunk, compressed, plus the metadata the viewer needs: the chunk manifest, an optional interior occlusion volume and a detail grid that guides streaming.
+- **LOD pyramid.** Every chunk exists at several levels of detail, from a coarse envelope of a few points to the full-resolution scan. The GSTx Bake tab builds the pyramid once, using a wavelet decomposition that keeps shape while it halves the point count (see the appendix).
+- **Package (`.gstx`).** One self-contained file holding every level of every chunk, compressed, plus the metadata the viewer needs: the chunk manifest, an optional interior occlusion volume and a detail grid that guides streaming. Packages from earlier versions (`.sflw`) still open.
 - **Streaming.** The viewer never needs the whole file at once. Chunks are requested at the level the view calls for, arrive in a priority order, cross-fade in, and can be evicted again when memory is tight. SplatLab simulates the network so you can watch this happen.
 - **Interior occlusion volume.** A solid, coloured voxel body baked inside the model. It stops the far side of a sparse scan from showing through the near side.
 
@@ -19,7 +19,7 @@ A few concepts carry through the whole application:
 
 SplatLab ships as two executables built from the same code:
 
-- **`SplatLab.exe`** runs in Studio mode: three tabs that take a dataset from raw scan to streamed render. **.SFLW Bake** loads a `.ply` or `.splat`, exposes the packaging parameters and saves a `.sflw`. **Renderer** shows the current dataset or any package with level-of-detail, visualiser and occlusion controls. **Streaming** simulates delivery over a constrained connection and shows what is resident.
+- **`SplatLab.exe`** runs in Studio mode: three tabs that take a dataset from raw scan to streamed render. **GSTx Bake** loads a `.ply` or `.splat`, exposes the packaging parameters and saves a `.gstx`. **Renderer** shows the current dataset or any package with level-of-detail, visualiser and occlusion controls. **Streaming** simulates delivery over a constrained connection and shows what is resident.
 - **`Surfels_DX12.exe`** runs in Viewer mode: the Renderer and Streaming tabs only, with the generator hidden. Use it where people only need to open packages.
 
 Either executable can start in either mode with a switch, and both accept a file on the command line, so dropping a package or a scan onto the executable opens it directly.
@@ -29,7 +29,7 @@ flowchart LR
     A["Raw scan<br/>.ply / .splat"] --> B["Octree chunking"]
     B --> C["Wavelet decomposition<br/>(LOD pyramid)"]
     C --> D["Quantize + compress"]
-    D --> E[".sflw package<br/>(single file)"]
+    D --> E[".gstx package<br/>(single file)"]
     E --> F["Renderer / Streaming tabs"]
 ```
 
@@ -42,7 +42,7 @@ Surfels_DX12.exe [options] [file]
 
 | Option | Effect |
 |---|---|
-| `file` | A `.sflw` package to open, or in Studio mode a `.ply` / `.splat` to preprocess. Without it, the `startup_dataset` from `config.json` opens. |
+| `file` | A `.gstx` package to open, or in Studio mode a `.ply` / `.splat` to preprocess. Without it, the `startup_dataset` from `config.json` opens. |
 | `--viewer` | Viewer mode: Renderer and Streaming tabs only. The default for `Surfels_DX12.exe`. |
 | `--studio` | Studio mode: all three tabs. The default for `SplatLab.exe`. |
 | `--render-path <p>` | GPU path for this run: `auto`, `mesh`, `vs6` or `vs5`. Overrides `render_path` in `config.json` without changing it. |
@@ -60,9 +60,9 @@ Surfels_DX12.exe [options] [file]
 
 **The banner.** Whenever a toggle changes what the viewport shows, a row at the top-left names it, as in `RENDERER: View Occlusion Volume Only enabled`. If the picture looks wrong, read the banner first: it names the tab and control responsible, and turning that control off restores the normal view. A red `CODEC:` row means the build is running the open stand-in codec rather than the bundled `bluesec-codec` library, and lists what that build lacks.
 
-## .SFLW Bake tab
+## GSTx Bake tab
 
-This tab converts a point cloud into a `.sflw` package.
+This tab converts a point cloud into a `.gstx` package.
 
 1. **Open Raw Point Cloud** picks a `.ply` or `.splat` file. **Generate Synthetic Benchmark** builds a procedural street scene to experiment with.
 2. Adjust the parameters. Every control is live. The chunking and wavelet sliders re-run the pipeline when you release them, and the occlusion volume controls rebuild the volume while you drag.
@@ -73,9 +73,9 @@ This tab converts a point cloud into a `.sflw` package.
    - **Generate Interior Occlusion Volume**, on by default, bakes a solid, coloured voxel body of the model, stored as a compact octree with a chain of coarser levels. The cell size follows the point density. Stray points away from the surface are ignored, and cubes that would show through the splat surface are removed automatically, so the volume never clips outside the model. The panel reports the resolution chosen, the block count of each level and how many cubes were removed. If a scan still shows cubes poking through, the `occlusion_shave_bias` key in `config.json` widens that removal.
    - **Shave** erodes the volume further inside the model, from 0 (the largest body that fits) to 10 (a thin core along the model's length). The cut scales with local thickness, so thin and thick parts shrink together. The shape is fixed when the package is saved and cannot be changed in the viewer.
    - **Hue Shift**, **Saturation** and **Brightness** grade the volume's colour. The defaults of 0, 1 and 1 leave the sampled colour as it is. The graded colour is written into the package.
-3. **Save Compressed Package (.sflw)** writes the result with the current parameters.
+3. **Save Compressed Package (.gstx)** writes the result with the current parameters.
 
-The output is one `.sflw` file. Open it in the Renderer tab, reload it later, or hand it to someone with the viewer.
+The output is one `.gstx` file. Open it in the Renderer tab, reload it later, or hand it to someone with the viewer.
 
 ## Renderer tab
 
@@ -89,7 +89,7 @@ This is where you examine a model. The controls that matter most:
 - **Match Level 0 Softness**, shown for Gaussian splat packages; on by default. The coarser levels of a splat package are drawn as camera-facing discs, and this sizes those discs from the level 0 Gaussians themselves: the read-out beside the checkbox shows how wide the typical level 0 Gaussian is relative to the level 0 point spacing (the softness ratio) and the disc radius, as a multiple of each level's own spacing, that gives the discs the same softness. Discs of level 1 and up also take an opacity floor so a faint record does not read as a hole. The effect is a streamed model that reads as one surface while it refills, with a less visible hand-over from discs to Gaussians. Off, the discs are 1.5 times the level spacing with each record's opacity as is. Remembered across sessions.
 - **Detach Camera** (Ctrl+D) freezes the culling camera where the view is and steps the view aside so you can inspect the culling from any angle. The model is exactly what the frozen camera would render, its level of detail included: Gaussians it would draw keep their colour, mid grey where you see their backs, and everything it would have culled, including the far half of the model beyond its centre, stays on screen as a translucent red volume, depth-tested against your view so it never builds up. Streaming keeps running from the frozen camera's point of view, so Evict refills the model as that camera would see it. The occlusion volume shows only the faces turned toward the frozen camera, and its frustum is drawn.
 
-**Interior Occlusion Volume.** **Show Occlusion Volume**, on by default, draws the volume and depth-tests the Gaussians against it. **View Occlusion Volume Only** shows the solid alone for comparison with the model. When the package carries several levels, an **Occlusion Volume Mip** selector appears. On **Auto** the renderer picks one level per frame from how large its cells are on screen, so the volume coarsens as the model does. Choosing a level forces it, which is handy with View Occlusion Volume Only. Shape and colour are set when the package is baked; the .SFLW Bake tab has those sliders.
+**Interior Occlusion Volume.** **Show Occlusion Volume**, on by default, draws the volume and depth-tests the Gaussians against it. **View Occlusion Volume Only** shows the solid alone for comparison with the model. When the package carries several levels, an **Occlusion Volume Mip** selector appears. On **Auto** the renderer picks one level per frame from how large its cells are on screen, so the volume coarsens as the model does. Choosing a level forces it, which is handy with View Occlusion Volume Only. Shape and colour are set when the package is baked; the GSTx Bake tab has those sliders.
 
 ## Streaming tab
 
