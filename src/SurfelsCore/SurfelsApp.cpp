@@ -354,6 +354,17 @@ namespace Surfels
                         }
                     }
                     {
+                        size_t hPos = line.find("\"lod_per_block\":");
+                        size_t eqPos = std::string::npos;
+                        if (hPos != std::string::npos) eqPos = line.find(':', hPos);
+                        else if (line.find("lod_per_block=") != std::string::npos) eqPos = line.find('=');
+                        if (eqPos != std::string::npos)
+                        {
+                            std::string val = line.substr(eqPos + 1);
+                            m_lodPerBlock = !(val.find("false") != std::string::npos || val.find('0') != std::string::npos);
+                        }
+                    }
+                    {
                         size_t hPos = line.find("\"lod_pixel_spacing\":");
                         size_t eqPos = std::string::npos;
                         if (hPos != std::string::npos) eqPos = line.find(':', hPos);
@@ -630,6 +641,7 @@ namespace Surfels
                 out << "  \"right_panel_open\": \"" << open << "\",\n";
             }
             out << "  \"lod_screen_space\": " << (m_lodScreenSpace ? "true" : "false") << ",\n";
+            out << "  \"lod_per_block\": " << (m_lodPerBlock ? "true" : "false") << ",\n";
             out << "  \"lod_pixel_spacing\": " << m_lodPixelSpacing << ",\n";
             out << "  \"render_path\": \"" << m_renderPathConfig << "\",\n";
             out << "  \"last_dialog_folder\": \"" << m_lastDialogFolder << "\"\n";
@@ -2204,6 +2216,12 @@ namespace Surfels
 
     // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
+
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
+
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
+
     void SurfelsApp::UpdateCamera(const ImGuiIO& io)
     {
         const float cy = cosf(m_pitch), sy = sinf(m_pitch);
@@ -2936,6 +2954,8 @@ namespace Surfels
                                 if (ImGui::SliderFloat("##LodPixelSpacing", &m_lodPixelSpacing, 0.25f, 4.0f, "max %.2f px")) SaveConfigFile();
                                 ImGui::PopItemWidth();
                                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Largest on-screen spacing between a level's points before the next finer level is used. Lower keeps full resolution longer (more splats drawn); 1 px is where a level's points just tile the pixels.");
+                                if (ImGui::Checkbox("Per-Block Levels", &m_lodPerBlock)) SaveConfigFile();
+                                if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: every block of the model takes its own level from its own distance to the eye, by the rule above -- the near side refines, the far side and the edges turning away stay coarser, so fewer splats are streamed and drawn for the same look. Off: one level for the whole model, set by its near side. Remembered across sessions.");
                             }
                             const int lvlNow = std::max(0, std::min(maxLODIndex, m_selectedPreviewLOD));
                             if (lvlNow < (int)m_lodSpacing.size() && m_lodSpacing[lvlNow] > 0.0f)

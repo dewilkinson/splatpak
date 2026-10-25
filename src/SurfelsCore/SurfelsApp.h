@@ -216,6 +216,9 @@ namespace Surfels
         float LodEffectiveDistance(float cameraDistance) const;  // Camera to the model's near side, the distance the screen-space rule projects at
         float LodFocalPixels() const;                            // Pixels per unit of tangent at the render height (the renderer's 45-degree vertical field of view)
         float ContinuousLodAtDistance(float cameraDistance, bool screenSpace) const; // The level the rule wants at this distance, fractional
+        float ContinuousLodAtDepth(float viewDepth) const;      // The screen-space rule at a view depth, fractional
+        bool  m_lodPerBlock          = false;                    // Screen-space LOD per block: each block's level from its own distance to the eye (BlockTargetLOD); off = one level for the whole model from its near side. Off by default until the pixel threshold is calibrated for it: at 1 px it draws 57% fewer splats than the model-wide level but is visibly softer, since a coarse level drawn as merged Gaussians does not match a finer one even at sub-pixel point spacing
+        bool  PerBlockLodActive() const;
         float LodSwitchDistance(int level, bool screenSpace) const;                // Camera distance at which auto LOD steps from level - 1 to level
         bool  m_autoRotate           = false; // Disabled by default
         bool  m_showControlHints     = true;  // Viewport: draw the faint rotate/zoom/pan reminder at the bottom-right (see DrawControlHints); saved in config.json
@@ -459,6 +462,17 @@ namespace Surfels
         // budget of starts (UINT32_MAX = unlimited), and the starts deferred to a later frame by the budget.
         uint32_t                  m_refineStartsThisFrame = 0, m_refineStartBudget = 0, m_refineStartsDeferred = 0;
         uint32_t                  m_deliverySeqCounter = 0;            // Last StreamChunk::deliverySeq handed out
+        // Streaming order after a rotation (see UpdateStreamingSimulation): the scheduler ranks its faces from
+        // has arrived
+        int                       BlockTargetLOD(const StreamChunk& c, const XMFLOAT3& eye) const; // The level a block should render at from its own distance to the eye
+        float                     m_streamSettleTimer = 0.0f;          // Seconds since the camera last moved
+        bool                      m_streamReorderPending = false;      // The camera moved; re-evaluate once it settles
+        XMFLOAT3                  m_orderEye = { 0, 0, 0 };
+        bool                      m_orderEyeValid = false;
+        XMFLOAT3                  m_pendingOrderEye = { 0, 0, 0 };
+        std::vector<StreamChunk*> m_finishBatch;
+        float                     m_finishBatchTimer = 0.0f;
+        bool                      m_finishBatchPending = false;
         std::vector<std::pair<uint32_t, uint32_t>> m_refineDeferred;  // Groups the pacing deferred this frame: (rank = the children's latest deliverySeq, start cost in chunks); sorted at the next frame's start to set m_refineAdmitSeqLimit
         uint32_t                  m_refineAdmitSeqLimit = 0;           // This frame a deferred group may start only if its rank is at or below this (delivery order); UINT32_MAX = no ordering (budget unlimited)
         float                     m_refinePacingTraceTimer = 0.0f;     // Once-per-second trace line while starts are being deferred
