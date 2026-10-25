@@ -612,6 +612,10 @@ namespace Surfels
         float  m_rightPanelWidth = 0.0f;             // From BuildUI, for placing the inset
         ImVec4 m_leftPanelRect = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);  // Side panels' x0, y0, x1, y1 this frame (from BuildUI):
         ImVec4 m_rightPanelRect = ImVec4(0.0f, 0.0f, 0.0f, 0.0f); // the loupe's box is kept out of them
+        bool   m_leftPanelCollapsed = false;          // Side panels folded to their title bar (the arrow on it; config left_panel_collapsed,
+        bool   m_rightPanelCollapsed = false;         // right_panel_collapsed): the space goes to the viewport and the loupe
+        void   RecordSidePanel(ImVec4& rect, bool& collapsed); // Inside a side panel: its on-screen rectangle (the title bar while folded), and remembers a fold
+        void   SetNextSidePanelCollapse(const ImVec4& rect, bool collapsed); // Before a side panel: a click on its title bar's arrow folds or unfolds it
         float  m_bannerBottomY = 0.0f;               // Bottom edge of the render-mode banner last frame (0 = none); the inset sits below it
         void   DrawLoupeOverlay();                   // The box and the inset's frame and zoom label (the inset itself is the renderer's)
         // A pinned box is anchored to the surface under it: the point and the patch's half-height in world units

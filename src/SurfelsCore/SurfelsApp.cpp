@@ -459,6 +459,22 @@ namespace Surfels
                         }
                     }
 
+                    // Side panels folded (JSON or INI); see RecordSidePanel.
+                    for (int side = 0; side < 2; side++)
+                    {
+                        const char* jsonKey = side == 0 ? "\"left_panel_collapsed\":" : "\"right_panel_collapsed\":";
+                        const char* iniKey  = side == 0 ? "left_panel_collapsed=" : "right_panel_collapsed=";
+                        size_t kPos = line.find(jsonKey);
+                        size_t eqPos = std::string::npos;
+                        if (kPos != std::string::npos) eqPos = line.find(':', kPos);
+                        else if (line.find(iniKey) != std::string::npos) eqPos = line.find('=');
+                        if (eqPos != std::string::npos)
+                        {
+                            std::string val = line.substr(eqPos + 1);
+                            (side == 0 ? m_leftPanelCollapsed : m_rightPanelCollapsed) = !(val.find("false") != std::string::npos || val.find('0') != std::string::npos);
+                        }
+                    }
+
                     // Two display toggles that are handy to pin for a test run (JSON or INI): the occlusion volume
                     // ("Show Occlusion Volume") and the arrival glow ("Refinement Visualizer"), both on by default.
                     for (int toggle = 0; toggle < 2; toggle++)
@@ -618,9 +634,10 @@ namespace Surfels
             out << "  \"occlusion_shave_bias\": " << m_occlusionShaveBiasCells << ",\n";
             out << "  \"show_control_hints\": " << (m_showControlHints ? "true" : "false") << ",\n";
             out << "  \"show_occlusion_volume\": " << (m_showOcclusionSetting ? "true" : "false") << ",\n";
+            out << "  \"left_panel_collapsed\": " << (m_leftPanelCollapsed ? "true" : "false") << ",\n";
+            out << "  \"right_panel_collapsed\": " << (m_rightPanelCollapsed ? "true" : "false") << ",\n";
             out << "  \"refinement_visualizer\": " << (m_showChunkStream ? "true" : "false") << ",\n";
             out << "  \"splat_disc_match_level0\": " << (m_splatDiscMatchLevel0 ? "true" : "false") << ",\n";
-            out << "  \"splat_draw_as_surfels\": " << (m_splatDrawAsSurfels ? "true" : "false") << ",\n";
             out << "  \"splat_coarse_as_gaussians\": " << (m_splatCoarseAsGaussians ? "true" : "false") << ",\n";
             out << "  \"splat_coarse_gaussian_cap\": " << m_splatCoarseGaussianCap << ",\n";
             out << "  \"loupe_size\": \"" << (int)m_loupeSize.x << "," << (int)m_loupeSize.y << "\",\n";
@@ -2694,9 +2711,13 @@ namespace Surfels
         float panelHeight = std::max(200.0f, (float)m_Height - 40.0f);
 
         // 2. Left Control Panel: Decoupled Preprocessor & Renderer Tabs
+        // Both side panels fold to their title bar with the arrow on it (remembered: left_panel_collapsed,
+        // right_panel_collapsed); a folded panel's rectangle is just that bar, so the loupe's box and inset,
+        // which keep out of the panels' rectangles, get the freed space.
         ImGui::SetNextWindowPos(ImVec2(10.0f, 30.0f), ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(leftPanelWidth, panelHeight), ImGuiCond_Always);
-        ImGui::Begin("##LeftPanel", nullptr, ImGuiWindowFlags_NoCollapse);
+        SetNextSidePanelCollapse(m_leftPanelRect, m_leftPanelCollapsed);
+        ImGui::Begin("##LeftPanel", nullptr, 0);
 
         // Tab Selector Buttons. Studio shows the three numbered tabs; the viewer has no generator, so
         // it shows Renderer and Streaming, unnumbered, across the same width.
@@ -3477,8 +3498,7 @@ namespace Surfels
             }
         }
 
-        m_leftPanelRect = ImVec4(ImGui::GetWindowPos().x, ImGui::GetWindowPos().y,
-            ImGui::GetWindowPos().x + ImGui::GetWindowSize().x, ImGui::GetWindowPos().y + ImGui::GetWindowSize().y);
+        RecordSidePanel(m_leftPanelRect, m_leftPanelCollapsed);
         ImGui::End();
 
         // 3. Right Statistics & Telemetry Panel. Its height fits the open sections (0 = auto-fit), up to the
@@ -3486,7 +3506,8 @@ namespace Surfels
         ImGui::SetNextWindowPos(ImVec2((float)m_Width - rightPanelWidth - 10.0f, 30.0f), ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(rightPanelWidth, 0.0f), ImGuiCond_Always);
         ImGui::SetNextWindowSizeConstraints(ImVec2(rightPanelWidth, 0.0f), ImVec2(rightPanelWidth, panelHeight));
-        ImGui::Begin("Statistics & Compression Analytics", nullptr, ImGuiWindowFlags_NoCollapse);
+        SetNextSidePanelCollapse(m_rightPanelRect, m_rightPanelCollapsed);
+        ImGui::Begin("Statistics & Compression Analytics", nullptr, 0);
 
         // The sections in the user's order (RightPanelSectionHeader); a title-bar drag swaps two after the loop.
         int swapSlotA = -1, swapSlotB = -1;
@@ -3824,8 +3845,7 @@ namespace Surfels
             SaveConfigFile();
         }
 
-        m_rightPanelRect = ImVec4(ImGui::GetWindowPos().x, ImGui::GetWindowPos().y,
-            ImGui::GetWindowPos().x + ImGui::GetWindowSize().x, ImGui::GetWindowPos().y + ImGui::GetWindowSize().y);
+        RecordSidePanel(m_rightPanelRect, m_rightPanelCollapsed);
         ImGui::End();
 
         // 4. Bottom Status & Notification Bar
@@ -5954,6 +5974,195 @@ namespace Surfels
             m_pRenderer->RequestSceneCapture();
             m_lodTestCaptureRequested = true;
         }
+    }
+
+    // Before a side panel's Begin: a click on the fold arrow at the left end of its title bar (last frame's rectangle)
+    // folds or unfolds it. ImGui 1.53 draws the arrow but only folds on a double-click of the title bar, which still
+    // works too; the saved state applies on the first frame.
+    void SurfelsApp::SetNextSidePanelCollapse(const ImVec4& rect, bool collapsed)
+    {
+        const ImGuiIO& io = ImGui::GetIO();
+        const float bar = ImGui::GetFrameHeight();
+        const bool onArrow = rect.z > rect.x && io.MouseClicked[0]
+            && io.MousePos.x >= rect.x && io.MousePos.x <= rect.x + 1.5f * bar && io.MousePos.y >= rect.y && io.MousePos.y <= rect.y + bar;
+        if (onArrow) ImGui::SetNextWindowCollapsed(!collapsed, ImGuiCond_Always);
+        else ImGui::SetNextWindowCollapsed(collapsed, ImGuiCond_Once);
+    }
+
+    // Called inside a side panel's Begin/End: records the rectangle it occupies on screen (only the title bar while
+    // folded) and remembers a fold or unfold in config.json
+    void SurfelsApp::RecordSidePanel(ImVec4& rect, bool& collapsed)
+    {
+        const ImVec2 pos = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
+        const bool nowCollapsed = ImGui::IsWindowCollapsed();
+        const float height = nowCollapsed ? ImGui::GetFrameHeight() : size.y;
+        rect = ImVec4(pos.x, pos.y, pos.x + size.x, pos.y + height);
+        if (nowCollapsed != collapsed)
+        {
+            collapsed = nowCollapsed;
+            SaveConfigFile();
+        }
+    }
+
+    // --lod-calibration: see LodCalShot in SurfelsApp.h
+    void SurfelsApp::StepLodCalibration()
+    {
+        const int maxLevel = (int)m_waveletResult.lodLevels.size() - 1;
+        if (!m_lodCalRunning)
+        {
+            if (maxLevel <= 0 || (int)m_lodSpacing.size() <= maxLevel || m_lodStreamChunks.empty()) return;
+            m_unthrottledBandwidth = true;
+            if (m_totalStreamBytes <= 0.0f || m_simulatedBytesDelivered < m_totalStreamBytes * 0.999f) return;
+
+            m_autoRotate = false;
+            m_enableStreamDecay = false;
+            if (m_detachCamera) SetDetachCamera(false);
+            m_demoteChunks = true;          // Blocks coarsen again when a setting asks for less detail
+            m_showChunkStream = false;      // No arrival glow in the captures
+            m_loupeEnabled = false;
+            m_lodScreenSpace = true;
+            m_yaw = 0.6f; m_pitch = 0.35f; m_target = m_center;
+            m_lodCalFit = FitDistanceForViewport();
+            static const float kFactors[] = { 0.55f, 1.0f, 1.8f };
+            static const float kThresholds[] = { 1.0f, 0.85f, 0.7f, 0.6f, 0.5f, 0.4f, 0.3f };
+            for (float f : kFactors)
+            {
+                auto add = [&](int kind, float px) { LodCalShot s; s.distanceFactor = f; s.kind = kind; s.pixelSpacing = px; m_lodCalShots.push_back(std::move(s)); };
+                add(0, 1.0f);
+                add(1, 1.0f);
+                add(2, 1.0f);
+                for (float px : kThresholds) add(3, px);
+            }
+            m_lodCalIndex = 0;
+            m_lodCalStableFrames = -1;
+            m_lodCalRunning = true;
+            LogTransitionTrace("LOD calibration: %zu captures at %ux%u, fitted distance %.3f", m_lodCalShots.size(), m_Width, m_Height, m_lodCalFit);
+        }
+
+        if (m_lodCalIndex >= m_lodCalShots.size()) return;
+        LodCalShot& shot = m_lodCalShots[m_lodCalIndex];
+
+        if (m_lodCalCaptureRequested)
+        {
+            if (shot.image.Empty()) return; // Taken after this frame's render (see OnRender)
+            LogTransitionTrace("LOD calibration: %zu/%zu x%.2f kind %d px %.2f: %llu splats, settled %d after %.1f s",
+                m_lodCalIndex + 1, m_lodCalShots.size(), shot.distanceFactor, shot.kind, shot.pixelSpacing, (unsigned long long)shot.splats, shot.settled ? 1 : 0, shot.seconds);
+            m_lodCalCaptureRequested = false;
+            m_lodCalStableFrames = -1;
+            if (++m_lodCalIndex >= m_lodCalShots.size() || m_lodCalShots[m_lodCalIndex].distanceFactor != shot.distanceFactor)
+                FinishLodCalibration();
+            return;
+        }
+
+        if (m_lodCalStableFrames < 0)
+        {
+            m_distance = m_lodCalFit * shot.distanceFactor;
+            if (shot.kind <= 1)
+            {
+                m_autoLOD = false;
+                m_selectedPreviewLOD = 0;
+            }
+            else
+            {
+                m_autoLOD = true;
+                m_lodPerBlock = (shot.kind == 3);
+                m_lodPixelSpacing = shot.pixelSpacing;
+            }
+            UpdatePreviewSurfels();
+            m_lodCalStableFrames = 0;
+            m_lodCalShotSeconds = 0.0;
+            m_lodCalLastSplats = ~0ull;
+            m_lodCalStableSeconds = 0.0;
+            return;
+        }
+
+        // Settled: no cross-fade running and the same render list for 2.5 s. Time, not frames: the model-wide rule
+        // steps one level per cool-down (the dither duration, 0.75 s), so a frame count settled between its steps at
+        // a high frame rate. A shot that never settles is captured after 60 s and marked
+        m_lodCalShotSeconds += m_deltaTime / 1000.0;
+        uint64_t splats = 0;
+        for (const StreamChunk* pc : m_rendererSourceChunks) splats += pc->rawSurfels.size();
+        const bool still = (m_lastActiveTransitions == 0 && splats == m_lodCalLastSplats);
+        m_lodCalStableSeconds = still ? m_lodCalStableSeconds + m_deltaTime / 1000.0 : 0.0;
+        m_lodCalStableFrames = still ? m_lodCalStableFrames + 1 : 0;
+        m_lodCalLastSplats = splats;
+        if (m_lodCalStableSeconds >= 2.5 || m_lodCalShotSeconds > 60.0)
+        {
+            shot.splats = splats;
+            shot.chunks = (uint32_t)m_rendererSourceChunks.size();
+            for (const StreamChunk* pc : m_rendererSourceChunks) shot.perLevel[std::min(7, std::max(0, pc->lodLevel))] += pc->rawSurfels.size();
+            shot.seconds = (float)m_lodCalShotSeconds;
+            shot.settled = (m_lodCalStableSeconds >= 2.5);
+            m_pRenderer->RequestSceneCapture();
+            m_lodCalCaptureRequested = true;
+        }
+    }
+
+    void SurfelsApp::FinishLodCalibration()
+    {
+        const int maxLevel = (int)m_waveletResult.lodLevels.size() - 1;
+        CreateDirectoryA(m_lodCalFolder.c_str(), nullptr);
+        std::ofstream md(m_lodCalFolder + "\\report.md");
+        std::ofstream csv(m_lodCalFolder + "\\results.csv");
+        csv << "distance_factor,distance,setting,pixel_threshold,splats,splats_vs_modelwide,psnr_db,ssim,settled,seconds\n";
+        md << "# LOD calibration\n\n";
+        md << "Model: `" << m_inputPathBuf << "`, " << m_Width << "x" << m_Height << ", 45 degree vertical field of view, yaw " << m_yaw << ", pitch " << m_pitch
+           << ", streaming on with Demote Chunks on. At each distance (a multiple of the fitted launch distance " << m_lodCalFit << ") every setting is compared with level 0 "
+              "everywhere at the same distance (PSNR over RGB and SSIM over luma, inside the model's bounds). `level 0 again` is a second level 0 capture: the noise floor.\n\n";
+        auto label = [](const LodCalShot& s) -> std::string
+        {
+            char b[64];
+            if (s.kind == 0) return "level 0 (reference)";
+            if (s.kind == 1) return "level 0 again";
+            if (s.kind == 2) { snprintf(b, sizeof(b), "model-wide, %.2f px", s.pixelSpacing); return b; }
+            snprintf(b, sizeof(b), "per-block, %.2f px", s.pixelSpacing); return b;
+        };
+        for (size_t i = 0; i < m_lodCalShots.size();)
+        {
+            const float f = m_lodCalShots[i].distanceFactor;
+            size_t end = i;
+            while (end < m_lodCalShots.size() && m_lodCalShots[end].distanceFactor == f && !m_lodCalShots[end].image.Empty()) end++;
+            const LodCalShot* ref = nullptr; const LodCalShot* wide = nullptr;
+            std::vector<const RgbaImage*> all;
+            for (size_t k = i; k < end; k++)
+            {
+                if (m_lodCalShots[k].kind == 0) ref = &m_lodCalShots[k];
+                if (m_lodCalShots[k].kind == 2) wide = &m_lodCalShots[k];
+                all.push_back(&m_lodCalShots[k].image);
+            }
+            if (ref && end > i)
+            {
+                const PixelRect rect = ImageCompare::ContentBounds(all);
+                md << "## Distance " << f << " x fitted (" << m_lodCalFit * f << ")\n\n";
+                md << "| Setting | Splats drawn | vs model-wide | By level (thousands, L0..) | PSNR (dB) | SSIM | Settled |\n|---|---:|---:|---|---:|---:|:-:|\n";
+                std::vector<RgbaImage> panels;
+                for (size_t k = i; k < end; k++)
+                {
+                    const LodCalShot& s = m_lodCalShots[k];
+                    const double psnr = (s.kind == 0) ? 0.0 : ImageCompare::Psnr(ref->image, s.image, rect);
+                    const double ssim = (s.kind == 0) ? 1.0 : ImageCompare::Ssim(ref->image, s.image, rect);
+                    const double vsWide = (wide && wide->splats > 0) ? (double)s.splats / (double)wide->splats : 0.0;
+                    std::string levels;
+                    for (int l = 0; l <= std::min(7, maxLevel); l++) { char b[24]; snprintf(b, sizeof(b), "%s%llu", l ? " / " : "", (unsigned long long)(s.perLevel[l] / 1000)); levels += b; }
+                    char vs[16] = "", ps[16] = "", ss[16] = "";
+                    if (vsWide > 0.0) snprintf(vs, sizeof(vs), "%d%%", (int)std::lround(vsWide * 100.0));
+                    if (s.kind != 0) { snprintf(ps, sizeof(ps), "%.1f", psnr); snprintf(ss, sizeof(ss), "%.3f", ssim); }
+                    char row[512];
+                    snprintf(row, sizeof(row), "| %s | %llu | %s | %s | %s | %s | %s |\n", label(s).c_str(), (unsigned long long)s.splats, vs, levels.c_str(), ps, ss, s.settled ? "yes" : "no");
+                    md << row;
+                    csv << f << "," << m_lodCalFit * f << "," << label(s) << "," << s.pixelSpacing << "," << s.splats << "," << vsWide << "," << psnr << "," << ssim << "," << (s.settled ? 1 : 0) << "," << s.seconds << "\n";
+                    panels.push_back(ImageCompare::Crop(s.image, rect));
+                }
+                std::vector<const RgbaImage*> panelPtrs;
+                for (const RgbaImage& p : panels) panelPtrs.push_back(&p);
+                char name[64]; snprintf(name, sizeof(name), "distance_%.2f.png", f);
+                ImageCompare::WritePng(m_lodCalFolder + "\\" + name, ImageCompare::SideBySide(panelPtrs));
+                md << "\nLeft to right, in the table's order: " << name << "\n\n![" << name << "](" << name << ")\n\n";
+            }
+            i = std::max(end, i + 1);
+            while (i < m_lodCalShots.size() && m_lodCalShots[i].distanceFactor == f) i++;
+        }
+        LogTransitionTrace("LOD calibration: report written to %s", m_lodCalFolder.c_str());
     }
 
     void SurfelsApp::FinishLodQualityTest()
