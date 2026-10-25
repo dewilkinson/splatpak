@@ -440,6 +440,24 @@ namespace Surfels
                         }
                     }
 
+                    // Two display toggles that are handy to pin for a test run (JSON or INI): the occlusion volume
+                    // ("Show Occlusion Volume") and the arrival glow ("Refinement Visualizer"), both on by default.
+                    for (int toggle = 0; toggle < 2; toggle++)
+                    {
+                        const char* jsonKey = toggle == 0 ? "\"show_occlusion_volume\":" : "\"refinement_visualizer\":";
+                        const char* iniKey  = toggle == 0 ? "show_occlusion_volume=" : "refinement_visualizer=";
+                        size_t kPos = line.find(jsonKey);
+                        size_t eqPos = std::string::npos;
+                        if (kPos != std::string::npos) eqPos = line.find(':', kPos);
+                        else if (line.find(iniKey) != std::string::npos) eqPos = line.find('=');
+                        if (eqPos != std::string::npos)
+                        {
+                            std::string val = line.substr(eqPos + 1);
+                            const bool on = !(val.find("false") != std::string::npos || val.find('0') != std::string::npos);
+                            (toggle == 0 ? m_enableOcclusionCulling : m_showChunkStream) = on;
+                        }
+                    }
+
                     // Camera control hints overlay on/off (JSON or INI); see DrawControlHints.
                     {
                         size_t hPos = line.find("\"show_control_hints\":");
@@ -592,6 +610,8 @@ namespace Surfels
             out << "  \"default_deadband_mm\": 3.0,\n";
             out << "  \"occlusion_shave_bias\": " << m_occlusionShaveBiasCells << ",\n";
             out << "  \"show_control_hints\": " << (m_showControlHints ? "true" : "false") << ",\n";
+            out << "  \"show_occlusion_volume\": " << (m_enableOcclusionCulling ? "true" : "false") << ",\n";
+            out << "  \"refinement_visualizer\": " << (m_showChunkStream ? "true" : "false") << ",\n";
             out << "  \"splat_disc_match_level0\": " << (m_splatDiscMatchLevel0 ? "true" : "false") << ",\n";
             out << "  \"splat_draw_as_surfels\": " << (m_splatDrawAsSurfels ? "true" : "false") << ",\n";
             out << "  \"splat_coarse_as_gaussians\": " << (m_splatCoarseAsGaussians ? "true" : "false") << ",\n";
