@@ -1289,7 +1289,7 @@ namespace Surfels
         if (splatPkg)
         {
             m_splatParams = m_loadedPackage.splatParams;
-            m_splatSHQuality = std::clamp((int)m_splatParams.shDegree - 1, 0, 2);
+            m_sourceSHDegree = m_splatParams.shDegree; // SH Quality keeps the user's choice; a re-bake keeps at most this
         }
         std::vector<SurfelVertex> decodedLOD0; // Splat packages: LOD 0 across every chunk, in chunk order
         auto decodeSplatLevel = [&](size_t c, size_t l, std::vector<SurfelVertex>& outSurfels)
@@ -1727,8 +1727,9 @@ namespace Surfels
         // scale range covers every source Gaussian plus the growth of the coarser levels). The packager
         // derives the same values from the same inputs when the package is written.
         if (m_splatAttributes.empty()) { m_sourceHasSplatAttributes = false; m_splatMode = false; }
+        if (!m_isLoadedFromSFLW) DetectSourceSHDegree(); // A package's own degree was taken at load
         m_splatParams = SplatEncodeParams{};
-        m_splatParams.shDegree = SplatSHDegree();
+        m_splatParams.shDegree = BakeSHDegree();
         m_splatParams.aabbMin = m_aabbMin;
         m_splatParams.aabbMax = m_aabbMax;
         if (m_splatMode)
@@ -1850,6 +1851,30 @@ namespace Surfels
         }
     }
 
+    // Highest spherical-harmonics band with a non-zero coefficient in any source Gaussian (bands 1, 2, 3 are
+    // coefficients 0-2, 3-7 and 8-14, three channels each), over a sample of up to 200k of them: a 3DGS file
+    // without f_rest carries none, a degree-1 export only band 1.
+    void SurfelsApp::DetectSourceSHDegree()
+    {
+        uint32_t degree = 0;
+        const size_t n = m_splatAttributes.size();
+        const size_t stride = std::max<size_t>(1, n / 200000);
+        for (size_t i = 0; i < n && degree < 3; i += stride)
+        {
+            const float* sh = m_splatAttributes[i].sh;
+            for (int k = 14; k >= 0; k--)
+            {
+                if (sh[3 * k] != 0.0f || sh[3 * k + 1] != 0.0f || sh[3 * k + 2] != 0.0f)
+                {
+                    degree = std::max(degree, k < 3 ? 1u : (k < 8 ? 2u : 3u));
+                    break;
+                }
+            }
+        }
+        m_sourceSHDegree = degree;
+        LogTransitionTrace("Source spherical harmonics: degree %u (SH Quality keeps degree %u)", degree, BakeSHDegree());
+    }
+
     // Splat mode: one level's records and SH stream from its points and the source Gaussians.
     void SurfelsApp::EncodeSplatLevel(const std::vector<SurfelVertex>& surfels, uint32_t level, std::vector<PackedSplatGPU>& outRecords, std::vector<uint8_t>& outSH) const
     {
@@ -1951,7 +1976,7 @@ namespace Surfels
         // can land), so nothing exported here can be stale.
         SplatBakeInput splatInput;
         splatInput.attributes = &m_splatAttributes;
-        splatInput.shDegree = SplatSHDegree();
+        splatInput.shDegree = BakeSHDegree();
         if (StreamPackager::PackageDataset(outputPath, m_chunks, m_maxLODLevels, deadbandMeters, m_state.splatRadius, m_occlusionVoxels, m_sourceFileBytes, &m_occlusionMips, &m_detailGrid, m_splatMode ? &splatInput : nullptr))
         {
             std::ifstream pkg(outputPath + ".sflw", std::ios::ate | std::ios::binary);
@@ -2677,6 +2702,8 @@ namespace Surfels
                         {
                             m_pipelineNeedsUpdate = true;
                         }
+                        if (BakeSHDegree() < SplatSHDegree())
+                            ImGui::TextDisabled("The source carries degree %u: the bake keeps degree %u", m_sourceSHDegree, BakeSHDegree());
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("How much of the view-dependent colour (spherical harmonics) the package keeps. Low keeps the first band, which carries most of the tint shift with viewing angle; Medium adds the second band (sharper highlights) at about 2.7 times the harmonics bytes; High keeps all three bands the source has, at five times the harmonics bytes.");
                     }
                 }

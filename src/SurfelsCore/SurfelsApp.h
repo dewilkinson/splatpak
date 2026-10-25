@@ -286,6 +286,11 @@ namespace Surfels
         uint32_t SplatRenderMode() const { return m_splatDrawAsSurfels ? 4u : 3u; }
         SplatEncodeParams m_splatParams;
         uint32_t SplatSHDegree() const { return (uint32_t)std::clamp(m_splatSHQuality, 0, 2) + 1u; }
+        // The bake keeps the SH Quality degree, but never more bands than the source carries: extra bands would
+        // only store zeros (a source without harmonics, or a package baked at a lower degree).
+        uint32_t m_sourceSHDegree = 3;               // Highest band the source's Gaussians carry (a package: its own degree)
+        uint32_t BakeSHDegree() const { return std::min(SplatSHDegree(), m_sourceSHDegree); }
+        void     DetectSourceSHDegree();            // Sets m_sourceSHDegree from m_splatAttributes (highest band with a non-zero coefficient)
         size_t   BytesPerRenderPoint() const { return m_splatMode ? (sizeof(PackedSplatGPU) + SplatCodec::SHRecordBytes(m_splatParams.shDegree)) : (m_enableQuantization ? sizeof(PackedSurfelGPU) : sizeof(SurfelVertex)); }
         void     EncodeSplatLevel(const std::vector<SurfelVertex>& surfels, uint32_t level, std::vector<PackedSplatGPU>& outRecords, std::vector<uint8_t>& outSH) const;
         void     ApplySplatRenderState();
