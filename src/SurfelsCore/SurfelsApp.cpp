@@ -2743,7 +2743,7 @@ namespace Surfels
         ImGui::SetNextWindowPos(ImVec2(10.0f, 30.0f), ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(leftPanelWidth, panelHeight), ImGuiCond_Always);
         SetNextSidePanelCollapse(m_leftPanelRect, m_leftPanelCollapsed);
-        ImGui::Begin("##LeftPanel", nullptr, 0);
+        ImGui::Begin("Model Renderer###LeftPanel", nullptr, 0);
 
         // Tab Selector Buttons. Studio shows the three numbered tabs; the viewer has no generator, so
         // it shows Renderer and Streaming, unnumbered, across the same width.
