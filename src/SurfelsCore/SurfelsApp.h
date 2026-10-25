@@ -5,7 +5,7 @@
 // The shared app shell behind both executables. In Studio mode it is SplatLab: the whole
 // offline preprocessing pipeline (load -> octree chunk -> wavelet decompose -> quantize ->
 // export) plus the runtime streaming simulation and every ImGui panel. In Viewer mode it is
-// the standalone Surfels viewer: the same class with the Surfel Generator tab, its menu items
+// the standalone Surfels viewer: the same class with the .SFLW Bake tab, its menu items
 // and its shortcuts hidden, so the viewer is SplatLab's Renderer and Streaming tabs by
 // construction rather than a second copy of them. SurfelsRenderer handles the actual GPU work;
 // this class is everything else -- UI, file I/O, and the streaming/decay/silhouette simulation.
@@ -183,7 +183,7 @@ namespace Surfels
         OcclusionVolume::Grid m_occlusionGrid;
         void  BuildOcclusionGrid();
         uint32_t m_occlusionVoxelsVersion = 0;   // Incremented whenever m_occlusionVoxels is rebuilt or cleared (renderer re-upload trigger)
-        uint32_t m_occlusionSafetyNetVersion = UINT32_MAX; // m_occlusionVoxelsVersion right after the Surfel Generator tab's fallback bake last fired (see BuildUI): equal = already tried for this volume state
+        uint32_t m_occlusionSafetyNetVersion = UINT32_MAX; // m_occlusionVoxelsVersion right after the .SFLW Bake tab's fallback bake last fired (see BuildUI): equal = already tried for this volume state
         std::vector<OcclusionVoxelGPU> m_occlusionVoxels; // Baked result -- from BuildOcclusionVolume() or loaded from an .sflw's package
         OcclusionMipTable m_occlusionMips;       // Mip layout of m_occlusionVoxels (see OcclusionMipTable): from Bake, or the loaded package's header
         int   m_occlusionMipOverride = -1;       // Viewer: -1 = renderer picks the mip from projected cell size; 0.. = force that mip (debug / side-by-side compare)

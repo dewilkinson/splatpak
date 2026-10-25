@@ -139,7 +139,7 @@ namespace Surfels
             "  Viewer mode: the Renderer and Streaming tabs only (the default for Surfels_DX12.exe).\n"
             "\n"
             "--studio\n"
-            "  Studio mode: the Surfel Generator, Renderer and Streaming tabs (the default for SplatLab.exe).\n"
+            "  Studio mode: the .SFLW Bake, Renderer and Streaming tabs (the default for SplatLab.exe).\n"
             "\n"
             "--render-path <p>\n"
             "  GPU path for this run: auto, mesh, vs6 or vs5. Overrides render_path in config.json without changing it.\n"
@@ -1532,7 +1532,7 @@ namespace Surfels
             m_pRenderer->FlushGPU();
         }
 
-        // Stay on the Surfel Generator tab: it is the primary workflow and its live controls (shave,
+        // Stay on the .SFLW Bake tab: it is the primary workflow and its live controls (shave,
         // colour grade) act on the model just loaded. The Renderer tab is one click away.
 
         m_statusMessage = "Successfully loaded compressed model: " + filepath + " (" + std::to_string(m_rendererSurfels.size()) + " surfels across " + std::to_string(m_rendererMeshletChunks.size()) + " meshlets, " + std::to_string(m_compressedSizeMB) + " MB)";
@@ -2723,7 +2723,7 @@ namespace Surfels
         // it shows Renderer and Streaming, unnumbered, across the same width.
         {
             struct TabDef { const char* label; int index; };
-            const TabDef studioTabs[] = { { "1. Surfel Generator", 0 }, { "2. Renderer", 1 }, { "3. Streaming", 2 } };
+            const TabDef studioTabs[] = { { "1. .SFLW Bake", 0 }, { "2. Renderer", 1 }, { "3. Streaming", 2 } };
             const TabDef viewerTabs[] = { { "Renderer", 1 }, { "Streaming", 2 } };
             const TabDef* tabs    = IsViewerOnly() ? viewerTabs : studioTabs;
             const int     numTabs = IsViewerOnly() ? 2 : 3;
@@ -3112,10 +3112,10 @@ namespace Surfels
                 {
                     if (ImGui::CollapsingHeader("Interior Occlusion Volume", ImGuiTreeNodeFlags_DefaultOpen))
                     {
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The baked occluder solid packaged with this model (%zu cubes). Its shape and colour are fixed here; to change the shave, hue, saturation or brightness, use the Interior Occlusion Volume controls on the 1. Surfel Generator tab and re-save the package.", m_occlusionVoxels.size());
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The baked occluder solid packaged with this model (%zu cubes). Its shape and colour are fixed here; to change the shave, hue, saturation or brightness, use the Interior Occlusion Volume controls on the 1. .SFLW Bake tab and re-save the package.", m_occlusionVoxels.size());
                         DrawOcclusionVolumeControls();
-                        ImGui::TextDisabled("Shape and colour are baked: adjust them on the Surfel Generator tab.");
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Switch to 1. Surfel Generator for the Shave, Hue Shift, Saturation and Brightness sliders, then Save Compressed Package to bake the result into the .sflw.");
+                        ImGui::TextDisabled("Shape and colour are baked: adjust them on the .SFLW Bake tab.");
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Switch to 1. .SFLW Bake for the Shave, Hue Shift, Saturation and Brightness sliders, then Save Compressed Package to bake the result into the .sflw.");
                     }
                 }
 
@@ -4899,8 +4899,8 @@ namespace Surfels
     }
 
     // Shared enable/view-only controls for the baked occlusion volume, drawn identically from both the
-    // Surfel Generator tab (right after baking) and the Renderer tab (while viewing). Shape parameters
-    // (resolution, shave) live only on the Surfel Generator tab: the volume is baked into the .sflw, so
+    // .SFLW Bake tab (right after baking) and the Renderer tab (while viewing). Shape parameters
+    // (resolution, shave) live only on the .SFLW Bake tab: the volume is baked into the .sflw, so
     // the viewer shows exactly what was packaged and offers nothing that would change it. "View
     // Occlusion Volume Only" is intentionally independent of "Show Occlusion Volume" -- wanting to
     // just look at the volume shouldn't require also turning on splat culling against it.
@@ -4952,7 +4952,7 @@ namespace Surfels
     }
 
     // Rebuilds the occlusion volume from the current checkbox/sliders, or clears it when generation is
-    // off. Called live from the Surfel Generator sliders (the bake is grid work over the raw points --
+    // off. Called live from the .SFLW Bake sliders (the bake is grid work over the raw points --
     // fast enough to drag) and on every full pipeline recompute. A freshly baked volume is shown straight
     // away unless Show Occlusion Volume was switched off (m_showOcclusionSetting), which a bake respects.
     void SurfelsApp::RefreshOcclusionVolume()

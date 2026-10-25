@@ -544,7 +544,7 @@ namespace Surfels
     inline const char* SFLWRebakeAdvice()
     {
         return "If the file was copied or downloaded, retry with a fresh copy. Otherwise re-bake it: open the original "
-               ".ply or .splat in SplatLab's Surfel Generator and use Save Compressed Package (.sflw). Packages "
+               ".ply or .splat in SplatLab's .SFLW Bake tab and use Save Compressed Package (.sflw). Packages "
                "written by the proprietary codec and by the open stand-in codec are not interchangeable, so a "
                "package must be baked with the same codec build that will read it.";
     }
