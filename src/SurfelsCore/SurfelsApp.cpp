@@ -147,6 +147,9 @@ namespace Surfels
             "--lod-quality-test <folder>\n"
             "  Once the model has fully streamed in, render it at every LOD switch distance, compare each level against level 0 at the same distance (PSNR, SSIM), write the images and report.md to the folder, and quit.\n"
             "\n"
+            "--lod-calibration <folder>\n"
+            "  Once the model has fully streamed in, render the launch view at three distances with level 0 everywhere, the model-wide level rule and per-block levels at a range of pixel thresholds, compare each with level 0 (PSNR, SSIM, splats drawn) and write report.md, results.csv and the images to the folder.\n"
+            "\n"
             "--help, -h, /?\n"
             "  Show this text.\n";
     }
@@ -176,6 +179,11 @@ namespace Surfels
             {
                 m_lodTestFolder = args[++i];
                 LogTransitionTrace("Command line: --lod-quality-test %s", m_lodTestFolder.c_str());
+            }
+            else if (a == "--lod-calibration" && i + 1 < args.size())
+            {
+                m_lodCalFolder = args[++i];
+                LogTransitionTrace("Command line: --lod-calibration %s", m_lodCalFolder.c_str());
             }
             else if (!a.empty() && a[0] != '-' && a[0] != '/')
             {
@@ -5701,6 +5709,7 @@ namespace Surfels
         }
         UpdateCamera(ImGui::GetIO());
         if (!m_lodTestFolder.empty()) StepLodQualityTest();
+        if (!m_lodCalFolder.empty()) StepLodCalibration();
         const auto tUi = std::chrono::high_resolution_clock::now();
         BuildUI();
         m_frameUiMs = std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - tUi).count();
@@ -5764,6 +5773,11 @@ namespace Surfels
             if (m_lodTestCaptureRequested && m_lodTestIndex < m_lodTestShots.size())
             {
                 RgbaImage& img = m_lodTestShots[m_lodTestIndex].image;
+                m_pRenderer->TakeSceneCapture(img.pixels, img.width, img.height);
+            }
+            if (m_lodCalCaptureRequested && m_lodCalIndex < m_lodCalShots.size())
+            {
+                RgbaImage& img = m_lodCalShots[m_lodCalIndex].image;
                 m_pRenderer->TakeSceneCapture(img.pixels, img.width, img.height);
             }
             const auto tPresent = std::chrono::high_resolution_clock::now();

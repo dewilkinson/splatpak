@@ -556,6 +556,34 @@ namespace Surfels
         float                    m_lodTestSavedCoarseGaussianCap = 0.0f;
         bool                     m_lodTestSavedDrawAsSurfels = false;
         std::vector<std::string> m_lodTestMontagesWritten;   // The report is rewritten after every finished group; montages are written once
+        // LOD calibration (--lod-calibration <folder>): with the whole stream resident, streaming on and Demote Chunks on,
+        // renders the launch view at a few distances with level 0 everywhere (the reference), the model-wide rule at 1 px,
+        // and per-block levels at a range of pixel thresholds; each shot waits for the render list to settle, then is
+        // compared with the reference (PSNR, SSIM) and its splat count recorded. Writes report.md, results.csv and crops.
+        struct LodCalShot
+        {
+            float     distanceFactor = 1.0f;  // x the fitted launch distance
+            int       kind = 0;               // 0 level 0 reference, 1 level 0 again (TAA noise floor), 2 model-wide rule, 3 per-block levels
+            float     pixelSpacing = 1.0f;    // The rule's threshold (kinds 2 and 3)
+            RgbaImage image;
+            uint64_t  splats = 0;
+            uint32_t  chunks = 0;
+            uint64_t  perLevel[8] = {};
+            float     seconds = 0.0f;
+            bool      settled = true;
+        };
+        std::string              m_lodCalFolder;            // Empty = no calibration this run
+        bool                     m_lodCalRunning = false;
+        std::vector<LodCalShot>  m_lodCalShots;
+        size_t                   m_lodCalIndex = 0;
+        int                      m_lodCalStableFrames = -1;
+        uint64_t                 m_lodCalLastSplats = 0;
+        bool                     m_lodCalCaptureRequested = false;
+        double                   m_lodCalShotSeconds = 0.0;
+        double                   m_lodCalStableSeconds = 0.0; // How long the render list has been unchanged with no cross-fade running
+        float                    m_lodCalFit = 0.0f;
+        void  StepLodCalibration();    // Once per frame, before the UI
+        void  FinishLodCalibration();  // Compares the captures and writes the report
         void  SetSplatDrawAsSurfels(bool asSurfels);        // Draw Splats as Surfels, as the checkbox applies it (re-stamps the chunks' fade value)
         // Loupe (L): a box that follows the mouse over the viewport, drawn again
         // magnified into an inset at the viewport's top right (SurfelsRenderer::State::loupeEnabled). W/S
