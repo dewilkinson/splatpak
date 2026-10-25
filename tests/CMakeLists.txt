@@ -22,7 +22,7 @@ set_target_properties(TestBitonicCPU PROPERTIES
 )
 
 add_executable(CompressVenus ${CMAKE_CURRENT_SOURCE_DIR}/CompressVenus.cpp)
-target_link_libraries(CompressVenus PRIVATE bluesec-codec)
+target_link_libraries(CompressVenus PRIVATE bluesec-codec brotli)
 set_target_properties(CompressVenus PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
@@ -32,7 +32,7 @@ set_target_properties(CompressVenus PROPERTIES
 )
 
 add_executable(TestLoadPackage ${CMAKE_CURRENT_SOURCE_DIR}/TestLoadPackage.cpp)
-target_link_libraries(TestLoadPackage PRIVATE bluesec-codec)
+target_link_libraries(TestLoadPackage PRIVATE bluesec-codec brotli)
 set_target_properties(TestLoadPackage PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
@@ -42,7 +42,7 @@ set_target_properties(TestLoadPackage PROPERTIES
 )
 
 add_executable(TestSplatCodec ${CMAKE_CURRENT_SOURCE_DIR}/TestSplatCodec.cpp)
-target_link_libraries(TestSplatCodec PRIVATE bluesec-codec)
+target_link_libraries(TestSplatCodec PRIVATE bluesec-codec brotli)
 set_target_properties(TestSplatCodec PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
@@ -63,7 +63,7 @@ set_target_properties(TestGeometryCull PROPERTIES
 
 
 add_executable(TestOcclusionVolume ${CMAKE_CURRENT_SOURCE_DIR}/TestOcclusionVolume.cpp)
-target_link_libraries(TestOcclusionVolume PRIVATE bluesec-codec)
+target_link_libraries(TestOcclusionVolume PRIVATE bluesec-codec brotli)
 set_target_properties(TestOcclusionVolume PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON

@@ -31,7 +31,7 @@ namespace Surfels
 
     // Magic bytes for .sflw binary stream container ("SFLW" in ASCII)
     static constexpr uint32_t SFLW_MAGIC = 0x574C4653;
-    static constexpr uint32_t SFLW_VERSION = 8; // v8 adds surfelFormat, the splat record and the SH stream (see docs/SFLW_FORMAT_SPECIFICATION.md). v2 adds SFLWFileHeader::splatRadius (appended at the
+    static constexpr uint32_t SFLW_VERSION = 9; // v9 adds payloadCodec: the entropy stage of every payload, Brotli (see PayloadCodec.h). v8 adds surfelFormat, the splat record and the SH stream (see docs/SFLW_FORMAT_SPECIFICATION.md). v2 adds SFLWFileHeader::splatRadius (appended at the
                                                  // struct's end so v1 files still read correctly -- see
                                                  // the version check in StreamPackager::LoadPackage).
                                                  // v3 adds an optional occlusion voxel array, appended
@@ -247,6 +247,14 @@ namespace Surfels
         uint32_t uncompressedByteSize;
     };
 
+    // The entropy stage a package's payloads went through (SFLWFileHeader::payloadCodec, v9+); the coders
+    // themselves are in PayloadCodec.h
+    enum PayloadCodecId : uint32_t
+    {
+        PAYLOAD_CODEC_LIBRARY = 0, // The codec library's own stage (ByteShuffle::CompressShuffled): every package before v9
+        PAYLOAD_CODEC_BROTLI  = 1, // Brotli (RFC 7932): every package written since v9
+    };
+
     inline uint32_t SurfelRecordBytes(uint32_t surfelFormat)
     {
         return surfelFormat == SURFEL_FORMAT_SPLAT20 ? (uint32_t)sizeof(PackedSplatGPU) : (uint32_t)sizeof(PackedSurfelGPU);
@@ -313,6 +321,7 @@ namespace Surfels
         float    splatScaleLog2Min;    // v8+ only -- splat mode: log2 scale mapped to byte 0 of the record's scale fields
         float    splatScaleLog2Max;    // v8+ only -- splat mode: log2 scale mapped to byte 255
         uint64_t shManifestOffset;     // v8+ only -- absolute offset of the SHLODRecord table (one per chunk LOD, manifest order); 0 = no SH stream
+        uint32_t payloadCodec;         // v9+ only -- the entropy stage of every payload (PayloadCodecId); pre-v9 files are PAYLOAD_CODEC_LIBRARY
     };
 
     // On-disk form of one ChunkManifest entry in a v4+ .sflw's embedded manifest table. The table
@@ -380,6 +389,7 @@ namespace Surfels
         if (version < 6) return offsetof(SFLWFileHeader, occlusionMipCount);
         if (version < 7) return offsetof(SFLWFileHeader, detailGridDims);
         if (version < 8) return offsetof(SFLWFileHeader, surfelFormat);
+        if (version < 9) return offsetof(SFLWFileHeader, payloadCodec);
         return sizeof(SFLWFileHeader);
     }
 
@@ -445,6 +455,12 @@ namespace Surfels
                 outReason = "The occlusion volume data extends past the end of the file. The package is corrupt or truncated.";
                 return false;
             }
+        }
+        if (h.version >= 9 && h.payloadCodec != PAYLOAD_CODEC_LIBRARY && h.payloadCodec != PAYLOAD_CODEC_BROTLI)
+        {
+            snprintf(buf, sizeof(buf), "The package declares payload codec %u, which this build does not know.", h.payloadCodec);
+            outReason = buf;
+            return false;
         }
         if (h.version >= 8)
         {

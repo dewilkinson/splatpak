@@ -26,11 +26,12 @@ The container carries a multi-resolution, chunked, compressed representation of 
 
 ### 1.3 Exclusions
 
-The entropy stage applied to each payload (Clause 8) is identified but its bit-level encoding is not specified here; it is defined by the codec library the package was written with. The algorithms that produce the coarser levels, the occlusion volume, the detail grid scores and the streaming order are likewise out of scope. Two implementations that follow this document interoperate at the container level; payload interchange additionally requires the same codec build.
+With payload codec 0 (Clause 8) the entropy stage's bit-level encoding is not specified here; it is defined by the codec library the package was written with, and payload interchange requires the same codec build. With payload codec 1 every payload is a Brotli stream and any conforming reader decodes it. The algorithms that produce the coarser levels, the occlusion volume, the detail grid scores and the streaming order are out of scope. Two implementations that follow this document interoperate at the container level.
 
 ## 2. Normative references
 
 - IEEE Std 754-2019, *IEEE Standard for Floating-Point Arithmetic* (binary32 and binary16 encodings).
+- IETF RFC 7932, *Brotli Compressed Data Format*, 2016 (payload codec 1, Clause 8).
 - Kerbl, Kopanas, Leimkühler, Drettakis, *3D Gaussian Splatting for Real-Time Radiance Field Rendering*, ACM TOG 42(4), 2023 (the spherical-harmonics basis and coefficient order, Clause 9.3).
 - DirectXMath `XMFLOAT3`/`XMFLOAT4` component order (x, y, z, w) as used by the reference implementation.
 
@@ -92,7 +93,7 @@ The header is a single structure whose extent depends on the format version: eac
 | Offset | Type | Field | Since | Description |
 |---:|---|---|:-:|---|
 | 0 | `u32` | `magic` | 1 | Shall be `0x574C4653` ("SFLW" as ASCII bytes `53 46 4C 57`). |
-| 4 | `u32` | `version` | 1 | Format version, 1 to 8. |
+| 4 | `u32` | `version` | 1 | Format version, 1 to 9. |
 | 8 | `u32` | `numChunks` | 1 | Number of chunks; shall be at least 1. |
 | 12 | `u32` | `maxLOD` | 1 | Number of coarser levels requested at bake time (levels per chunk are at most `maxLOD + 1`). |
 | 16 | `u64` | `totalSurfelsLOD0` | 1 | Sum of the level-0 record counts over all chunks. |
@@ -106,20 +107,23 @@ The header is a single structure whose extent depends on the format version: eac
 | 80 | `u64` | `occlusionVoxelOffset` | 3 | Absolute offset of the voxel array (Clause 10); 0 when the count is 0. |
 | 88 | `u64` | `manifestOffset` | 4 | Absolute offset of the embedded chunk manifest (Clause 6.3). |
 | 96 | `u64` | `sourceFileBytes` | 5 | Size in bytes of the source file the package was baked from; 0 = unknown. |
-| 104 | `u32` | `occlusionMipCount` | 6 | Number of mips in the voxel array, 0 to 8 (Clause 10.2). |
-| 108 | `u32[8]` | `occlusionMipBlockCount` | 6 | Voxels per mip; the sum shall equal `occlusionVoxelCount`. |
-| 140 | `f32[8]` | `occlusionMipCellSize` | 6 | Finest cube edge of each mip. |
-| 172 | `u32[3]` | `detailGridDims` | 7 | Detail grid resolution (x, y, z); all 0 = no grid. |
-| 184 | `f32` | `detailGridCellSize` | 7 | Cell edge in model units; the grid's origin is `globalBoundsMin`. |
-| 188 | `u64` | `detailGridOffset` | 7 | Absolute offset of the detail grid (Clause 11). |
-| 196 | `u32` | `surfelFormat` | 8 | Record format of every level payload: 0 = surfel (Clause 7.1), 1 = splat (Clause 7.2). |
-| 200 | `u32` | `shDegree` | 8 | Spherical-harmonics degree kept in the SH stream: 0, 1, 2 or 3. Shall be 0 when `surfelFormat` is 0. |
-| 204 | `u32` | `splatRecordBytes` | 8 | Bytes per record of the declared format: 8 for format 0, 20 for format 1. |
-| 208 | `u32` | `shRecordBytes` | 8 | Bytes per point in the SH stream: `3 × ((shDegree + 1)² − 1)`; 0 when `shDegree` is 0. |
-| 212 | `f32` | `splatScaleLog2Min` | 8 | log₂ of the scale that a scale byte of 0 decodes to (Clause 7.2). |
-| 216 | `f32` | `splatScaleLog2Max` | 8 | log₂ of the scale that a scale byte of 255 decodes to. |
-| 220 | `u64` | `shManifestOffset` | 8 | Absolute offset of the SH table (Clause 9.5); 0 = no SH stream. |
-| 228 | | *end* | | |
+| 104 | `u32` | `occlusionMipCount` | 6 | Number of mips in the voxel array, 0 to 4 (Clause 10.2). |
+| 108 | `u32[4]` | `occlusionMipBlockCount` | 6 | Voxels per mip; the sum shall equal `occlusionVoxelCount`. |
+| 124 | `f32[4]` | `occlusionMipCellSize` | 6 | Finest cube edge of each mip. |
+| 140 | `u32[3]` | `detailGridDims` | 7 | Detail grid resolution (x, y, z); all 0 = no grid. |
+| 152 | `f32` | `detailGridCellSize` | 7 | Cell edge in model units; the grid's origin is `globalBoundsMin`. |
+| 156 | `u32` | *padding* | 7 | Alignment of the following `u64`; a writer shall write 0 and a reader shall ignore it. |
+| 160 | `u64` | `detailGridOffset` | 7 | Absolute offset of the detail grid (Clause 11). |
+| 168 | `u32` | `surfelFormat` | 8 | Record format of every level payload: 0 = surfel (Clause 7.1), 1 = splat (Clause 7.2). |
+| 172 | `u32` | `shDegree` | 8 | Spherical-harmonics degree kept in the SH stream: 0, 1, 2 or 3. Shall be 0 when `surfelFormat` is 0. |
+| 176 | `u32` | `splatRecordBytes` | 8 | Bytes per record of the declared format: 8 for format 0, 20 for format 1. |
+| 180 | `u32` | `shRecordBytes` | 8 | Bytes per point in the SH stream: `3 × ((shDegree + 1)² − 1)`; 0 when `shDegree` is 0. |
+| 184 | `f32` | `splatScaleLog2Min` | 8 | log₂ of the scale that a scale byte of 0 decodes to (Clause 7.2). |
+| 188 | `f32` | `splatScaleLog2Max` | 8 | log₂ of the scale that a scale byte of 255 decodes to. |
+| 192 | `u64` | `shManifestOffset` | 8 | Absolute offset of the SH table (Clause 9.5); 0 = no SH stream. |
+| 200 | `u32` | `payloadCodec` | 9 | Entropy stage of every payload (Clause 8): 0 = the codec library's own stage, 1 = Brotli. |
+| 204 | `u32` | *padding* | 9 | Trailing alignment of the structure; a writer shall write 0 and a reader shall ignore it. |
+| 208 | | *end* | | |
 
 ### 6.2 Header extent by version
 
@@ -130,9 +134,10 @@ The header is a single structure whose extent depends on the format version: eac
 | 3 | 88 | adds the occlusion voxel count and offset |
 | 4 | 96 | adds the embedded manifest; earlier versions keep the manifest in a companion `.json` file (Annex A) |
 | 5 | 104 | adds `sourceFileBytes` |
-| 6 | 172 | adds the occlusion mip table |
-| 7 | 196 | adds the detail grid |
-| 8 | 228 | adds the record format, the splat quantisation parameters and the SH table |
+| 6 | 140 | adds the occlusion mip table |
+| 7 | 168 | adds the detail grid |
+| 8 | 200 | adds the record format, the splat quantisation parameters and the SH table |
+| 9 | 208 | adds the payload codec |
 
 A file shorter than the extent of its declared version is truncated and shall be rejected.
 
@@ -214,9 +219,14 @@ The Gaussian's covariance is `R · diag(scale²) · Rᵀ`, where `R` is the rota
 
 ## 8. Payloads
 
-A level's records are laid out contiguously (`surfelCount × splatRecordBytes` bytes), transposed into byte planes (byte *k* of every record forms plane *k*, planes in order) and passed through the codec library's entropy stage to produce the payload of `compressedByteSize` bytes. A reader reverses both steps. The SH stream of a level (Clause 9.5) is treated identically with a stride of `shRecordBytes`.
+A level's records are laid out contiguously (`surfelCount × splatRecordBytes` bytes), transposed into byte planes (byte *k* of every record forms plane *k*, planes in order) and passed through the entropy stage named by the header's `payloadCodec` to produce the payload of `compressedByteSize` bytes. A reader reverses both steps. The SH stream of a level (Clause 9.5) is treated identically with a stride of `shRecordBytes`.
 
-The entropy stage is codec-defined (Clause 1.3). A payload the linked codec cannot decode shall be reported as such and shall not be silently skipped.
+| `payloadCodec` | Entropy stage |
+|:-:|---|
+| 0 | The codec library's own stage; its encoding is codec-defined (Clause 1.3). Every package before version 9 uses it. |
+| 1 | Brotli (RFC 7932): the payload is one Brotli stream that decodes to exactly `uncompressedByteSize` bytes. Written with the largest standard window that covers the input (at most 2²⁴ bytes), so any decoder handles it. |
+
+A payload that does not decode, or that decodes to a different size, shall be reported as such and shall not be silently skipped. A reader that does not know the declared codec shall reject the package.
 
 ## 9. Spherical harmonics (splat mode)
 
@@ -320,6 +330,7 @@ Versions 1 to 3 kept the chunk manifest in a JSON file next to the package (`<na
 | `shDegree`, `shRecordBytes`, `shManifestOffset` | 0 |
 | `splatRecordBytes` | 8 |
 | `splatScaleLog2Min`, `splatScaleLog2Max` | 0 (unused for format 0) |
+| `payloadCodec` | 0 (the codec library's stage) |
 
 ## Annex C (informative): rendering model of format 1
 
@@ -329,6 +340,7 @@ The reference renderer draws a splat package the way the PlayCanvas / SuperSplat
 
 | Version | Date | Change |
 |:-:|---|---|
+| 9 | 2026-10-25 | Payload codec field; Brotli as the entropy stage. |
 | 8 | 2026-09-07 | Record format field, the 20-byte splat record, the SH stream and table, splat scale range. This document created. |
 | 7 | 2026-09-07 | Detail grid. |
 | 6 | 2026-09-05 | Occlusion volume mip table. |

@@ -20,6 +20,7 @@
 #include "../../libs/bluesec-codec/LiftingWavelet.h"
 #include "../../libs/bluesec-codec/ByteShuffle.h"
 #include "../../libs/bluesec-codec/SplatCodec.h"
+#include "PayloadCodec.h"
 
 namespace Surfels
 {
@@ -44,7 +45,8 @@ namespace Surfels
             uint64_t sourceFileBytes = 0,
             const OcclusionMipTable* pOcclusionMips = nullptr, // Mip layout of occlusionVoxels; nullptr = one mip covering the array
             const DetailGrid* detailGrid = nullptr,             // Detail heatmap (v7+); nullptr = none stored
-            const SplatBakeInput* splat = nullptr)              // Splat mode (v8+, surfel format 1); nullptr = 8-byte surfel records
+            const SplatBakeInput* splat = nullptr,              // Splat mode (v8+, surfel format 1); nullptr = 8-byte surfel records
+            uint32_t payloadCodec = PayloadCodec::kDefault)     // Entropy stage of every payload (v9+); see PayloadCodec.h
         {
             std::string sflwPath = outputBasepath + ".sflw";
 
@@ -87,6 +89,7 @@ namespace Surfels
             header.globalBoundsMax = gMax;
             header.splatRadius = splatRadius;
             header.sourceFileBytes = sourceFileBytes;
+            header.payloadCodec = payloadCodec;
 
             // Record format (v8+). Splat mode encodes every level through SplatCodec against one
             // global scale range, so the header carries what a decoder needs to invert it.
@@ -121,6 +124,22 @@ namespace Surfels
             size_t totalRawBytes = 0;
             size_t totalCompressedBytes = 0;
 
+            // Three passes. Every level is decomposed, encoded and byte-shuffled first (the codec library,
+            // one chunk after another); then every payload is compressed at once across the cores (Brotli
+            // at the package quality runs at about 1 MB/s per core and is the bulk of a bake); then the
+            // payloads are written in order and the manifest takes their offsets.
+            struct LevelPayloads
+            {
+                uint32_t lodLevel = 0;
+                uint32_t recordCount = 0;
+                uint32_t uncompressedBytes = 0;   // Records, before compression
+                uint32_t shUncompressedBytes = 0; // SH stream, before compression (0 = none)
+                float    geometricError = 0.0f;
+                std::vector<uint8_t> records;     // Shuffled, then compressed in place
+                std::vector<uint8_t> sh;
+            };
+            std::vector<std::vector<LevelPayloads>> chunkLevels(chunks.size());
+
             for (size_t i = 0; i < chunks.size(); i++)
             {
                 auto& chunk = chunks[i];
@@ -135,6 +154,7 @@ namespace Surfels
                 cm.center = chunk.center;
                 cm.boundingRadius = chunk.boundingRadius;
                 cm.numLODs = (uint32_t)waveletResult.lodLevels.size();
+                chunkManifests.push_back(std::move(cm)); // Its LOD headers are filled in when the payloads are written
 
                 for (const auto& lod : waveletResult.lodLevels)
                 {
@@ -156,50 +176,79 @@ namespace Surfels
                         recordBytesPtr = reinterpret_cast<const uint8_t*>(packedSurfels.data());
                     }
 
-                    // 3. Byte-Shuffle
-                    size_t uncompressedBytes = recordCount * recordBytes;
-                    auto shuffled = ByteShuffle::Shuffle(recordBytesPtr, recordCount, recordBytes);
+                    // 3. Byte-Shuffle (the SH stream too, at its own stride)
+                    LevelPayloads lp;
+                    lp.lodLevel = lod.level;
+                    lp.recordCount = (uint32_t)recordCount;
+                    lp.uncompressedBytes = (uint32_t)(recordCount * recordBytes);
+                    lp.geometricError = lod.geometricError;
+                    lp.records = ByteShuffle::Shuffle(recordBytesPtr, recordCount, recordBytes);
+                    if (splatMode && header.shRecordBytes > 0 && !shStream.empty())
+                    {
+                        lp.sh = ByteShuffle::Shuffle(shStream.data(), recordCount, header.shRecordBytes);
+                        lp.shUncompressedBytes = (uint32_t)shStream.size();
+                    }
+                    chunkLevels[i].push_back(std::move(lp));
+                }
+            }
 
-                    // 4. Compress
-                    auto compressed = ByteShuffle::CompressShuffled(shuffled);
+            // 4. Compress every payload (PayloadCodec: Brotli across the cores)
+            {
+                std::vector<std::vector<uint8_t>*> payloads;
+                for (auto& levels : chunkLevels)
+                    for (auto& lp : levels)
+                    {
+                        payloads.push_back(&lp.records);
+                        if (lp.shUncompressedBytes > 0) payloads.push_back(&lp.sh);
+                    }
+                PayloadCodec::CompressInPlace(payloads, header.payloadCodec, PayloadCodec::kPackageQuality);
+                for (const auto& levels : chunkLevels)
+                    for (const auto& lp : levels)
+                        if ((lp.uncompressedBytes > 0 && lp.records.empty()) || (lp.shUncompressedBytes > 0 && lp.sh.empty()))
+                        {
+                            std::cerr << "The payload codec (" << PayloadCodec::Name(header.payloadCodec) << ") failed to compress a level; out of memory?" << std::endl;
+                            return false;
+                        }
+            }
 
-                    uint64_t currentFileOffset = (uint64_t)sflwOut.tellp();
-                    sflwOut.write(reinterpret_cast<const char*>(compressed.data()), compressed.size());
-
+            // 5. Write the payloads in order: each level's records, then (splat mode) its SH stream
+            for (size_t i = 0; i < chunks.size(); i++)
+            {
+                auto& cm = chunkManifests[i];
+                for (auto& lp : chunkLevels[i])
+                {
                     ChunkLODHeader lh = {};
-                    lh.lodLevel = lod.level;
-                    lh.surfelCount = (uint32_t)recordCount;
-                    lh.uncompressedByteSize = (uint32_t)uncompressedBytes;
-                    lh.compressedByteSize = (uint32_t)compressed.size();
-                    lh.fileOffset = currentFileOffset;
-                    lh.geometricError = lod.geometricError;
+                    lh.lodLevel = lp.lodLevel;
+                    lh.surfelCount = lp.recordCount;
+                    lh.uncompressedByteSize = lp.uncompressedBytes;
+                    lh.compressedByteSize = (uint32_t)lp.records.size();
+                    lh.fileOffset = (uint64_t)sflwOut.tellp();
+                    lh.geometricError = lp.geometricError;
+                    sflwOut.write(reinterpret_cast<const char*>(lp.records.data()), lp.records.size());
 
-                    // Splat mode: the level's spherical-harmonics stream right after its records, through
-                    // the same shuffle (stride = bytes per splat) and entropy stages.
                     if (splatMode)
                     {
                         SHLODRecord sr = {};
-                        if (header.shRecordBytes > 0 && !shStream.empty())
+                        if (lp.shUncompressedBytes > 0)
                         {
-                            auto shShuffled = ByteShuffle::Shuffle(shStream.data(), recordCount, header.shRecordBytes);
-                            auto shCompressed = ByteShuffle::CompressShuffled(shShuffled);
                             sr.fileOffset = (uint64_t)sflwOut.tellp();
-                            sr.uncompressedByteSize = (uint32_t)shStream.size();
-                            sr.compressedByteSize = (uint32_t)shCompressed.size();
-                            sflwOut.write(reinterpret_cast<const char*>(shCompressed.data()), shCompressed.size());
-                            totalRawBytes += shStream.size();
-                            totalCompressedBytes += shCompressed.size();
+                            sr.uncompressedByteSize = lp.shUncompressedBytes;
+                            sr.compressedByteSize = (uint32_t)lp.sh.size();
+                            sflwOut.write(reinterpret_cast<const char*>(lp.sh.data()), lp.sh.size());
+                            totalRawBytes += lp.shUncompressedBytes;
+                            totalCompressedBytes += lp.sh.size();
                         }
                         shRecords.push_back(sr);
                     }
 
                     cm.lods.push_back(lh);
 
-                    totalRawBytes += uncompressedBytes;
-                    totalCompressedBytes += compressed.size();
-                }
+                    totalRawBytes += lp.uncompressedBytes;
+                    totalCompressedBytes += lp.records.size();
 
-                chunkManifests.push_back(std::move(cm));
+                    std::vector<uint8_t>().swap(lp.records); // Written: free as we go
+                    std::vector<uint8_t>().swap(lp.sh);
+                }
             }
 
             // Occlusion voxels (v3+, optional) go after all chunk LOD data. Written after the payloads
@@ -406,6 +455,11 @@ namespace Surfels
                 outPackage.header.splatScaleLog2Max = 0.0f;
                 outPackage.header.shManifestOffset = 0;
             }
+            // The payload codec field was appended in version 9; older files went through the codec library's own stage.
+            if (outPackage.header.version < 9)
+            {
+                outPackage.header.payloadCodec = PAYLOAD_CODEC_LIBRARY;
+            }
             const bool splatPackage = outPackage.IsSplatPackage();
             const uint32_t recordBytes = SurfelRecordBytes(outPackage.header.surfelFormat);
             if (!ValidateSFLWManifest(outPackage.chunkManifests, fileSize, reason, recordBytes))
@@ -474,15 +528,15 @@ namespace Surfels
                         return fail(buf);
                     }
 
-                    // A payload the linked codec rejects used to be skipped silently, leaving that LOD
-                    // empty and the model full of holes. It is the signature of a package baked with the
-                    // other codec build (proprietary vs. open stand-in) or of corrupt data -- fail loudly.
+                    // A payload the codec rejects used to be skipped silently, leaving that LOD empty and
+                    // the model full of holes. It is corrupt data, or (the codec library's stage, pre-v9) a
+                    // package baked with the other codec build (proprietary vs. open stand-in) -- fail loudly.
                     std::vector<uint8_t> shuffled(lodHeader.uncompressedByteSize);
-                    if (!ByteShuffle::DecompressShuffled(compressedBytes.data(), compressedBytes.size(), shuffled.data(), lodHeader.uncompressedByteSize))
+                    if (!PayloadCodec::Decompress(compressedBytes.data(), compressedBytes.size(), shuffled.data(), lodHeader.uncompressedByteSize, outPackage.header.payloadCodec))
                     {
                         char buf[224];
-                        snprintf(buf, sizeof(buf), "Chunk %zu LOD %zu holds compressed data this build's codec cannot decode (%u -> %u bytes). The package was baked with a different codec build or is corrupt.",
-                            c, l, lodHeader.compressedByteSize, lodHeader.uncompressedByteSize);
+                        snprintf(buf, sizeof(buf), "Chunk %zu LOD %zu holds %s data this build cannot decode (%u -> %u bytes). The package is corrupt, or was baked with a different codec build.",
+                            c, l, PayloadCodec::Name(outPackage.header.payloadCodec), lodHeader.compressedByteSize, lodHeader.uncompressedByteSize);
                         return fail(buf);
                     }
 
@@ -505,10 +559,10 @@ namespace Surfels
                                 return fail(buf);
                             }
                             std::vector<uint8_t> shShuffled(shRecords[r].uncompressedByteSize);
-                            if (!ByteShuffle::DecompressShuffled(shCompressed.data(), shCompressed.size(), shShuffled.data(), shRecords[r].uncompressedByteSize))
+                            if (!PayloadCodec::Decompress(shCompressed.data(), shCompressed.size(), shShuffled.data(), shRecords[r].uncompressedByteSize, outPackage.header.payloadCodec))
                             {
                                 char buf[224];
-                                snprintf(buf, sizeof(buf), "Chunk %zu LOD %zu holds spherical-harmonics data this build's codec cannot decode. The package was baked with a different codec build or is corrupt.", c, l);
+                                snprintf(buf, sizeof(buf), "Chunk %zu LOD %zu holds spherical-harmonics data (%s) this build cannot decode. The package is corrupt, or was baked with a different codec build.", c, l, PayloadCodec::Name(outPackage.header.payloadCodec));
                                 return fail(buf);
                             }
                             outPackage.chunkLODSH[c][l].resize(shRecords[r].uncompressedByteSize);

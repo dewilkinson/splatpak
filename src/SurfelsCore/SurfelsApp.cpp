@@ -1753,34 +1753,77 @@ namespace Surfels
         m_selectedPreviewLOD = 0; // Default to LOD 0 (100% full dataset)
 
         // Compression estimates
-        // Compressed size of one level as the package would hold it (records, plus the SH stream in splat mode).
-        auto estimateLevel = [&](const std::vector<SurfelVertex>& surfels, uint32_t level) -> size_t
+        // Package size as the bake would write it: every level ships in full inside the .sflw, so every
+        // level's records (plus the SH stream in splat mode) are byte-plane shuffled and put through the
+        // payload codec at the package quality (the header, manifest and occlusion volume are negligible
+        // next to the payloads). Brotli at that quality runs well under 1 MB/s per core, so the estimate
+        // compresses a sample: windows of about kWindowBytes of contiguous records, spread over the levels
+        // in proportion to their bytes (every level gets one), each shuffled and compressed like a chunk
+        // level's payload, and each class (records, SH) scaled by its sampled ratio. A window holds every
+        // byte plane in its true proportion, which a slice of a shuffled stream does not (the planes
+        // compress very differently, so slices put the estimate 10% out). It lands within a few percent
+        // of the written package. The ratio shown is the original file against that.
+        const auto tEstimateStart = std::chrono::high_resolution_clock::now();
+        constexpr size_t kWindowBytes = 512u << 10;
+        constexpr int kWindowsPerClass = 6;
+        struct LevelRecords { std::vector<PackedSplatGPU> splats; std::vector<PackedSurfelGPU> surfels; std::vector<uint8_t> sh; };
+        std::vector<LevelRecords> levels;
+        auto encodeLevel = [&](const std::vector<SurfelVertex>& surfels, uint32_t level)
         {
-            if (m_splatMode)
-            {
-                std::vector<PackedSplatGPU> records;
-                std::vector<uint8_t> sh;
-                EncodeSplatLevel(surfels, level, records, sh);
-                size_t bytes = ByteShuffle::CompressShuffled(ByteShuffle::Shuffle(reinterpret_cast<const uint8_t*>(records.data()), records.size(), sizeof(PackedSplatGPU))).size();
-                const uint32_t shBytes = SplatCodec::SHRecordBytes(m_splatParams.shDegree);
-                if (shBytes > 0 && !sh.empty())
-                    bytes += ByteShuffle::CompressShuffled(ByteShuffle::Shuffle(sh.data(), records.size(), shBytes)).size();
-                return bytes;
-            }
-            auto packed = Quantizer::QuantizeSurfels(surfels, m_aabbMin, m_aabbMax);
-            return ByteShuffle::CompressShuffled(ByteShuffle::Shuffle(reinterpret_cast<const uint8_t*>(packed.data()), packed.size(), sizeof(PackedSurfelGPU))).size();
+            LevelRecords lr;
+            if (m_splatMode) EncodeSplatLevel(surfels, level, lr.splats, lr.sh);
+            else lr.surfels = Quantizer::QuantizeSurfels(surfels, m_aabbMin, m_aabbMax);
+            levels.push_back(std::move(lr));
         };
-        const size_t compressedLOD0Bytes = estimateLevel(m_rawSurfels, 0);
-
-        // Package-size estimate: every LOD level ships in full inside the .sflw, so sum them all (the
-        // header, manifest and occlusion volume are negligible next to the payloads). The ratio shown
-        // is therefore the original file against the file that will be written.
-        size_t packageBytes = sizeof(SFLWFileHeader) + compressedLOD0Bytes;
+        encodeLevel(m_rawSurfels, 0);
         for (size_t lvl = 1; lvl < m_waveletResult.lodLevels.size(); lvl++)
+            encodeLevel(m_waveletResult.lodLevels[lvl].surfels, (uint32_t)lvl);
+        const float encodeSeconds = std::chrono::duration<float>(std::chrono::high_resolution_clock::now() - tEstimateStart).count();
+
+        const uint32_t shStride = m_splatMode ? SplatCodec::SHRecordBytes(m_splatParams.shDegree) : 0u;
+        const uint32_t recordStride = m_splatMode ? (uint32_t)sizeof(PackedSplatGPU) : (uint32_t)sizeof(PackedSurfelGPU);
+        size_t packageBytes = sizeof(SFLWFileHeader);
+        for (int cls = 0; cls < 2; cls++)
         {
-            packageBytes += estimateLevel(m_waveletResult.lodLevels[lvl].surfels, (uint32_t)lvl);
+            const bool sh = (cls == 1);
+            const uint32_t stride = sh ? shStride : recordStride;
+            if (stride == 0) continue;
+            auto levelBytes = [&](const LevelRecords& lr) -> const uint8_t*
+            {
+                return sh ? lr.sh.data() : m_splatMode ? reinterpret_cast<const uint8_t*>(lr.splats.data()) : reinterpret_cast<const uint8_t*>(lr.surfels.data());
+            };
+            auto levelCount = [&](const LevelRecords& lr) -> size_t { return sh ? lr.sh.size() / stride : m_splatMode ? lr.splats.size() : lr.surfels.size(); };
+            size_t total = 0;
+            for (const auto& lr : levels) total += levelCount(lr) * stride;
+            if (total == 0) continue;
+            const size_t window = std::max<size_t>(1, kWindowBytes / stride);
+            std::vector<std::vector<uint8_t>> samples;
+            for (const auto& lr : levels)
+            {
+                const size_t count = levelCount(lr);
+                if (count == 0) continue;
+                const int n = std::max(1, (int)std::lround((double)kWindowsPerClass * (double)(count * stride) / (double)total));
+                const size_t w = std::min(window, count);
+                for (int j = 0; j < n; j++)
+                {
+                    const size_t centre = (size_t)(((double)j + 0.5) * (double)count / (double)n);
+                    const size_t start = std::min(count - w, centre > w / 2 ? centre - w / 2 : (size_t)0);
+                    samples.push_back(ByteShuffle::Shuffle(levelBytes(lr) + start * stride, w, stride));
+                }
+            }
+            size_t sampled = 0;
+            for (const auto& s : samples) sampled += s.size();
+            std::vector<std::vector<uint8_t>*> jobs;
+            for (auto& s : samples) jobs.push_back(&s);
+            PayloadCodec::CompressInPlace(jobs);
+            size_t compressed = 0;
+            for (const auto& s : samples) compressed += s.size();
+            packageBytes += (size_t)((double)total * (sampled > 0 ? (double)compressed / (double)sampled : 1.0));
         }
         m_compressedSizeMB = (float)packageBytes / (1024.0f * 1024.0f);
+        LogTransitionTrace("Package size estimate: %.2f MB (%s, sampled) in %.2f s (%.2f s encoding every level, the rest compressing the sample)",
+            m_compressedSizeMB, PayloadCodec::Name(PayloadCodec::kDefault),
+            std::chrono::duration<float>(std::chrono::high_resolution_clock::now() - tEstimateStart).count(), encodeSeconds);
         m_compressionRatio = m_rawFileSizeMB > 0.0f ? (m_rawFileSizeMB / std::max(0.001f, m_compressedSizeMB)) : 1.0f;
         m_deadbandZeroPercent = 64.5f; // Measured planar surface coefficient sparsification
 
@@ -3520,8 +3563,8 @@ namespace Surfels
                     ImGui::Text("Tier 3 (Morton Swizzle):  Contiguous 8-channel planes");
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 3 Morton Swizzle & Transposition: Interleaves 3D spatial coordinate bits via Z-order curve and transposes 8-byte structures into 8 contiguous channels to maximize entropy redundancy.");
 
-                    ImGui::Text("Tier 4 (Codec: Byte-RLE / Zstd Entropy): %.2f MB", m_compressedSizeMB);
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 4 Bitstream Codec: Byte-plane Run-Length Entropy & Zstandard lossless stream compression on transposed 8-byte channels.");
+                    ImGui::Text("Tier 4 (Codec: Byte planes + Brotli): %.2f MB", m_compressedSizeMB);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 4 Entropy Codec: the package as it would be written -- every level's records and spherical-harmonics stream, transposed into byte planes and Brotli-compressed at quality 11. Every level ships in full, so this is about twice the level 0 data above before compression. Estimated from a sample while a bake is being set up; a loaded package shows its real file size.");
 
                     ImGui::Separator();
                     ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "TOTAL COMPRESSION:    %.2fx (%.2f MB -> %.2f MB)", tier2Reduction, m_rawFileSizeMB, tier2MB);
