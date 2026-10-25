@@ -6,9 +6,17 @@
 # algorithms and never ship as source outside this library.
 cmake_minimum_required(VERSION 3.24)
 
-project(bluesec-codec)
+project(bluesec-codec C CXX)
+
+# Brotli (MIT, libs/brotli) is compiled into this library: the payload decoder (PayloadDecode) and the
+# app's payload encoder (src/SurfelsCore/PayloadCodec.h) both use it, and a host links one library.
+set(BROTLI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../brotli)
+file(GLOB BROTLI_SOURCES ${BROTLI_DIR}/c/common/*.c ${BROTLI_DIR}/c/dec/*.c ${BROTLI_DIR}/c/enc/*.c)
 
 add_library(bluesec-codec STATIC
+    ${BROTLI_SOURCES}
+    PayloadDecode.h
+    PayloadDecode.cpp
     LiftingWavelet.h
     LiftingWavelet.cpp
     ByteShuffle.h
@@ -25,7 +33,8 @@ add_library(bluesec-codec STATIC
     SplatCodec.cpp
 )
 
-target_include_directories(bluesec-codec PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
+target_include_directories(bluesec-codec PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${BROTLI_DIR}/c/include)
+source_group("Brotli" FILES ${BROTLI_SOURCES})
 
 set_target_properties(bluesec-codec PROPERTIES
     CXX_STANDARD 17

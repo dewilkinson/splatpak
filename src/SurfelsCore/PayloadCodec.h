@@ -25,8 +25,8 @@
 #include <algorithm>
 #include "WaveletTypes.h"
 #include "../../libs/bluesec-codec/ByteShuffle.h"
+#include "../../libs/bluesec-codec/PayloadDecode.h"
 #include <brotli/encode.h>
-#include <brotli/decode.h>
 
 namespace Surfels
 {
@@ -72,11 +72,7 @@ namespace Surfels
         // The inverse: false when the bytes are not a payload of this codec or do not decode to exactly dstSize bytes
         static bool Decompress(const uint8_t* src, size_t srcSize, uint8_t* dst, size_t dstSize, uint32_t codec)
         {
-            if (codec == PAYLOAD_CODEC_LIBRARY) return ByteShuffle::DecompressShuffled(src, srcSize, dst, dstSize);
-            if (codec != PAYLOAD_CODEC_BROTLI) return false;
-            if (dstSize == 0) return srcSize == 0;
-            size_t decoded = dstSize;
-            return BrotliDecoderDecompress(srcSize, src, &decoded, dst) == BROTLI_DECODER_RESULT_SUCCESS && decoded == dstSize;
+            return PayloadDecode::Decompress(src, srcSize, dst, dstSize, codec); // The one reader, in the codec library
         }
 
         // Every payload replaced by its compressed form. Brotli runs across the cores (up to kMaxThreads);

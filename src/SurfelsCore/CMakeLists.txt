@@ -57,8 +57,8 @@ target_include_directories(surfels_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Cauldron_DX12 doesn't itself propagate the D3D12/DXGI system libs or the AGS SDK it calls
 # into, so they are listed here once and reach both executables through this target. DbgHelp
-# backs the minidump writer in AppEntry.cpp. brotli is the payload entropy stage (PayloadCodec.h).
-target_link_libraries(surfels_core PUBLIC Cauldron_DX12 ImGUI amd_ags d3d12 dxgi DbgHelp bluesec-codec brotli)
+# backs the minidump writer in AppEntry.cpp. bluesec-codec carries Brotli (the payload entropy stage).
+target_link_libraries(surfels_core PUBLIC Cauldron_DX12 ImGUI amd_ags d3d12 dxgi DbgHelp bluesec-codec)
 add_dependencies(surfels_core copied_surfels_core_shaders)
 
 set_target_properties(surfels_core PROPERTIES
