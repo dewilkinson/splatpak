@@ -782,10 +782,12 @@ namespace Surfels
                 m_loupeEnabled = !m_loupeEnabled;
                 return true;
             }
-            // V cycles the loupe's display (normal, outlines, colours, centres) while it is on.
-            if (msg.wParam == 'V' && m_loupeEnabled && !ctrlPressed && (msg.lParam & (1 << 30)) == 0 && !ImGui::GetIO().WantCaptureKeyboard)
+            // V cycles the splat display (normal, outlines, colours, centres) for the whole model; Shift+V cycles
+            // the loupe's own.
+            if (msg.wParam == 'V' && !ctrlPressed && (msg.lParam & (1 << 30)) == 0 && !ImGui::GetIO().WantCaptureKeyboard)
             {
-                m_loupeViz = (m_loupeViz + 1) % 4;
+                int& viz = ((GetKeyState(VK_SHIFT) & 0x8000) != 0) ? m_loupeViz : m_splatViz;
+                viz = (viz + 1) % 4;
                 return true;
             }
             if (ctrlPressed && msg.wParam == 'O')
@@ -3036,25 +3038,9 @@ namespace Surfels
 
                     static const char* s_splatVizNames[] = { "Normal", "Splat outlines", "Random colour per splat", "Splat centres" };
                     ImGui::PushItemWidth(180.0f);
-                    ImGui::Combo("Splat Display##Viewport", &m_splatViz, s_splatVizNames, IM_ARRAYSIZE(s_splatVizNames));
+                    ImGui::Combo("Splat Display (V)##Viewport", &m_splatViz, s_splatVizNames, IM_ARRAYSIZE(s_splatVizNames));
                     ImGui::PopItemWidth();
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("How every splat in the view is drawn. Normal: as rendered, blending into one smooth surface. Splat outlines: each splat's ellipse at half its peak, over a faint fill -- its true size, shape and orientation. Random colour per splat: every splat filled flat out to that same contour in its own colour, so coverage and overlap show. Splat centres: a mark at every centre, the sampling density. The loupe has its own setting (V).");
-
-                    ImGui::Checkbox("Loupe (L)##Viewport", &m_loupeEnabled);
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("A box follows the mouse over the model; the area inside it is drawn again, magnified, in an inset at the top right of the viewport, so individual splats show. W/S change the magnification (%.0fx to %.0fx) while it is on, faster the longer they are held; the other zoom keys still move the camera. Drag inside the inset to move it, or on an edge or corner to resize it.", kLoupeZoomMin, kLoupeZoomMax);
-                    if (m_loupeEnabled)
-                    {
-                        ImGui::SameLine();
-                        ImGui::PushItemWidth(150.0f);
-                        ImGui::SliderFloat("##LoupeZoom", &m_loupeZoom, kLoupeZoomMin, kLoupeZoomMax, "%.1fx", 2.0f);
-                        ImGui::PopItemWidth();
-                        ImGui::Indent(12.0f);
-                        ImGui::PushItemWidth(180.0f);
-                        ImGui::Combo("Loupe Display (V)", &m_loupeViz, s_splatVizNames, IM_ARRAYSIZE(s_splatVizNames));
-                        ImGui::PopItemWidth();
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("What the inset shows. Normal: the splats as rendered, which blend into one smooth surface. Splat outlines: each splat's ellipse at half its peak, over a faint fill -- its true size, shape and orientation. Random colour per splat: every splat filled flat out to that same contour in its own colour, so coverage and overlap show. Splat centres: a dot at every centre, the sampling density. V cycles them while the loupe is on.");
-                        ImGui::Unindent(12.0f);
-                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("How every splat of the whole model is drawn. Normal: as rendered, blending into one smooth surface. Splat outlines: each splat's ellipse at half its peak, over a faint fill -- its true size, shape and orientation. Random colour per splat: every splat filled flat out to that same contour in its own colour, so coverage and overlap show. Splat centres: a mark at every centre, the sampling density. V cycles it; Shift+V cycles the loupe's own (L).");
 
                     if (ImGui::Checkbox("Show Camera Control Hints##Viewport", &m_showControlHints))
                     {
@@ -4584,7 +4570,7 @@ namespace Surfels
         if (grabbed & kLoupeDragBottom) dl->AddLine(ImVec2(x0, y1), ImVec2(x1, y1), grip, 4.0f);
         static const char* s_vizNames[] = { "normal", "outlines", "colours", "centres" };
         char label[64];
-        snprintf(label, sizeof(label), "Loupe %.1fx (W/S)  %s (V)", zoom, s_vizNames[std::clamp(m_loupeViz, 0, 3)]);
+        snprintf(label, sizeof(label), "Loupe %.1fx (W/S)  %s (Shift+V)", zoom, s_vizNames[std::clamp(m_loupeViz, 0, 3)]);
         dl->AddRectFilled(ImVec2(destX, destY + inset.y - 20.0f), ImVec2(destX + ImGui::CalcTextSize(label).x + 12.0f, destY + inset.y), IM_COL32(0, 0, 0, 170));
         dl->AddText(ImVec2(destX + 6.0f, destY + inset.y - 17.0f), frame, label);
     }
@@ -4624,7 +4610,8 @@ namespace Surfels
                 { "Rotate", "left-drag \xC2\xB7 Left/Right arrows" },
                 { "Zoom",   m_loupeEnabled ? "wheel \xC2\xB7 right-drag \xC2\xB7 Up/Down" : "wheel \xC2\xB7 right-drag \xC2\xB7 W/S \xC2\xB7 Up/Down" },
                 { "Pan",    "Shift + drag \xC2\xB7 Shift + arrows" },
-                { "Loupe",  m_loupeEnabled ? "L off \xC2\xB7 W/S magnify \xC2\xB7 V display" : "L" },
+                { "Splats", "V display" },
+                { "Loupe",  m_loupeEnabled ? "L off \xC2\xB7 W/S magnify \xC2\xB7 Shift+V display" : "L" },
             };
             const float bindingColumn = ImGui::CalcTextSize("Rotate").x + 14.0f; // Fixed verb column so the proportional font still lines up
             for (const Hint& h : hints)

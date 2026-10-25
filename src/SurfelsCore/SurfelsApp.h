@@ -536,7 +536,7 @@ namespace Surfels
         bool                     m_lodTestSavedDrawAsSurfels = false;
         std::vector<std::string> m_lodTestMontagesWritten;   // The report is rewritten after every finished group; montages are written once
         void  SetSplatDrawAsSurfels(bool asSurfels);        // Draw Splats as Surfels, as the checkbox applies it (re-stamps the chunks' fade value)
-        // Loupe (L, or the Renderer tab checkbox): a box that follows the mouse over the viewport, drawn again
+        // Loupe (L): a box that follows the mouse over the viewport, drawn again
         // magnified into an inset at the viewport's top right (SurfelsRenderer::State::loupeEnabled). W/S
         // change the magnification while it is on.
         // W/S zoom: kLoupeZoomRate e-folds per second at first, growing by kLoupeZoomAccel per second held up to
@@ -554,8 +554,8 @@ namespace Surfels
         int    m_loupeHover = 0;                     // What a drag would do from where the mouse is (highlighted)
         bool   m_loupeEnabled = false;
         float  m_loupeZoom = 8.0f;
-        int    m_loupeViz = 0;                       // Inset display: 0 normal, 1 splat outlines, 2 random colour per splat, 3 centres (V cycles while the loupe is on)
-        int    m_splatViz = 0;                       // The same display for the whole view (Renderer tab "Splat Display"); V never changes it
+        int    m_loupeViz = 0;                       // Inset display: 0 normal, 1 splat outlines, 2 random colour per splat, 3 centres (Shift+V cycles it)
+        int    m_splatViz = 0;                       // The same display for the whole model (Renderer tab "Splat Display"; V cycles it)
         ImVec2 m_loupeCenter = ImVec2(-1.0f, -1.0f); // Back-buffer pixels; negative = not placed yet (centre of the view)
         float  m_rightPanelWidth = 0.0f;             // From BuildUI, for placing the inset
         float  m_bannerBottomY = 0.0f;               // Bottom edge of the render-mode banner last frame (0 = none); the inset sits below it
