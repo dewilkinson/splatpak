@@ -71,3 +71,13 @@ set_target_properties(TestOcclusionVolume PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_HOME_DIRECTORY}"
     DEBUG_POSTFIX "d"
 )
+
+add_executable(TestStreamRuntime ${CMAKE_CURRENT_SOURCE_DIR}/TestStreamRuntime.cpp)
+target_link_libraries(TestStreamRuntime PRIVATE bluesec-codec)
+set_target_properties(TestStreamRuntime PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    FOLDER "Tests"
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_HOME_DIRECTORY}"
+    DEBUG_POSTFIX "d"
+)
