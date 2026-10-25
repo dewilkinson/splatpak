@@ -3403,6 +3403,8 @@ namespace Surfels
             }
         }
 
+        m_leftPanelRect = ImVec4(ImGui::GetWindowPos().x, ImGui::GetWindowPos().y,
+            ImGui::GetWindowPos().x + ImGui::GetWindowSize().x, ImGui::GetWindowPos().y + ImGui::GetWindowSize().y);
         ImGui::End();
 
         // 3. Right Statistics & Telemetry Panel. Its height fits the open sections (0 = auto-fit), up to the
@@ -3748,6 +3750,8 @@ namespace Surfels
             SaveConfigFile();
         }
 
+        m_rightPanelRect = ImVec4(ImGui::GetWindowPos().x, ImGui::GetWindowPos().y,
+            ImGui::GetWindowPos().x + ImGui::GetWindowSize().x, ImGui::GetWindowPos().y + ImGui::GetWindowSize().y);
         ImGui::End();
 
         // 4. Bottom Status & Notification Bar
@@ -4581,16 +4585,41 @@ namespace Surfels
     // The loupe's box around the mouse (the area the inset shows) and the inset's frame; the renderer has
     // already copied the magnified draw into the inset. The inset opens at the top right of the viewport,
     // left of the right panel and clear of the banner row, and goes wherever it is dragged from there; it is
-    // kept inside the window (below the menu bar) when the window shrinks.
+    // kept inside the window (below the menu bar) when the window shrinks. Neither the box nor the inset ever
+    // enters a side panel: where one would, it is pushed out the shorter way (sideways off the full-height left
+    // panel; sideways or below the right panel, whose height follows its open sections).
     void SurfelsApp::DrawLoupeOverlay()
     {
         m_state.loupeEnabled = false;
         if (!m_loupeEnabled || m_Width == 0 || m_Height == 0) return;
+        // A push that would leave the window is not taken (below the full-height left panel there is no room)
+        const auto pushOutOfPanels = [this](ImVec2& c, ImVec2 half)
+        {
+            for (const ImVec4& p : { m_leftPanelRect, m_rightPanelRect })
+            {
+                if (p.z <= p.x) continue;
+                if (c.x + half.x <= p.x || c.x - half.x >= p.z || c.y + half.y <= p.y || c.y - half.y >= p.w) continue;
+                float pushL = c.x + half.x - p.x, pushR = p.z - (c.x - half.x), pushD = p.w - (c.y - half.y);
+                if (p.x - 2.0f * half.x < 0.0f) pushL = FLT_MAX;
+                if (p.z + 2.0f * half.x > (float)m_Width) pushR = FLT_MAX;
+                if (p.w + 2.0f * half.y > (float)m_Height) pushD = FLT_MAX;
+                if (pushD < std::min(pushL, pushR)) c.y += pushD;
+                else if (pushL < pushR) c.x -= pushL;
+                else if (pushR < FLT_MAX) c.x += pushR;
+            }
+        };
         if (m_loupeCenter.x < 0.0f) m_loupeCenter = ImVec2(0.5f * (float)m_Width, 0.5f * (float)m_Height);
         const float zoom = m_loupeZoom;
         const ImVec2 inset(std::floor(std::min(m_loupeSize.x, (float)m_Width)), std::floor(std::min(m_loupeSize.y, (float)m_Height)));
         if (m_loupePos.x < 0.0f)
             m_loupePos = ImVec2((float)m_Width - m_rightPanelWidth - inset.x - 14.0f, std::max(56.0f, m_bannerBottomY + 10.0f));
+        {
+            // The inset with its 1-pixel frame (and a pixel to spare) is what stays clear of the panels
+            const ImVec2 halfInset(0.5f * inset.x + 2.0f, 0.5f * inset.y + 2.0f);
+            ImVec2 c(m_loupePos.x + 0.5f * inset.x, m_loupePos.y + 0.5f * inset.y);
+            pushOutOfPanels(c, halfInset);
+            m_loupePos = ImVec2(c.x - 0.5f * inset.x, c.y - 0.5f * inset.y);
+        }
         const float menuBar = 22.0f;
         m_loupePos.x = std::clamp(m_loupePos.x, 0.0f, std::max(0.0f, (float)m_Width - inset.x));
         m_loupePos.y = std::clamp(m_loupePos.y, menuBar, std::max(menuBar, (float)m_Height - inset.y));
@@ -4600,16 +4629,18 @@ namespace Surfels
         m_state.loupeWidth = (uint32_t)inset.x;
         m_state.loupeHeight = (uint32_t)inset.y;
         m_state.loupeEnabled = true;
-        m_state.loupeCenterX = m_loupeCenter.x;
-        m_state.loupeCenterY = m_loupeCenter.y;
         m_state.loupeZoom = zoom;
         m_state.loupeViz = (uint32_t)m_loupeViz;
         m_state.loupeDestX = (uint32_t)destX;
         m_state.loupeDestY = (uint32_t)destY;
 
+        const ImVec2 half(0.5f * inset.x / zoom, 0.5f * inset.y / zoom);
+        pushOutOfPanels(m_loupeCenter, half);
+        m_state.loupeCenterX = m_loupeCenter.x;
+        m_state.loupeCenterY = m_loupeCenter.y;
+
         ImDrawList* dl = ImGui::GetOverlayDrawList();
         const ImU32 frame = IM_COL32(255, 210, 80, 230);
-        const ImVec2 half(0.5f * inset.x / zoom, 0.5f * inset.y / zoom);
         const ImVec2 boxMin(m_loupeCenter.x - half.x, m_loupeCenter.y - half.y), boxMax(m_loupeCenter.x + half.x, m_loupeCenter.y + half.y);
         if (m_loupePinned)
         {

@@ -566,6 +566,8 @@ namespace Surfels
         bool   m_loupeBoxPressed = false;            // The left button went down inside the box (a click toggles the pin on release)
         ImVec2 m_loupeBoxPressPos = ImVec2(0.0f, 0.0f);
         float  m_rightPanelWidth = 0.0f;             // From BuildUI, for placing the inset
+        ImVec4 m_leftPanelRect = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);  // Side panels' x0, y0, x1, y1 this frame (from BuildUI):
+        ImVec4 m_rightPanelRect = ImVec4(0.0f, 0.0f, 0.0f, 0.0f); // the loupe's box is kept out of them
         float  m_bannerBottomY = 0.0f;               // Bottom edge of the render-mode banner last frame (0 = none); the inset sits below it
         void   DrawLoupeOverlay();                   // The box and the inset's frame and zoom label (the inset itself is the renderer's)
 
