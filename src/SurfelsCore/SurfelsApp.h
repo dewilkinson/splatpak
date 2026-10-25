@@ -418,10 +418,10 @@ namespace Surfels
         size_t m_evictedSurfelCount         = 0;      // Count of earlier slots evicted from GPU Ring Buffer
 
         // Show Chunk Stream: Creeping Wavefront & Dissolving Alpha Wake
-        bool   m_showChunkStream            = true;   // Streaming arrival visualizer: newly delivered chunks glow hot orange, settle to a regular orange tint and fade out (Renderer tab: "Show Streaming Arrivals")
-        float  m_chunkStreamDuration        = 1.0f;   // Seconds a delivered chunk stays tinted (the glow is the first part of that); 1 s by default
-        float  m_arrivalGlowIntensity       = 0.4f;   // Refinement visualizer strength (0..2); 0.4 by default
-        float  m_arrivalGlowHue             = 0.0f;   // Refinement visualizer hue rotation in degrees (-180..180, 0 = orange)
+        bool   m_showChunkStream            = true;   // Streaming arrival visualizer: newly delivered chunks glow white-gold, cool to gold and fade out (Renderer tab: "Show Streaming Arrivals")
+        float  m_chunkStreamDuration        = 2.5f;   // Seconds a delivered chunk glows, fading out over that time; 2.5 s by default
+        float  m_arrivalGlowIntensity       = 1.0f;   // Refinement visualizer strength (0..2); 1 by default
+        float  m_arrivalGlowHue             = 0.0f;   // Refinement visualizer hue rotation in degrees (-180..180, 0 = gold)
         void   DrawRefinementVisualizerControls(const char* idSuffix); // Checkbox + duration/intensity/hue sliders (Renderer tab)
 
         // Silhouette Edge Focused Reconstruction & Dilation Morphing

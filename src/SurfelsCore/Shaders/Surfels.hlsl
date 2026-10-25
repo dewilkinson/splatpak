@@ -124,7 +124,7 @@ cbuffer SurfelsCB : register(b0)
     uint     g_OcclusionVoxelCount; // Blocks in the occlusion volume mip drawn this frame
     uint     g_OcclusionVoxelFirst; // Index of that mip's first block in g_OcclusionVoxelBuffer
     float    g_ArrivalGlowIntensity; // Refinement visualizer strength (1 = default)
-    float    g_ArrivalGlowHue;       // Refinement visualizer hue rotation, degrees (0 = orange)
+    float    g_ArrivalGlowHue;       // Refinement visualizer hue rotation, degrees (0 = gold)
     uint     g_AutoSplatSize;        // 1 = disc radius from the level's point spacing (g_LodRadius), 0 = size classes x g_Radius
     uint     g_CulledPass;           // Detach Camera: 0 = the splats the frozen camera sees, 1 = only the ones it culled (the red volume)
     float2   g_AutoSplatPad1;
@@ -189,22 +189,23 @@ float3 HsvToRgb(float h, float s, float v)
 }
 
 // Streaming arrival glow (Refinement Visualizer): w is the chunk's wave, 0.95 (just delivered) -> 0
-// (faded). Newly added chunks -- the leading edge of the growing model -- flash bright, then settle to
-// a regular semi-transparent fill that fades out at the end of its life. Shared by the disc modes
-// (BuildSplat, with the surfel's directional lighting) and the splat mode's colour (SplatColor, lighting 1),
-// so the Gaussians and the coarse-level discs take the same tint.
+// (faded). Newly added chunks -- the leading edge of the growing model -- glow a bright white-gold,
+// cooling to a deeper gold as they age and fading out smoothly over their whole life. Shared by the
+// disc modes (BuildSplat, with the surfel's directional lighting) and the splat mode's colour
+// (SplatColor, lighting 1), so the Gaussians and the coarse-level discs take the same tint.
 void ArrivalGlow(inout float3 color, float w, float lighting)
 {
     float life = saturate(w / 0.95);                 // 1 = just arrived, 0 = expired
-    float glow = life * life;                        // Bright peak at the leading edge, still strong at mid-life
-    // Colours are orange by default (hue ~24 degrees); the Hue slider rotates both the regular
-    // fill and the hot leading-edge colour together, Intensity scales the fill opacity and bloom.
-    float3 regularTint = HsvToRgb(24.0 + g_ArrivalGlowHue, 0.96, 1.0);
-    float3 hotTint     = HsvToRgb(24.0 + g_ArrivalGlowHue, 0.55, 1.0);
-    float3 tint = lerp(regularTint, hotTint, glow);
-    float opacity = saturate(0.60 * g_ArrivalGlowIntensity) * smoothstep(0.0, 0.25, life); // Semi-transparent fill; fades out over the last quarter
-    color = lerp(color, tint * (lighting + 0.35 * glow), opacity);
-    color += hotTint * (glow * 0.55 * g_ArrivalGlowIntensity); // Emissive bloom on the newest chunks
+    float fade = life * life * (3.0 - 2.0 * life);   // Smooth fall-off over the whole life, no plateau
+    float heat = life * life * life;                 // The hot core: strong on arrival, gone by mid-life
+    // Gold by default (hue ~45 degrees); the Hue slider rotates both the fill and the hot core together,
+    // Intensity scales the fill opacity and the bloom.
+    float3 goldTint = HsvToRgb(45.0 + g_ArrivalGlowHue, 0.85, 1.0);
+    float3 hotTint  = HsvToRgb(45.0 + g_ArrivalGlowHue, 0.35, 1.0); // Near white-gold
+    float3 tint = lerp(goldTint, hotTint, heat);
+    float opacity = saturate(0.70 * g_ArrivalGlowIntensity) * fade;
+    color = lerp(color, tint * (lighting + 0.5 * heat), opacity);
+    color += goldTint * (fade * 0.45 * g_ArrivalGlowIntensity) + hotTint * (heat * 0.6 * g_ArrivalGlowIntensity); // Emissive glow, brightest on the newest chunks
 }
 
 struct VSOut

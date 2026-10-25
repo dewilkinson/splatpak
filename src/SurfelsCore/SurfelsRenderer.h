@@ -66,8 +66,8 @@ namespace Surfels
             bool     enableDithering  = true; // Stochastic screen-space Bayer dithering for smooth LOD transitions
             bool     highlightSilhouette = false; // Highlight silhouette chunks in lavender semi-transparent effect
             bool     showChunkStream  = true;  // Refinement visualizer: tint newly streamed chunks (arrival glow)
-            float    arrivalGlowIntensity = 0.4f; // Strength of that tint and bloom (0 = invisible, 0.4 = default, 2 = strong)
-            float    arrivalGlowHue = 0.0f;       // Hue rotation in degrees applied to the glow colours (0 = orange)
+            float    arrivalGlowIntensity = 1.0f; // Strength of that tint and bloom (0 = invisible, 1 = default, 2 = strong)
+            float    arrivalGlowHue = 0.0f;       // Hue rotation in degrees applied to the glow colours (0 = gold)
             bool     autoSplatSize = true;        // Disc radius from each level's point spacing (lodRadius) instead of the size classes
             float    lodRadius[8] = {};           // Auto splat size: disc radius per LOD level, world units (0 = unknown level)
             float    splatDiscRadius[8] = {};     // Splat mode: camera-facing disc radius per level for level 2 and up, world units (0 = draw Gaussians)
