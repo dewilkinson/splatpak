@@ -32,3 +32,7 @@ datasets/
 
 # Claude Code per-job worktrees (EnterWorktree); the skills/agents beside them ARE tracked.
 /.claude/worktrees/
+
+# Python bytecode caches (scripts/ imports public-history-scrub.py)
+__pycache__/
+*.pyc
