@@ -328,14 +328,23 @@ namespace Surfels
         uint8_t*                   m_pSHBufferMapped = nullptr;
         uint32_t                   m_shBufferCapacityBytes = 0;
         const void*                m_lastSplatSHPtr = nullptr;
+        // The render list, its slot layout and its sorted chunk indices are written to upload buffers before
+        // this frame's WaitForSwapChain, while the copies of up to kUploadRing - 1 earlier frames may still be
+        // reading theirs, so each has a ring of kUploadRing buffers advanced once per frame; the plain
+        // pointers are this frame's entries (see the ring advance in OnRender).
+        static constexpr uint32_t  kUploadRing = 4;
+        uint32_t                   m_uploadRingIndex = 0;
         ID3D12Resource*            m_pChunkSlotBaseUpload = nullptr; // First slot of every chunk (exclusive prefix of surfelCount)
         uint32_t*                  m_pChunkSlotBaseMapped = nullptr;
+        ID3D12Resource*            m_pChunkSlotBaseUploadRing[kUploadRing] = {};
+        uint32_t*                  m_pChunkSlotBaseMappedRing[kUploadRing] = {};
         ID3D12Resource*            m_pChunkSlotBaseGpu = nullptr;
         D3D12_RESOURCE_STATES      m_chunkSlotBaseState = D3D12_RESOURCE_STATE_COPY_DEST;
         uint32_t                   m_splatSlotCount = 0;             // Sum of the render list's surfel counts
         bool                       m_splatSortNeedsRun = true;
         uint32_t                   m_heartbeatSorts = 0;             // Splat sorts and render-list uploads since the last heartbeat line
         uint32_t                   m_heartbeatListUploads = 0;
+        uint32_t                   m_heartbeatCopiesInFlight = 0; // List uploads that found the previous list's copy still running (what tore the list before the upload ring)
         ID3D12RootSignature*       m_pSplatSortRootSig = nullptr;
         ID3D12PipelineState*       m_pSplatExpandPSO = nullptr;
         ID3D12PipelineState*       m_pSplatHistPSO = nullptr;
@@ -393,14 +402,18 @@ namespace Surfels
         bool                       m_gpuSortNeedsRun = true;
 
         std::vector<MeshletChunkGPU> m_meshletChunks;
-        ID3D12Resource*            m_pChunkUploadBuffer = nullptr;
+        ID3D12Resource*            m_pChunkUploadBuffer = nullptr;       // This frame's entry of the ring below (see kUploadRing)
         uint8_t*                   m_pChunkUploadBufferMapped = nullptr;
+        ID3D12Resource*            m_pChunkUploadBufferRing[kUploadRing] = {};
+        uint8_t*                   m_pChunkUploadBufferMappedRing[kUploadRing] = {};
         ID3D12Resource*            m_pChunkGpuBuffer = nullptr;
         D3D12_RESOURCE_STATES      m_chunkGpuBufferState = D3D12_RESOURCE_STATE_COPY_DEST;
         ID3D12Resource*            m_pSortedChunkIndicesGpuBuffer = nullptr;
         D3D12_RESOURCE_STATES      m_sortedChunkIndicesState = D3D12_RESOURCE_STATE_COPY_DEST;
-        ID3D12Resource*            m_pSortedChunkIndicesUploadBuffer = nullptr;
+        ID3D12Resource*            m_pSortedChunkIndicesUploadBuffer = nullptr; // This frame's entry of the ring below (see kUploadRing)
         uint32_t*                  m_pSortedChunkIndicesUploadBufferMapped = nullptr;
+        ID3D12Resource*            m_pSortedChunkIndicesUploadBufferRing[kUploadRing] = {};
+        uint32_t*                  m_pSortedChunkIndicesUploadBufferMappedRing[kUploadRing] = {};
         uint32_t                   m_chunkBufferCapacityBytes = 0;
         uint32_t                   m_sortedChunkIndicesCapacityBytes = 0;
         bool                       m_lastGpuRadixSort = false;

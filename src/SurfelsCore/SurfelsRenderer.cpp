@@ -890,9 +890,16 @@ namespace Surfels
         if (m_pSHBuffer) { m_pSHBuffer->Unmap(0, nullptr); m_pSHBuffer->Release(); m_pSHBuffer = nullptr; }
         if (m_pSHGpuBuffer) { m_pSHGpuBuffer->Release(); m_pSHGpuBuffer = nullptr; }
         m_pSHBufferMapped = nullptr; m_shBufferCapacityBytes = 0;
-        if (m_pChunkSlotBaseUpload) { m_pChunkSlotBaseUpload->Unmap(0, nullptr); m_pChunkSlotBaseUpload->Release(); m_pChunkSlotBaseUpload = nullptr; }
+        for (uint32_t r = 0; r < kUploadRing; r++)
+        {
+            if (m_pChunkSlotBaseUploadRing[r]) { m_pChunkSlotBaseUploadRing[r]->Unmap(0, nullptr); m_pChunkSlotBaseUploadRing[r]->Release(); m_pChunkSlotBaseUploadRing[r] = nullptr; }
+            m_pChunkSlotBaseMappedRing[r] = nullptr;
+            if (m_pSortedChunkIndicesUploadBufferRing[r]) { m_pSortedChunkIndicesUploadBufferRing[r]->Unmap(0, nullptr); m_pSortedChunkIndicesUploadBufferRing[r]->Release(); m_pSortedChunkIndicesUploadBufferRing[r] = nullptr; }
+            m_pSortedChunkIndicesUploadBufferMappedRing[r] = nullptr;
+        }
+        m_pChunkSlotBaseUpload = nullptr; m_pChunkSlotBaseMapped = nullptr;
+        m_pSortedChunkIndicesUploadBuffer = nullptr; m_pSortedChunkIndicesUploadBufferMapped = nullptr;
         if (m_pChunkSlotBaseGpu) { m_pChunkSlotBaseGpu->Release(); m_pChunkSlotBaseGpu = nullptr; }
-        m_pChunkSlotBaseMapped = nullptr;
         if (m_pSlotInfoBuffer) { m_pSlotInfoBuffer->Release(); m_pSlotInfoBuffer = nullptr; }
         if (m_pSplatPairsA) { m_pSplatPairsA->Release(); m_pSplatPairsA = nullptr; }
         if (m_pSplatPairsB) { m_pSplatPairsB->Release(); m_pSplatPairsB = nullptr; }
@@ -910,7 +917,12 @@ namespace Surfels
         if (m_pOccluderPSOUnorm) { m_pOccluderPSOUnorm->Release(); m_pOccluderPSOUnorm = nullptr; }
         if (m_pBackBufferUnormRtvHeap) { m_pBackBufferUnormRtvHeap->Release(); m_pBackBufferUnormRtvHeap = nullptr; }
 
-        if (m_pChunkUploadBuffer) { m_pChunkUploadBuffer->Unmap(0, nullptr); m_pChunkUploadBuffer->Release(); m_pChunkUploadBuffer = nullptr; }
+        for (uint32_t r = 0; r < kUploadRing; r++)
+        {
+            if (m_pChunkUploadBufferRing[r]) { m_pChunkUploadBufferRing[r]->Unmap(0, nullptr); m_pChunkUploadBufferRing[r]->Release(); m_pChunkUploadBufferRing[r] = nullptr; }
+            m_pChunkUploadBufferMappedRing[r] = nullptr;
+        }
+        m_pChunkUploadBuffer = nullptr;
         m_pChunkUploadBufferMapped = nullptr;
         if (m_pChunkGpuBuffer) { m_pChunkGpuBuffer->Release(); m_pChunkGpuBuffer = nullptr; }
         m_chunkBufferCapacityBytes = 0;
@@ -1704,18 +1716,27 @@ namespace Surfels
                 m_pDevice->GPUFlush(D3D12_COMMAND_LIST_TYPE_DIRECT);
                 FlushCopyQueue(); // m_pCopyQueue may still be reading m_pChunkUploadBuffer via CopyResource; Device::GPUFlush doesn't know about this queue
 
-                if (m_pChunkUploadBuffer) { m_pChunkUploadBuffer->Unmap(0, nullptr); m_pChunkUploadBuffer->Release(); m_pChunkUploadBuffer = nullptr; }
-                if (m_pChunkGpuBuffer) { m_pChunkGpuBuffer->Release(); m_pChunkGpuBuffer = nullptr; }
+                for (uint32_t r = 0; r < kUploadRing; r++)
+                {
+                    if (m_pChunkUploadBufferRing[r]) { m_pChunkUploadBufferRing[r]->Unmap(0, nullptr); m_pChunkUploadBufferRing[r]->Release(); m_pChunkUploadBufferRing[r] = nullptr; }
+                    m_pChunkUploadBufferMappedRing[r] = nullptr;
+                }
+                m_pChunkUploadBuffer = nullptr;
                 m_pChunkUploadBufferMapped = nullptr;
+                if (m_pChunkGpuBuffer) { m_pChunkGpuBuffer->Release(); m_pChunkGpuBuffer = nullptr; }
 
-                ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
-                    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
-                    D3D12_HEAP_FLAG_NONE,
-                    &CD3DX12_RESOURCE_DESC::Buffer(chunkBytes),
-                    D3D12_RESOURCE_STATE_GENERIC_READ,
-                    nullptr,
-                    IID_PPV_ARGS(&m_pChunkUploadBuffer)));
-                SetName(m_pChunkUploadBuffer, "SurfelsRenderer::m_pChunkUploadBuffer");
+                for (uint32_t r = 0; r < kUploadRing; r++)
+                {
+                    ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
+                        &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+                        D3D12_HEAP_FLAG_NONE,
+                        &CD3DX12_RESOURCE_DESC::Buffer(chunkBytes),
+                        D3D12_RESOURCE_STATE_GENERIC_READ,
+                        nullptr,
+                        IID_PPV_ARGS(&m_pChunkUploadBufferRing[r])));
+                    SetName(m_pChunkUploadBufferRing[r], "SurfelsRenderer::m_pChunkUploadBuffer");
+                    m_pChunkUploadBufferRing[r]->Map(0, nullptr, reinterpret_cast<void**>(&m_pChunkUploadBufferMappedRing[r]));
+                }
 
                 CD3DX12_RESOURCE_DESC chunkGpuDesc = CD3DX12_RESOURCE_DESC::Buffer(chunkBytes);
                 ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
@@ -1742,16 +1763,21 @@ namespace Surfels
                 SetName(m_pSortedChunkIndicesGpuBuffer, "SurfelsRenderer::m_pSortedChunkIndicesGpuBuffer");
                 m_sortedChunkIndicesState = D3D12_RESOURCE_STATE_COPY_DEST;
 
-                if (m_pSortedChunkIndicesUploadBuffer) { m_pSortedChunkIndicesUploadBuffer->Unmap(0, nullptr); m_pSortedChunkIndicesUploadBuffer->Release(); m_pSortedChunkIndicesUploadBuffer = nullptr; }
-                ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
-                    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
-                    D3D12_HEAP_FLAG_NONE,
-                    &CD3DX12_RESOURCE_DESC::Buffer(idxBytes),
-                    D3D12_RESOURCE_STATE_GENERIC_READ,
-                    nullptr,
-                    IID_PPV_ARGS(&m_pSortedChunkIndicesUploadBuffer)));
-                SetName(m_pSortedChunkIndicesUploadBuffer, "SurfelsRenderer::m_pSortedChunkIndicesUploadBuffer");
-                m_pSortedChunkIndicesUploadBuffer->Map(0, nullptr, reinterpret_cast<void**>(&m_pSortedChunkIndicesUploadBufferMapped));
+                for (uint32_t r = 0; r < kUploadRing; r++)
+                {
+                    if (m_pSortedChunkIndicesUploadBufferRing[r]) { m_pSortedChunkIndicesUploadBufferRing[r]->Unmap(0, nullptr); m_pSortedChunkIndicesUploadBufferRing[r]->Release(); m_pSortedChunkIndicesUploadBufferRing[r] = nullptr; }
+                    ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
+                        &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD),
+                        D3D12_HEAP_FLAG_NONE,
+                        &CD3DX12_RESOURCE_DESC::Buffer(idxBytes),
+                        D3D12_RESOURCE_STATE_GENERIC_READ,
+                        nullptr,
+                        IID_PPV_ARGS(&m_pSortedChunkIndicesUploadBufferRing[r])));
+                    SetName(m_pSortedChunkIndicesUploadBufferRing[r], "SurfelsRenderer::m_pSortedChunkIndicesUploadBuffer");
+                    m_pSortedChunkIndicesUploadBufferRing[r]->Map(0, nullptr, reinterpret_cast<void**>(&m_pSortedChunkIndicesUploadBufferMappedRing[r]));
+                }
+                m_pSortedChunkIndicesUploadBuffer = nullptr;
+                m_pSortedChunkIndicesUploadBufferMapped = nullptr;
 
                 uint32_t pairBytes = numChunkElements * sizeof(uint32_t) * 2;
                 if (pairBytes > m_sortPairBufferCapacityBytes)
@@ -1770,21 +1796,23 @@ namespace Surfels
                     m_sortPairBufferCapacityBytes = pairBytes;
                 }
 
-                m_pChunkUploadBuffer->Map(0, nullptr, reinterpret_cast<void**>(&m_pChunkUploadBufferMapped));
-
                 // Splat mode: the first slot of every chunk, same capacity as the chunk list.
-                if (m_pChunkSlotBaseUpload) { m_pChunkSlotBaseUpload->Unmap(0, nullptr); m_pChunkSlotBaseUpload->Release(); m_pChunkSlotBaseUpload = nullptr; }
-                if (m_pChunkSlotBaseGpu) { m_pChunkSlotBaseGpu->Release(); m_pChunkSlotBaseGpu = nullptr; }
+                for (uint32_t r = 0; r < kUploadRing; r++)
+                {
+                    if (m_pChunkSlotBaseUploadRing[r]) { m_pChunkSlotBaseUploadRing[r]->Unmap(0, nullptr); m_pChunkSlotBaseUploadRing[r]->Release(); m_pChunkSlotBaseUploadRing[r] = nullptr; }
+                    ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
+                        &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD), D3D12_HEAP_FLAG_NONE, &CD3DX12_RESOURCE_DESC::Buffer(idxBytes),
+                        D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_pChunkSlotBaseUploadRing[r])));
+                    m_pChunkSlotBaseUploadRing[r]->Map(0, nullptr, reinterpret_cast<void**>(&m_pChunkSlotBaseMappedRing[r]));
+                }
+                m_pChunkSlotBaseUpload = nullptr;
                 m_pChunkSlotBaseMapped = nullptr;
-                ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
-                    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_UPLOAD), D3D12_HEAP_FLAG_NONE, &CD3DX12_RESOURCE_DESC::Buffer(idxBytes),
-                    D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(&m_pChunkSlotBaseUpload)));
+                if (m_pChunkSlotBaseGpu) { m_pChunkSlotBaseGpu->Release(); m_pChunkSlotBaseGpu = nullptr; }
                 ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
                     &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_DEFAULT), D3D12_HEAP_FLAG_NONE, &CD3DX12_RESOURCE_DESC::Buffer(idxBytes),
                     D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_pChunkSlotBaseGpu)));
                 SetName(m_pChunkSlotBaseGpu, "SurfelsRenderer::m_pChunkSlotBaseGpu");
                 m_chunkSlotBaseState = D3D12_RESOURCE_STATE_COPY_DEST;
-                m_pChunkSlotBaseUpload->Map(0, nullptr, reinterpret_cast<void**>(&m_pChunkSlotBaseMapped));
 
                 m_chunkBufferCapacityBytes = chunkBytes;
                 m_sortedChunkIndicesCapacityBytes = idxBytes;
@@ -1794,6 +1822,21 @@ namespace Surfels
                 m_needUploadChunkIndicesToGpu = true;
                 m_gpuSortNeedsRun = true;
             }
+
+            // This frame's upload buffers: the next entry of each ring. The list is written here, before this
+            // frame's WaitForSwapChain, so the copies of up to kUploadRing - 1 earlier frames may still be
+            // reading their entries. One buffer written every frame tore the list whenever its previous
+            // copy was still running (on either queue): that frame drew the chunks past the tear point with
+            // another list's offsets and weights, a seam with a patch missing or garbled on one side, seen
+            // while the list changed every frame (refinement). The count of copies found still in flight
+            // when the next list was written goes to the heartbeat.
+            m_uploadRingIndex = (m_uploadRingIndex + 1) % kUploadRing;
+            m_pChunkUploadBuffer = m_pChunkUploadBufferRing[m_uploadRingIndex];
+            m_pChunkUploadBufferMapped = m_pChunkUploadBufferMappedRing[m_uploadRingIndex];
+            m_pChunkSlotBaseUpload = m_pChunkSlotBaseUploadRing[m_uploadRingIndex];
+            m_pChunkSlotBaseMapped = m_pChunkSlotBaseMappedRing[m_uploadRingIndex];
+            m_pSortedChunkIndicesUploadBuffer = m_pSortedChunkIndicesUploadBufferRing[m_uploadRingIndex];
+            m_pSortedChunkIndicesUploadBufferMapped = m_pSortedChunkIndicesUploadBufferMappedRing[m_uploadRingIndex];
 
             // The app hands over the render list every frame, but between LOD changes it is the same list.
             // Re-uploading it each frame also re-ran both GPU sorts every frame and, on the copy queue,
@@ -1805,6 +1848,7 @@ namespace Surfels
             {
                 m_lastUploadedChunks.assign(pState->pChunks, pState->pChunks + chunkCount);
                 m_heartbeatListUploads++;
+                if (m_pCopyFence != nullptr && m_pCopyFence->GetCompletedValue() < m_copyFenceValue) m_heartbeatCopiesInFlight++; // The previous list's copy still running as this one is written
                 MeshletChunkGPU* pDstChunks = reinterpret_cast<MeshletChunkGPU*>(m_pChunkUploadBufferMapped);
                 memcpy(pDstChunks, pState->pChunks, chunkCount * sizeof(MeshletChunkGPU));
                 if (numChunkElements > chunkCount)
@@ -1991,9 +2035,10 @@ namespace Surfels
         s_frameCounter++;
         if (s_frameCounter % 60 == 0)
         {
-            LogTransitionTrace("Renderer Heartbeat: frame=%u, chunkCount=%u, surfelCount=%u, fps=%.1f, gpuWait=%.1fms, record=%.1fms, upload=%.1fms, mode=%u, sorts=%u, listUploads=%u",
+            LogTransitionTrace("Renderer Heartbeat: frame=%u, chunkCount=%u, surfelCount=%u, fps=%.1f, gpuWait=%.1fms, record=%.1fms, upload=%.1fms, mode=%u, sorts=%u, listUploads=%u, listCopiesInFlight=%u",
                 s_frameCounter, pState->chunkCount, pState->surfelCount, m_metrics.frameRate,
-                m_smoothGpuWaitMs, m_smoothCommandRecordMs, m_smoothUploadMs, pState->renderMode, m_heartbeatSorts, m_heartbeatListUploads);
+                m_smoothGpuWaitMs, m_smoothCommandRecordMs, m_smoothUploadMs, pState->renderMode, m_heartbeatSorts, m_heartbeatListUploads, m_heartbeatCopiesInFlight);
+            m_heartbeatCopiesInFlight = 0;
             m_heartbeatSorts = 0;
             m_heartbeatListUploads = 0;
         }
