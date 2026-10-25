@@ -30,9 +30,26 @@ int main(int argc, char** argv)
 
     std::cout << "Package detail grid " << pkg.detailGrid.nx << "x" << pkg.detailGrid.ny << "x" << pkg.detailGrid.nz
               << " (" << pkg.detailGrid.occupiedCells << " occupied cells)" << std::endl;
-    std::vector<Surfels::PackedSurfelGPU> packed;
-    for (const auto& c : pkg.chunkLOD0Surfels) packed.insert(packed.end(), c.begin(), c.end());
-    auto points = Surfels::Quantizer::UnquantizeSurfels(packed, pkg.header.globalBoundsMin, pkg.header.globalBoundsMax);
+    std::vector<Surfels::SurfelVertex> points;
+    if (pkg.IsSplatPackage())
+    {
+        // Splat packages carry 20-byte Gaussian records instead of surfels: decode level 0 of each chunk
+        // (positions are all the grid needs, so the SH stream is left out).
+        for (const auto& c : pkg.chunkLODSplats)
+        {
+            if (c.empty()) continue;
+            std::vector<Surfels::SurfelVertex> decoded;
+            std::vector<Surfels::SplatAttributes> attributes;
+            Surfels::SplatCodec::Decode(c[0], nullptr, 0, pkg.splatParams, 0, 0, decoded, attributes);
+            points.insert(points.end(), decoded.begin(), decoded.end());
+        }
+    }
+    else
+    {
+        std::vector<Surfels::PackedSurfelGPU> packed;
+        for (const auto& c : pkg.chunkLOD0Surfels) packed.insert(packed.end(), c.begin(), c.end());
+        points = Surfels::Quantizer::UnquantizeSurfels(packed, pkg.header.globalBoundsMin, pkg.header.globalBoundsMax);
+    }
     std::cout << "Loaded " << points.size() << " LOD0 surfels from " << pkg.chunkManifests.size() << " chunks; package volume had "
               << pkg.occlusionVoxels.size() << " cubes in " << pkg.occlusionMips.mipCount << " mips (";
     for (uint32_t k = 0; k < pkg.occlusionMips.mipCount; k++)
