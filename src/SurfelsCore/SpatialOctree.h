@@ -168,13 +168,29 @@ namespace Surfels
             return chunks;
         }
 
+        // Morton code of a position inside a box (frameMin + frameExtent). Every LOD level sorted in the same
+        // box puts the same region at the same place on the curve, which is what lets the streaming hierarchy
+        // match a coarse block to the fine blocks over the same surface (SurfelsApp::InitStreamingSimulation).
+        static inline uint32_t MortonCodeInFrame(const XMFLOAT3& p, const XMFLOAT3& frameMin, const XMFLOAT3& frameExtent)
+        {
+            return ComputeMorton30((p.x - frameMin.x) / frameExtent.x, (p.y - frameMin.y) / frameExtent.y, (p.z - frameMin.z) / frameExtent.z);
+        }
+
+        static inline XMFLOAT3 MortonFrameExtent(const XMFLOAT3& frameMin, const XMFLOAT3& frameMax)
+        {
+            return XMFLOAT3(std::max(1e-4f, frameMax.x - frameMin.x), std::max(1e-4f, frameMax.y - frameMin.y), std::max(1e-4f, frameMax.z - frameMin.z));
+        }
+
         // Partitions points into high-occupancy Meshlet-sized clusters (typically 128 surfels per chunk)
-        // using 64-bit Morton Z-Order spatial curve sorting for maximum GPU L2 cache locality.
+        // using 64-bit Morton Z-Order spatial curve sorting for maximum GPU L2 cache locality. The curve
+        // spans the points' own bounds, or the box given by frameMin/frameMax (see MortonCodeInFrame).
         static void PartitionIntoMeshletChunks(
             std::vector<SurfelVertex>& inOutPoints,
             std::vector<MeshletChunkGPU>& outMeshletChunks,
             uint32_t surfelsPerMeshlet = 128,
-            bool enableMorton = true)
+            bool enableMorton = true,
+            const XMFLOAT3* frameMin = nullptr,
+            const XMFLOAT3* frameMax = nullptr)
         {
             outMeshletChunks.clear();
             if (inOutPoints.empty()) return;
@@ -183,25 +199,29 @@ namespace Surfels
 
             if (enableMorton)
             {
-                // 1. Compute Global AABB
+                // 1. Compute Global AABB (unless a frame is given)
                 XMFLOAT3 gMin(1e9f, 1e9f, 1e9f);
                 XMFLOAT3 gMax(-1e9f, -1e9f, -1e9f);
-                for (const auto& p : inOutPoints)
+                if (frameMin && frameMax)
                 {
-                    gMin.x = std::min(gMin.x, p.position.x);
-                    gMin.y = std::min(gMin.y, p.position.y);
-                    gMin.z = std::min(gMin.z, p.position.z);
+                    gMin = *frameMin;
+                    gMax = *frameMax;
+                }
+                else
+                {
+                    for (const auto& p : inOutPoints)
+                    {
+                        gMin.x = std::min(gMin.x, p.position.x);
+                        gMin.y = std::min(gMin.y, p.position.y);
+                        gMin.z = std::min(gMin.z, p.position.z);
 
-                    gMax.x = std::max(gMax.x, p.position.x);
-                    gMax.y = std::max(gMax.y, p.position.y);
-                    gMax.z = std::max(gMax.z, p.position.z);
+                        gMax.x = std::max(gMax.x, p.position.x);
+                        gMax.y = std::max(gMax.y, p.position.y);
+                        gMax.z = std::max(gMax.z, p.position.z);
+                    }
                 }
 
-                XMFLOAT3 gExtent(
-                    std::max(1e-4f, gMax.x - gMin.x),
-                    std::max(1e-4f, gMax.y - gMin.y),
-                    std::max(1e-4f, gMax.z - gMin.z)
-                );
+                XMFLOAT3 gExtent = MortonFrameExtent(gMin, gMax);
 
                 // 2. Compute 30-bit Morton Code for each point and sort
                 struct MortonPoint
@@ -215,12 +235,7 @@ namespace Surfels
                 #pragma omp parallel for
                 for (int i = 0; i < (int)numPoints; i++)
                 {
-                    const auto& p = inOutPoints[i];
-                    float nx = (p.position.x - gMin.x) / gExtent.x;
-                    float ny = (p.position.y - gMin.y) / gExtent.y;
-                    float nz = (p.position.z - gMin.z) / gExtent.z;
-
-                    mortonList[i].code = ComputeMorton30(nx, ny, nz);
+                    mortonList[i].code = MortonCodeInFrame(inOutPoints[i].position, gMin, gExtent);
                     mortonList[i].originalIndex = (uint32_t)i;
                 }
 

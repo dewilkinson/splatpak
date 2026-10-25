@@ -1802,6 +1802,10 @@ namespace Surfels
         m_residentLODs.clear();
         if (m_rawSurfels.empty() && m_rendererRawSurfels.empty()) return;
 
+        // place on the curve at every level (InitStreamingSimulation nests the stream blocks on it)
+        m_lodSortFrameMin = m_aabbMin;
+        m_lodSortFrameMax = m_aabbMax;
+
         if (m_enableWavelet && !m_waveletResult.lodLevels.empty())
         {
             int numLODs = (int)m_waveletResult.lodLevels.size();
@@ -1837,7 +1841,7 @@ namespace Surfels
                 }
 
                 m_residentLODs[lodIdx].rawSurfels = std::move(lodPoints);
-                SpatialOctree::PartitionIntoMeshletChunks(m_residentLODs[lodIdx].rawSurfels, m_residentLODs[lodIdx].meshletChunks, 64, m_enableMortonOrder);
+                SpatialOctree::PartitionIntoMeshletChunks(m_residentLODs[lodIdx].rawSurfels, m_residentLODs[lodIdx].meshletChunks, 64, m_enableMortonOrder, &m_lodSortFrameMin, &m_lodSortFrameMax);
                 for (auto& mc : m_residentLODs[lodIdx].meshletChunks) mc.lodLevel = (uint32_t)lodIdx; // The shader draws by level (splat mode: discs from kSplatDiscMinLevel), as the stream does
                 m_residentLODs[lodIdx].packedSurfels = Quantizer::QuantizeSurfels(m_residentLODs[lodIdx].rawSurfels, m_aabbMin, m_aabbMax);
                 if (m_splatMode)
@@ -1851,7 +1855,7 @@ namespace Surfels
         {
             m_residentLODs.resize(1);
             m_residentLODs[0].rawSurfels = !m_rawSurfels.empty() ? m_rawSurfels : m_rendererRawSurfels;
-            SpatialOctree::PartitionIntoMeshletChunks(m_residentLODs[0].rawSurfels, m_residentLODs[0].meshletChunks, 64, m_enableMortonOrder);
+            SpatialOctree::PartitionIntoMeshletChunks(m_residentLODs[0].rawSurfels, m_residentLODs[0].meshletChunks, 64, m_enableMortonOrder, &m_lodSortFrameMin, &m_lodSortFrameMax);
             m_residentLODs[0].packedSurfels = Quantizer::QuantizeSurfels(m_residentLODs[0].rawSurfels, m_aabbMin, m_aabbMax);
             if (m_splatMode)
             {

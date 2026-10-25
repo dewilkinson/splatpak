@@ -269,6 +269,8 @@ namespace Surfels
             std::vector<MeshletChunkGPU> meshletChunks;
         };
         std::vector<ResidentLOD> m_residentLODs;
+        XMFLOAT3 m_lodSortFrameMin = { 0, 0, 0 }; // The Morton frame every level is sorted in (PrecacheResidentLODs): the model's bounds
+        XMFLOAT3 m_lodSortFrameMax = { 0, 0, 0 };
         void PrecacheResidentLODs();
 
         // Splat mode: the imported cloud's full Gaussians (SurfelVertex::sourceIndex refers here), the
@@ -330,6 +332,7 @@ namespace Surfels
             uint32_t globalSurfelOffset = 0;      // Zero-copy offset into m_unifiedPackedSurfels / m_unifiedRawSurfels
             XMFLOAT3 aabbMin = { 0, 0, 0 };
             XMFLOAT3 aabbMax = { 0, 0, 0 };
+            size_t   childBegin = 0;              // The block's children at the next finer level: m_lodStreamChunks[lodLevel - 1][childBegin, childEnd). The finer
         };
 
         struct ChunkRequest
