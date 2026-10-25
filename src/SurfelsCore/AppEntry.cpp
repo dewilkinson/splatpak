@@ -128,6 +128,16 @@ int Surfels::RunSurfelsApp(HINSTANCE hInstance, LPSTR lpCmdLine, int nCmdShow, c
                 forwarded += "--render-path " + args[++i] + " ";
                 continue;
             }
+            if (a == "--lod-quality-test")
+            {
+                if (i + 1 >= args.size())
+                {
+                    ShowUsage(windowName, "--lod-quality-test needs an output folder");
+                    return 2;
+                }
+                forwarded += "--lod-quality-test \"" + args[++i] + "\" ";
+                continue;
+            }
             if (!a.empty() && (a[0] == '-' || (a[0] == '/' && a.size() == 2)))
             {
                 ShowUsage(windowName, "Unknown option: " + a);

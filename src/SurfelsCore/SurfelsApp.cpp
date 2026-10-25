@@ -144,6 +144,9 @@ namespace Surfels
             "--render-path <p>\n"
             "  GPU path for this run: auto, mesh, vs6 or vs5. Overrides render_path in config.json without changing it.\n"
             "\n"
+            "--lod-quality-test <folder>\n"
+            "  Once the model has fully streamed in, render it at every LOD switch distance, compare each level against level 0 at the same distance (PSNR, SSIM), write the images and report.md to the folder, and quit.\n"
+            "\n"
             "--help, -h, /?\n"
             "  Show this text.\n";
     }
@@ -168,6 +171,11 @@ namespace Surfels
                 else if (v == "vs5")  m_renderPathOverride = 2;
                 else                  m_renderPathOverride = -1;
                 LogTransitionTrace("Command line: --render-path %s", v.c_str());
+            }
+            else if (a == "--lod-quality-test" && i + 1 < args.size())
+            {
+                m_lodTestFolder = args[++i];
+                LogTransitionTrace("Command line: --lod-quality-test %s", m_lodTestFolder.c_str());
             }
             else if (!a.empty() && a[0] != '-' && a[0] != '/')
             {
@@ -291,7 +299,10 @@ namespace Surfels
                     if (bPos == std::string::npos) bPos = line.find("\"benchmark_path\":");
                     if (bPos != std::string::npos)
                     {
-                        size_t q1 = line.find("\"", bPos + 18);
+                        // The value's opening quote is the first one after the key's colon (searching from a
+                        // fixed offset found the key's own closing quote and read ": " as the path).
+                        const size_t colon = line.find(':', bPos);
+                        size_t q1 = (colon != std::string::npos) ? line.find("\"", colon + 1) : std::string::npos;
                         if (q1 != std::string::npos)
                         {
                             size_t q2 = line.find("\"", q1 + 1);
@@ -327,6 +338,80 @@ namespace Surfels
                         if (eqPos != std::string::npos)
                         {
                             m_occlusionShaveBiasCells = std::clamp((float)atof(line.c_str() + eqPos + 1), -2.0f, 8.0f);
+                        }
+                    }
+
+                    // Auto LOD rule (JSON or INI): screen space on/off and its pixel threshold; see ContinuousLodAtDistance.
+                    {
+                        size_t hPos = line.find("\"lod_screen_space\":");
+                        size_t eqPos = std::string::npos;
+                        if (hPos != std::string::npos) eqPos = line.find(':', hPos);
+                        else if (line.find("lod_screen_space=") != std::string::npos) eqPos = line.find('=');
+                        if (eqPos != std::string::npos)
+                        {
+                            std::string val = line.substr(eqPos + 1);
+                            m_lodScreenSpace = !(val.find("false") != std::string::npos || val.find('0') != std::string::npos);
+                        }
+                    }
+                    {
+                        size_t hPos = line.find("\"lod_pixel_spacing\":");
+                        size_t eqPos = std::string::npos;
+                        if (hPos != std::string::npos) eqPos = line.find(':', hPos);
+                        else if (line.find("lod_pixel_spacing=") != std::string::npos) eqPos = line.find('=');
+                        if (eqPos != std::string::npos)
+                        {
+                            m_lodPixelSpacing = std::clamp((float)atof(line.c_str() + eqPos + 1), 0.25f, 8.0f);
+                        }
+                    }
+                    // Right panel section order and open state (JSON or INI): comma-separated lists, see RightPanelSectionHeader.
+                    // The order is taken only when it is a complete permutation of the sections.
+                    {
+                        auto readList = [&](const char* jsonKey, const char* iniKey) -> std::vector<int>
+                        {
+                            std::vector<int> values;
+                            size_t pos = line.find(jsonKey);
+                            size_t start = std::string::npos;
+                            if (pos != std::string::npos) start = line.find(':', pos);
+                            else if ((pos = line.find(iniKey)) != std::string::npos) start = line.find('=', pos);
+                            if (start == std::string::npos) return values;
+                            for (size_t i = start + 1; i < line.size(); i++)
+                                if (line[i] >= '0' && line[i] <= '9') values.push_back(line[i] - '0');
+                            return values;
+                        };
+                        const std::vector<int> order = readList("\"right_panel_order\":", "right_panel_order=");
+                        if ((int)order.size() == kRightSectionCount)
+                        {
+                            bool seen[kRightSectionCount] = {};
+                            bool valid = true;
+                            for (int v : order) { if (v >= kRightSectionCount || seen[v]) valid = false; else seen[v] = true; }
+                            if (valid) for (int i = 0; i < kRightSectionCount; i++) m_rightPanelOrder[i] = order[i];
+                        }
+                        const std::vector<int> open = readList("\"right_panel_open\":", "right_panel_open=");
+                        if ((int)open.size() == kRightSectionCount)
+                            for (int i = 0; i < kRightSectionCount; i++) m_rightPanelOpen[i] = (open[i] != 0);
+                    }
+
+                    // Splat mode, Coarse Levels as Gaussians: the scale cap (JSON or INI); see OnRender's splatDiscRadius.
+                    {
+                        size_t hPos = line.find("\"splat_coarse_gaussian_cap\":");
+                        size_t eqPos = std::string::npos;
+                        if (hPos != std::string::npos) eqPos = line.find(':', hPos);
+                        else if (line.find("splat_coarse_gaussian_cap=") != std::string::npos) eqPos = line.find('=');
+                        if (eqPos != std::string::npos)
+                        {
+                            m_splatCoarseGaussianCap = std::clamp((float)atof(line.c_str() + eqPos + 1), 0.0f, 4.0f);
+                        }
+                    }
+                    // Splat mode, Coarse Levels as Gaussians on/off (JSON or INI); see OnRender's splatDiscRadius.
+                    {
+                        size_t hPos = line.find("\"splat_coarse_as_gaussians\":");
+                        size_t eqPos = std::string::npos;
+                        if (hPos != std::string::npos) eqPos = line.find(':', hPos);
+                        else if (line.find("splat_coarse_as_gaussians=") != std::string::npos) eqPos = line.find('=');
+                        if (eqPos != std::string::npos)
+                        {
+                            std::string val = line.substr(eqPos + 1);
+                            m_splatCoarseAsGaussians = !(val.find("false") != std::string::npos || val.find('0') != std::string::npos);
                         }
                     }
 
@@ -484,6 +569,20 @@ namespace Surfels
             out << "  \"show_control_hints\": " << (m_showControlHints ? "true" : "false") << ",\n";
             out << "  \"splat_disc_match_level0\": " << (m_splatDiscMatchLevel0 ? "true" : "false") << ",\n";
             out << "  \"splat_draw_as_surfels\": " << (m_splatDrawAsSurfels ? "true" : "false") << ",\n";
+            out << "  \"splat_coarse_as_gaussians\": " << (m_splatCoarseAsGaussians ? "true" : "false") << ",\n";
+            out << "  \"splat_coarse_gaussian_cap\": " << m_splatCoarseGaussianCap << ",\n";
+            {
+                std::string order, open;
+                for (int i = 0; i < kRightSectionCount; i++)
+                {
+                    order += (i ? "," : "") + std::to_string(m_rightPanelOrder[i]);
+                    open += (i ? "," : "") + std::string(m_rightPanelOpen[i] ? "1" : "0");
+                }
+                out << "  \"right_panel_order\": \"" << order << "\",\n";
+                out << "  \"right_panel_open\": \"" << open << "\",\n";
+            }
+            out << "  \"lod_screen_space\": " << (m_lodScreenSpace ? "true" : "false") << ",\n";
+            out << "  \"lod_pixel_spacing\": " << m_lodPixelSpacing << ",\n";
             out << "  \"render_path\": \"" << m_renderPathConfig << "\",\n";
             out << "  \"last_dialog_folder\": \"" << m_lastDialogFolder << "\"\n";
             out << "}\n";
@@ -524,6 +623,7 @@ namespace Surfels
         }
         m_pRenderer = new SurfelsRenderer();
         m_pRenderer->SetRenderPathOverride(m_renderPathOverride);
+        m_pRenderer->SetQuietStartup(!m_lodTestFolder.empty()); // An unattended test run has nobody to dismiss the fallback notice
         m_pRenderer->OnCreate(&m_device, &m_swapChain);
         {
             // ImGUI::OnCreate appended the UI's default font after ours: make that one the default again.
@@ -648,6 +748,19 @@ namespace Surfels
         if (msg.message == WM_KEYDOWN)
         {
             bool ctrlPressed = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            // L toggles the loupe. Taken from the message, not polled per frame: at a low frame rate a quick
+            // tap starts and ends between two frames. Bit 30 set = auto-repeat while held.
+            if (msg.wParam == 'L' && !ctrlPressed && (msg.lParam & (1 << 30)) == 0 && !ImGui::GetIO().WantCaptureKeyboard)
+            {
+                m_loupeEnabled = !m_loupeEnabled;
+                return true;
+            }
+            // V cycles the loupe's display (normal, outlines, colours, centres) while it is on.
+            if (msg.wParam == 'V' && m_loupeEnabled && !ctrlPressed && (msg.lParam & (1 << 30)) == 0 && !ImGui::GetIO().WantCaptureKeyboard)
+            {
+                m_loupeViz = (m_loupeViz + 1) % 4;
+                return true;
+            }
             if (ctrlPressed && msg.wParam == 'O')
             {
                 m_pendingAction = IsViewerOnly() ? PendingAction::OpenCompressedFile : PendingAction::OpenFile;
@@ -1147,7 +1260,7 @@ namespace Surfels
         if (splatPkg)
         {
             m_splatParams = m_loadedPackage.splatParams;
-            m_splatSHQuality = (m_splatParams.shDegree >= 3) ? 1 : 0;
+            m_splatSHQuality = std::clamp((int)m_splatParams.shDegree - 1, 0, 2);
         }
         std::vector<SurfelVertex> decodedLOD0; // Splat packages: LOD 0 across every chunk, in chunk order
         auto decodeSplatLevel = [&](size_t c, size_t l, std::vector<SurfelVertex>& outSurfels)
@@ -1685,6 +1798,7 @@ namespace Surfels
 
                 m_residentLODs[lodIdx].rawSurfels = std::move(lodPoints);
                 SpatialOctree::PartitionIntoMeshletChunks(m_residentLODs[lodIdx].rawSurfels, m_residentLODs[lodIdx].meshletChunks, 64, m_enableMortonOrder);
+                for (auto& mc : m_residentLODs[lodIdx].meshletChunks) mc.lodLevel = (uint32_t)lodIdx; // The shader draws by level (splat mode: discs from kSplatDiscMinLevel), as the stream does
                 m_residentLODs[lodIdx].packedSurfels = Quantizer::QuantizeSurfels(m_residentLODs[lodIdx].rawSurfels, m_aabbMin, m_aabbMax);
                 if (m_splatMode)
                 {
@@ -1950,7 +2064,14 @@ namespace Surfels
         }
     }
 
-    // Mouse-orbit/zoom camera, for both the active viewing camera and the (optional) frozen culling camera
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
+
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
+
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
+
+    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
+
     void SurfelsApp::UpdateCamera(const ImGuiIO& io)
     {
         const float cy = cosf(m_pitch), sy = sinf(m_pitch);
@@ -1962,6 +2083,60 @@ namespace Surfels
 
         float dtSeconds = (float)(m_deltaTime / 1000.0f);
         if (dtSeconds <= 0.0f || dtSeconds > 0.1f) dtSeconds = 0.016f; // Safe fallback
+
+        // Loupe inset: a left-button drag on an edge or corner resizes it, anywhere else inside it moves it.
+        // Taken before the camera so a drag on the inset never orbits the model.
+        m_loupeHover = 0;
+        bool overInset = false;
+        if (m_loupeEnabled && m_loupeRect.z > m_loupeRect.x)
+        {
+            const ImVec2 m = io.MousePos;
+            const float grab = 7.0f;
+            const bool inX = m.x >= m_loupeRect.x - grab && m.x <= m_loupeRect.z + grab;
+            const bool inY = m.y >= m_loupeRect.y - grab && m.y <= m_loupeRect.w + grab;
+            overInset = inX && inY;
+            if (overInset)
+            {
+                if (fabsf(m.x - m_loupeRect.x) <= grab) m_loupeHover |= kLoupeDragLeft;
+                if (fabsf(m.x - m_loupeRect.z) <= grab) m_loupeHover |= kLoupeDragRight;
+                if (fabsf(m.y - m_loupeRect.y) <= grab) m_loupeHover |= kLoupeDragTop;
+                if (fabsf(m.y - m_loupeRect.w) <= grab) m_loupeHover |= kLoupeDragBottom;
+                if (m_loupeHover == 0) m_loupeHover = kLoupeDragMove;
+            }
+            if (m_loupeDrag == 0 && m_loupeHover != 0 && io.MouseClicked[0] && !io.WantCaptureMouse)
+                m_loupeDrag = m_loupeHover;
+        }
+        if (m_loupeDrag != 0)
+        {
+            if (!io.MouseDown[0] || !m_loupeEnabled)
+                m_loupeDrag = 0;
+            else
+            {
+                const ImVec2 d = io.MouseDelta;
+                const float minW = 160.0f, minH = 120.0f;
+                const float maxW = std::max(minW, (float)m_Width - 20.0f), maxH = std::max(minH, (float)m_Height - 60.0f);
+                if (m_loupeDrag & kLoupeDragMove) { m_loupePos.x += d.x; m_loupePos.y += d.y; }
+                if (m_loupeDrag & kLoupeDragRight) m_loupeSize.x = std::clamp(m_loupeSize.x + d.x, minW, maxW);
+                if (m_loupeDrag & kLoupeDragBottom) m_loupeSize.y = std::clamp(m_loupeSize.y + d.y, minH, maxH);
+                if (m_loupeDrag & kLoupeDragLeft) // The right edge stays put
+                {
+                    const float w = std::clamp(m_loupeSize.x - d.x, minW, maxW);
+                    m_loupePos.x += m_loupeSize.x - w;
+                    m_loupeSize.x = w;
+                }
+                if (m_loupeDrag & kLoupeDragTop) // The bottom edge stays put
+                {
+                    const float h = std::clamp(m_loupeSize.y - d.y, minH, maxH);
+                    m_loupePos.y += m_loupeSize.y - h;
+                    m_loupeSize.y = h;
+                }
+            }
+        }
+
+        // The loupe's box follows the mouse while it is over the viewport -- not over the inset itself, nor while
+        // the inset is being dragged (L toggles the loupe: see OnEvent).
+        if (m_loupeEnabled && m_loupeDrag == 0 && !overInset && !io.WantCaptureMouse && io.MousePos.x >= 0.0f && io.MousePos.y >= 0.0f)
+            m_loupeCenter = io.MousePos;
 
         // Keyboard Controls: Arrow Keys (Shift=Pan, No Shift=Rotate), W/S/PageUp/PageDown Zoom
         if (!io.WantCaptureKeyboard)
@@ -2008,13 +2183,27 @@ namespace Surfels
                     m_yaw += keyRotSpeed;
                 }
 
-                // Up/Down / W/S: Smooth Frame-Rate Independent Exponential Zoom
+                // Up/Down / W/S: Smooth Frame-Rate Independent Exponential Zoom. With the loupe on, W/S
+                // change its magnification instead and only the other keys move the camera.
                 float zoomRate = 2.2f; // Exponential zoom rate per second
-                if ((GetKeyState(VK_UP) & 0x8000) || (GetKeyState('W') & 0x8000) || (GetKeyState(VK_PRIOR) & 0x8000) || (GetKeyState(VK_ADD) & 0x8000) || (GetKeyState(VK_OEM_PLUS) & 0x8000))
+                const bool wDown = (GetKeyState('W') & 0x8000) != 0, sDown = (GetKeyState('S') & 0x8000) != 0;
+                if (m_loupeEnabled)
+                {
+                    // The real frame time (capped), not the 0.016 s fallback above: at a few frames a second that
+                    // fallback would make the zoom crawl.
+                    const float dtZoom = std::min(0.5f, std::max(0.0f, (float)(m_deltaTime / 1000.0)));
+                    m_loupeZoomHoldSec = (wDown != sDown) ? m_loupeZoomHoldSec + dtZoom : 0.0f;
+                    const float rate = std::min(kLoupeZoomRateMax, kLoupeZoomRate * (1.0f + kLoupeZoomAccel * m_loupeZoomHoldSec));
+                    if (wDown && !sDown) m_loupeZoom *= expf(+rate * dtZoom);
+                    if (sDown && !wDown) m_loupeZoom *= expf(-rate * dtZoom);
+                    m_loupeZoom = std::max(kLoupeZoomMin, std::min(kLoupeZoomMax, m_loupeZoom));
+                }
+                const bool wZooms = wDown && !m_loupeEnabled, sZooms = sDown && !m_loupeEnabled;
+                if ((GetKeyState(VK_UP) & 0x8000) || wZooms || (GetKeyState(VK_PRIOR) & 0x8000) || (GetKeyState(VK_ADD) & 0x8000) || (GetKeyState(VK_OEM_PLUS) & 0x8000))
                 {
                     m_distance *= expf(-zoomRate * dtSeconds); // Smooth fast Zoom In
                 }
-                if ((GetKeyState(VK_DOWN) & 0x8000) || (GetKeyState('S') & 0x8000) || (GetKeyState(VK_NEXT) & 0x8000) || (GetKeyState(VK_SUBTRACT) & 0x8000) || (GetKeyState(VK_OEM_MINUS) & 0x8000))
+                if ((GetKeyState(VK_DOWN) & 0x8000) || sZooms || (GetKeyState(VK_NEXT) & 0x8000) || (GetKeyState(VK_SUBTRACT) & 0x8000) || (GetKeyState(VK_OEM_MINUS) & 0x8000))
                 {
                     m_distance *= expf(+zoomRate * dtSeconds); // Smooth fast Zoom Out
                 }
@@ -2023,7 +2212,7 @@ namespace Surfels
             m_distance = std::max(0.1f, std::min(1000.0f, m_distance));
         }
 
-        if (!io.WantCaptureMouse)
+        if (!io.WantCaptureMouse && m_loupeDrag == 0)
         {
             if (shiftDown)
             {
@@ -2041,8 +2230,9 @@ namespace Surfels
                 // NO SHIFT = ROTATE OR ZOOM ONLY (ZERO PANNING)
                 if (io.MouseDown[0])
                 {
-                    // Left Mouse Drag: Orbit Camera (Yaw / Pitch)
-                    m_yaw += io.MouseDelta.x * 0.006f;
+                    // Left Mouse Drag: Orbit Camera (Yaw / Pitch). The model follows the drag on both axes:
+                    // dragging right moves the eye left (yaw down), so the model turns to the right.
+                    m_yaw -= io.MouseDelta.x * 0.006f;
                     m_pitch = std::max(-1.55f, std::min(1.55f, m_pitch + io.MouseDelta.y * 0.006f));
                 }
                 else if (io.MouseDown[1])
@@ -2080,25 +2270,24 @@ namespace Surfels
 
             if (m_autoLODCooldownTimer <= 0.0f)
             {
-                float maxDim = std::max(m_extents.x, std::max(m_extents.y, m_extents.z));
                 // Detach Camera: the level follows the frozen camera's distance, not the observer's.
                 const float lodDistance = m_detachCamera ? m_detachedDistance : m_distance;
-                float normalizedDist = lodDistance / std::max(0.1f, maxDim);
-
                 int maxLODIndex = (int)m_waveletResult.lodLevels.size() - 1;
+                const bool screenSpace = m_lodScreenSpace && (int)m_lodSpacing.size() > maxLODIndex && maxLODIndex > 0 && m_lodSpacing[0] > 0.0f;
+                const float targetFloatLOD = ContinuousLodAtDistance(lodDistance, screenSpace);
 
-                // Map camera distance to continuous LOD factor with hysteresis deadband:
-                float factor = std::max(0.0f, std::min(1.0f, (normalizedDist - 1.0f) / 3.0f));
-                float targetFloatLOD = factor * (float)maxLODIndex;
-
-                // Schmitt-trigger hysteresis (+/- 0.35 LOD units) to prevent border oscillation when zooming
+                // Schmitt-trigger hysteresis to prevent border oscillation when zooming. Screen space: step
+                // coarser only once the next level's spacing is within the pixel threshold, and back finer a
+                // little before the current level exceeds it. Legacy: +/- 0.35 LOD units around the midpoint.
                 int curLOD = m_selectedPreviewLOD;
                 int newLOD = curLOD;
-                if (targetFloatLOD > (float)curLOD + 0.65f)
+                const float upAt = screenSpace ? 1.0f : 0.65f;
+                const float downAt = screenSpace ? 0.15f : 0.65f;
+                if (targetFloatLOD >= (float)curLOD + upAt)
                 {
                     newLOD = std::min(maxLODIndex, curLOD + 1);
                 }
-                else if (targetFloatLOD < (float)curLOD - 0.65f)
+                else if (targetFloatLOD < (float)curLOD - downAt)
                 {
                     newLOD = std::max(0, curLOD - 1);
                 }
@@ -2451,12 +2640,12 @@ namespace Surfels
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bakes and draws every point as the 3D Gaussian the source describes: its three scales and rotation, its opacity, an 8-bit colour and, optionally, its spherical harmonics. 20 bytes per point plus the harmonics, against 8 bytes for a surfel, in exchange for the look of a reference splat viewer. Off: the 8-byte oriented-disc surfel.");
                     if (m_splatMode)
                     {
-                        static const char* s_shNames[] = { "Low (degree 1, 9 bytes per splat)", "High (degree 3, 45 bytes per splat)" };
+                        static const char* s_shNames[] = { "Low (degree 1, 9 bytes per splat)", "Medium (degree 2, 24 bytes per splat)", "High (degree 3, 45 bytes per splat)" };
                         if (ImGui::Combo("SH Quality", &m_splatSHQuality, s_shNames, IM_ARRAYSIZE(s_shNames)))
                         {
                             m_pipelineNeedsUpdate = true;
                         }
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("How much of the view-dependent colour (spherical harmonics) the package keeps. Low keeps the first band, which carries most of the tint shift with viewing angle; High keeps all three bands the source has, at five times the harmonics bytes.");
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("How much of the view-dependent colour (spherical harmonics) the package keeps. Low keeps the first band, which carries most of the tint shift with viewing angle; Medium adds the second band (sharper highlights) at about 2.7 times the harmonics bytes; High keeps all three bands the source has, at five times the harmonics bytes.");
                     }
                 }
 
@@ -2577,6 +2766,24 @@ namespace Surfels
                             UpdatePreviewSurfels();
                         }
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Automatically adapts active LOD level dynamically based on distance from camera.");
+                        if (m_autoLOD)
+                        {
+                            ImGui::Indent(12.0f);
+                            if (ImGui::Checkbox("Screen-Space LOD", &m_lodScreenSpace)) SaveConfigFile();
+                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: a coarser level is used only once its point spacing projects to at most the threshold below, in pixels, at the model's near side -- so the switch happens where the coarser level can no longer be told apart from full resolution, whatever the window size. Off: the old rule, a fixed ramp from 1x to 4x the model's size. Remembered across sessions.");
+                            if (m_lodScreenSpace)
+                            {
+                                ImGui::SameLine();
+                                ImGui::PushItemWidth(140.0f);
+                                if (ImGui::SliderFloat("##LodPixelSpacing", &m_lodPixelSpacing, 0.25f, 4.0f, "max %.2f px")) SaveConfigFile();
+                                ImGui::PopItemWidth();
+                                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Largest on-screen spacing between a level's points before the next finer level is used. Lower keeps full resolution longer (more splats drawn); 1 px is where a level's points just tile the pixels.");
+                            }
+                            const int lvlNow = std::max(0, std::min(maxLODIndex, m_selectedPreviewLOD));
+                            if (lvlNow < (int)m_lodSpacing.size() && m_lodSpacing[lvlNow] > 0.0f)
+                                ImGui::TextDisabled("Level %d spacing on screen: %.2f px", lvlNow, m_lodSpacing[lvlNow] * LodFocalPixels() / LodEffectiveDistance(m_detachCamera ? m_detachedDistance : m_distance));
+                            ImGui::Unindent(12.0f);
+                        }
 
                         ImGui::PushItemWidth(ImGui::GetContentRegionAvailWidth() - 95.0f);
                         if (ImGui::SliderInt("##LODSlider", &m_selectedPreviewLOD, 0, maxLODIndex, "LOD %.0f"))
@@ -2731,14 +2938,10 @@ namespace Surfels
                     }
                     if (m_splatMode)
                     {
-                        if (ImGui::Checkbox("Draw Splats as Surfels", &m_splatDrawAsSurfels))
+                        bool drawAsSurfels = m_splatDrawAsSurfels;
+                        if (ImGui::Checkbox("Draw Splats as Surfels", &drawAsSurfels))
                         {
-                            // The render mode follows SplatRenderMode() at the next state selection; re-stamp the chunks'
-                            // dilationMorph now (the sorted pipeline's fade weight, or the surfel value) without a re-partition
-                            const float morph = m_splatDrawAsSurfels ? 0.0f : 1.0f;
-                            for (auto& mc : m_rendererMeshletChunks) mc.dilationMorph = morph;
-                            for (auto& lod : m_residentLODs) for (auto& mc : lod.meshletChunks) mc.dilationMorph = morph;
-                            m_streamStateDirty = true;
+                            SetSplatDrawAsSurfels(drawAsSurfels);
                             SaveConfigFile();
                         }
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Draws the package's Gaussians as opaque, depth-tested discs through the surfel pipeline: no per-frame sort, no blending. Auto Splat Size and its Coverage, Splat Radius Scale and Surfel Orientation apply (Normal-Oriented uses each Gaussian's own orientation), and the dithered level transitions dissolve between two surfaces instead of sparkling. The colour is the record's base colour plus its harmonics, unlit. Off restores the sorted Gaussian pipeline. Remembered across sessions.");
@@ -2763,6 +2966,19 @@ namespace Surfels
                         ImGui::TextDisabled("Level 0 softness %.2f x spacing -> disc radius %.2f x spacing", m_splatSoftnessRatio, m_splatDiscMatchFactor);
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("The level 0 records' median in-plane footprint sqrt(s_max x s_mid) divided by the level 0 point spacing, and the disc radius factor sqrt(8) x that ratio (a disc with the splat falloff of radius R is a Gaussian of sigma R / sqrt(8)), clamped to 1.5..4.0.");
                         ImGui::PopStyleVar();
+                        if (ImGui::Checkbox("Coarse Levels as Gaussians", &m_splatCoarseAsGaussians))
+                        {
+                            SaveConfigFile();
+                        }
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Draws levels 1 and up with their own Gaussians (the coarse records carry grown scales and orientations) instead of camera-facing discs of the level spacing, which read as grain. The two disc settings above then only matter while this is off. Remembered across sessions.");
+                        if (m_splatCoarseAsGaussians)
+                        {
+                            ImGui::SameLine();
+                            ImGui::PushItemWidth(140.0f);
+                            if (ImGui::SliderFloat("##CoarseGaussianCap", &m_splatCoarseGaussianCap, 0.0f, 4.0f, m_splatCoarseGaussianCap > 0.0f ? "cap %.2f x spacing" : "no cap")) SaveConfigFile();
+                            ImGui::PopItemWidth();
+                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Largest scale a coarse Gaussian may take, per axis, as a multiple of its level's point spacing. The coarse records are grown well past that and bloom into a blur around the model without a cap; 1.5 measured best on cthulu (0.75 is a little grainier). 0 = no cap. Remembered across sessions.");
+                        }
                     }
                     ImGui::SliderFloat("Splat Radius Scale", &m_state.splatRadius, 0.10f, 10.0f, "%.2fx");
                     ImGui::Checkbox("Auto Splat Size (per-level density)", &m_autoSplatSize);
@@ -2787,6 +3003,28 @@ namespace Surfels
 
                     ImGui::Checkbox("Auto Rotate Model##Viewport", &m_autoRotate);
                     m_state.autoRotate = m_autoRotate;
+
+                    static const char* s_splatVizNames[] = { "Normal", "Splat outlines", "Random colour per splat", "Splat centres" };
+                    ImGui::PushItemWidth(180.0f);
+                    ImGui::Combo("Splat Display##Viewport", &m_splatViz, s_splatVizNames, IM_ARRAYSIZE(s_splatVizNames));
+                    ImGui::PopItemWidth();
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("How every splat in the view is drawn. Normal: as rendered, blending into one smooth surface. Splat outlines: each splat's ellipse at half its peak, over a faint fill -- its true size, shape and orientation. Random colour per splat: every splat filled flat out to that same contour in its own colour, so coverage and overlap show. Splat centres: a mark at every centre, the sampling density. The loupe has its own setting (V).");
+
+                    ImGui::Checkbox("Loupe (L)##Viewport", &m_loupeEnabled);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("A box follows the mouse over the model; the area inside it is drawn again, magnified, in an inset at the top right of the viewport, so individual splats show. W/S change the magnification (%.0fx to %.0fx) while it is on, faster the longer they are held; the other zoom keys still move the camera. Drag inside the inset to move it, or on an edge or corner to resize it.", kLoupeZoomMin, kLoupeZoomMax);
+                    if (m_loupeEnabled)
+                    {
+                        ImGui::SameLine();
+                        ImGui::PushItemWidth(150.0f);
+                        ImGui::SliderFloat("##LoupeZoom", &m_loupeZoom, kLoupeZoomMin, kLoupeZoomMax, "%.1fx", 2.0f);
+                        ImGui::PopItemWidth();
+                        ImGui::Indent(12.0f);
+                        ImGui::PushItemWidth(180.0f);
+                        ImGui::Combo("Loupe Display (V)", &m_loupeViz, s_splatVizNames, IM_ARRAYSIZE(s_splatVizNames));
+                        ImGui::PopItemWidth();
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("What the inset shows. Normal: the splats as rendered, which blend into one smooth surface. Splat outlines: each splat's ellipse at half its peak, over a faint fill -- its true size, shape and orientation. Random colour per splat: every splat filled flat out to that same contour in its own colour, so coverage and overlap show. Splat centres: a dot at every centre, the sampling density. V cycles them while the loupe is on.");
+                        ImGui::Unindent(12.0f);
+                    }
 
                     if (ImGui::Checkbox("Show Camera Control Hints##Viewport", &m_showControlHints))
                     {
@@ -3097,339 +3335,347 @@ namespace Surfels
 
         ImGui::End();
 
-        // 3. Right Statistics & Telemetry Panel
+        // 3. Right Statistics & Telemetry Panel. Its height fits the open sections (0 = auto-fit), up to the
+        // full panel height, where it scrolls; the space below it stays free for the viewport (and the loupe).
         ImGui::SetNextWindowPos(ImVec2((float)m_Width - rightPanelWidth - 10.0f, 30.0f), ImGuiCond_Always);
-        ImGui::SetNextWindowSize(ImVec2(rightPanelWidth, panelHeight), ImGuiCond_Always);
+        ImGui::SetNextWindowSize(ImVec2(rightPanelWidth, 0.0f), ImGuiCond_Always);
+        ImGui::SetNextWindowSizeConstraints(ImVec2(rightPanelWidth, 0.0f), ImVec2(rightPanelWidth, panelHeight));
         ImGui::Begin("Statistics & Compression Analytics", nullptr, ImGuiWindowFlags_NoCollapse);
 
-        // Real-Time Performance & Stage Timings
-        if (ImGui::CollapsingHeader("Real-Time Performance & Stage Timings", ImGuiTreeNodeFlags_DefaultOpen))
+        // The sections in the user's order (RightPanelSectionHeader); a title-bar drag swaps two after the loop.
+        int swapSlotA = -1, swapSlotB = -1;
+        for (int slot = 0; slot < kRightSectionCount; slot++)
         {
-            const auto& metrics = m_pRenderer->GetTimingMetrics();
-
-            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "Framerate:       %.1f FPS", metrics.frameRate);
-            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Total Frame Time:%.2f ms", metrics.totalFrameTimeMs);
-            ImGui::Separator();
-            ImGui::Text("Per-Stage Breakdown (ms):");
-
-            float uploadDisplay = m_pRenderer->GetSmoothUploadMs();
-            if (uploadDisplay > 0.0001f)
+            const int section = m_rightPanelOrder[slot];
+            if (!RightPanelSectionHeader(slot, section, swapSlotA, swapSlotB)) continue;
+            switch (section)
             {
-                ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "  • Surfel/Chunk Buffer Upload:      %.2f ms", uploadDisplay);
-            }
+                // Real-Time Performance & Stage Timings
+                case kRightPerformance:
+                {
+                    const auto& metrics = m_pRenderer->GetTimingMetrics();
 
-            if (m_gpuRadixSort)
-            {
-                float sortDisplay = (metrics.gpuSortTimeMs > 0.0001f) ? metrics.gpuSortTimeMs : m_pRenderer->GetSmoothGpuSortMs();
-                ImGui::TextColored(ImVec4(0.3f, 0.9f, 1.0f, 1.0f), "  • GPU Radix Depth Sort (32-Bit):    %.2f ms", sortDisplay);
-            }
-            else
-            {
-                ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "  • CPU Radix Depth Sort (16-Bit):    %.2f ms", metrics.cpuSortTimeMs);
-            }
+                    ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "Framerate:       %.1f FPS", metrics.frameRate);
+                    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Total Frame Time:%.2f ms", metrics.totalFrameTimeMs);
+                    ImGui::Separator();
+                    ImGui::Text("Per-Stage Breakdown (ms):");
+
+                    float uploadDisplay = m_pRenderer->GetSmoothUploadMs();
+                    if (uploadDisplay > 0.0001f)
+                    {
+                        ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "  • Surfel/Chunk Buffer Upload:      %.2f ms", uploadDisplay);
+                    }
+
+                    if (m_gpuRadixSort)
+                    {
+                        float sortDisplay = (metrics.gpuSortTimeMs > 0.0001f) ? metrics.gpuSortTimeMs : m_pRenderer->GetSmoothGpuSortMs();
+                        ImGui::TextColored(ImVec4(0.3f, 0.9f, 1.0f, 1.0f), "  • GPU Radix Depth Sort (32-Bit):    %.2f ms", sortDisplay);
+                    }
+                    else
+                    {
+                        ImGui::TextColored(ImVec4(1.0f, 0.7f, 0.3f, 1.0f), "  • CPU Radix Depth Sort (16-Bit):    %.2f ms", metrics.cpuSortTimeMs);
+                    }
 
 #if 0 // DYNAMIC SILHOUETTE: GPU silhouette chunk processing switched off for now (re-enable by restoring this block)
-            if (m_enableSilhouetteLOD0 || m_highlightSilhouetteChunks)
-            {
-                ImGui::TextColored(ImVec4(0.85f, 0.55f, 0.98f, 1.0f), "  • Silhouette Item Prepass:          %.2f ms", m_pRenderer->GetSmoothSilhouettePrepassMs());
-            }
+                    if (m_enableSilhouetteLOD0 || m_highlightSilhouetteChunks)
+                    {
+                        ImGui::TextColored(ImVec4(0.85f, 0.55f, 0.98f, 1.0f), "  • Silhouette Item Prepass:          %.2f ms", m_pRenderer->GetSmoothSilhouettePrepassMs());
+                    }
 #endif // DYNAMIC SILHOUETTE
 
-            if (m_enableOcclusionCulling)
-            {
-                ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "  • Occlusion Volume Pass:            %.2f ms  (mip %u of %u)", m_pRenderer->GetSmoothOccluderMs(), m_pRenderer->GetActiveOcclusionMip(), m_occlusionMips.mipCount);
-            }
-
-            ImGui::Text(m_pRenderer->GetRenderPath() == SurfelsRenderer::RenderPath::MeshShaders ? "  • Main Splat Mesh Shader Dispatch:  %.2f ms" : "  • Main Splat Vertex Shader Draw:    %.2f ms", m_pRenderer->GetSmoothMainDispatchMs());
-
-            if (m_enableTemporalFiltering)
-            {
-                ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "  • TAA Resolve:                      %.2f ms", m_pRenderer->GetSmoothTaaMs());
-            }
-
-            // Where the frame time actually goes. The stage lines above are the CPU cost of recording each
-            // pass; this is the whole frame on the CPU wall clock, so the sum approaches the total.
-            ImGui::Separator();
-            ImGui::Text("Frame Budget (CPU wall clock, ms):");
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where the frame time goes, measured on the CPU. The stage lines above are command-recording costs only. GPU wait is the CPU blocked on the swapchain fence, i.e. waiting for the GPU (or VSync): a large value there means the GPU is the bottleneck.");
-            {
-                const float traversal = m_budgetShown[kBudgetTraversal];
-                const float simOther = std::max(0.0f, m_budgetShown[kBudgetSim] - traversal);
-                const float ui = m_budgetShown[kBudgetUi];
-                const float gpuWait = m_budgetShown[kBudgetGpuWait];
-                const float record = m_budgetShown[kBudgetRecord];
-                const float present = m_budgetShown[kBudgetPresent];
-                const float accounted = traversal + simOther + ui + gpuWait + record + present;
-                const float other = std::max(0.0f, metrics.totalFrameTimeMs - accounted);
-                const ImVec4 cpuCol(0.95f, 0.85f, 0.55f, 1.0f), gpuCol(0.55f, 0.85f, 1.0f, 1.0f), dimCol(0.6f, 0.6f, 0.6f, 1.0f);
-                ImGui::TextColored(cpuCol, "  \xe2\x80\xa2 LOD traversal & render list:      %.2f ms", traversal);
-                ImGui::TextColored(cpuCol, "  \xe2\x80\xa2 Streaming delivery & queues:      %.2f ms", simOther);
-                ImGui::TextColored(cpuCol, "  \xe2\x80\xa2 UI build (ImGui):                 %.2f ms", ui);
-                ImGui::TextColored(gpuCol, "  \xe2\x80\xa2 GPU wait (swapchain fence):       %.2f ms", gpuWait);
-                ImGui::TextColored(cpuCol, "  \xe2\x80\xa2 Command recording & uploads:      %.2f ms", record);
-                ImGui::TextColored(cpuCol, "  \xe2\x80\xa2 Present:                          %.2f ms", present);
-                ImGui::TextColored(dimCol, "  \xe2\x80\xa2 Other (input, window, OS):        %.2f ms", other);
-            }
-        }
-
-        // Compression Summary
-        if (ImGui::CollapsingHeader("4-Tier Compression Results", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            uint32_t pointCount = (uint32_t)(!m_rendererSurfels.empty() ? m_rendererSurfels.size() : m_rawSurfels.size());
-            const float bytesPerPoint = (float)BytesPerRenderPoint();
-            float tier2MB = (pointCount * bytesPerPoint) / (1024.0f * 1024.0f);
-            float tier2Reduction = (tier2MB > 0.001f && m_rawFileSizeMB > 0.0f) ? (m_rawFileSizeMB / tier2MB) : 31.0f;
-
-            ImGui::Text("Raw Point Cloud:      %.2f MB (100%%)", m_rawFileSizeMB);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Uncompressed input point cloud dataset (248 bytes/splat uncompressed 3D Gaussian baseline).");
-
-            ImGui::Text("Tier 2 (%u-Byte GPU):  %.2f MB (%.1fx reduction)", (unsigned)bytesPerPoint, tier2MB, tier2Reduction);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip(m_splatMode
-                ? "Tier 2 Quantization, splat mode: 20-byte Gaussian record (16:16:16 position, 8-bit log scales, opacity, 8:8:8 colour, quaternion) plus the spherical-harmonics stream."
-                : "Tier 2 Quantization: 8-byte packed GPU format (10:10:10:2 position, Oct16 normal, RGB565 color).");
-
-            ImGui::Text("Tier 3 (Morton Swizzle):  Contiguous 8-channel planes");
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 3 Morton Swizzle & Transposition: Interleaves 3D spatial coordinate bits via Z-order curve and transposes 8-byte structures into 8 contiguous channels to maximize entropy redundancy.");
-
-            ImGui::Text("Tier 4 (Codec: Byte-RLE / Zstd Entropy): %.2f MB", m_compressedSizeMB);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 4 Bitstream Codec: Byte-plane Run-Length Entropy & Zstandard lossless stream compression on transposed 8-byte channels.");
-
-            ImGui::Separator();
-            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "TOTAL COMPRESSION:    %.2fx (%.2f MB -> %.2f MB)", tier2Reduction, m_rawFileSizeMB, tier2MB);
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pinned to the Tier 2 (8-byte GPU quantization) ratio: this is the reduction every surfel gets just from the fixed-size packed format, independent of how well the RLE/entropy codec happens to compress a given model's byte patterns.");
-        }
-
-        // LOD Residency Equalizer
-        bool lodResidencyOpen = ImGui::CollapsingHeader("LOD Residency", ImGuiTreeNodeFlags_DefaultOpen);
-        if (ImGui::IsItemHovered())
-        {
-            ImGui::SetTooltip(
-                "Shows how much of each LOD level is currently resident in the simulated ring buffer\n"
-                "(green), locked mid-transition (orange), or protected as an active silhouette edge\n"
-                "(highlighted). Chunks stream in as the camera needs finer detail and drain out (via the\n"
-                "Decay control below) when no longer needed.\n\n"
-                "The fill rate is controlled by the Network Profiles / Bandwidth Throttle options on the\n"
-                "Streaming tab -- lower bandwidth means slower fill. The drain rate is controlled only by\n"
-                "the Decay Rate slider below and is independent of bandwidth: 0 = no decay, 10 = full\n"
-                "drain of every evictable level in 3 s on any bandwidth setting."
-            );
-        }
-        if (lodResidencyOpen)
-        {
-            DrawLODResidencyEqualizer();
-        }
-
-        // Wavelet Multi-Resolution Pyramid Table
-        if (ImGui::CollapsingHeader("Wavelet Multi-Resolution Pyramid", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            ImGui::Columns(4, "LODColumns");
-            ImGui::Text("Level"); ImGui::NextColumn();
-            ImGui::Text("Points"); ImGui::NextColumn();
-            ImGui::Text("Retained"); ImGui::NextColumn();
-            ImGui::Text("Max Err"); ImGui::NextColumn();
-            ImGui::Separator();
-
-            for (size_t i = 0; i < m_waveletResult.lodLevels.size(); i++)
-            {
-                const auto& lod = m_waveletResult.lodLevels[i];
-                float percent = (lod.surfels.size() * 100.0f) / std::max(1ULL, (unsigned long long)m_rawSurfels.size());
-
-                // Highlight the active visible LOD level in green/asterisk
-                bool isVisible = ((int)i == m_selectedPreviewLOD);
-
-                char label[64];
-                sprintf_s(label, "LOD %d%s", lod.level, isVisible ? " (ACTIVE)" : "");
-
-                if (ImGui::Selectable(label, isVisible, ImGuiSelectableFlags_SpanAllColumns))
-                {
-                    m_selectedPreviewLOD = (int)i;
-                    m_autoLOD = false; // Disable auto when user clicks manual table row
-                    m_enableWavelet = true;
-                    UpdatePreviewSurfels();
-                }
-                ImGui::NextColumn();
-
-                ImGui::Text("%u", (uint32_t)lod.surfels.size()); ImGui::NextColumn();
-                ImGui::Text("%.1f%%", percent); ImGui::NextColumn();
-                ImGui::Text("%.1f mm", lod.geometricError * 1000.0f); ImGui::NextColumn();
-            }
-            ImGui::Columns(1);
-            ImGui::TextDisabled("Tip: Click any row to visualize that LOD.");
-        }
-
-        // Model Metrics
-        if (ImGui::CollapsingHeader("Input Model Metrics", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            uint32_t totalVertices = (uint32_t)(!m_rendererSurfels.empty() ? m_rendererSurfels.size() : m_rawSurfels.size());
-            ImGui::Text("Active Source:   %s", m_rendererSourceDescription.c_str());
-            ImGui::Text("Total Vertices:  %u points", totalVertices);
-            ImGui::Text("Uncompressed:    %.2f MB", m_rawFileSizeMB);
-            ImGui::Text("Bounding Box Min:[%.2f, %.2f, %.2f]", m_aabbMin.x, m_aabbMin.y, m_aabbMin.z);
-            ImGui::Text("Bounding Box Max:[%.2f, %.2f, %.2f]", m_aabbMax.x, m_aabbMax.y, m_aabbMax.z);
-            ImGui::Text("Spatial Extents: %.1f x %.1f x %.1f m", m_extents.x, m_extents.y, m_extents.z);
-        }
-
-        // Geometry Optimisations & Culling Stats
-        if (ImGui::CollapsingHeader("Geometry Optimisations & Culling Stats", ImGuiTreeNodeFlags_DefaultOpen))
-        {
-            const auto& cStats = m_pRenderer->GetCullStats();
-
-            uint32_t totalSurfels = cStats.totalDatasetSurfels;
-            uint32_t drawnSurfels = cStats.msDrawnSurfels;
-            uint32_t culledSurfels = (totalSurfels >= drawnSurfels) ? (totalSurfels - drawnSurfels) : 0;
-            float reductionPct = totalSurfels > 0 ? (float)culledSurfels / (float)totalSurfels * 100.0f : 0.0f;
-            float reductionFactor = drawnSurfels > 0 ? (float)totalSurfels / (float)drawnSurfels : 1.0f;
-
-            // Summary Badges / KPI Cards
-            ImGui::Columns(3, "CullKpiCols", false);
-            ImGui::TextDisabled("TOTAL SURFELS");
-            ImGui::TextColored(ImVec4(0.3f, 0.85f, 1.0f, 1.0f), "%u", totalSurfels);
-            ImGui::NextColumn();
-
-            ImGui::TextDisabled("CULLED / SAVED");
-            ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%u (%.1f%%)", culledSurfels, reductionPct);
-            ImGui::NextColumn();
-
-            ImGui::TextDisabled("DRAWN TO SCREEN");
-            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "%u (%.1f%%)", drawnSurfels, 100.0f - reductionPct);
-            ImGui::NextColumn();
-            ImGui::Columns(1);
-
-            ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Optimization Efficiency: %.1fx reduction (%.1f%% eliminated)", reductionFactor, reductionPct);
-
-            ImGui::Spacing();
-
-            // Visual Proportional Multi-Segment Breakdown Bar
-            if (totalSurfels > 0)
-            {
-                ImVec2 barSize = ImVec2(ImGui::GetContentRegionAvailWidth(), 16.0f);
-                ImVec2 barPos = ImGui::GetCursorScreenPos();
-                ImDrawList* drawList = ImGui::GetWindowDrawList();
-
-                drawList->AddRectFilled(barPos, ImVec2(barPos.x + barSize.x, barPos.y + barSize.y), IM_COL32(30, 30, 30, 255), 2.0f);
-
-                float fracDrawn   = (float)drawnSurfels / (float)totalSurfels;
-                float fracFrustum = (float)cStats.asFrustumCulledSurfels / (float)totalSurfels;
-                float fracCone    = (float)cStats.asConeCulledSurfels / (float)totalSurfels;
-                float fracLod     = (float)cStats.lodPrunedSurfels / (float)totalSurfels;
-
-                float curX = barPos.x;
-                auto drawSegment = [&](float frac, ImU32 col) {
-                    float w = frac * barSize.x;
-                    if (w > 0.5f)
+                    if (m_enableOcclusionCulling)
                     {
-                        drawList->AddRectFilled(ImVec2(curX, barPos.y), ImVec2(curX + w, barPos.y + barSize.y), col, 2.0f);
-                        curX += w;
+                        ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "  • Occlusion Volume Pass:            %.2f ms  (mip %u of %u)", m_pRenderer->GetSmoothOccluderMs(), m_pRenderer->GetActiveOcclusionMip(), m_occlusionMips.mipCount);
                     }
-                };
 
-                drawSegment(fracDrawn,   IM_COL32(50, 205, 50, 255));   // Green: Drawn
-                drawSegment(fracFrustum, IM_COL32(70, 130, 230, 255));  // Blue: Frustum Culled
-                drawSegment(fracCone,    IM_COL32(255, 140, 0, 255));   // Orange: Normal Cone Culled
-                drawSegment(fracLod,     IM_COL32(160, 90, 220, 255));  // Purple: LOD Decimated
+                    ImGui::Text(m_pRenderer->GetRenderPath() == SurfelsRenderer::RenderPath::MeshShaders ? "  • Main Splat Mesh Shader Dispatch:  %.2f ms" : "  • Main Splat Vertex Shader Draw:    %.2f ms", m_pRenderer->GetSmoothMainDispatchMs());
 
-                ImGui::Dummy(barSize);
+                    if (m_enableTemporalFiltering)
+                    {
+                        ImGui::TextColored(ImVec4(0.4f, 0.8f, 1.0f, 1.0f), "  • TAA Resolve:                      %.2f ms", m_pRenderer->GetSmoothTaaMs());
+                    }
 
-                // Legend Swatches
-                ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "[■] Drawn (%.1f%%)", fracDrawn * 100.0f);
-                ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.3f, 0.6f, 1.0f, 1.0f), "[■] Frustum (%.1f%%)", fracFrustum * 100.0f);
-                ImGui::SameLine();
-                ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.1f, 1.0f), "[■] Cone (%.1f%%)", fracCone * 100.0f);
-                ImGui::SameLine();
-                ImGui::TextColored(ImVec4(0.7f, 0.4f, 0.9f, 1.0f), "[■] LOD (%.1f%%)", fracLod * 100.0f);
-            }
-
-            ImGui::Spacing();
-            ImGui::Separator();
-
-            // Rejection Stage Breakdown Table
-            ImGui::Text("Rejection Stage Breakdown:");
-            ImGui::Columns(4, "RejectionTableCols", true);
-            ImGui::Text("Optimization Stage"); ImGui::NextColumn();
-            ImGui::Text("Surfels"); ImGui::NextColumn();
-            ImGui::Text("Chunks"); ImGui::NextColumn();
-            ImGui::Text("Share / Rule"); ImGui::NextColumn();
-            ImGui::Separator();
-
-            // 1. LOD Decimation
-            float lodShare = totalSurfels > 0 ? (float)cStats.lodPrunedSurfels / (float)totalSurfels * 100.0f : 0.0f;
-            ImGui::TextColored(ImVec4(0.75f, 0.5f, 0.95f, 1.0f), "1. LOD Multi-Res"); ImGui::NextColumn();
-            ImGui::Text("%u", cStats.lodPrunedSurfels); ImGui::NextColumn();
-            ImGui::Text("%u", cStats.totalDatasetChunks > cStats.lodActiveChunks ? (cStats.totalDatasetChunks - cStats.lodActiveChunks) : 0); ImGui::NextColumn();
-            ImGui::Text("%.1f%% (Pixel error)", lodShare); ImGui::NextColumn();
-
-            // 2. Task Shader Frustum Culling
-            float frustumShare = totalSurfels > 0 ? (float)cStats.asFrustumCulledSurfels / (float)totalSurfels * 100.0f : 0.0f;
-            ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "2. Task Frustum Cull"); ImGui::NextColumn();
-            ImGui::Text("%u", cStats.asFrustumCulledSurfels); ImGui::NextColumn();
-            ImGui::Text("%u", cStats.asFrustumCulledChunks); ImGui::NextColumn();
-            ImGui::Text("%.1f%% (6 Planes AABB)", frustumShare); ImGui::NextColumn();
-
-            // 3. Task Shader Normal Cone Culling
-            float coneShare = totalSurfels > 0 ? (float)cStats.asConeCulledSurfels / (float)totalSurfels * 100.0f : 0.0f;
-            ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f), "3. Task Backface Cone"); ImGui::NextColumn();
-            ImGui::Text("%u", cStats.asConeCulledSurfels); ImGui::NextColumn();
-            ImGui::Text("%u", cStats.asConeCulledChunks); ImGui::NextColumn();
-            ImGui::Text("%.1f%% (Cone Axis . Ray)", coneShare); ImGui::NextColumn();
-
-            // 4. Mesh Shader & Drawn
-            float drawnShare = totalSurfels > 0 ? (float)drawnSurfels / (float)totalSurfels * 100.0f : 0.0f;
-            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "4. Mesh Shader Emitted"); ImGui::NextColumn();
-            ImGui::Text("%u", drawnSurfels); ImGui::NextColumn();
-            ImGui::Text("%u", cStats.asPassedChunks); ImGui::NextColumn();
-            ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "%.1f%% (SURVIVED)", drawnShare); ImGui::NextColumn();
-
-            ImGui::Columns(1);
-            ImGui::Separator();
-
-            // On-Chip Amplification & Bandwidth Savings
-            ImGui::Text("Hardware Amplification & Bandwidth:");
-            ImGui::BulletText("Generated Vertices:   %u  (4 per surfel)", cStats.generatedVertices);
-            ImGui::BulletText("Generated Triangles:  %u  (2 per surfel)", cStats.generatedTriangles);
-            ImGui::BulletText("VRAM Bandwidth Saved: %.2f MB/frame", cStats.vramBandwidthSavedMB);
-
-            uint32_t statsEdgeChunks = 0;
-            uint32_t statsTotalChunks = 0;
-            if (m_enableStreamingSimulation)
-            {
-                statsTotalChunks = (uint32_t)m_rendererSourceChunks.size();
-                for (const auto* pChunk : m_rendererSourceChunks)
-                {
-                    if (pChunk && pChunk->isSilhouette) statsEdgeChunks++;
+                    // Where the frame time actually goes. The stage lines above are the CPU cost of recording each
+                    // pass; this is the whole frame on the CPU wall clock, so the sum approaches the total.
+                    ImGui::Separator();
+                    ImGui::Text("Frame Budget (CPU wall clock, ms):");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where the frame time goes, measured on the CPU. The stage lines above are command-recording costs only. GPU wait is the CPU blocked on the swapchain fence, i.e. waiting for the GPU (or VSync): a large value there means the GPU is the bottleneck.");
+                    {
+                        const float traversal = m_budgetShown[kBudgetTraversal];
+                        const float simOther = std::max(0.0f, m_budgetShown[kBudgetSim] - traversal);
+                        const float ui = m_budgetShown[kBudgetUi];
+                        const float gpuWait = m_budgetShown[kBudgetGpuWait];
+                        const float record = m_budgetShown[kBudgetRecord];
+                        const float present = m_budgetShown[kBudgetPresent];
+                        const float accounted = traversal + simOther + ui + gpuWait + record + present;
+                        const float other = std::max(0.0f, metrics.totalFrameTimeMs - accounted);
+                        const ImVec4 cpuCol(0.95f, 0.85f, 0.55f, 1.0f), gpuCol(0.55f, 0.85f, 1.0f, 1.0f), dimCol(0.6f, 0.6f, 0.6f, 1.0f);
+                        ImGui::TextColored(cpuCol, "  \xe2\x80\xa2 LOD traversal & render list:      %.2f ms", traversal);
+                        ImGui::TextColored(cpuCol, "  \xe2\x80\xa2 Streaming delivery & queues:      %.2f ms", simOther);
+                        ImGui::TextColored(cpuCol, "  \xe2\x80\xa2 UI build (ImGui):                 %.2f ms", ui);
+                        ImGui::TextColored(gpuCol, "  \xe2\x80\xa2 GPU wait (swapchain fence):       %.2f ms", gpuWait);
+                        ImGui::TextColored(cpuCol, "  \xe2\x80\xa2 Command recording & uploads:      %.2f ms", record);
+                        ImGui::TextColored(cpuCol, "  \xe2\x80\xa2 Present:                          %.2f ms", present);
+                        ImGui::TextColored(dimCol, "  \xe2\x80\xa2 Other (input, window, OS):        %.2f ms", other);
+                    }
                 }
-            }
-            else if (!m_residentLODs.empty())
-            {
-                int maxLODIndex = std::max(0, (int)m_residentLODs.size() - 1);
-                int selectedLOD = std::max(0, std::min(maxLODIndex, m_selectedPreviewLOD));
-                const auto& resident = m_residentLODs[selectedLOD];
-                statsTotalChunks = (uint32_t)resident.meshletChunks.size();
-                for (const auto& mc : resident.meshletChunks)
-                {
-                    if (mc.isSilhouette > 0.5f) statsEdgeChunks++;
-                }
-            }
-            ImGui::BulletText("Edge Chunks Detected: %u / %u active", statsEdgeChunks, statsTotalChunks);
+                break;
 
-            if (cStats.lodActiveChunks > 0)
-            {
-                float earlyOutRatio = (float)(cStats.asFrustumCulledChunks + cStats.asConeCulledChunks) / (float)cStats.lodActiveChunks * 100.0f;
-                ImGui::BulletText("Task Early-Out Ratio: %.1f%% of micro-chunks rejected before Mesh stage", earlyOutRatio);
+                // Compression Summary
+                case kRightCompression:
+                {
+                    uint32_t pointCount = (uint32_t)(!m_rendererSurfels.empty() ? m_rendererSurfels.size() : m_rawSurfels.size());
+                    const float bytesPerPoint = (float)BytesPerRenderPoint();
+                    float tier2MB = (pointCount * bytesPerPoint) / (1024.0f * 1024.0f);
+                    float tier2Reduction = (tier2MB > 0.001f && m_rawFileSizeMB > 0.0f) ? (m_rawFileSizeMB / tier2MB) : 31.0f;
+
+                    ImGui::Text("Raw Point Cloud:      %.2f MB (100%%)", m_rawFileSizeMB);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Uncompressed input point cloud dataset (248 bytes/splat uncompressed 3D Gaussian baseline).");
+
+                    ImGui::Text("Tier 2 (%u-Byte GPU):  %.2f MB (%.1fx reduction)", (unsigned)bytesPerPoint, tier2MB, tier2Reduction);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip(m_splatMode
+                        ? "Tier 2 Quantization, splat mode: 20-byte Gaussian record (16:16:16 position, 8-bit log scales, opacity, 8:8:8 colour, quaternion) plus the spherical-harmonics stream."
+                        : "Tier 2 Quantization: 8-byte packed GPU format (10:10:10:2 position, Oct16 normal, RGB565 color).");
+
+                    ImGui::Text("Tier 3 (Morton Swizzle):  Contiguous 8-channel planes");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 3 Morton Swizzle & Transposition: Interleaves 3D spatial coordinate bits via Z-order curve and transposes 8-byte structures into 8 contiguous channels to maximize entropy redundancy.");
+
+                    ImGui::Text("Tier 4 (Codec: Byte-RLE / Zstd Entropy): %.2f MB", m_compressedSizeMB);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 4 Bitstream Codec: Byte-plane Run-Length Entropy & Zstandard lossless stream compression on transposed 8-byte channels.");
+
+                    ImGui::Separator();
+                    ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "TOTAL COMPRESSION:    %.2fx (%.2f MB -> %.2f MB)", tier2Reduction, m_rawFileSizeMB, tier2MB);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Pinned to the Tier 2 (8-byte GPU quantization) ratio: this is the reduction every surfel gets just from the fixed-size packed format, independent of how well the RLE/entropy codec happens to compress a given model's byte patterns.");
+                }
+                break;
+
+                // LOD Residency Equalizer (its title bar's tooltip is in RightPanelSectionHeader)
+                case kRightResidency:
+                    DrawLODResidencyEqualizer();
+                    break;
+
+                // Wavelet Multi-Resolution Pyramid Table
+                case kRightPyramid:
+                {
+                    ImGui::Columns(4, "LODColumns");
+                    ImGui::Text("Level"); ImGui::NextColumn();
+                    ImGui::Text("Points"); ImGui::NextColumn();
+                    ImGui::Text("Retained"); ImGui::NextColumn();
+                    ImGui::Text("Max Err"); ImGui::NextColumn();
+                    ImGui::Separator();
+
+                    for (size_t i = 0; i < m_waveletResult.lodLevels.size(); i++)
+                    {
+                        const auto& lod = m_waveletResult.lodLevels[i];
+                        float percent = (lod.surfels.size() * 100.0f) / std::max(1ULL, (unsigned long long)m_rawSurfels.size());
+
+                        // Highlight the active visible LOD level in green/asterisk
+                        bool isVisible = ((int)i == m_selectedPreviewLOD);
+
+                        char label[64];
+                        sprintf_s(label, "LOD %d%s", lod.level, isVisible ? " (ACTIVE)" : "");
+
+                        if (ImGui::Selectable(label, isVisible, ImGuiSelectableFlags_SpanAllColumns))
+                        {
+                            m_selectedPreviewLOD = (int)i;
+                            m_autoLOD = false; // Disable auto when user clicks manual table row
+                            m_enableWavelet = true;
+                            UpdatePreviewSurfels();
+                        }
+                        ImGui::NextColumn();
+
+                        ImGui::Text("%u", (uint32_t)lod.surfels.size()); ImGui::NextColumn();
+                        ImGui::Text("%.1f%%", percent); ImGui::NextColumn();
+                        ImGui::Text("%.1f mm", lod.geometricError * 1000.0f); ImGui::NextColumn();
+                    }
+                    ImGui::Columns(1);
+                    ImGui::TextDisabled("Tip: Click any row to visualize that LOD.");
+                }
+                break;
+
+                // Model Metrics
+                case kRightModel:
+                {
+                    uint32_t totalVertices = (uint32_t)(!m_rendererSurfels.empty() ? m_rendererSurfels.size() : m_rawSurfels.size());
+                    ImGui::Text("Active Source:   %s", m_rendererSourceDescription.c_str());
+                    ImGui::Text("Total Vertices:  %u points", totalVertices);
+                    ImGui::Text("Uncompressed:    %.2f MB", m_rawFileSizeMB);
+                    ImGui::Text("Bounding Box Min:[%.2f, %.2f, %.2f]", m_aabbMin.x, m_aabbMin.y, m_aabbMin.z);
+                    ImGui::Text("Bounding Box Max:[%.2f, %.2f, %.2f]", m_aabbMax.x, m_aabbMax.y, m_aabbMax.z);
+                    ImGui::Text("Spatial Extents: %.1f x %.1f x %.1f m", m_extents.x, m_extents.y, m_extents.z);
+                }
+                break;
+
+                // Geometry Optimisations & Culling Stats
+                case kRightCulling:
+                {
+                    const auto& cStats = m_pRenderer->GetCullStats();
+
+                    uint32_t totalSurfels = cStats.totalDatasetSurfels;
+                    uint32_t drawnSurfels = cStats.msDrawnSurfels;
+                    uint32_t culledSurfels = (totalSurfels >= drawnSurfels) ? (totalSurfels - drawnSurfels) : 0;
+                    float reductionPct = totalSurfels > 0 ? (float)culledSurfels / (float)totalSurfels * 100.0f : 0.0f;
+                    float reductionFactor = drawnSurfels > 0 ? (float)totalSurfels / (float)drawnSurfels : 1.0f;
+
+                    // Summary Badges / KPI Cards
+                    ImGui::Columns(3, "CullKpiCols", false);
+                    ImGui::TextDisabled("TOTAL SURFELS");
+                    ImGui::TextColored(ImVec4(0.3f, 0.85f, 1.0f, 1.0f), "%u", totalSurfels);
+                    ImGui::NextColumn();
+
+                    ImGui::TextDisabled("CULLED / SAVED");
+                    ImGui::TextColored(ImVec4(1.0f, 0.45f, 0.45f, 1.0f), "%u (%.1f%%)", culledSurfels, reductionPct);
+                    ImGui::NextColumn();
+
+                    ImGui::TextDisabled("DRAWN TO SCREEN");
+                    ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "%u (%.1f%%)", drawnSurfels, 100.0f - reductionPct);
+                    ImGui::NextColumn();
+                    ImGui::Columns(1);
+
+                    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Optimization Efficiency: %.1fx reduction (%.1f%% eliminated)", reductionFactor, reductionPct);
+
+                    ImGui::Spacing();
+
+                    // Visual Proportional Multi-Segment Breakdown Bar
+                    if (totalSurfels > 0)
+                    {
+                        ImVec2 barSize = ImVec2(ImGui::GetContentRegionAvailWidth(), 16.0f);
+                        ImVec2 barPos = ImGui::GetCursorScreenPos();
+                        ImDrawList* drawList = ImGui::GetWindowDrawList();
+
+                        drawList->AddRectFilled(barPos, ImVec2(barPos.x + barSize.x, barPos.y + barSize.y), IM_COL32(30, 30, 30, 255), 2.0f);
+
+                        float fracDrawn   = (float)drawnSurfels / (float)totalSurfels;
+                        float fracFrustum = (float)cStats.asFrustumCulledSurfels / (float)totalSurfels;
+                        float fracCone    = (float)cStats.asConeCulledSurfels / (float)totalSurfels;
+                        float fracLod     = (float)cStats.lodPrunedSurfels / (float)totalSurfels;
+
+                        float curX = barPos.x;
+                        auto drawSegment = [&](float frac, ImU32 col) {
+                            float w = frac * barSize.x;
+                            if (w > 0.5f)
+                            {
+                                drawList->AddRectFilled(ImVec2(curX, barPos.y), ImVec2(curX + w, barPos.y + barSize.y), col, 2.0f);
+                                curX += w;
+                            }
+                        };
+
+                        drawSegment(fracDrawn,   IM_COL32(50, 205, 50, 255));   // Green: Drawn
+                        drawSegment(fracFrustum, IM_COL32(70, 130, 230, 255));  // Blue: Frustum Culled
+                        drawSegment(fracCone,    IM_COL32(255, 140, 0, 255));   // Orange: Normal Cone Culled
+                        drawSegment(fracLod,     IM_COL32(160, 90, 220, 255));  // Purple: LOD Decimated
+
+                        ImGui::Dummy(barSize);
+
+                        // Legend Swatches
+                        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "[■] Drawn (%.1f%%)", fracDrawn * 100.0f);
+                        ImGui::SameLine();
+                        ImGui::TextColored(ImVec4(0.3f, 0.6f, 1.0f, 1.0f), "[■] Frustum (%.1f%%)", fracFrustum * 100.0f);
+                        ImGui::SameLine();
+                        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.1f, 1.0f), "[■] Cone (%.1f%%)", fracCone * 100.0f);
+                        ImGui::SameLine();
+                        ImGui::TextColored(ImVec4(0.7f, 0.4f, 0.9f, 1.0f), "[■] LOD (%.1f%%)", fracLod * 100.0f);
+                    }
+
+                    ImGui::Spacing();
+                    ImGui::Separator();
+
+                    // Rejection Stage Breakdown Table
+                    ImGui::Text("Rejection Stage Breakdown:");
+                    ImGui::Columns(4, "RejectionTableCols", true);
+                    ImGui::Text("Optimization Stage"); ImGui::NextColumn();
+                    ImGui::Text("Surfels"); ImGui::NextColumn();
+                    ImGui::Text("Chunks"); ImGui::NextColumn();
+                    ImGui::Text("Share / Rule"); ImGui::NextColumn();
+                    ImGui::Separator();
+
+                    // 1. LOD Decimation
+                    float lodShare = totalSurfels > 0 ? (float)cStats.lodPrunedSurfels / (float)totalSurfels * 100.0f : 0.0f;
+                    ImGui::TextColored(ImVec4(0.75f, 0.5f, 0.95f, 1.0f), "1. LOD Multi-Res"); ImGui::NextColumn();
+                    ImGui::Text("%u", cStats.lodPrunedSurfels); ImGui::NextColumn();
+                    ImGui::Text("%u", cStats.totalDatasetChunks > cStats.lodActiveChunks ? (cStats.totalDatasetChunks - cStats.lodActiveChunks) : 0); ImGui::NextColumn();
+                    ImGui::Text("%.1f%% (Pixel error)", lodShare); ImGui::NextColumn();
+
+                    // 2. Task Shader Frustum Culling
+                    float frustumShare = totalSurfels > 0 ? (float)cStats.asFrustumCulledSurfels / (float)totalSurfels * 100.0f : 0.0f;
+                    ImGui::TextColored(ImVec4(0.4f, 0.7f, 1.0f, 1.0f), "2. Task Frustum Cull"); ImGui::NextColumn();
+                    ImGui::Text("%u", cStats.asFrustumCulledSurfels); ImGui::NextColumn();
+                    ImGui::Text("%u", cStats.asFrustumCulledChunks); ImGui::NextColumn();
+                    ImGui::Text("%.1f%% (6 Planes AABB)", frustumShare); ImGui::NextColumn();
+
+                    // 3. Task Shader Normal Cone Culling
+                    float coneShare = totalSurfels > 0 ? (float)cStats.asConeCulledSurfels / (float)totalSurfels * 100.0f : 0.0f;
+                    ImGui::TextColored(ImVec4(1.0f, 0.65f, 0.2f, 1.0f), "3. Task Backface Cone"); ImGui::NextColumn();
+                    ImGui::Text("%u", cStats.asConeCulledSurfels); ImGui::NextColumn();
+                    ImGui::Text("%u", cStats.asConeCulledChunks); ImGui::NextColumn();
+                    ImGui::Text("%.1f%% (Cone Axis . Ray)", coneShare); ImGui::NextColumn();
+
+                    // 4. Mesh Shader & Drawn
+                    float drawnShare = totalSurfels > 0 ? (float)drawnSurfels / (float)totalSurfels * 100.0f : 0.0f;
+                    ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "4. Mesh Shader Emitted"); ImGui::NextColumn();
+                    ImGui::Text("%u", drawnSurfels); ImGui::NextColumn();
+                    ImGui::Text("%u", cStats.asPassedChunks); ImGui::NextColumn();
+                    ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "%.1f%% (SURVIVED)", drawnShare); ImGui::NextColumn();
+
+                    ImGui::Columns(1);
+                    ImGui::Separator();
+
+                    // On-Chip Amplification & Bandwidth Savings
+                    ImGui::Text("Hardware Amplification & Bandwidth:");
+                    ImGui::BulletText("Generated Vertices:   %u  (4 per surfel)", cStats.generatedVertices);
+                    ImGui::BulletText("Generated Triangles:  %u  (2 per surfel)", cStats.generatedTriangles);
+                    ImGui::BulletText("VRAM Bandwidth Saved: %.2f MB/frame", cStats.vramBandwidthSavedMB);
+
+                    uint32_t statsEdgeChunks = 0;
+                    uint32_t statsTotalChunks = 0;
+                    if (m_enableStreamingSimulation)
+                    {
+                        statsTotalChunks = (uint32_t)m_rendererSourceChunks.size();
+                        for (const auto* pChunk : m_rendererSourceChunks)
+                        {
+                            if (pChunk && pChunk->isSilhouette) statsEdgeChunks++;
+                        }
+                    }
+                    else if (!m_residentLODs.empty())
+                    {
+                        int maxLODIndex = std::max(0, (int)m_residentLODs.size() - 1);
+                        int selectedLOD = std::max(0, std::min(maxLODIndex, m_selectedPreviewLOD));
+                        const auto& resident = m_residentLODs[selectedLOD];
+                        statsTotalChunks = (uint32_t)resident.meshletChunks.size();
+                        for (const auto& mc : resident.meshletChunks)
+                        {
+                            if (mc.isSilhouette > 0.5f) statsEdgeChunks++;
+                        }
+                    }
+                    ImGui::BulletText("Edge Chunks Detected: %u / %u active", statsEdgeChunks, statsTotalChunks);
+
+                    if (cStats.lodActiveChunks > 0)
+                    {
+                        float earlyOutRatio = (float)(cStats.asFrustumCulledChunks + cStats.asConeCulledChunks) / (float)cStats.lodActiveChunks * 100.0f;
+                        ImGui::BulletText("Task Early-Out Ratio: %.1f%% of micro-chunks rejected before Mesh stage", earlyOutRatio);
+                    }
+                }
+                break;
+
+                // Spatial Octree Metrics
+                case kRightSpatial:
+                {
+                    uint32_t totalChunks = (uint32_t)(!m_rendererOctreeChunks.empty() ? m_rendererOctreeChunks.size() : m_chunks.size());
+                    uint32_t totalVertices = (uint32_t)(!m_rendererSurfels.empty() ? m_rendererSurfels.size() : m_rawSurfels.size());
+                    ImGui::Text("Chunk Voxel Size: %.1f meters", m_chunkSize);
+                    ImGui::Text("Total Chunks:     %u spatial chunks", totalChunks);
+                    if (totalChunks > 0)
+                    {
+                        ImGui::Text("Avg Points/Chunk: %u points", totalVertices / totalChunks);
+                    }
+                }
+                break;
             }
         }
-
-        // Spatial Octree Metrics
-        if (ImGui::CollapsingHeader("Spatial Partitioning", ImGuiTreeNodeFlags_DefaultOpen))
+        if (swapSlotA >= 0 && swapSlotB >= 0)
         {
-            uint32_t totalChunks = (uint32_t)(!m_rendererOctreeChunks.empty() ? m_rendererOctreeChunks.size() : m_chunks.size());
-            uint32_t totalVertices = (uint32_t)(!m_rendererSurfels.empty() ? m_rendererSurfels.size() : m_rawSurfels.size());
-            ImGui::Text("Chunk Voxel Size: %.1f meters", m_chunkSize);
-            ImGui::Text("Total Chunks:     %u spatial chunks", totalChunks);
-            if (totalChunks > 0)
-            {
-                ImGui::Text("Avg Points/Chunk: %u points", totalVertices / totalChunks);
-            }
+            std::swap(m_rightPanelOrder[swapSlotA], m_rightPanelOrder[swapSlotB]);
+            SaveConfigFile();
         }
 
         ImGui::End();
@@ -3450,6 +3696,10 @@ namespace Surfels
 
         // 4d. Reset View button at the bottom-left of the viewport
         DrawResetViewButton(leftPanelWidth);
+
+        // 4e. Loupe box and inset frame
+        m_rightPanelWidth = rightPanelWidth;
+        DrawLoupeOverlay();
 
         // 5. About Dialog Window
         if (m_showAboutDialog)
@@ -4038,12 +4288,23 @@ namespace Surfels
         if (m_showOctreeVisualizer)        add(ImVec4(1.00f, 0.75f, 0.20f, 1.0f), "RENDERER: Macro Clusters enabled");
         if (m_showGlobalBounds)            add(ImVec4(0.40f, 0.60f, 1.00f, 1.0f), "RENDERER: Global Model Bounds enabled");
         if (m_state.renderMode == 4)       add(ImVec4(0.55f, 0.85f, 1.00f, 1.0f), "SPLAT: 3D Gaussian package drawn as surfels, SH degree %u, opaque discs", m_splatParams.shDegree);
-        if (m_state.renderMode == 3)       add(ImVec4(0.55f, 0.85f, 1.00f, 1.0f), kSplatGaussianLevel0 ? "SPLAT: 3D Gaussian mode, SH degree %u, %s-space blending, levels 1+ as discs" : "SPLAT: 3D Gaussian package, SH degree %u, %s-space blending, every level as discs (Gaussian level 0 off)", m_splatParams.shDegree, m_splatBlendSpace == 1 ? "linear" : "display");
+        if (m_state.renderMode == 3)
+        {
+            const char* fmt = !kSplatGaussianLevel0     ? "SPLAT: 3D Gaussian package, SH degree %u, %s-space blending, every level as discs (Gaussian level 0 off)"
+                            : m_splatCoarseAsGaussians ? "SPLAT: 3D Gaussian mode, SH degree %u, %s-space blending, levels 1+ as capped Gaussians"
+                                                       : "SPLAT: 3D Gaussian mode, SH degree %u, %s-space blending, levels 1+ as discs";
+            add(ImVec4(0.55f, 0.85f, 1.00f, 1.0f), fmt, m_splatParams.shDegree, m_splatBlendSpace == 1 ? "linear" : "display");
+        }
         if (m_showCulledChunks)            add(ImVec4(0.80f, 0.80f, 0.80f, 1.0f), "RENDERER: Show Culled Chunks enabled");
         if (m_detachCamera)                add(ImVec4(0.30f, 0.90f, 1.00f, 1.0f), "RENDERER: Detach Camera (frozen culling frustum) enabled");
         if (m_freezeRenderingAndMemory)    add(ImVec4(0.55f, 0.75f, 1.00f, 1.0f), "STREAMING: Freeze Rendering & Memory enabled");
         if (m_enableStreamingSimulation && !m_unthrottledBandwidth) add(ImVec4(1.00f, 0.80f, 0.30f, 1.0f), "STREAMING: Bandwidth throttle %.1f MB/s enabled", m_bandwidthThrottleMBps);
         if (!m_autoLOD)                    add(ImVec4(0.50f, 1.00f, 0.50f, 1.0f), "RENDERER: Manual LOD %d enabled", m_selectedPreviewLOD);
+        if (m_splatViz != 0)
+        {
+            static const char* s_vizBanner[] = { "", "splat outlines", "random colour per splat", "splat centres" };
+            add(ImVec4(1.00f, 0.82f, 0.30f, 1.0f), "RENDERER: Splat Display: %s enabled", s_vizBanner[std::clamp(m_splatViz, 0, 3)]);
+        }
         if (m_occlusionMipOverride >= 0)   add(ImVec4(1.00f, 0.55f, 0.80f, 1.0f), "RENDERER: Occlusion Volume Mip %d forced enabled", m_occlusionMipOverride);
         // The open stand-in codec is a different product: say so on every frame, in one short row.
         if (!CodecBuild::IsProprietary()) add(ImVec4(1.00f, 0.35f, 0.35f, 1.0f), "CODEC: %s (%s)", CodecBuild::Name(), CodecBuild::MissingFeatures()); // Kept to one short row: the codec README has the full list
@@ -4060,6 +4321,7 @@ namespace Surfels
             if (m_pRenderer->GetRenderPath() == SurfelsRenderer::RenderPath::VertexShadersSM5)
                 add(hw, "RENDERER: Shader Model 6 %s, SM 5.1 legacy compiler enabled", (forced && caps.shaderModel6) ? "bypassed (forced)" : "unavailable");
         }
+        m_bannerBottomY = 0.0f;
         if (count == 0) return;
 
         // Top-left of the viewport: just right of the left panel, below the menu bar, never under the
@@ -4081,6 +4343,7 @@ namespace Surfels
             {
                 ImGui::TextColored(lines[i].color, "%s", lines[i].text);
             }
+            m_bannerBottomY = ImGui::GetWindowPos().y + ImGui::GetWindowSize().y; // The loupe inset goes below it
         }
         ImGui::End();
         ImGui::PopStyleVar(2);
@@ -4192,6 +4455,110 @@ namespace Surfels
         ImGui::PopStyleColor();
     }
 
+    // The title bar of the right-panel section at this slot. The open state is ours (m_rightPanelOpen, saved in
+    // config.json), handed to ImGui every frame. Dragging the title bar more than its own height up or down
+    // asks for a swap with the neighbouring slot (applied after the loop, so no section is drawn twice); the
+    // drag delta is then reset, so each further step needs the same distance again. A click that ends a drag
+    // which moved the section leaves its open state as it was.
+    bool SurfelsApp::RightPanelSectionHeader(int slot, int section, int& swapSlotA, int& swapSlotB)
+    {
+        static const char* s_titles[kRightSectionCount] = {
+            "Real-Time Performance & Stage Timings", "4-Tier Compression Results", "LOD Residency",
+            "Wavelet Multi-Resolution Pyramid", "Input Model Metrics", "Geometry Optimisations & Culling Stats", "Spatial Partitioning" };
+        const ImGuiIO& io = ImGui::GetIO();
+        if (!io.MouseDown[0] && !io.MouseReleased[0]) m_rightDragMoved = false;
+
+        ImGui::SetNextTreeNodeOpen(m_rightPanelOpen[section], ImGuiCond_Always);
+        const bool open = ImGui::CollapsingHeader(s_titles[section]);
+        const bool active = ImGui::IsItemActive();
+        // A title bar toggles when the button is released over it (1.53: press-and-release); after a drag that moved
+        // the section, that release is the end of the move, not a click.
+        if (open != m_rightPanelOpen[section] && !m_rightDragMoved)
+        {
+            m_rightPanelOpen[section] = open;
+            SaveConfigFile();
+        }
+
+        if (section == kRightResidency && ImGui::IsItemHovered() && !active)
+        {
+            ImGui::SetTooltip(
+                "Shows how much of each LOD level is currently resident in the simulated ring buffer\n"
+                "(green), locked mid-transition (orange), or protected as an active silhouette edge\n"
+                "(highlighted). Chunks stream in as the camera needs finer detail and drain out (via the\n"
+                "Decay control below) when no longer needed.\n\n"
+                "The fill rate is controlled by the Network Profiles / Bandwidth Throttle options on the\n"
+                "Streaming tab -- lower bandwidth means slower fill. The drain rate is controlled only by\n"
+                "the Decay Rate slider below and is independent of bandwidth: 0 = no decay, 10 = full\n"
+                "drain of every evictable level in 3 s on any bandwidth setting.\n\n"
+                "Drag any section's title bar up or down to reorder the panel.");
+        }
+
+        if (active && ImGui::IsMouseDragging(0, 4.0f))
+        {
+            const float dy = ImGui::GetMouseDragDelta(0).y;
+            const float step = ImGui::GetItemRectSize().y;
+            if (dy < -step && slot > 0) { swapSlotA = slot; swapSlotB = slot - 1; }
+            else if (dy > step && slot + 1 < kRightSectionCount) { swapSlotA = slot; swapSlotB = slot + 1; }
+            if (swapSlotA == slot)
+            {
+                ImGui::ResetMouseDragDelta(0);
+                m_rightDragMoved = true;
+            }
+        }
+        return m_rightPanelOpen[section];
+    }
+
+    // The loupe's box around the mouse (the area the inset shows) and the inset's frame; the renderer has
+    // already copied the magnified draw into the inset. The inset opens at the top right of the viewport,
+    // left of the right panel and clear of the banner row, and goes wherever it is dragged from there; it is
+    // kept inside the window (below the menu bar) when the window shrinks.
+    void SurfelsApp::DrawLoupeOverlay()
+    {
+        m_state.loupeEnabled = false;
+        if (!m_loupeEnabled || m_Width == 0 || m_Height == 0) return;
+        if (m_loupeCenter.x < 0.0f) m_loupeCenter = ImVec2(0.5f * (float)m_Width, 0.5f * (float)m_Height);
+        const float zoom = m_loupeZoom;
+        const ImVec2 inset(std::floor(std::min(m_loupeSize.x, (float)m_Width)), std::floor(std::min(m_loupeSize.y, (float)m_Height)));
+        if (m_loupePos.x < 0.0f)
+            m_loupePos = ImVec2((float)m_Width - m_rightPanelWidth - inset.x - 14.0f, std::max(56.0f, m_bannerBottomY + 10.0f));
+        const float menuBar = 22.0f;
+        m_loupePos.x = std::clamp(m_loupePos.x, 0.0f, std::max(0.0f, (float)m_Width - inset.x));
+        m_loupePos.y = std::clamp(m_loupePos.y, menuBar, std::max(menuBar, (float)m_Height - inset.y));
+        const float destX = std::floor(m_loupePos.x);
+        const float destY = std::floor(m_loupePos.y);
+        m_loupeRect = ImVec4(destX, destY, destX + inset.x, destY + inset.y);
+        m_state.loupeWidth = (uint32_t)inset.x;
+        m_state.loupeHeight = (uint32_t)inset.y;
+        m_state.loupeEnabled = true;
+        m_state.loupeCenterX = m_loupeCenter.x;
+        m_state.loupeCenterY = m_loupeCenter.y;
+        m_state.loupeZoom = zoom;
+        m_state.loupeViz = (uint32_t)m_loupeViz;
+        m_state.loupeDestX = (uint32_t)destX;
+        m_state.loupeDestY = (uint32_t)destY;
+
+        ImDrawList* dl = ImGui::GetOverlayDrawList();
+        const ImU32 frame = IM_COL32(255, 210, 80, 230);
+        const ImVec2 half(0.5f * inset.x / zoom, 0.5f * inset.y / zoom);
+        dl->AddRect(ImVec2(m_loupeCenter.x - half.x, m_loupeCenter.y - half.y), ImVec2(m_loupeCenter.x + half.x, m_loupeCenter.y + half.y), frame, 0.0f, ~0, 1.5f);
+        dl->AddRect(ImVec2(destX - 1.0f, destY - 1.0f), ImVec2(destX + inset.x + 1.0f, destY + inset.y + 1.0f), frame, 0.0f, ~0, 2.0f);
+        // What a drag would grab lights up under the mouse and while dragged: an edge (two for a corner), or the
+        // whole frame for a move
+        const int grabbed = m_loupeDrag ? m_loupeDrag : m_loupeHover;
+        const ImU32 grip = IM_COL32(255, 245, 190, 255);
+        const float x0 = destX - 1.0f, y0 = destY - 1.0f, x1 = destX + inset.x + 1.0f, y1 = destY + inset.y + 1.0f;
+        if (grabbed & kLoupeDragMove) dl->AddRect(ImVec2(x0, y0), ImVec2(x1, y1), grip, 0.0f, ~0, 3.0f);
+        if (grabbed & kLoupeDragLeft) dl->AddLine(ImVec2(x0, y0), ImVec2(x0, y1), grip, 4.0f);
+        if (grabbed & kLoupeDragRight) dl->AddLine(ImVec2(x1, y0), ImVec2(x1, y1), grip, 4.0f);
+        if (grabbed & kLoupeDragTop) dl->AddLine(ImVec2(x0, y0), ImVec2(x1, y0), grip, 4.0f);
+        if (grabbed & kLoupeDragBottom) dl->AddLine(ImVec2(x0, y1), ImVec2(x1, y1), grip, 4.0f);
+        static const char* s_vizNames[] = { "normal", "outlines", "colours", "centres" };
+        char label[64];
+        snprintf(label, sizeof(label), "Loupe %.1fx (W/S)  %s (V)", zoom, s_vizNames[std::clamp(m_loupeViz, 0, 3)]);
+        dl->AddRectFilled(ImVec2(destX, destY + inset.y - 20.0f), ImVec2(destX + ImGui::CalcTextSize(label).x + 12.0f, destY + inset.y), IM_COL32(0, 0, 0, 170));
+        dl->AddText(ImVec2(destX + 6.0f, destY + inset.y - 17.0f), frame, label);
+    }
+
     // Faint three-line reminder of the camera bindings, tucked into the bottom-right corner of the
     // viewport just above the status bar and left of the right panel. Deliberately understated (dim
     // text on a barely-there backing, no interaction) so it reads as part of the canvas rather than a
@@ -4225,8 +4592,9 @@ namespace Surfels
             struct Hint { const char* verb; const char* binding; };
             const Hint hints[] = {                         // "\xC2\xB7" = middle dot (U+00B7), in the default Latin glyph range
                 { "Rotate", "left-drag \xC2\xB7 Left/Right arrows" },
-                { "Zoom",   "wheel \xC2\xB7 right-drag \xC2\xB7 W/S \xC2\xB7 Up/Down" },
+                { "Zoom",   m_loupeEnabled ? "wheel \xC2\xB7 right-drag \xC2\xB7 Up/Down" : "wheel \xC2\xB7 right-drag \xC2\xB7 W/S \xC2\xB7 Up/Down" },
                 { "Pan",    "Shift + drag \xC2\xB7 Shift + arrows" },
+                { "Loupe",  m_loupeEnabled ? "L off \xC2\xB7 W/S magnify \xC2\xB7 V display" : "L" },
             };
             const float bindingColumn = ImGui::CalcTextSize("Rotate").x + 14.0f; // Fixed verb column so the proportional font still lines up
             for (const Hint& h : hints)
@@ -5068,6 +5436,7 @@ namespace Surfels
             m_fitViewPending = false;
         }
         UpdateCamera(ImGui::GetIO());
+        if (!m_lodTestFolder.empty()) StepLodQualityTest();
         const auto tUi = std::chrono::high_resolution_clock::now();
         BuildUI();
         m_frameUiMs = std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - tUi).count();
@@ -5089,8 +5458,16 @@ namespace Surfels
         // the sparse low tail that reads as holes, while overlapping neighbours still set the surface density.
         static const float kSplatDiscCoverage = 1.5f;
         const float splatDiscFactor = m_splatDiscMatchLevel0 ? m_splatDiscMatchFactor : kSplatDiscCoverage;
-        for (int l = 0; l < 8; l++) m_state.splatDiscRadius[l] = (l < (int)m_lodSpacing.size()) ? m_lodSpacing[l] * splatDiscFactor : 0.0f;
+        // Coarse Levels as Gaussians: 0 (uncapped Gaussians) or, with a cap, the negative per-axis scale limit
+        // (the shader keeps the Gaussian and clamps its scales to the level spacing x the cap factor).
+        for (int l = 0; l < 8; l++)
+        {
+            const float spacing = (l < (int)m_lodSpacing.size()) ? m_lodSpacing[l] : 0.0f;
+            m_state.splatDiscRadius[l] = !m_splatCoarseAsGaussians ? spacing * splatDiscFactor
+                                       : (m_splatCoarseGaussianCap > 0.0f ? -spacing * m_splatCoarseGaussianCap : 0.0f);
+        }
         m_state.splatDiscOpacityFloor = m_splatDiscMatchLevel0 ? 0.5f : 0.0f;
+        m_state.splatViz = (uint32_t)std::clamp(m_splatViz, 0, 3);
         m_state.enableGpuSilhouetteInversion = false; // DYNAMIC SILHOUETTE switched off for now; was: m_enableSilhouetteLOD0 || m_highlightSilhouetteChunks
         m_state.silhouetteDepthThreshold = m_silhouetteDepthThreshold;
         m_state.enableTemporalFiltering = m_enableTemporalFiltering;
@@ -5120,6 +5497,11 @@ namespace Surfels
         {
             const auto tRender = std::chrono::high_resolution_clock::now();
             m_pRenderer->OnRender(&m_state, &m_swapChain);
+            if (m_lodTestCaptureRequested && m_lodTestIndex < m_lodTestShots.size())
+            {
+                RgbaImage& img = m_lodTestShots[m_lodTestIndex].image;
+                m_pRenderer->TakeSceneCapture(img.pixels, img.width, img.height);
+            }
             const auto tPresent = std::chrono::high_resolution_clock::now();
             EndFrame();
             const auto tDone = std::chrono::high_resolution_clock::now();
@@ -5171,6 +5553,234 @@ namespace Surfels
                 Trace("SurfelsApp::OnRender: transient render/present glitch; continuing on next frame.\n");
             }
         }
+    }
+
+    void SurfelsApp::SetSplatDrawAsSurfels(bool asSurfels)
+    {
+        m_splatDrawAsSurfels = asSurfels;
+        // The render mode follows SplatRenderMode() at the next state selection; re-stamp the chunks'
+        // dilationMorph now (the sorted pipeline's fade weight, or the surfel value) without a re-partition
+        const float morph = m_splatDrawAsSurfels ? 0.0f : 1.0f;
+        for (auto& mc : m_rendererMeshletChunks) mc.dilationMorph = morph;
+        for (auto& lod : m_residentLODs) for (auto& mc : lod.meshletChunks) mc.dilationMorph = morph;
+        m_streamStateDirty = true;
+    }
+
+    // LOD quality test (see SurfelsApp.h). Runs on the static per-level sets (streaming off), so each capture
+    // is exactly one level everywhere -- the streamed view keeps refined detail when the target coarsens,
+    // which would hide the level being measured. Before that it waits for the stream to land completely,
+    // which doubles as the check that Greedy streaming carries on to level 0.
+    void SurfelsApp::StepLodQualityTest()
+    {
+        const int maxLevel = (int)m_waveletResult.lodLevels.size() - 1;
+        if (!m_lodTestRunning)
+        {
+            if (maxLevel <= 0 || (int)m_lodSpacing.size() <= maxLevel || m_residentLODs.empty()) return;
+            if (m_enableStreamingSimulation && (m_totalStreamBytes <= 0.0f || m_simulatedBytesDelivered < m_totalStreamBytes * 0.999f))
+            {
+                m_lodTestShotSeconds += m_deltaTime / 1000.0;
+                return;
+            }
+            LogTransitionTrace("LOD quality test: stream fully resident after %.1f s (%.1f MB); starting captures", m_lodTestShotSeconds, m_simulatedBytesDelivered / (1024.0f * 1024.0f));
+            for (int lvl = 0; lvl <= maxLevel; lvl++)
+            {
+                size_t resident = 0, total = 0;
+                if (lvl < (int)m_lodStreamChunks.size()) for (const auto& c : m_lodStreamChunks[lvl]) { total++; if (c.isResident) resident++; }
+                LogTransitionTrace("LOD quality test: level %d resident %zu / %zu blocks", lvl, resident, total);
+            }
+
+            m_autoLOD = false;
+            m_autoRotate = false;
+            m_enableStreamDecay = false;
+            if (m_detachCamera) SetDetachCamera(false);
+            m_enableStreamingSimulation = false;
+
+            // Splat packages: both drawing modes (sorted Gaussians, then opaque surfel discs); other packages draw one way.
+            const int drawModes = m_splatMode ? 2 : 1;
+            for (int mode = 0; mode < drawModes; mode++)
+            for (int rule = 0; rule < 2; rule++)
+            {
+                const bool screenSpace = (rule == 1);
+                for (int L = 1; L <= maxLevel; L++)
+                {
+                    const float d = LodSwitchDistance(L, screenSpace) * 1.001f;
+                    auto add = [&](int level, bool gauss, int repeat, float cap = 0.0f)
+                    {
+                        LodTestShot s;
+                        s.screenSpaceRule = screenSpace; s.switchLevel = L; s.distance = d;
+                        s.level = level; s.coarseAsGaussians = gauss; s.coarseGaussianCap = cap; s.repeat = repeat; s.asSurfels = (mode == 1);
+                        m_lodTestShots.push_back(std::move(s));
+                    };
+                    add(0, false, 0);
+                    add(0, false, 1);
+                    add(L - 1, false, 0);
+                    add(L, false, 0);
+                    if (mode == 0) // Coarse levels as their own Gaussians: a sorted-Gaussian option only (the surfel pipeline sizes its discs from lodRadius)
+                    {
+                        add(L, true, 0);
+                        for (float cap : kLodTestGaussianCaps) add(L, true, 0, cap);
+                    }
+                }
+            }
+            m_lodTestIndex = 0;
+            m_lodTestSettledFrames = -1;
+            m_lodTestRunning = true;
+            m_lodTestSavedCoarseAsGaussians = m_splatCoarseAsGaussians;
+            m_lodTestSavedCoarseGaussianCap = m_splatCoarseGaussianCap;
+            m_lodTestSavedDrawAsSurfels = m_splatDrawAsSurfels;
+            LogTransitionTrace("LOD quality test: %zu captures at %ux%u, yaw %.3f pitch %.3f, pixel threshold %.2f", m_lodTestShots.size(), m_Width, m_Height, m_yaw, m_pitch, m_lodPixelSpacing);
+        }
+
+        if (m_lodTestIndex >= m_lodTestShots.size()) return;
+        LodTestShot& shot = m_lodTestShots[m_lodTestIndex];
+
+        if (m_lodTestCaptureRequested)
+        {
+            if (shot.image.Empty()) return; // Taken after this frame's render (see OnRender)
+            LogTransitionTrace("LOD quality test: %zu/%zu %s, %s switch %d, d=%.3f, level %d%s%s captured after %.1f s",
+                m_lodTestIndex + 1, m_lodTestShots.size(), shot.asSurfels ? "surfels" : "gaussians", shot.screenSpaceRule ? "screen" : "legacy", shot.switchLevel, shot.distance,
+                shot.level, shot.coarseAsGaussians ? " (coarse as Gaussians)" : "", shot.repeat ? " (repeat)" : "", m_lodTestShotSeconds);
+            m_lodTestCaptureRequested = false;
+            m_lodTestSettledFrames = -1;
+            const bool last = (++m_lodTestIndex >= m_lodTestShots.size());
+            // A group (mode, rule, switch level) is complete: rewrite the report so a run that dies keeps what it measured
+            if (last || m_lodTestShots[m_lodTestIndex].switchLevel != shot.switchLevel || m_lodTestShots[m_lodTestIndex].screenSpaceRule != shot.screenSpaceRule)
+                FinishLodQualityTest();
+            if (last)
+            {
+                m_splatCoarseAsGaussians = m_lodTestSavedCoarseAsGaussians;
+                m_splatCoarseGaussianCap = m_lodTestSavedCoarseGaussianCap;
+                if (m_splatDrawAsSurfels != m_lodTestSavedDrawAsSurfels) SetSplatDrawAsSurfels(m_lodTestSavedDrawAsSurfels);
+                LogTransitionTrace("LOD quality test: done");
+                PostQuitMessage(0);
+            }
+            return;
+        }
+
+        if (m_lodTestSettledFrames < 0)
+        {
+            m_distance = shot.distance;
+            m_selectedPreviewLOD = shot.level;
+            m_splatCoarseAsGaussians = shot.coarseAsGaussians;
+            m_splatCoarseGaussianCap = shot.coarseGaussianCap;
+            if (m_splatMode && m_splatDrawAsSurfels != shot.asSurfels) SetSplatDrawAsSurfels(shot.asSurfels);
+            UpdatePreviewSurfels();
+            m_lodTestSettledFrames = 0;
+            m_lodTestShotSeconds = 0.0;
+            return;
+        }
+        m_lodTestShotSeconds += m_deltaTime / 1000.0;
+        // Long enough for the upload, the sort and TAA (blend weight 0.15) to converge on a still camera.
+        if (++m_lodTestSettledFrames >= 24)
+        {
+            m_pRenderer->RequestSceneCapture();
+            m_lodTestCaptureRequested = true;
+        }
+    }
+
+    void SurfelsApp::FinishLodQualityTest()
+    {
+        CreateDirectoryA(m_lodTestFolder.c_str(), nullptr);
+        std::ofstream md(m_lodTestFolder + "\\report.md");
+        std::ofstream csv(m_lodTestFolder + "\\results.csv");
+        csv << "mode,rule,switch_level,distance,level,drawing,level_spacing_px,psnr_db,ssim\n";
+        md << "# LOD quality test\n\n";
+        md << "Model: `" << m_inputPathBuf << "`, " << m_Width << "x" << m_Height << ", 45 degree vertical field of view, yaw " << m_yaw << ", pitch " << m_pitch
+           << ". Each row renders the model at the distance where the rule switches to the given level, and compares it with level 0 at the same distance "
+              "(PSNR over RGB and SSIM over luma, both inside the model's bounding box). `L0 again` is a second level 0 capture: the TAA noise floor.\n\n";
+        md << "Level spacing (median nearest neighbour):";
+        for (size_t l = 0; l < m_lodSpacing.size(); l++) md << " L" << l << " " << m_lodSpacing[l] * 1000.0f << " mm";
+        md << "\n\n";
+
+        bool asSurfels = false;
+        auto find = [&](bool screenSpace, int switchLevel, int level, bool gauss, int repeat, float cap = 0.0f) -> const LodTestShot*
+        {
+            for (const auto& s : m_lodTestShots)
+                if (s.asSurfels == asSurfels && s.screenSpaceRule == screenSpace && s.switchLevel == switchLevel && s.level == level && s.coarseAsGaussians == gauss
+                    && s.coarseGaussianCap == cap && s.repeat == repeat && !s.image.Empty())
+                    return &s;
+            return nullptr;
+        };
+        const int maxLevel = (int)m_waveletResult.lodLevels.size() - 1;
+        std::vector<std::string> montages;
+        for (int section = 0; section < 4; section++)
+        {
+            asSurfels = (section >= 2);
+            const bool screenSpace = (section & 1) != 0;
+            if (!m_splatMode && asSurfels) break;
+            const char* modeName = !m_splatMode ? "" : (asSurfels ? "Drawn as surfels (mode 4): " : "Sorted Gaussians (mode 3): ");
+            md << "## " << modeName << (screenSpace ? "screen-space rule (new), threshold " : "legacy distance rule (old)");
+            if (screenSpace) md << m_lodPixelSpacing << " px";
+            md << "\n\n| Switch to | Distance | Drawn | Spacing on screen | PSNR (dB) | SSIM |\n|---|---|---|---|---|---|\n";
+            for (int L = 1; L <= maxLevel; L++)
+            {
+                const LodTestShot* ref = find(screenSpace, L, 0, false, 0);
+                if (!ref) continue;
+                struct Row { std::string name; const LodTestShot* shot; int level; };
+                std::vector<Row> rows = {
+                    { "L0 again", find(screenSpace, L, 0, false, 1), 0 },
+                    { "previous level, discs", find(screenSpace, L, L - 1, false, 0), L - 1 },
+                    { "new level, discs", find(screenSpace, L, L, false, 0), L },
+                    { "new level, Gaussians", find(screenSpace, L, L, true, 0), L } };
+                for (float cap : kLodTestGaussianCaps)
+                {
+                    char capName[64];
+                    snprintf(capName, sizeof(capName), "new level, Gaussians capped %.2f x spacing", cap);
+                    rows.push_back({ capName, find(screenSpace, L, L, true, 0, cap), L });
+                }
+                std::vector<const RgbaImage*> all = { &ref->image };
+                for (const Row& r : rows) if (r.shot) all.push_back(&r.shot->image);
+                const PixelRect rect = ImageCompare::ContentBounds(all);
+                for (const Row& r : rows)
+                {
+                    if (!r.shot) continue;
+                    const double psnr = ImageCompare::Psnr(ref->image, r.shot->image, rect);
+                    const double ssim = ImageCompare::Ssim(ref->image, r.shot->image, rect);
+                    const float spacingPx = (r.level < (int)m_lodSpacing.size()) ? m_lodSpacing[r.level] * LodFocalPixels() / LodEffectiveDistance(ref->distance) : 0.0f;
+                    char line[256];
+                    snprintf(line, sizeof(line), "| L%d | %.3f | L%d %s | %.2f px | %.2f | %.4f |\n", L, ref->distance, r.level, r.name.c_str(), spacingPx, psnr, ssim);
+                    md << line;
+                    csv << (asSurfels ? "surfels," : "gaussians,") << (screenSpace ? "screen" : "legacy") << "," << L << "," << ref->distance << "," << r.level << ",\"" << r.name << "\"," << spacingPx << "," << psnr << "," << ssim << "\n";
+                }
+                // Montage, sorted Gaussians: level 0 | new level as discs | as Gaussians | capped Gaussians (each cap).
+                // Surfels: level 0 | previous level | new level | its error against level 0.
+                const LodTestShot* prev = find(screenSpace, L, L - 1, false, 0);
+                const LodTestShot* discs = find(screenSpace, L, L, false, 0);
+                if (prev && discs)
+                {
+                    char name[64];
+                    snprintf(name, sizeof(name), "%s_%s_switch_L%d.png", asSurfels ? "surfels" : "gaussians", screenSpace ? "screen" : "legacy", L);
+                    if (std::find(m_lodTestMontagesWritten.begin(), m_lodTestMontagesWritten.end(), name) == m_lodTestMontagesWritten.end())
+                    {
+                        std::vector<RgbaImage> panels;
+                        panels.push_back(ImageCompare::Crop(ref->image, rect));
+                        if (asSurfels)
+                        {
+                            panels.push_back(ImageCompare::Crop(prev->image, rect));
+                            panels.push_back(ImageCompare::Crop(discs->image, rect));
+                            panels.push_back(ImageCompare::ErrorMap(panels[0], panels[2]));
+                        }
+                        else
+                        {
+                            panels.push_back(ImageCompare::Crop(discs->image, rect));
+                            if (const LodTestShot* g = find(screenSpace, L, L, true, 0)) panels.push_back(ImageCompare::Crop(g->image, rect));
+                            for (float cap : kLodTestGaussianCaps)
+                                if (const LodTestShot* g = find(screenSpace, L, L, true, 0, cap)) panels.push_back(ImageCompare::Crop(g->image, rect));
+                        }
+                        std::vector<const RgbaImage*> panelPtrs;
+                        for (const RgbaImage& p : panels) panelPtrs.push_back(&p);
+                        ImageCompare::WritePng(m_lodTestFolder + "\\" + name, ImageCompare::SideBySide(panelPtrs));
+                        m_lodTestMontagesWritten.push_back(name);
+                    }
+                    montages.push_back(name);
+                }
+            }
+            md << (asSurfels ? "\nMontages, left to right: level 0, the previous level, the new level, then the new level's error against level 0 (x4).\n\n"
+                             : "\nMontages, left to right: level 0, the new level as discs, as uncapped Gaussians, then as Gaussians capped at 0.75 and 1.5 x the level spacing.\n\n");
+            for (const std::string& name : montages) md << "![" << name << "](" << name << ")\n\n";
+            montages.clear();
+        }
+        LogTransitionTrace("LOD quality test: report written to %s", m_lodTestFolder.c_str());
     }
 
     // Once the GPU device is confirmed removed/hung there is nothing further this app can safely do with

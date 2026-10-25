@@ -18,6 +18,9 @@ namespace Surfels
 {
     void LogTransitionTrace(const char* fmt, ...);
 
+    static constexpr uint32_t kLoupeWidth = 480;  // Loupe inset default size in pixels; the user can resize it (State::loupeWidth, loupeHeight)
+    static constexpr uint32_t kLoupeHeight = 320;
+
     class SurfelsRenderer
     {
     public:
@@ -78,6 +81,16 @@ namespace Surfels
             bool     enableTemporalFiltering = true; // High-performance Temporal Accumulation & Dither Resolver (TAA)
             float    temporalBlendWeight      = 0.15f; // History blend weight (0.05 = maximum smoothness, 0.50 = responsive)
             bool     enableSubpixelJitter     = true;  // 8-phase Halton(2,3) sub-pixel camera jitter
+            // Loupe: the area of the view around (loupeCenterX, loupeCenterY) -- back-buffer pixels -- drawn again
+            // loupeZoom times larger into a loupeWidth x loupeHeight inset whose top-left corner is at
+            // (loupeDestX, loupeDestY). A real second draw, not an enlargement, so individual splats show.
+            uint32_t loupeWidth = kLoupeWidth, loupeHeight = kLoupeHeight; // Clamped to the window
+            bool     loupeEnabled = false;
+            float    loupeCenterX = 0.0f, loupeCenterY = 0.0f;
+            float    loupeZoom = 8.0f;
+            uint32_t loupeViz = 0;               // Inset display: 0 normal, 1 splat outlines, 2 a random colour per splat, 3 splat centres
+            uint32_t splatViz = 0;               // The same choice for the whole view (main pass); the loupe keeps its own
+            uint32_t loupeDestX = 0, loupeDestY = 0;
             bool     enableVarianceClamping   = true;  // 3x3 YCoCg neighborhood variance color box clamping (anti-ghosting)
 
             // Interior Occlusion Volume: solid depth-writing cubes baked at preprocessing time so far-side
@@ -126,6 +139,7 @@ namespace Surfels
             bool     meshPipelineFailed = false; // Mesh shaders were reported but their pipeline states could not be created
         };
         void SetRenderPathOverride(int path) { m_renderPathOverride = path; } // Before OnCreate: -1 = auto, else a RenderPath value
+        void SetQuietStartup(bool quiet) { m_quietStartup = quiet; }           // Before OnCreate: skip the fallback notice dialog (logged instead)
         RenderPath GetRenderPath() const { return m_renderPath; }
         bool IsRenderPathForced() const { return m_renderPathForced; }
         const GpuCapabilities& GetGpuCapabilities() const { return m_gpuCaps; }
@@ -162,6 +176,12 @@ namespace Surfels
         float GetSmoothTaaMs() const { return m_smoothTaaMs; }
         const std::vector<uint32_t>& GetSilhouetteBitmask() const { return m_silhouetteBitmaskCPU; }
         uint32_t GetSilhouetteBitmaskChunkCount() const { return m_lastEdgeChunkCount; }
+
+        // Scene capture (LOD quality test): the next frame copies the finished scene -- after TAA, before
+        // the ImGui overlay -- to the CPU. TakeSceneCapture hands it over once, as tightly packed RGBA8
+        // in display space (the bytes the swapchain shows).
+        void RequestSceneCapture() { m_captureRequested = true; }
+        bool TakeSceneCapture(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height);
 
 
     private:
@@ -226,7 +246,8 @@ namespace Surfels
             uint32_t   splatSlotCount;
             float      splatDiscRadius[8];    // Splat mode: camera-facing disc radius per level for level 2 and up, world units (two float4 rows in the shader; splatSlotCount ends a 16-byte row, so no padding)
             float      splatDiscOpacityFloor; // Splat mode: opacity floor for the discs of level 1 and up (see State)
-            float      splatDiscPad[3];       // Pads to a whole 16-byte row (float3 g_SplatDiscPad in the shader)
+            uint32_t   splatViz;              // g_SplatViz: State::splatViz in the main pass, State::loupeViz in the loupe pass
+            float      splatDiscPad[2];       // Pads to a whole 16-byte row (float2 g_SplatDiscPad in the shader)
         };
         static_assert(offsetof(SurfelsCB, splatDiscRadius) % 16 == 0, "SurfelsCB::splatDiscRadius must start a 16-byte row: the shader reads it as float4 g_SplatDiscRadius[2]");
         static_assert(sizeof(SurfelsCB) % 16 == 0, "SurfelsCB must be a whole number of 16-byte rows");
@@ -265,6 +286,7 @@ namespace Surfels
         RenderPath      m_renderPath = RenderPath::MeshShaders;
         int             m_renderPathOverride = -1;
         bool            m_renderPathForced = false;
+        bool            m_quietStartup = false;
         GpuCapabilities m_gpuCaps;
         void CreateVertexShaderPipelines(CAULDRON_DX12::SwapChain* pSwapChain); // The fallback's graphics PSOs (main, occlusion-test, item prepass, occluder)
 
@@ -312,6 +334,8 @@ namespace Surfels
         D3D12_RESOURCE_STATES      m_chunkSlotBaseState = D3D12_RESOURCE_STATE_COPY_DEST;
         uint32_t                   m_splatSlotCount = 0;             // Sum of the render list's surfel counts
         bool                       m_splatSortNeedsRun = true;
+        uint32_t                   m_heartbeatSorts = 0;             // Splat sorts and render-list uploads since the last heartbeat line
+        uint32_t                   m_heartbeatListUploads = 0;
         ID3D12RootSignature*       m_pSplatSortRootSig = nullptr;
         ID3D12PipelineState*       m_pSplatExpandPSO = nullptr;
         ID3D12PipelineState*       m_pSplatHistPSO = nullptr;
@@ -383,6 +407,7 @@ namespace Surfels
         bool                       m_lastUseChunkedPipeline = false;
         bool                       m_needUploadChunkIndicesToGpu = false;
         std::vector<std::pair<float, uint32_t>> m_chunkDists;
+        std::vector<MeshletChunkGPU> m_lastUploadedChunks; // The render list last copied to the GPU; an unchanged list skips the upload and the re-sort
 
         // GPU-Driven Pipeline & Bitonic LDS Sorting PSOs
         ID3D12CommandSignature*    m_pCommandSignature = nullptr;
@@ -427,6 +452,12 @@ namespace Surfels
         CAULDRON_DX12::PostProcCS  m_silhouetteEdgeExtractCS;
         ID3D12Resource*            m_pSilhouetteBitmaskGpuBuffer = nullptr;
         ID3D12Resource*            m_pSilhouetteReadbackBuffer = nullptr;
+        ID3D12Resource*            m_pCaptureReadback = nullptr;     // Scene capture (see RequestSceneCapture); sized for the back buffer
+        uint64_t                   m_captureReadbackBytes = 0;
+        bool                       m_captureRequested = false;
+        bool                       m_captureReady = false;
+        std::vector<uint8_t>       m_capturePixels;
+        uint32_t                   m_captureWidth = 0, m_captureHeight = 0;
         ID3D12PipelineState*       m_pItemPrepassPSO = nullptr;
         std::vector<uint32_t>      m_silhouetteBitmaskCPU;
         uint32_t                   m_itemWidth = 0;
@@ -437,6 +468,14 @@ namespace Surfels
         float                      m_lastEdgeDepthThreshold = -1.0f;
         bool                       m_lastEdgeExteriorOnly = true;
         bool                       m_edgeBitmaskValid = false;
+
+        // Loupe inset (see State::loupeEnabled): its own colour target (the scene colour buffer's layout, both
+        // views) and depth, at the fixed inset size.
+        CAULDRON_DX12::Texture     m_loupeColor;
+        CAULDRON_DX12::RTV         m_loupeRTV;
+        CAULDRON_DX12::RTV         m_loupeRTVUnorm;
+        CAULDRON_DX12::Texture     m_loupeDepth;
+        CAULDRON_DX12::DSV         m_loupeDSV;
 
         // Temporal Anti-Aliasing & Dither Transition Resolver
         CAULDRON_DX12::Texture     m_sceneColorBuffer;

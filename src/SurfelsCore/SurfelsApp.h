@@ -26,6 +26,7 @@
 #include "Quantizer.h"
 #include "../../libs/bluesec-codec/ByteShuffle.h"
 #include "StreamPackager.h"
+#include "ImageCompare.h"
 #include <commdlg.h>
 #include <string>
 #include <vector>
@@ -163,7 +164,7 @@ namespace Surfels
         // Dataset auto-loaded on launch when no file is passed on the command line (see OnCreate()).
         // Configurable via config.json/surfels_config.ini ("startup_dataset") so a different default
         // can be swapped in without recompiling. Tried as-is and at a few relative CWD depths.
-        std::string m_startupDatasetPath = "assets/cthulu/cthulu.sflw";
+        std::string m_startupDatasetPath = "assets/dwarves/dwarves.sflw";
 
         // Interior Occlusion Volume: solid depth-writing cubes baked at preprocessing time so far-side
         // surfels can't show through gaps in the near side. Optional and disabled by default.
@@ -205,6 +206,16 @@ namespace Surfels
 
         bool  m_autoLOD              = true;  // Distance-adaptive dynamic LOD selection
         float m_autoLODCooldownTimer = 0.0f;  // Blocks auto-LOD from advancing another level until the in-flight dither transition has had time to settle
+        // Auto LOD rule. Screen space (default): a level is used only once its point spacing projects to
+        // at most m_lodPixelSpacing pixels at the model's near side, so a coarser level is never wider-spaced
+        // on screen than the threshold. Legacy: the old linear map of distance / model size (1x..4x -> all
+        // levels), kept for comparison (the LOD quality test measures both). Saved in config.json.
+        bool  m_lodScreenSpace       = true;
+        float m_lodPixelSpacing      = 1.0f;
+        float LodEffectiveDistance(float cameraDistance) const;  // Camera to the model's near side, the distance the screen-space rule projects at
+        float LodFocalPixels() const;                            // Pixels per unit of tangent at the render height (the renderer's 45-degree vertical field of view)
+        float ContinuousLodAtDistance(float cameraDistance, bool screenSpace) const; // The level the rule wants at this distance, fractional
+        float LodSwitchDistance(int level, bool screenSpace) const;                // Camera distance at which auto LOD steps from level - 1 to level
         bool  m_autoRotate           = false; // Disabled by default
         bool  m_showControlHints     = true;  // Viewport: draw the faint rotate/zoom/pan reminder at the bottom-right (see DrawControlHints); saved in config.json
         int         m_renderPathOverride = -1;     // "render_path" from config.json or --render-path: -1 auto, else SurfelsRenderer::RenderPath to force (testing)
@@ -265,7 +276,7 @@ namespace Surfels
         std::vector<SplatAttributes> m_splatAttributes;
         bool     m_sourceHasSplatAttributes = false; // The loaded source carried scales/rotations/opacities (a 3DGS .ply or .splat)
         bool     m_splatMode                = false; // Bake and draw as 3D Gaussians (surfel format 1) instead of 8-byte surfels
-        int      m_splatSHQuality           = 0;     // 0 = low (spherical-harmonics degree 1), 1 = high (degree 3)
+        int      m_splatSHQuality           = 2;     // Spherical-harmonics degree kept, minus one: 0 = low (degree 1), 1 = medium (degree 2), 2 = high (degree 3, the default); a loaded package sets it to its own degree
         int      m_splatBlendSpace          = 0;     // 0 = display-space blending (as the reference viewer), 1 = linear
         // Draw Splats as Surfels (Renderer tab, saved in config.json as splat_draw_as_surfels): a splat package is
         // drawn through the surfel pipeline as opaque, depth-tested discs (render mode 4; Auto Splat Size, Coverage,
@@ -274,7 +285,7 @@ namespace Surfels
         bool     m_splatDrawAsSurfels       = false;
         uint32_t SplatRenderMode() const { return m_splatDrawAsSurfels ? 4u : 3u; }
         SplatEncodeParams m_splatParams;
-        uint32_t SplatSHDegree() const { return m_splatSHQuality == 1 ? 3u : 1u; }
+        uint32_t SplatSHDegree() const { return (uint32_t)std::clamp(m_splatSHQuality, 0, 2) + 1u; }
         size_t   BytesPerRenderPoint() const { return m_splatMode ? (sizeof(PackedSplatGPU) + SplatCodec::SHRecordBytes(m_splatParams.shDegree)) : (m_enableQuantization ? sizeof(PackedSurfelGPU) : sizeof(SurfelVertex)); }
         void     EncodeSplatLevel(const std::vector<SurfelVertex>& surfels, uint32_t level, std::vector<PackedSplatGPU>& outRecords, std::vector<uint8_t>& outSH) const;
         void     ApplySplatRenderState();
@@ -489,5 +500,77 @@ namespace Surfels
         float FitDistanceForViewport() const;                                     // Camera distance at which the model's bounding sphere fits neatly in the viewport strip between the two control panels
         void  RebuildHeatmapClusterCubes();
         void  DrawOctreeVisualizer();
+
+        // LOD quality test (--lod-quality-test <folder>): once the whole stream is resident, renders the model
+        // at each LOD switch distance -- of both auto LOD rules -- at level 0, the level before the switch and
+        // the level after it, compares each against level 0 at the same distance (PSNR, SSIM) and writes the
+        // images and a report to the folder, then quits. Coarse levels are measured both as discs (the
+        // current splat-mode drawing) and as their own Gaussians.
+        struct LodTestShot
+        {
+            bool        screenSpaceRule = true; // Which rule's switch distance this shot sits at
+            int         switchLevel = 0;        // The level the rule switches to at that distance
+            float       distance = 0.0f;
+            int         level = 0;              // Level drawn
+            bool        coarseAsGaussians = false;
+            float       coarseGaussianCap = 0.0f; // With coarseAsGaussians: the scale cap, x level spacing (0 = uncapped)
+            bool        asSurfels = false;      // Splat mode drawn as opaque surfel discs (mode 4) instead of sorted Gaussians (mode 3)
+            int         repeat = 0;             // 1 = a second level 0 capture, for the TAA noise floor
+            RgbaImage   image;
+        };
+        std::string              m_lodTestFolder;            // Empty = no test this run
+        bool                     m_lodTestRunning = false;
+        std::vector<LodTestShot> m_lodTestShots;
+        size_t                   m_lodTestIndex = 0;
+        int                      m_lodTestSettledFrames = 0;
+        bool                     m_lodTestCaptureRequested = false;
+        double                   m_lodTestShotSeconds = 0.0;
+        // Splat mode: draw levels 1+ as their own Gaussians, scales capped at m_splatCoarseGaussianCap x the level spacing,
+        // instead of discs. On by default: the LOD quality test (2026-10-24, cthulu) put capped Gaussians at or above discs at
+        // every level -- 25.4 vs 18.2 dB at level 1 -- while uncapped ones bloom from level 2 up. Renderer option, saved in config.json.
+        bool                     m_splatCoarseAsGaussians = true;
+        static constexpr float   kLodTestGaussianCaps[2] = { 0.75f, 1.5f }; // Scale caps the LOD quality test measures, x level spacing
+        float                    m_splatCoarseGaussianCap = 1.5f;  // With Coarse Levels as Gaussians: cap each axis's scale at this x the level spacing (0 = no cap)
+        bool                     m_lodTestSavedCoarseAsGaussians = false;
+        float                    m_lodTestSavedCoarseGaussianCap = 0.0f;
+        bool                     m_lodTestSavedDrawAsSurfels = false;
+        std::vector<std::string> m_lodTestMontagesWritten;   // The report is rewritten after every finished group; montages are written once
+        void  SetSplatDrawAsSurfels(bool asSurfels);        // Draw Splats as Surfels, as the checkbox applies it (re-stamps the chunks' fade value)
+        // Loupe (L, or the Renderer tab checkbox): a box that follows the mouse over the viewport, drawn again
+        // magnified into an inset at the viewport's top right (SurfelsRenderer::State::loupeEnabled). W/S
+        // change the magnification while it is on.
+        // W/S zoom: kLoupeZoomRate e-folds per second at first, growing by kLoupeZoomAccel per second held up to
+        // kLoupeZoomRateMax, so a tap nudges and a long hold dives deep.
+        static constexpr float kLoupeZoomMin = 2.0f, kLoupeZoomMax = 256.0f;
+        static constexpr float kLoupeZoomRate = 0.8f, kLoupeZoomAccel = 1.5f, kLoupeZoomRateMax = 6.0f;
+        float  m_loupeZoomHoldSec = 0.0f;            // How long W or S has been held (drives the acceleration)
+        // Inset placement: opens at the top right of the viewport, then a left-button drag inside it moves it and one
+        // on an edge or corner resizes it (UpdateCamera). Drag modes combine: two edge bits = a corner.
+        static constexpr int kLoupeDragLeft = 1, kLoupeDragBottom = 2, kLoupeDragRight = 4, kLoupeDragTop = 8, kLoupeDragMove = 16;
+        ImVec2 m_loupeSize = ImVec2((float)kLoupeWidth, (float)kLoupeHeight);
+        ImVec2 m_loupePos = ImVec2(-1.0f, -1.0f);   // Inset top-left, window pixels; negative = not placed yet (top right of the viewport)
+        ImVec4 m_loupeRect = ImVec4(0.0f, 0.0f, 0.0f, 0.0f); // Inset x0, y0, x1, y1 last frame (for grabbing it)
+        int    m_loupeDrag = 0;                      // The drag in progress (kLoupeDrag* bits); 0 = none
+        int    m_loupeHover = 0;                     // What a drag would do from where the mouse is (highlighted)
+        bool   m_loupeEnabled = false;
+        float  m_loupeZoom = 8.0f;
+        int    m_loupeViz = 0;                       // Inset display: 0 normal, 1 splat outlines, 2 random colour per splat, 3 centres (V cycles while the loupe is on)
+        int    m_splatViz = 0;                       // The same display for the whole view (Renderer tab "Splat Display"); V never changes it
+        ImVec2 m_loupeCenter = ImVec2(-1.0f, -1.0f); // Back-buffer pixels; negative = not placed yet (centre of the view)
+        float  m_rightPanelWidth = 0.0f;             // From BuildUI, for placing the inset
+        float  m_bannerBottomY = 0.0f;               // Bottom edge of the render-mode banner last frame (0 = none); the inset sits below it
+        void   DrawLoupeOverlay();                   // The box and the inset's frame and zoom label (the inset itself is the renderer's)
+
+        // Right panel sections: drawn in m_rightPanelOrder (section ids, see BuildUI), each open or collapsed per
+        // m_rightPanelOpen. Dragging a section's title bar up or down moves it; order and open state are saved in
+        // config.json (right_panel_order, right_panel_open). The panel's height fits whatever is open.
+        static constexpr int kRightPerformance = 0, kRightCompression = 1, kRightResidency = 2, kRightPyramid = 3, kRightModel = 4, kRightCulling = 5, kRightSpatial = 6;
+        static constexpr int kRightSectionCount = 7;
+        int    m_rightPanelOrder[kRightSectionCount] = { 0, 1, 2, 3, 4, 5, 6 };
+        bool   m_rightPanelOpen[kRightSectionCount] = { true, true, true, true, true, true, true };
+        bool   m_rightDragMoved = false;             // The title bar being dragged has moved its section: its click must not toggle it
+        bool   RightPanelSectionHeader(int slot, int section, int& swapSlotA, int& swapSlotB); // Title bar of the section at this slot: open state, drag to reorder; true = draw the body
+        void  StepLodQualityTest();     // Once per frame, before the UI: moves the test along
+        void  FinishLodQualityTest();   // Compares the captures and writes the report
     };
 }

@@ -50,7 +50,7 @@ Surfels_DX12.exe [options] [file]
 
 ## Getting started
 
-**Release build.** Download the latest zip from the [Releases page](../../../releases), extract it anywhere and run `Run SplatLab.cmd`. No installation is needed. The bundled Cthulhu Statue scan loads on first launch, so the window is never empty.
+**Release build.** Download the latest zip from the [Releases page](../../../releases), extract it anywhere and run `Run SplatLab.cmd`. No installation is needed. The bundled Dancing Couple of Dwarves scan loads on first launch, so the window is never empty.
 
 **Hardware.** Any Direct3D 12 GPU works. GPUs with mesh shaders (GeForce RTX 20-series or newer, Radeon RX 6000 or newer, Intel Arc) run the fast path. Other hardware falls back to instanced vertex shaders automatically, drawing the same picture at lower frame rates. When the fallback is active a dialog says so at launch, the top-left banner lists the stages it stands in for, and Help > About names the path in use.
 

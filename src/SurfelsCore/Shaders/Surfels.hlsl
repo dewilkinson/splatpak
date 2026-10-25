@@ -142,8 +142,19 @@ cbuffer SurfelsCB : register(b0)
     uint     g_SplatSlotCount;       // Slots in g_SortedSplats this frame
     float4   g_SplatDiscRadius[2];   // Splat mode: camera-facing disc radius per level for level kSplatDiscMinLevel and up (world units), index = lodLevel 0..7; 0 = draw Gaussians
     float    g_SplatDiscOpacityFloor; // Splat mode: opacity floor for the discs of level 1 and up (Match Level 0 Softness; 0 = the record's opacity as is)
-    float3   g_SplatDiscPad;
+    uint     g_SplatViz;             // Splat display: the main pass takes the Renderer setting, the loupe pass its own. 0 = normal, 1 = outlines, 2 = a random colour per splat, 3 = centres (see SplatVizShade)
+    float2   g_SplatDiscPad;
 };
+
+// Splat display: a stable, saturated colour per splat index, so neighbouring splats tell apart.
+float3 SplatVizColor(uint index)
+{
+    uint h = index * 2654435761u;
+    h ^= h >> 15; h *= 2246822519u; h ^= h >> 13;
+    float hue = (float)(h & 0xFFFFu) / 65535.0;
+    float3 rgb = saturate(abs(frac(hue + float3(0.0, 2.0 / 3.0, 1.0 / 3.0)) * 6.0 - 3.0) - 1.0);
+    return lerp(float3(0.25, 0.25, 0.25), rgb, 0.85);
+}
 
 // Auto splat size: every disc of a level takes that level's density-derived radius (its typical point
 // spacing times the coverage factor), so a dense patch covers the surface exactly and an isolated point
@@ -656,6 +667,8 @@ bool BuildSplat(uint surfelIndex, uint lod, float chunkBlendWeight, float chunkD
         // that stack can reach at a dark, see-through tint instead of a bright fill.
         litColor = float3(1.0, 0.12, 0.10); // Detach Camera: culled by the frozen camera -- red, drawn once (depth-tested against the viewer) at 10% opacity in mainPS
 
+    if (g_SplatViz == 2) litColor = SplatVizColor(surfelIndex);
+
     sd.worldPos = worldPos;
     sd.normal = normal;
     sd.litColor = litColor;
@@ -848,6 +861,13 @@ bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, out G
     // GaussianCornerVertex (centre plus clip-space half-axes) is exact. A level without a measured
     // spacing (radius 0) falls through to the Gaussian.
     float discR = (lod >= kSplatDiscMinLevel && lod < 8) ? g_SplatDiscRadius[lod >> 2][lod & 3] : 0.0;
+    // A negative radius keeps the level's own Gaussians but caps every axis's scale at -discR (world
+    // units): the coarse records' grown scales otherwise bloom far past the model's rim.
+    if (discR < 0.0)
+    {
+        scale = min(scale, -discR);
+        discR = 0.0;
+    }
     if (discR > 0.0)
     {
         float3 tX = g_CamRight * discR;
@@ -959,7 +979,9 @@ bool SplatFromSlot(uint slot, out GaussianSplat gs, out float blendWeight)
         if (g_ShowOnlyLocked == 1 && !ChunkIsLocked(chunk)) return false;
     }
     if (info.x >= g_SurfelCount) return false;
-    return BuildGaussianSplat(info.x, lod, fade, wave, gs);
+    const bool built = BuildGaussianSplat(info.x, lod, fade, wave, gs);
+    if (built && g_SplatViz == 2) gs.color = SplatVizColor(info.x);
+    return built;
 }
 
 VSOut GaussianCornerVertex(GaussianSplat gs, uint corner, float chunkBlendWeight)
@@ -1678,6 +1700,41 @@ float GetBayer8x8(uint2 pixelPos)
 // Pixel Shader Stage (mainPS)
 // =========================================================================
 
+// Splat display modes (g_SplatViz: the whole view, or the loupe inset on its own). f is the splat's falloff at this pixel --
+// the Gaussian in splat mode, linear across a surfel disc -- and the outline is its half-maximum contour,
+// which is where a splat visibly ends. The opaque surfel pipelines ignore alpha, so they get the colour
+// as is; the blended splat pipeline gets it premultiplied.
+float4 SplatVizShade(VSOut i, float d)
+{
+    const bool blended = (g_RenderMode == 3);
+    const float f = blended ? SplatFalloff(d) : (1.0 - d);
+    if (g_SplatViz == 2) // A flat colour per splat over its half-maximum footprint
+    {
+        if (f < 0.5) discard;
+        return float4(i.color, 1.0);
+    }
+    float a, mark;
+    float3 markColor;
+    if (g_SplatViz == 1) // Outline at the half-maximum contour over a faint fill
+    {
+        const float w = max(fwidth(f), 1e-4);
+        mark = 1.0 - saturate(abs(f - 0.5) / (1.5 * w));
+        markColor = saturate(i.color * 1.6 + 0.15);
+        a = max(mark, f * i.splatAlpha * 0.35);
+    }
+    else // 3: a dot of about two pixels at the centre over a faint fill
+    {
+        const float r = sqrt(d);
+        const float w = max(fwidth(r), 1e-4);
+        mark = 1.0 - saturate((r - 2.0 * w) / w);
+        markColor = float3(1.0, 0.95, 0.4);
+        a = max(mark, f * i.splatAlpha * 0.25);
+    }
+    if (a < 1.0 / 255.0) discard;
+    const float3 c = lerp(i.color * 0.55, markColor, mark);
+    return blended ? float4(c * a, a) : float4(c, 1.0);
+}
+
 float4 mainPS(VSOut i) : SV_Target
 {
     float2 centered = i.uv * 2.0 - 1.0;
@@ -1710,6 +1767,9 @@ float4 mainPS(VSOut i) : SV_Target
             }
         }
     }
+
+    if (g_SplatViz != 0)
+        return SplatVizShade(i, d);
 
     if (g_RenderMode == 3)
     {

@@ -101,7 +101,7 @@ namespace Surfels
             header.shManifestOffset = 0;
             if (splatMode)
             {
-                splatParams.shDegree = (splat->shDegree >= 3) ? 3u : (splat->shDegree >= 1 ? 1u : 0u);
+                splatParams.shDegree = std::min(splat->shDegree, 3u); // 0 (none) to 3; the record size follows the degree (SplatCodec::SHRecordBytes)
                 splatParams.aabbMin = gMin;
                 splatParams.aabbMax = gMax;
                 SplatCodec::ComputeScaleRange(*splat->attributes, maxLODs, splatParams.scaleLog2Min, splatParams.scaleLog2Max);

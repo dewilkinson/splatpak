@@ -18,7 +18,7 @@ namespace Surfels
     // travel in the package header so a decoder reproduces the encoder's quantisation exactly.
     struct SplatEncodeParams
     {
-        uint32_t shDegree     = 1;      // Spherical-harmonics degree kept in the SH stream: 0 (none), 1 (low) or 3 (high)
+        uint32_t shDegree     = 1;      // Spherical-harmonics degree kept in the SH stream: 0 (none), 1 (low), 2 (medium) or 3 (high)
         float    scaleLog2Min = -14.0f; // log2 of the scale a scale byte of 0 decodes to
         float    scaleLog2Max = 2.0f;   // log2 of the scale a scale byte of 255 decodes to
         XMFLOAT3 aabbMin      = { 0.0f, 0.0f, 0.0f }; // Global bounds the 16-bit positions span

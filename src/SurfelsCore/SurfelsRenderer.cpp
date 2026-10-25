@@ -102,6 +102,9 @@ namespace Surfels
         // Temporal Anti-Aliasing (TAA) Descriptors
         m_resourceViewHeaps.AllocRTVDescriptor(1, &m_sceneColorRTV);
         m_resourceViewHeaps.AllocRTVDescriptor(1, &m_sceneColorRTVUnorm);
+        m_resourceViewHeaps.AllocRTVDescriptor(1, &m_loupeRTV);
+        m_resourceViewHeaps.AllocRTVDescriptor(1, &m_loupeRTVUnorm);
+        m_resourceViewHeaps.AllocDSVDescriptor(1, &m_loupeDSV);
         m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(1, &m_sceneColorSRV);
         m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(1, &m_historyColorSRV);
         m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(1, &m_historyColorUAV);
@@ -509,7 +512,7 @@ namespace Surfels
                 forced ? "\n\nSet \"render_path\" to \"auto\" in config.json to use the best path this GPU supports." : "\n\nFor full performance use a GPU with D3D12 Mesh Shader Tier 1 (GeForce RTX 20 series or newer, Radeon RX 6000 or newer, Intel Arc) and a current driver.");
             char title[128];
             snprintf(title, sizeof(title), "%s - Mesh shader fallback engaged", g_appTitle);
-            MessageBoxA(NULL, msg, title, MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
+            if (!m_quietStartup) MessageBoxA(NULL, msg, title, MB_OK | MB_ICONWARNING | MB_SETFOREGROUND);
         }
 
         // Create Silhouette Edge Extraction and Clear Compute Shaders
@@ -913,6 +916,7 @@ namespace Surfels
         m_chunkBufferCapacityBytes = 0;
         if (m_pSortedChunkIndicesGpuBuffer) { m_pSortedChunkIndicesGpuBuffer->Release(); m_pSortedChunkIndicesGpuBuffer = nullptr; }
         m_sortedChunkIndicesCapacityBytes = 0;
+        m_lastUploadedChunks.clear();
 
         m_lastSurfelsPtr = nullptr;
         m_lastSurfelCount = 0;
@@ -946,6 +950,8 @@ namespace Surfels
         if (m_pSilhouetteBitmaskGpuBuffer) { m_pSilhouetteBitmaskGpuBuffer->Release(); m_pSilhouetteBitmaskGpuBuffer = nullptr; }
         if (m_pSilhouetteReadbackBuffer) { m_pSilhouetteReadbackBuffer->Release(); m_pSilhouetteReadbackBuffer = nullptr; }
         m_bitmaskCapacityBytes = 0;
+        if (m_pCaptureReadback) { m_pCaptureReadback->Release(); m_pCaptureReadback = nullptr; }
+        m_captureReadbackBytes = 0;
         if (m_pRootSignature) { m_pRootSignature->Release(); m_pRootSignature = nullptr; }
 
         m_depthBuffer.OnDestroy();
@@ -959,6 +965,16 @@ namespace Surfels
         m_constantBufferRing.OnDestroy();
         m_uploadHeap.OnDestroy();
         m_resourceViewHeaps.OnDestroy();
+    }
+
+    bool SurfelsRenderer::TakeSceneCapture(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height)
+    {
+        if (!m_captureReady) return false;
+        m_captureReady = false;
+        rgba.swap(m_capturePixels);
+        width = m_captureWidth;
+        height = m_captureHeight;
+        return true;
     }
 
     // Splat mode: grow-only buffers of the per-frame depth sort, sized for the padded slot count.
@@ -1105,6 +1121,7 @@ namespace Surfels
         toState(m_pSplatPairsA, m_splatPairsAState, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
         toState(m_pSlotInfoBuffer, m_slotInfoState, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
         m_splatSortNeedsRun = false;
+        m_heartbeatSorts++;
         m_metrics.gpuSortTimeMs = std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - sortStart).count();
         m_metrics.isGPUSortActive = true;
         m_metrics.wasSortedThisFrame = true;
@@ -1778,8 +1795,16 @@ namespace Surfels
                 m_gpuSortNeedsRun = true;
             }
 
-            if (m_pChunkUploadBufferMapped != nullptr && pState->pChunks != nullptr && chunkCount > 0)
+            // The app hands over the render list every frame, but between LOD changes it is the same list.
+            // Re-uploading it each frame also re-ran both GPU sorts every frame and, on the copy queue,
+            // made the CPU wait on the previous frame's copy.
+            const bool chunksChanged = modelChanged
+                || m_lastUploadedChunks.size() != chunkCount
+                || memcmp(m_lastUploadedChunks.data(), pState->pChunks, chunkCount * sizeof(MeshletChunkGPU)) != 0;
+            if (chunksChanged && m_pChunkUploadBufferMapped != nullptr && pState->pChunks != nullptr && chunkCount > 0)
             {
+                m_lastUploadedChunks.assign(pState->pChunks, pState->pChunks + chunkCount);
+                m_heartbeatListUploads++;
                 MeshletChunkGPU* pDstChunks = reinterpret_cast<MeshletChunkGPU*>(m_pChunkUploadBufferMapped);
                 memcpy(pDstChunks, pState->pChunks, chunkCount * sizeof(MeshletChunkGPU));
                 if (numChunkElements > chunkCount)
@@ -1909,6 +1934,14 @@ namespace Surfels
         m_sceneColorBuffer.CreateRTV(0, &m_sceneColorRTVUnorm, 0, -1, -1, DXGI_FORMAT_R8G8B8A8_UNORM); // Splat mode, display-space blending
         m_sceneColorBuffer.CreateSRV(0, &m_sceneColorSRV);
 
+        m_loupeColor.Init(m_pDevice, "SurfelsRenderer::m_loupeColor",
+            &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET),
+            D3D12_RESOURCE_STATE_RENDER_TARGET, &sceneClear);
+        m_loupeColor.CreateRTV(0, &m_loupeRTV, 0, -1, -1, swapFormat);
+        m_loupeColor.CreateRTV(0, &m_loupeRTVUnorm, 0, -1, -1, DXGI_FORMAT_R8G8B8A8_UNORM);
+        m_loupeDepth.InitDepthStencil(m_pDevice, "SurfelsRenderer::m_loupeDepth", &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_D32_FLOAT, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_DEPTH_STENCIL), 1.0f);
+        m_loupeDepth.CreateDSV(0, &m_loupeDSV);
+
         m_historyColorBuffer.Init(m_pDevice, "SurfelsRenderer::m_historyColorBuffer",
             &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
             D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, nullptr);
@@ -1938,6 +1971,8 @@ namespace Surfels
     // Releases the depth buffer and every TAA/item-prepass texture
     void SurfelsRenderer::OnDestroyWindowSizeDependentResources()
     {
+        m_loupeColor.OnDestroy();
+        m_loupeDepth.OnDestroy();
         m_sceneColorBuffer.OnDestroy();
         m_historyColorBuffer.OnDestroy();
         m_resolvedColorBuffer.OnDestroy();
@@ -1956,8 +1991,11 @@ namespace Surfels
         s_frameCounter++;
         if (s_frameCounter % 60 == 0)
         {
-            LogTransitionTrace("Renderer Heartbeat: frame=%u, chunkCount=%u, surfelCount=%u, fps=%.1f",
-                s_frameCounter, pState->chunkCount, pState->surfelCount, m_metrics.frameRate);
+            LogTransitionTrace("Renderer Heartbeat: frame=%u, chunkCount=%u, surfelCount=%u, fps=%.1f, gpuWait=%.1fms, record=%.1fms, upload=%.1fms, mode=%u, sorts=%u, listUploads=%u",
+                s_frameCounter, pState->chunkCount, pState->surfelCount, m_metrics.frameRate,
+                m_smoothGpuWaitMs, m_smoothCommandRecordMs, m_smoothUploadMs, pState->renderMode, m_heartbeatSorts, m_heartbeatListUploads);
+            m_heartbeatSorts = 0;
+            m_heartbeatListUploads = 0;
         }
 
         // Throttle CPU so it does not overwrite in-flight command allocator / dynamic buffers
@@ -2285,7 +2323,8 @@ namespace Surfels
         for (int l = 0; l < 8; l++) pCB->lodRadius[l] = pState->lodRadius[l];
         for (int l = 0; l < 8; l++) pCB->splatDiscRadius[l] = pState->splatDiscRadius[l];
         pCB->splatDiscOpacityFloor = pState->splatDiscOpacityFloor;
-        pCB->splatDiscPad[0] = 0.0f; pCB->splatDiscPad[1] = 0.0f; pCB->splatDiscPad[2] = 0.0f;
+        pCB->splatViz = std::min(pState->splatViz, 3u);
+        pCB->splatDiscPad[0] = 0.0f; pCB->splatDiscPad[1] = 0.0f;
         // Splat mode
         XMStoreFloat4x4(&pCB->view, view);
         pCB->viewportW = (float)m_width;
@@ -2441,6 +2480,7 @@ namespace Surfels
             }
         };
 
+        bool chunkedPassDrawn = false; // The loupe replays the chunked pass (see below)
         if (surfelCount > 0 && pGpuRes != nullptr && pUploadRes != nullptr)
         {
             if (m_needUploadToGpu || m_needUploadChunksToGpu)
@@ -2769,6 +2809,7 @@ namespace Surfels
                 }
 
                 DrawOccluderPass();
+                chunkedPassDrawn = true;
 
                 if (!pState->showOcclusionVolumeOnly)
                 {
@@ -3147,10 +3188,15 @@ namespace Surfels
             }
 #endif // DYNAMIC SILHOUETTE
 
-            DrawOccluderPass();
+            // Flat pipeline only: the chunked branch above has already drawn the occluder and the splats,
+            // and splat mode without a chunk list has nothing to draw. Drawing again here doubled the GPU
+            // work and, in splat mode, blended the farthest slots a second time over the finished image.
+            const bool flatPipeline = !useChunked && !SortedGaussians(pState->renderMode);
+            if (flatPipeline)
+                DrawOccluderPass();
 
             // Draw Main Mesh Shader Pass
-            if (!pState->showOcclusionVolumeOnly)
+            if (flatPipeline && !pState->showOcclusionVolumeOnly)
             {
                 auto mainDispatchStart2 = std::chrono::high_resolution_clock::now();
 
@@ -3262,6 +3308,123 @@ namespace Surfels
             m_temporalFirstFrame = true;
         }
 
+        // Loupe: the chunked pass again, through a crop of the unjittered projection that blows the box around
+        // the loupe centre up to the inset, into its own target, then copied over the back buffer's corner.
+        // The sort is the frame's own (same eye). Scaling g_Proj00 with the crop keeps the Gaussians' screen
+        // footprint exact: the shader derives the covariance's focal length from it and the viewport.
+        if (pState->loupeEnabled && chunkedPassDrawn && m_loupeColor.GetResource() != nullptr && m_width > 0 && m_height > 0)
+        {
+            SurfelsCB* pLoupeCB = nullptr;
+            D3D12_GPU_VIRTUAL_ADDRESS loupeCbAddress = 0;
+            if (m_constantBufferRing.AllocConstantBuffer(sizeof(SurfelsCB), (void**)&pLoupeCB, &loupeCbAddress))
+            {
+                // The inset's size; its target is window-sized, so the loupe draws into the top-left corner of it.
+                const uint32_t lw = std::min(std::max(16u, pState->loupeWidth), m_width);
+                const uint32_t lh = std::min(std::max(16u, pState->loupeHeight), m_height);
+                const float zoom = std::max(1.0f, pState->loupeZoom);
+                const float sx = zoom * (float)m_width / (float)lw;
+                const float sy = zoom * (float)m_height / (float)lh;
+                const float cx = 2.0f * pState->loupeCenterX / (float)m_width - 1.0f;
+                const float cy = 1.0f - 2.0f * pState->loupeCenterY / (float)m_height;
+                const XMMATRIX crop(sx, 0.0f, 0.0f, 0.0f,
+                                    0.0f, sy, 0.0f, 0.0f,
+                                    0.0f, 0.0f, 1.0f, 0.0f,
+                                    -sx * cx, -sy * cy, 0.0f, 1.0f);
+                const XMMATRIX loupeViewProj = XMMatrixMultiply(unjitteredViewProj, crop);
+                *pLoupeCB = *pCB;
+                XMStoreFloat4x4(&pLoupeCB->viewProj, loupeViewProj);
+                if (!pState->detachCullCamera) XMStoreFloat4x4(&pLoupeCB->cullViewProj, loupeViewProj);
+                pLoupeCB->viewportW = (float)lw;
+                pLoupeCB->viewportH = (float)lh;
+                pLoupeCB->proj00 = XMVectorGetX(proj.r[0]) * sx;
+                pLoupeCB->splatViz = std::min(pState->loupeViz, 3u);
+
+                D3D12_CPU_DESCRIPTOR_HANDLE loupeRtv = splatDisplayBlend ? m_loupeRTVUnorm.GetCPU() : m_loupeRTV.GetCPU();
+                D3D12_CPU_DESCRIPTOR_HANDLE loupeDsv = m_loupeDSV.GetCPU();
+                pCmdLst->OMSetRenderTargets(1, &loupeRtv, FALSE, &loupeDsv);
+                CD3DX12_RECT loupeScissor(0, 0, (LONG)lw, (LONG)lh);
+                pCmdLst->ClearRenderTargetView(loupeRtv, clearColor, 1, &loupeScissor);
+                pCmdLst->ClearDepthStencilView(loupeDsv, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 1, &loupeScissor);
+                CD3DX12_VIEWPORT loupeViewport(0.0f, 0.0f, (float)lw, (float)lh);
+                pCmdLst->RSSetViewports(1, &loupeViewport);
+                pCmdLst->RSSetScissorRects(1, &loupeScissor);
+
+                // The draw helpers read cbAddress by reference; the Detach Camera passes are not replayed.
+                const D3D12_GPU_VIRTUAL_ADDRESS mainCbAddress = cbAddress;
+                cbAddress = loupeCbAddress;
+                cbCulledAddress = 0;
+                DrawOccluderPass();
+                if (!pState->showOcclusionVolumeOnly)
+                {
+                    const D3D12_GPU_VIRTUAL_ADDRESS surfelAddr = pGpuRes->GetGPUVirtualAddress();
+                    pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
+                    pCmdLst->SetGraphicsRootShaderResourceView(1, surfelAddr);
+                    pCmdLst->SetGraphicsRootShaderResourceView(2, surfelAddr);
+                    pCmdLst->SetGraphicsRootShaderResourceView(3, m_pChunkGpuBuffer->GetGPUVirtualAddress());
+                    pCmdLst->SetGraphicsRootShaderResourceView(4, m_pSortedChunkIndicesGpuBuffer->GetGPUVirtualAddress());
+                    pCmdLst->SetGraphicsRootShaderResourceView(5, m_pOcclusionVoxelBuffer ? m_pOcclusionVoxelBuffer->GetGPUVirtualAddress() : 0);
+                    pCmdLst->SetGraphicsRootShaderResourceView(6, m_pSplatGpuBuffer ? m_pSplatGpuBuffer->GetGPUVirtualAddress() : 0);
+                    pCmdLst->SetGraphicsRootShaderResourceView(7, m_pSHGpuBuffer ? m_pSHGpuBuffer->GetGPUVirtualAddress() : 0);
+                    pCmdLst->SetGraphicsRootShaderResourceView(8, m_pSplatPairsA ? m_pSplatPairsA->GetGPUVirtualAddress() : 0);
+                    pCmdLst->SetGraphicsRootShaderResourceView(9, m_pSlotInfoBuffer ? m_pSlotInfoBuffer->GetGPUVirtualAddress() : 0);
+                    const bool splatMode = SortedGaussians(pState->renderMode);
+                    const uint32_t chunkCount = pState->chunkCount;
+                    const uint32_t asGroupCount = splatMode ? ((m_splatSlotCount + SURFELS_PER_GROUP - 1) / SURFELS_PER_GROUP) : ((chunkCount + AS_GROUP_SIZE - 1) / AS_GROUP_SIZE);
+                    const uint32_t instances = splatMode ? m_splatSlotCount : chunkCount * SURFELS_PER_GROUP;
+                    if (!splatMode || (m_pSplatPairsA != nullptr && m_pSlotInfoBuffer != nullptr && m_splatSlotCount > 0))
+                        issueSplatDraws(asGroupCount, instances);
+                }
+                cbAddress = mainCbAddress;
+                pCmdLst->RSSetViewports(1, &viewport);
+                pCmdLst->RSSetScissorRects(1, &scissor);
+
+                // Into the back buffer's corner (it is a render target here on both the TAA and the direct path)
+                const uint32_t dstX = std::min(pState->loupeDestX, m_width - lw);
+                const uint32_t dstY = std::min(pState->loupeDestY, m_height - lh);
+                const D3D12_BOX srcBox = { 0, 0, 0, lw, lh, 1 };
+                D3D12_RESOURCE_BARRIER pre[2] = {
+                    CD3DX12_RESOURCE_BARRIER::Transition(m_loupeColor.GetResource(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE),
+                    CD3DX12_RESOURCE_BARRIER::Transition(pBackBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_DEST) };
+                pCmdLst->ResourceBarrier(2, pre);
+                CD3DX12_TEXTURE_COPY_LOCATION dst(pBackBuffer, 0);
+                CD3DX12_TEXTURE_COPY_LOCATION src(m_loupeColor.GetResource(), 0);
+                pCmdLst->CopyTextureRegion(&dst, dstX, dstY, 0, &src, &srcBox);
+                D3D12_RESOURCE_BARRIER post[2] = {
+                    CD3DX12_RESOURCE_BARRIER::Transition(m_loupeColor.GetResource(), D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
+                    CD3DX12_RESOURCE_BARRIER::Transition(pBackBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET) };
+                pCmdLst->ResourceBarrier(2, post);
+            }
+        }
+
+        // Scene capture: copy the finished scene (the back buffer is a render target again on both the
+        // TAA and the direct path) before the ImGui overlay lands on it.
+        D3D12_PLACED_SUBRESOURCE_FOOTPRINT captureFootprint = {};
+        bool captureIssued = false;
+        if (m_captureRequested)
+        {
+            m_captureRequested = false;
+            const D3D12_RESOURCE_DESC bbDesc = pBackBuffer->GetDesc();
+            UINT64 totalBytes = 0;
+            m_pDevice->GetDevice()->GetCopyableFootprints(&bbDesc, 0, 1, 0, &captureFootprint, nullptr, nullptr, &totalBytes);
+            if (totalBytes > m_captureReadbackBytes)
+            {
+                if (m_pCaptureReadback) { m_pCaptureReadback->Release(); m_pCaptureReadback = nullptr; }
+                ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(
+                    &CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK), D3D12_HEAP_FLAG_NONE, &CD3DX12_RESOURCE_DESC::Buffer(totalBytes),
+                    D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_pCaptureReadback)));
+                SetName(m_pCaptureReadback, "SurfelsRenderer::m_pCaptureReadback");
+                m_captureReadbackBytes = totalBytes;
+            }
+            D3D12_RESOURCE_BARRIER toSrc = CD3DX12_RESOURCE_BARRIER::Transition(pBackBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            pCmdLst->ResourceBarrier(1, &toSrc);
+            CD3DX12_TEXTURE_COPY_LOCATION dst(m_pCaptureReadback, captureFootprint);
+            CD3DX12_TEXTURE_COPY_LOCATION src(pBackBuffer, 0);
+            pCmdLst->CopyTextureRegion(&dst, 0, 0, 0, &src, nullptr);
+            D3D12_RESOURCE_BARRIER toRt = CD3DX12_RESOURCE_BARRIER::Transition(pBackBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
+            pCmdLst->ResourceBarrier(1, &toRt);
+            captureIssued = true;
+        }
+
         // Set backbuffer as render target for ImGui UI overlay
         D3D12_CPU_DESCRIPTOR_HANDLE backRtv = *pSwapChain->GetCurrentBackBufferRTV();
         pCmdLst->OMSetRenderTargets(1, &backRtv, FALSE, nullptr);
@@ -3281,6 +3444,38 @@ namespace Surfels
 
         ID3D12CommandList* pCmdLists[] = { pCmdLst };
         m_pDevice->GetGraphicsQueue()->ExecuteCommandLists(1, pCmdLists);
+
+        if (captureIssued)
+        {
+            // A test-only path: wait for this frame, then repack the rows as RGBA8.
+            m_pDevice->GPUFlush(D3D12_COMMAND_LIST_TYPE_DIRECT);
+            const DXGI_FORMAT fmt = captureFootprint.Footprint.Format;
+            const bool bgra = (fmt == DXGI_FORMAT_B8G8R8A8_UNORM || fmt == DXGI_FORMAT_B8G8R8A8_UNORM_SRGB || fmt == DXGI_FORMAT_B8G8R8A8_TYPELESS);
+            const uint32_t w = captureFootprint.Footprint.Width, h = captureFootprint.Footprint.Height;
+            uint8_t* pData = nullptr;
+            D3D12_RANGE readRange = { 0, (SIZE_T)m_captureReadbackBytes };
+            if (SUCCEEDED(m_pCaptureReadback->Map(0, &readRange, (void**)&pData)) && pData != nullptr)
+            {
+                m_capturePixels.resize((size_t)w * h * 4);
+                for (uint32_t y = 0; y < h; y++)
+                {
+                    const uint8_t* pRow = pData + captureFootprint.Offset + (size_t)y * captureFootprint.Footprint.RowPitch;
+                    uint8_t* pOut = m_capturePixels.data() + (size_t)y * w * 4;
+                    for (uint32_t x = 0; x < w; x++)
+                    {
+                        pOut[x * 4 + 0] = pRow[x * 4 + (bgra ? 2 : 0)];
+                        pOut[x * 4 + 1] = pRow[x * 4 + 1];
+                        pOut[x * 4 + 2] = pRow[x * 4 + (bgra ? 0 : 2)];
+                        pOut[x * 4 + 3] = 255;
+                    }
+                }
+                D3D12_RANGE noWrite = { 0, 0 };
+                m_pCaptureReadback->Unmap(0, &noWrite);
+                m_captureWidth = w;
+                m_captureHeight = h;
+                m_captureReady = true;
+            }
+        }
 
         auto now = std::chrono::high_resolution_clock::now();
         const float gpuWaitMs = std::chrono::duration<float, std::milli>(tWaitEnd - tWaitStart).count();
