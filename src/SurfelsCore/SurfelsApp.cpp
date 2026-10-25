@@ -391,6 +391,31 @@ namespace Surfels
                             for (int i = 0; i < kRightSectionCount; i++) m_rightPanelOpen[i] = (open[i] != 0);
                     }
 
+                    // Loupe inset size and top-left corner (JSON or INI): "w,h" and "x,y" in window pixels. DrawLoupeOverlay
+                    // keeps a remembered place inside the window, so a smaller window or another screen cannot lose it.
+                    {
+                        auto readPair = [&](const char* jsonKey, const char* iniKey, float& a, float& b) -> bool
+                        {
+                            size_t pos = line.find(jsonKey);
+                            size_t start = std::string::npos;
+                            if (pos != std::string::npos) start = line.find(':', pos);
+                            else if ((pos = line.find(iniKey)) != std::string::npos) start = line.find('=', pos);
+                            if (start == std::string::npos) return false;
+                            const size_t q = line.find_first_of("-0123456789", start + 1);
+                            const size_t comma = (q != std::string::npos) ? line.find(',', q) : std::string::npos;
+                            if (comma == std::string::npos) return false;
+                            a = (float)atof(line.c_str() + q);
+                            b = (float)atof(line.c_str() + comma + 1);
+                            return true;
+                        };
+                        float w = 0.0f, h = 0.0f;
+                        if (readPair("\"loupe_size\":", "loupe_size=", w, h) && w >= 160.0f && h >= 120.0f)
+                            m_loupeSize = ImVec2(w, h);
+                        float x = 0.0f, y = 0.0f;
+                        if (readPair("\"loupe_pos\":", "loupe_pos=", x, y) && x >= 0.0f && y >= 0.0f)
+                            m_loupePos = ImVec2(x, y);
+                    }
+
                     // Splat mode, Coarse Levels as Gaussians: the scale cap (JSON or INI); see OnRender's splatDiscRadius.
                     {
                         size_t hPos = line.find("\"splat_coarse_gaussian_cap\":");
@@ -571,6 +596,8 @@ namespace Surfels
             out << "  \"splat_draw_as_surfels\": " << (m_splatDrawAsSurfels ? "true" : "false") << ",\n";
             out << "  \"splat_coarse_as_gaussians\": " << (m_splatCoarseAsGaussians ? "true" : "false") << ",\n";
             out << "  \"splat_coarse_gaussian_cap\": " << m_splatCoarseGaussianCap << ",\n";
+            out << "  \"loupe_size\": \"" << (int)m_loupeSize.x << "," << (int)m_loupeSize.y << "\",\n";
+            if (m_loupePos.x >= 0.0f) out << "  \"loupe_pos\": \"" << (int)m_loupePos.x << "," << (int)m_loupePos.y << "\",\n";
             {
                 std::string order, open;
                 for (int i = 0; i < kRightSectionCount; i++)
@@ -2109,7 +2136,10 @@ namespace Surfels
         if (m_loupeDrag != 0)
         {
             if (!io.MouseDown[0] || !m_loupeEnabled)
+            {
                 m_loupeDrag = 0;
+                SaveConfigFile(); // The inset's size and place are remembered (loupe_size, loupe_pos)
+            }
             else
             {
                 const ImVec2 d = io.MouseDelta;

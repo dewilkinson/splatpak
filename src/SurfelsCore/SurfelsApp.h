@@ -548,7 +548,7 @@ namespace Surfels
         // on an edge or corner resizes it (UpdateCamera). Drag modes combine: two edge bits = a corner.
         static constexpr int kLoupeDragLeft = 1, kLoupeDragBottom = 2, kLoupeDragRight = 4, kLoupeDragTop = 8, kLoupeDragMove = 16;
         ImVec2 m_loupeSize = ImVec2((float)kLoupeWidth, (float)kLoupeHeight);
-        ImVec2 m_loupePos = ImVec2(-1.0f, -1.0f);   // Inset top-left, window pixels; negative = not placed yet (top right of the viewport)
+        ImVec2 m_loupePos = ImVec2(-1.0f, -1.0f);   // Inset top-left, window pixels; negative = not placed yet (top right of the viewport). Size and place are saved in config.json (loupe_size, loupe_pos) when a drag ends
         ImVec4 m_loupeRect = ImVec4(0.0f, 0.0f, 0.0f, 0.0f); // Inset x0, y0, x1, y1 last frame (for grabbing it)
         int    m_loupeDrag = 0;                      // The drag in progress (kLoupeDrag* bits); 0 = none
         int    m_loupeHover = 0;                     // What a drag would do from where the mouse is (highlighted)
