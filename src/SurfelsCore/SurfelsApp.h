@@ -301,7 +301,7 @@ namespace Surfels
         StreamingPolicy m_streamingPolicy           = StreamingPolicy::Greedy; // Greedy (default) or Conservative
         float  m_conservativeNeighborBufferMargin   = 1.35f;  // Frustum margin for pre-fetching local neighbors in conservative mode
         bool   m_enableDitheredTransitions  = true;   // Stochastic screen-space Bayer dithering for smooth LOD transitions
-        bool   m_demoteChunks               = false;  // Off: a node that has refined into its children stays refined when the zoom target coarsens or its edge flag drops (only Decay-marked children demote). On: the v1.2.0 handshake, children cross-fade back to the parent and are evicted
+        bool   m_demoteChunks               = false;  // Demote Chunks on Zoom Out. Off: detail already shown stays when the view coarsens (decay can still drain it). On: it fades back to the coarser level and is dropped
         bool   m_autoSplatSize       = true;   // Auto Splat Size: disc radius from each level's point spacing (m_lodSpacing x m_autoSplatCoverage), not the size classes
         float  m_autoSplatCoverage   = 1.2f;   // Disc radius as a multiple of the level's typical point spacing
         // Splat mode, Match Level 0 Softness (Renderer tab, saved in config.json): the coarse levels' discs take
@@ -368,16 +368,7 @@ namespace Surfels
         bool   m_enableSubpixelJitter       = true;   // 8-phase Halton(2,3) sub-pixel camera jitter
         bool   m_enableVarianceClamping     = true;   // 3x3 YCoCg neighborhood variance color box clamping (anti-ghosting)
 
-        // Streaming order (libs/bluesec-codec/StreamOrder.h): which face of the bounding octahedron each
-        // block belongs to, the per-face delivery lists, face visibility, and the dealing of a frame's
-        // bandwidth across faces. The app owns the blocks (handle = index into m_allStreamChunkPtrs) and
-        // asks the scheduler for this frame's load list; the rules live in the codec library.
-        // TIER 1 (silhouette edges and the bootstrap envelope) bypasses the capped demand queue: those requests
-        // go straight into a queue per face, and the delivery simulator serves the eight queues through the
-        // Refinement pacing (see UpdateStreamingSimulation): new cross-fades started this frame, the frame's
-        // budget of starts (UINT32_MAX = unlimited), and the starts deferred to a later frame by the budget.
-        // Streaming order after a rotation (see UpdateStreamingSimulation): the scheduler ranks its faces from
-        // has arrived
+        // Streaming tab: the streaming order's bounding octahedron (libs/bluesec-codec/StreamOrder.h, owned by m_stream)
         void  DrawOctahedronGlyph();                                   // Streaming tab: the octahedron's upper and lower faces, visible ones lit, each with its fill progress
         DetailGrid                            m_detailGrid;         // Detail grid for the loaded model: from the package (v7+) or built from LOD 0 on load / preprocess; written into exported packages
 

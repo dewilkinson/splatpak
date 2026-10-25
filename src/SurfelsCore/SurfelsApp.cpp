@@ -1924,7 +1924,8 @@ namespace Surfels
         m_residentLODs.clear();
         if (m_rawSurfels.empty() && m_rendererRawSurfels.empty()) return;
 
-        // place on the curve at every level (InitStreamingSimulation nests the stream blocks on it)
+        // Every level is sorted in one spatial order over the model's bounds, so a region sits at the same place
+        // in the order at every level (the streaming runtime's block hierarchy relies on it)
         m_lodSortFrameMin = m_aabbMin;
         m_lodSortFrameMax = m_aabbMax;
 
@@ -3456,6 +3457,7 @@ namespace Surfels
                         ImGui::TextDisabled("Active transitions: %u. Refinement starts deferred: %u (budget unlimited)", m_stream.m_lastActiveTransitions, m_stream.m_refineStartsDeferred);
                     else
                         ImGui::TextDisabled("Active transitions: %u. Refinement starts deferred: %u (budget %u chunks)", m_stream.m_lastActiveTransitions, m_stream.m_refineStartsDeferred, m_stream.m_refineStartBudget);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Chunks mid cross-fade last frame, and the refinements this frame held back to a later frame so the model refines gradually. A region that waits keeps showing its coarser level; the stream is not slowed.");
 
                     // Bandwidth Preset Buttons
                     ImGui::Text("Network Profiles:");

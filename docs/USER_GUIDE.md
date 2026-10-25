@@ -104,6 +104,8 @@ This tab simulates delivery over a constrained connection. It is useful for demo
 
 The **LOD Residency** panel on the right shows which chunks are resident, in transition or silhouette-locked at each level. Green bars filling in are streaming made visible.
 
+**Refinement pacing.** However fast data arrives, the model refines gradually: detail dissolves in chunk by chunk instead of snapping, and a region keeps showing its coarser level until its finer one is ready to fade in, while the data keeps arriving at full speed. The tab reports the transitions in progress and how many were held back this frame.
+
 ```mermaid
 flowchart TD
     Cam["Camera moves"] --> Sel["Screen-space error<br/>picks a target LOD per chunk"]

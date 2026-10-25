@@ -28,7 +28,8 @@ int main(int argc, char** argv)
         return 2;
     }
 
-    // the package bounds with the records and harmonics carried along (as SurfelsApp::PrecacheResidentLODs)
+    // Each level: every chunk's records, decoded for positions, then sorted in one spatial order over the
+    // package bounds with the records and harmonics carried along (as SurfelsApp::PrecacheResidentLODs)
     const XMFLOAT3 bmin = pkg.header.globalBoundsMin, bmax = pkg.header.globalBoundsMax;
     const uint32_t shBytes = SplatCodec::SHRecordBytes(pkg.splatParams.shDegree);
     size_t numLevels = 0;
