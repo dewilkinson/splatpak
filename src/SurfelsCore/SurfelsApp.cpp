@@ -1258,10 +1258,22 @@ namespace Surfels
     {
         for (;;)
         {
-            m_statusMessage = "Loading compressed surfel stream package (.sflw)...";
+            m_statusMessage = "Loading compressed 3DGS stream package (.sflw)...";
             std::string reason;
-            if (StreamPackager::LoadPackage(filepath, m_loadedPackage, &reason))
-                break;
+            // Loaded into a temporary: only a Gaussian package replaces the current one. Packages of 8-byte
+            // surfel discs (record format 0, every package before splat mode) are no longer drawn; the
+            // source they were baked from bakes again as Gaussians.
+            StreamPackager::SFLWPackageData pkg;
+            if (StreamPackager::LoadPackage(filepath, pkg, &reason))
+            {
+                if (pkg.IsSplatPackage())
+                {
+                    m_loadedPackage = std::move(pkg);
+                    break;
+                }
+                reason = "This is a surfel package (8-byte oriented discs), which this version no longer draws: it shows 3D Gaussian packages only. "
+                         "Open the source .ply or .splat it was baked from on the .SFLW Bake tab and save a new package.";
+            }
 
             m_statusMessage = "Failed to load compressed package: " + filepath + " -- " + reason;
             m_statusIsSuccess = false;
@@ -1535,7 +1547,11 @@ namespace Surfels
         // Stay on the .SFLW Bake tab: it is the primary workflow and its live controls (shave,
         // colour grade) act on the model just loaded. The Renderer tab is one click away.
 
-        m_statusMessage = "Successfully loaded compressed model: " + filepath + " (" + std::to_string(m_rendererSurfels.size()) + " surfels across " + std::to_string(m_rendererMeshletChunks.size()) + " meshlets, " + std::to_string(m_compressedSizeMB) + " MB)";
+        {
+            char detail[96];
+            snprintf(detail, sizeof(detail), " (%zu Gaussians, %.1f MB)", m_rendererSurfels.size(), m_compressedSizeMB);
+            m_statusMessage = "Successfully loaded compressed model: " + filepath + detail;
+        }
         m_statusIsSuccess = true;
         return true;
     }
@@ -1705,6 +1721,17 @@ namespace Surfels
         if (m_rawSurfels.empty()) return;
         m_occlusionGrid.valid = false; // Points/AABB may change below; the cached voxelization is stale
 
+        // Everything is 3D Gaussians: a plain point cloud (no Gaussian fields in the source) gets an isotropic
+        // Gaussian at every point, sized from its point spacing (PointCloudGaussians.h), before the cloud is
+        // cut into chunks, so every point carries its Gaussian's index through the decimation.
+        if (!m_isLoadedFromSFLW && m_splatAttributes.empty())
+        {
+            const float sigma = PointCloudGaussians::Build(m_rawSurfels, m_splatAttributes);
+            LogTransitionTrace("Point cloud: %zu points shown as Gaussians of sigma %.5f (half the median point spacing)", m_rawSurfels.size(), sigma);
+        }
+        m_sourceHasSplatAttributes = !m_splatAttributes.empty();
+        m_splatMode = m_sourceHasSplatAttributes;
+
         // 1. Compute Global AABB
         m_aabbMin = XMFLOAT3(1e9f, 1e9f, 1e9f);
         m_aabbMax = XMFLOAT3(-1e9f, -1e9f, -1e9f);
@@ -1781,7 +1808,6 @@ namespace Surfels
         // Splat mode: the encode parameters every level shares (positions span the model bounds; the
         // scale range covers every source Gaussian plus the growth of the coarser levels). The packager
         // derives the same values from the same inputs when the package is written.
-        if (m_splatAttributes.empty()) { m_sourceHasSplatAttributes = false; m_splatMode = false; }
         if (!m_isLoadedFromSFLW) DetectSourceSHDegree(); // A package's own degree was taken at load
         m_splatParams = SplatEncodeParams{};
         m_splatParams.shDegree = BakeSHDegree();
@@ -2821,24 +2847,20 @@ namespace Surfels
                 }
                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("Maximum number of multi-resolution LOD decimation levels in the wavelet pyramid. Applied when the slider is released.");
 
-                if (m_sourceHasSplatAttributes)
+                // Every point bakes as a 3D Gaussian (a plain point cloud's are made for it, see
+                // PointCloudGaussians.h); only how much view-dependent colour to keep is a choice.
+                if (m_splatMode)
                 {
-                    if (ImGui::Checkbox("Gaussian Splat Mode (full 3DGS record)", &m_splatMode))
+                    static const char* s_shNames[] = { "Low (degree 1, 9 bytes per splat)", "Medium (degree 2, 24 bytes per splat)", "High (degree 3, 45 bytes per splat)" };
+                    if (ImGui::Combo("SH Quality", &m_splatSHQuality, s_shNames, IM_ARRAYSIZE(s_shNames)))
                     {
                         m_pipelineNeedsUpdate = true;
                     }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bakes and draws every point as the 3D Gaussian the source describes: its three scales and rotation, its opacity, an 8-bit colour and, optionally, its spherical harmonics. 20 bytes per point plus the harmonics, against 8 bytes for a surfel, in exchange for the look of a reference splat viewer. Off: the 8-byte oriented-disc surfel.");
-                    if (m_splatMode)
-                    {
-                        static const char* s_shNames[] = { "Low (degree 1, 9 bytes per splat)", "Medium (degree 2, 24 bytes per splat)", "High (degree 3, 45 bytes per splat)" };
-                        if (ImGui::Combo("SH Quality", &m_splatSHQuality, s_shNames, IM_ARRAYSIZE(s_shNames)))
-                        {
-                            m_pipelineNeedsUpdate = true;
-                        }
-                        if (BakeSHDegree() < SplatSHDegree())
-                            ImGui::TextDisabled("The source carries degree %u: the bake keeps degree %u", m_sourceSHDegree, BakeSHDegree());
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("How much of the view-dependent colour (spherical harmonics) the package keeps. Low keeps the first band, which carries most of the tint shift with viewing angle; Medium adds the second band (sharper highlights) at about 2.7 times the harmonics bytes; High keeps all three bands the source has, at five times the harmonics bytes.");
-                    }
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("How much of the view-dependent colour (spherical harmonics) the package keeps. Low keeps the first band, which carries most of the tint shift with viewing angle; Medium adds the second band (sharper highlights) at about 2.7 times the harmonics bytes; High keeps all three bands the source has, at five times the harmonics bytes.");
+                    if (m_sourceSHDegree == 0)
+                        ImGui::TextDisabled("The source has no spherical harmonics (a point cloud): colour only");
+                    else if (BakeSHDegree() < SplatSHDegree())
+                        ImGui::TextDisabled("The source carries degree %u: the bake keeps degree %u", m_sourceSHDegree, BakeSHDegree());
                 }
 
                 if (ImGui::SliderFloat("Deadband Zero (mm)", &m_deadbandThresholdMM, 0.0f, 50.0f, "%.1f mm"))
@@ -2862,7 +2884,7 @@ namespace Surfels
                 {
                     RefreshOcclusionVolume();
                 }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bakes solid occluder cubes into the interior of the model so the renderer can depth-test against them to hide far-side surfels visible through gaps in a sparse near side. The volume is a closed voxel proxy of the whole model (surface shell plus everything it encloses). On by default; the sliders below rebuild it live.");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bakes solid occluder cubes into the interior of the model so the renderer can depth-test against them to hide far-side splats visible through gaps in a sparse near side. The volume is a closed voxel proxy of the whole model (surface shell plus everything it encloses). On by default; the sliders below rebuild it live.");
                 // Always shown (not gated on the checkbox or on a volume existing) so the controls are
                 // never hidden by a transient empty result; the checkbox decides whether a move rebuilds
                 // or clears.
@@ -2871,12 +2893,12 @@ namespace Surfels
                     {
                         RefreshOcclusionVolume();
                     }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Erodes the solid further inside the model. Cubes that would poke through the surfel surface are always removed first (see the count below), so 0 = the largest volume that stays inside the model and 10 = a thin core along the model's length. Thin and thick parts shrink together. Rebuilds live; baked into the package.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Erodes the solid further inside the model. Cubes that would poke through the splat surface are always removed first (see the count below), so 0 = the largest volume that stays inside the model and 10 = a thin core along the model's length. Thin and thick parts shrink together. Rebuilds live; baked into the package.");
                     // Colour grade of the baked colour. Applied when each block's colour is packed, so it
                     // ships in the .sflw like the shape does; rebuilds live off the cached grid.
                     bool gradeChanged = false;
                     gradeChanged |= ImGui::SliderFloat("Hue Shift", &m_occlusionHueShift, -180.0f, 180.0f, "%.0f deg");
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rotates the hue of every occluder block by this many degrees around the colour wheel. 0 = as sampled from the surfels.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rotates the hue of every occluder block by this many degrees around the colour wheel. 0 = as sampled from the splats.");
                     gradeChanged |= ImGui::SliderFloat("Saturation", &m_occlusionSaturation, 0.0f, 2.0f, "%.2fx");
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Scales colour saturation. 0 = greyscale, 1 = as sampled, above 1 = more vivid.");
                     gradeChanged |= ImGui::SliderFloat("Brightness", &m_occlusionBrightness, 0.0f, 2.0f, "%.2fx");
@@ -2889,7 +2911,7 @@ namespace Surfels
                     {
                         ImGui::TextDisabled("Auto resolution: %d cells along the longest axis (%.3f m per cell)", m_occlusionGrid.resolution, m_occlusionGrid.cellSize);
                         ImGui::TextDisabled("Shell padding: %d cell(s)   Poke-through cull: %zu of %zu cubes removed   Bias: %+.1f cells (config.json)", m_occlusionGrid.gapClose, m_occlusionGrid.pokeCount, m_occlusionGrid.solidCount, m_occlusionShaveBiasCells);
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Cubes whose corners fall outside the surfel surface (tested against the centroid and mean normal of the neighbouring surfels). Always removed, at any shave, so the volume never clips outside the model.");
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Cubes whose corners fall outside the splat surface (tested against the centroid and mean normal of the neighbouring splats). Always removed, at any shave, so the volume never clips outside the model.");
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Chosen from the point density so a few points span every surface cell. Interior blocks are merged into larger cubes automatically.");
                     }
                 }
@@ -3090,12 +3112,6 @@ namespace Surfels
                         }
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Grazing angle dot product threshold |N . V| to classify boundary chunks as silhouette.");
 
-                        if (ImGui::SliderFloat("Dilation Morph", &m_dilationMorphAmount, 0.0f, 1.0f, "%.2fx"))
-                        {
-                            m_streamStateDirty = true;
-                        }
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("While a silhouette edge chunk is mid-transition, its surfels are pushed outward along their normals and their discs swell (both scaled by this factor, fading with the dissolve) so the rim does not thin out between levels. 0 = off. 1 = full: up to 1.5 splat radii outward and 40%% larger discs, which reads as a breathing edge. Default 0.25: a subtle 10%% swell that covers the dissolve gap without visible bulging.");
-
                         if (ImGui::Button("Test Silhouette Edge Refinement", ImVec2(-1, 26)))
                         {
                             TriggerSilhouetteEdgeMorphTest();
@@ -3161,24 +3177,14 @@ namespace Surfels
                             if (ImGui::IsItemHovered()) ImGui::SetTooltip("Largest scale a coarse Gaussian may take, per axis, as a multiple of its level's point spacing. The coarse records are grown well past that and bloom into a blur around the model without a cap; 1.5 measured best on cthulu (0.75 is a little grainier). 0 = no cap. Remembered across sessions.");
                         }
                     }
-                    ImGui::SliderFloat("Splat Radius Scale", &m_state.splatRadius, 0.10f, 10.0f, "%.2fx");
-                    ImGui::Checkbox("Auto Splat Size (per-level density)", &m_autoSplatSize);
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Sizes every disc from its level's typical point spacing instead of the per-point size classes: a dense patch covers the surface exactly and an isolated point (scan outlier, decimation stray) gets the same small disc instead of an inflated one, which removes the halo of ghost discs around the model at coarse levels. Splat Radius Scale still multiplies.");
-                    if (m_autoSplatSize)
+                    // Splat Radius Scale, Auto Splat Size and its Coverage sized the surfel discs, which are gone;
+                    // their defaults still size the silhouette prepass's coarse discs (m_state.lodRadius).
+                    if (!m_lodSpacing.empty())
                     {
-                        ImGui::Indent(12.0f);
-                        ImGui::PushItemWidth(150.0f);
-                        ImGui::SliderFloat("Coverage", &m_autoSplatCoverage, 0.0f, 8.0f, "%.2f x spacing");
-                        ImGui::PopItemWidth();
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Disc radius as a multiple of the level's point spacing. Around 1.0 neighbouring discs just cover the surface; below ~0.6 gaps open, well above 1 discs overlap heavily and strays grow again. Splats that project below about 1.5 pixels are drawn as opaque one-pixel dots regardless.");
-                        if (!m_lodSpacing.empty())
-                        {
-                            std::string sp = "Level spacing:";
-                            for (size_t l = 0; l < m_lodSpacing.size(); l++) { char b[40]; snprintf(b, sizeof(b), " L%zu %.4g", l, m_lodSpacing[l]); sp += b; }
-                            ImGui::TextDisabled("%s", sp.c_str());
-                            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Median nearest-neighbour distance of each level's points, in model units (measured on load).");
-                        }
-                        ImGui::Unindent(12.0f);
+                        std::string sp = "Level spacing:";
+                        for (size_t l = 0; l < m_lodSpacing.size(); l++) { char b[40]; snprintf(b, sizeof(b), " L%zu %.4g", l, m_lodSpacing[l]); sp += b; }
+                        ImGui::TextDisabled("%s", sp.c_str());
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Median nearest-neighbour distance of each level's points, in model units (measured on load).");
                     }
                     ImGui::Separator();
 
@@ -3212,17 +3218,6 @@ namespace Surfels
                         ImGui::PopStyleVar();
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Unavailable on this GPU path (%s): there is no amplification (task) shader stage. Chunk backface culling runs per splat in the vertex shader instead and is always on.", m_pRenderer->GetRenderPathDescription());
                     }
-                    else if (m_splatMode && SplatRenderMode() == 4)
-                    {
-                        // Splat package drawn as surfels: cone culling is off (the chunk cones come from placeholder
-                        // normals; see SurfelsRenderer). Greyed out; edits go to a copy and are dropped.
-                        bool coneShown = m_enableConeCulling;
-                        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.45f);
-                        ImGui::Checkbox("Meshlet Backface Cone Culling (Task Shader)", &coneShown);
-                        ImGui::PopStyleVar();
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Task Shader (mainAS) culls ~50% of meshlet chunks facing away from the camera before mesh shaders and rasterization ever execute. Off for a splat package drawn as surfels: its chunk normal cones are placeholders.");
-                        ImGui::TextDisabled("off for splat packages drawn as surfels");
-                    }
                     else
                     {
                         ImGui::Checkbox("Meshlet Backface Cone Culling (Task Shader)", &m_enableConeCulling);
@@ -3254,7 +3249,7 @@ namespace Surfels
                     {
                         m_streamStateDirty = true;
                     }
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Smooths stochastic Bayer dither patterns into seamless photo-realistic alpha dissolves,\nand eliminates surfel edge shimmer via temporal history accumulation.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Smooths stochastic Bayer dither patterns into seamless photo-realistic alpha dissolves,\nand eliminates splat edge shimmer via temporal history accumulation.");
 
                     if (m_enableTemporalFiltering)
                     {
@@ -3268,7 +3263,7 @@ namespace Surfels
                         {
                             m_streamStateDirty = true;
                         }
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Applies sub-pixel projection jitter to reconstruct crisp anti-aliased surfel edges when stationary.");
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Applies sub-pixel projection jitter to reconstruct crisp anti-aliased splat edges when stationary.");
 
                         if (ImGui::Checkbox("Variance Color Box Clamping (Anti-Ghosting)", &m_enableVarianceClamping))
                         {
@@ -3313,7 +3308,7 @@ namespace Surfels
                         UpdatePreviewSurfels();
                     }
                     m_state.useChunkedPipeline = m_useChunkedPipeline;
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hierarchical two-level sorting: 64-surfel meshlet clusters with Amplification Shader (AS) frustum culling.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Hierarchical two-level sorting: 64-splat meshlet clusters with Amplification Shader (AS) frustum culling.");
 
                     ImGui::SameLine();
                     ImGui::TextColored(m_useChunkedPipeline ? ImVec4(0.3f, 1.0f, 0.4f, 1.0f) : ImVec4(1.0f, 0.6f, 0.2f, 1.0f),

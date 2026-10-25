@@ -2,11 +2,12 @@
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// Command-line packager: loads a .ply point cloud and writes the same .sflw that SplatLab's
-// "Save Compressed Package" would produce for it with default settings -- octree chunking, the
-// wavelet LOD pyramid, the baked interior occlusion volume, and the source file size in the header.
+// Command-line packager: loads a .ply (a 3DGS scene, or a plain point cloud shown as Gaussians at its
+// points, see PointCloudGaussians.h) and writes the same .sflw that SplatLab's "Save Compressed
+// Package" would produce for it with default settings -- octree chunking, the wavelet LOD pyramid,
+// 20-byte Gaussian records, the baked interior occlusion volume, and the source file size in the header.
 // Used to regenerate the bundled assets without the GUI, and as an end-to-end pipeline smoke test.
-//   CompressVenus <input.ply> <output base path> [shave 0..10]
+//   CompressVenus <input.ply> <output base path> [shave 0..10] [spherical-harmonics degree 0..3, default 3]
 
 #include <iostream>
 #include <fstream>
@@ -15,6 +16,7 @@
 #include "../src/SurfelsCore/PLYLoader.h"
 #include "../src/SurfelsCore/SpatialOctree.h"
 #include "../src/SurfelsCore/StreamPackager.h"
+#include "../src/SurfelsCore/PointCloudGaussians.h"
 #include "../libs/bluesec-codec/OcclusionVolume.h"
 
 int main(int argc, char** argv)
@@ -22,15 +24,14 @@ int main(int argc, char** argv)
     std::string inputPLY = (argc > 1) ? argv[1] : "models/venus.ply";
     std::string outputBase = (argc > 2) ? argv[2] : "models/venus";
     float shave = (argc > 3) ? (float)atof(argv[3]) : 0.0f;
-    // Splat mode: a fourth argument gives the spherical-harmonics degree (0, 1 or 3) and bakes the
-    // package as 20-byte Gaussians (surfel format 1) when the .ply carries 3DGS attributes.
-    const int splatDegree = (argc > 4) ? atoi(argv[4]) : -1;
+    // The spherical-harmonics degree the package keeps (0 to 3; a point cloud has none, so 0)
+    const int splatDegree = std::max(0, std::min(3, (argc > 4) ? atoi(argv[4]) : 3));
 
     std::cout << "Loading " << inputPLY << "..." << std::endl;
     std::vector<Surfels::SurfelVertex> surfels;
     std::vector<Surfels::SplatAttributes> splatAttrs;
     double origin[3] = {0,0,0};
-    if (!Surfels::PLYLoader::LoadPLY(inputPLY, surfels, origin, splatDegree >= 0 ? &splatAttrs : nullptr))
+    if (!Surfels::PLYLoader::LoadPLY(inputPLY, surfels, origin, &splatAttrs))
     {
         std::cerr << "Failed to load " << inputPLY << std::endl;
         return 1;
@@ -79,18 +80,22 @@ int main(int argc, char** argv)
         std::cout << trace;
     }
 
+    // A plain point cloud: a Gaussian at every point, before the chunking so each point keeps its index
+    const bool pointCloud = splatAttrs.empty();
+    if (pointCloud)
+    {
+        const float sigma = Surfels::PointCloudGaussians::Build(surfels, splatAttrs);
+        std::cout << "Point cloud: a Gaussian of sigma " << sigma << " at each point (half the median spacing)" << std::endl;
+    }
+
     auto chunks = Surfels::SpatialOctree::PartitionIntoChunks(surfels, chunkSize);
     std::cout << "Partitioned into " << chunks.size() << " chunks. Packaging to " << outputBase << ".sflw..." << std::endl;
 
     Surfels::SplatBakeInput splatInput;
     splatInput.attributes = &splatAttrs;
-    splatInput.shDegree = (uint32_t)std::max(0, splatDegree);
-    const bool splatMode = splatDegree >= 0 && !splatAttrs.empty();
-    if (splatDegree >= 0 && splatAttrs.empty())
-        std::cout << "Note: " << inputPLY << " carries no 3DGS attributes; baking 8-byte surfels instead." << std::endl;
-    if (splatMode)
-        std::cout << "Splat mode: 20-byte Gaussian records, spherical-harmonics degree " << splatInput.shDegree << std::endl;
-    if (!Surfels::StreamPackager::PackageDataset(outputBase, chunks, maxLODs, deadbandMeters, splatRadius, occlusion, sourceFileBytes, &occlusionMips, &detailGrid, splatMode ? &splatInput : nullptr))
+    splatInput.shDegree = pointCloud ? 0u : (uint32_t)splatDegree;
+    std::cout << "Splat mode: 20-byte Gaussian records, spherical-harmonics degree " << splatInput.shDegree << std::endl;
+    if (!Surfels::StreamPackager::PackageDataset(outputBase, chunks, maxLODs, deadbandMeters, splatRadius, occlusion, sourceFileBytes, &occlusionMips, &detailGrid, &splatInput))
     {
         std::cerr << "Failed to package dataset" << std::endl;
         return 1;

@@ -26,6 +26,7 @@
 #include "Quantizer.h"
 #include "../../libs/bluesec-codec/ByteShuffle.h"
 #include "StreamPackager.h"
+#include "PointCloudGaussians.h"
 #include "ImageCompare.h"
 #include <commdlg.h>
 #include <string>
