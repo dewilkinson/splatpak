@@ -128,6 +128,11 @@ int Surfels::RunSurfelsApp(HINSTANCE hInstance, LPSTR lpCmdLine, int nCmdShow, c
                 forwarded += "--render-path " + args[++i] + " ";
                 continue;
             }
+            if (a == "--stream-test")
+            {
+                forwarded += a + " ";
+                continue;
+            }
             if (a == "--lod-quality-test" || a == "--lod-calibration")
             {
                 if (i + 1 >= args.size())

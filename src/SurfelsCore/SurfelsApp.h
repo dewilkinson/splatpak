@@ -27,6 +27,7 @@
 #include "../../libs/bluesec-codec/ByteShuffle.h"
 #include "StreamPackager.h"
 #include "PointCloudGaussians.h"
+#include "../../libs/bluesec-codec/StreamRuntime.h"
 #include "ImageCompare.h"
 #include <commdlg.h>
 #include <string>
@@ -127,7 +128,6 @@ namespace Surfels
         StreamPackager::SFLWPackageData m_loadedPackage;
         std::vector<PackedSurfelGPU>    m_rendererSurfels;
         std::vector<SurfelVertex>       m_rendererRawSurfels;
-        std::vector<MeshletChunkGPU>    m_rendererMeshletChunks;
         std::vector<ChunkData>          m_rendererOctreeChunks;
 
         // Bounding box & stats
@@ -214,13 +214,7 @@ namespace Surfels
         // levels), kept for comparison (the LOD quality test measures both). Saved in config.json.
         bool  m_lodScreenSpace       = true;
         float m_lodPixelSpacing      = 1.0f;
-        float LodEffectiveDistance(float cameraDistance) const;  // Camera to the model's near side, the distance the screen-space rule projects at
-        float LodFocalPixels() const;                            // Pixels per unit of tangent at the render height (the renderer's 45-degree vertical field of view)
-        float ContinuousLodAtDistance(float cameraDistance, bool screenSpace) const; // The level the rule wants at this distance, fractional
-        float ContinuousLodAtDepth(float viewDepth) const;      // The screen-space rule at a view depth, fractional
         bool  m_lodPerBlock          = false;                    // Screen-space LOD per block: each block's level from its own distance to the eye (BlockTargetLOD); off = one level for the whole model from its near side. Off by default until the pixel threshold is calibrated for it: at 1 px it draws 57% fewer splats than the model-wide level but is visibly softer, since a coarse level drawn as merged Gaussians does not match a finer one even at sub-pixel point spacing
-        bool  PerBlockLodActive() const;
-        float LodSwitchDistance(int level, bool screenSpace) const;                // Camera distance at which auto LOD steps from level - 1 to level
         bool  m_autoRotate           = false; // Disabled by default
         bool  m_showControlHints     = true;  // Viewport: draw the faint rotate/zoom/pan reminder at the bottom-right (see DrawControlHints); saved in config.json
         int         m_renderPathOverride = -1;     // "render_path" from config.json or --render-path: -1 auto, else SurfelsRenderer::RenderPath to force (testing)
@@ -265,15 +259,12 @@ namespace Surfels
         std::vector<SurfelVertex> m_previewLODSurfels;
 
         // Pre-cached resident GPU/CPU LOD buffers for zero-hitch instantaneous transitions
-        struct ResidentLOD
-        {
-            std::vector<SurfelVertex> rawSurfels;
-            std::vector<PackedSurfelGPU> packedSurfels;
-            std::vector<PackedSplatGPU> splats;   // Splat mode: the level's 20-byte Gaussian records
-            std::vector<uint8_t>        splatSH;  // Splat mode: the level's spherical-harmonics stream
-            std::vector<MeshletChunkGPU> meshletChunks;
-        };
         std::vector<ResidentLOD> m_residentLODs;
+        // The streaming runtime (libs/bluesec-codec/StreamRuntime.h): it owns the blocks, residency, delivery and
+        // the render list; the app feeds it the levels above, its settings and the camera, and draws its output
+        StreamRuntime m_stream;
+        void SyncStreamInputs();   // The UI settings and the camera, into m_stream (every frame, and before any call into it)
+        void ApplyStreamFrame();   // The runtime's render list and buffers, into the renderer state
         XMFLOAT3 m_lodSortFrameMin = { 0, 0, 0 }; // The Morton frame every level is sorted in (PrecacheResidentLODs): the model's bounds
         XMFLOAT3 m_lodSortFrameMax = { 0, 0, 0 };
         void PrecacheResidentLODs();
@@ -303,61 +294,9 @@ namespace Surfels
         void     ApplySplatRenderState();
 
         // Progressive Network Streaming & Bandwidth Throttle Simulator
-        struct StreamChunk
-        {
-            int      lodLevel = 0;
-            size_t   chunkIndex = 0;
-            XMFLOAT3 center = { 0, 0, 0 };
-            float    radius = 0.0f;
-            XMFLOAT3 avgNormal = { 0, 1, 0 };      // Representative surface normal for silhouette edge testing
-            float    normalSpread = 0.0f;          // Normal angular variation
-            float    detailScore = 0.0f;           // 0..1 from the package's detail grid over this block's bounds (DetailGrid::SampleBox); an input to the streaming order
-            uint8_t  octahedronFace = 0;           // Face (0..7) of the bounding octahedron this block was assigned by StreamOrder::Build
-            std::vector<SurfelVertex>   rawSurfels;
-            std::vector<PackedSurfelGPU> packedSurfels;
-            size_t   byteSize = 0;
-            float    currentPriority = 0.0f;
-            bool     isRequested = false;
-            bool     isEdgeQueued = false;         // Has an entry in one of the per-face edge queues (m_faceEdgeQueue); cleared when that entry is consumed
-            uint32_t lastRequestFrame = 0;         // m_streamFrame of the traversal's most recent request for this block; an edge-queue entry not re-requested for a while is stale and dropped
-            uint32_t deliveryCount = 0;            // Deliveries since the last streaming reset (diagnostic: > 1 means the block was evicted and streamed again)
-            bool     isDelivered = false;
-            bool     isResident = false;
-            bool     isEvictionPending = false;    // Marked for eviction: waiting for parent demotion transition to complete
-            bool     isLockedInTransition = false; // Locked against eviction while transition is running in either direction
-            bool     hasRefined = false;           // Has refined into its children (CASE 2) since they last arrived. Only then does dropping back to this node (CASE 1) evict them; children that came in ahead of need and were never shown stay resident for when the view gets closer
-            bool     refinedBySilhouette = false;  // The refinement into its children was edge-driven (this node sits at or below the target level). When the flag drops and it demotes, the children are kept resident: evicting them only made the face lists re-stream them for the next flag, which flashed the visible faces while spinning
-            bool     isSilhouette = false;         // Active in-view silhouette edge chunk (locked against eviction)
-            float    transitionProgress = 0.0f;   // 0.0 (Parent Level N Solid) <-> 1.0 (Children Level N-1 Solid)
-            float    streamWaveTimer = 0.0f;      // Arrival glow (Refinement Visualizer) countdown, m_chunkStreamDuration -> 0; started by the chunk's first draw after delivery (see streamWavePending)
-            bool     streamWavePending = false;   // Delivered but not yet drawn: the arrival glow is armed and starts on the first draw, so a chunk whose refinement start the pacing defers (levels 1 and 0 at high bandwidth) still glows when it appears instead of expiring unseen
-            uint32_t deliverySeq = 0;             // Order of delivery by the stream (1 = first delivered this session; 0 = resident at load). The refinement pacing admits waiting groups in this order so the model grows back in the scheduler's order, not the traversal's
-            float    silhouetteHysteresisTimer = 0.0f; // Hysteresis hold time (seconds) to eliminate refinement/demotion thrashing
-            bool     renderedLastFrame = false;    // Visited by the previous frame's traversal: rendered, or refined in place of by its children. Only such "active" chunks may keep an edge flag; anything the traversal never reached (a level outside the active range) is cleared before the next traversal. Clearing on "not rendered" alone made a refined edge parent lose its flag, re-render, get re-detected and refine again every other frame -- a whole-model flicker
-            uint32_t globalSurfelOffset = 0;      // Zero-copy offset into m_unifiedPackedSurfels / m_unifiedRawSurfels
-            XMFLOAT3 aabbMin = { 0, 0, 0 };
-            XMFLOAT3 aabbMax = { 0, 0, 0 };
-            size_t   childBegin = 0;              // The block's children at the next finer level: m_lodStreamChunks[lodLevel - 1][childBegin, childEnd). The finer
-            size_t   parentIndex = SIZE_MAX;      // The block's parent at the next coarser level (SIZE_MAX at the coarsest level, or when the levels are not nested)
-            bool     appendedLastFrame = false;
-        };
 
-        struct ChunkRequest
-        {
-            int    lodLevel = 0;
-            size_t chunkIndex = 0;
-            float  priority = 0.0f;
-        };
 
-        std::vector<ChunkRequest> m_demandRequestQueue;
-        size_t                    m_demandRequestHead = 0; // O(1) queue consumption without array shifts
-        void RequestChunk(int lodLevel, size_t chunkIndex, float priority);
 
-        enum class StreamingPolicy
-        {
-            Conservative = 0, // The view's own requests cover only visible chunks + a local neighbour buffer, and detail the view drops back from is evicted. The scheduler's face streams run in both policies (see StreamOrder.h)
-            Greedy       = 1  // Refines visible chunks first, then continues pre-fetching remaining background chunks
-        };
 
         StreamingPolicy m_streamingPolicy           = StreamingPolicy::Greedy; // Greedy (default) or Conservative
         float  m_conservativeNeighborBufferMargin   = 1.35f;  // Frustum margin for pre-fetching local neighbors in conservative mode
@@ -365,8 +304,6 @@ namespace Surfels
         bool   m_demoteChunks               = false;  // Off: a node that has refined into its children stays refined when the zoom target coarsens or its edge flag drops (only Decay-marked children demote). On: the v1.2.0 handshake, children cross-fade back to the parent and are evicted
         bool   m_autoSplatSize       = true;   // Auto Splat Size: disc radius from each level's point spacing (m_lodSpacing x m_autoSplatCoverage), not the size classes
         float  m_autoSplatCoverage   = 1.2f;   // Disc radius as a multiple of the level's typical point spacing
-        std::vector<float> m_lodSpacing;       // Per LOD level: median nearest-neighbour distance of its points (world units), from ComputeLodSpacing
-        void   ComputeLodSpacing();           // Fills m_lodSpacing from the resident level point sets (after a load or a preprocess)
         // Splat mode, Match Level 0 Softness (Renderer tab, saved in config.json): the coarse levels' discs take
         // the radius factor derived from the level 0 Gaussians (ComputeSplatSoftness) instead of the fixed 1.5,
         // and discs of level 1 and up take an opacity floor (State::splatDiscOpacityFloor). Off: 1.5, no floor.
@@ -391,7 +328,6 @@ namespace Surfels
         bool   m_prioritizeFrustumAndProximity = true; // Stream view frustum & close proximity chunks first
         float  m_bandwidthThrottleMBps      = 10.0f;  // Simulated bandwidth in MB/s
         float  m_ringBufferCapacityMB       = 512.0f; // GPU Ring Buffer capacity limit in MB. Defaults to the slider's ceiling (see MaxRingBufferMB) whenever a dataset's stream is built
-        float  MaxRingBufferMB() const;               // Ring buffer slider ceiling: 512 MB, or twice the loaded dataset's total stream size, whichever is larger
         bool   m_enableStreamDecay          = false;  // Toggle cache decay on/off
         float  m_streamDecayRate            = 5.00f;  // Decay rate (0.0 = no decay .. 10.0 = max) for memory reclamation.
                                                         // At 10.0 a full drain (everything but the two pinned coarsest
@@ -400,23 +336,13 @@ namespace Surfels
                                                         // evictable byte total, not of the bandwidth, so the throttle
                                                         // cancels out. Scales linearly below max (5.0 = twice as long).
                                                         // See the decay budget calculation in UpdateStreamingSimulation.
-        static constexpr float kMaxDecayRate                    = 10.0f; // Slider maximum
-        static constexpr float kDecayFullDrainSecondsAtMaxRate  = 10.0f; // Full-drain time at rate 10, independent of bandwidth
         // Decay is a fixed outflow in bytes per second, set only when the toggle or the slider changes
         // (or a model loads): rate 10 = the whole evictable set in kDecayFullDrainSecondsAtMaxRate at the
         // bandwidth in force at that moment (the reference bandwidth, added to the outflow so the NET
         // drain at that bandwidth takes exactly that long; Full = no inflow term). Changing the bandwidth
         // afterwards does not touch it, so the throttle becomes the knob for the net eviction rate.
-        float  m_decayBytesPerSec = 0.0f;
-        float  m_decayReferenceBandwidthBps = 0.0f;                     // 0 = Full (uncapped) was the reference
         void   CalibrateDecay();
-        float  EvictableStreamBytes() const;                            // Everything but the two pinned coarsest levels
-        float  DecayFullDrainSeconds() const;                            // Implied full-drain time for the current slider value (0 when decay is off)
         bool   m_isStreamingPaused          = false;  // Pause/Resume packet streaming
-        float  m_simulatedBytesDelivered    = 0.0f;   // Transferred bytes accumulator
-        float  m_totalStreamBytes           = 0.0f;   // Total model transfer size
-        float  m_streamRefinementProgress   = 1.0f;   // 0.0f to 1.0f
-        size_t m_evictedSurfelCount         = 0;      // Count of earlier slots evicted from GPU Ring Buffer
 
         // Show Chunk Stream: Creeping Wavefront & Dissolving Alpha Wake
         bool   m_showChunkStream            = true;   // Streaming arrival visualizer: newly delivered chunks glow white-gold, cool to gold and fade out (Renderer tab: "Show Streaming Arrivals")
@@ -442,68 +368,21 @@ namespace Surfels
         bool   m_enableSubpixelJitter       = true;   // 8-phase Halton(2,3) sub-pixel camera jitter
         bool   m_enableVarianceClamping     = true;   // 3x3 YCoCg neighborhood variance color box clamping (anti-ghosting)
 
-        std::vector<std::vector<StreamChunk>> m_lodStreamChunks; // Chunks grouped by LOD level for O(1) equalizer
-        std::vector<StreamChunk*>             m_allStreamChunkPtrs; // Flat list of pointers for priority sorting
         // Streaming order (libs/bluesec-codec/StreamOrder.h): which face of the bounding octahedron each
         // block belongs to, the per-face delivery lists, face visibility, and the dealing of a frame's
         // bandwidth across faces. The app owns the blocks (handle = index into m_allStreamChunkPtrs) and
         // asks the scheduler for this frame's load list; the rules live in the codec library.
-        StreamOrder               m_streamOrder;
-        std::vector<uint32_t>     m_scratchLoadHandles;               // This frame's load list from the scheduler (block handles)
-        std::vector<StreamChunk*> m_scratchLoadList;                  // The same list as chunk pointers, in delivery order
-        std::vector<size_t>       m_faceDrainBuckets[kOctahedronFaces]; // Scratch: demand-queue entries of the tier being delivered, bucketed by face
         // TIER 1 (silhouette edges and the bootstrap envelope) bypasses the capped demand queue: those requests
         // go straight into a queue per face, and the delivery simulator serves the eight queues through the
-        static constexpr size_t   kMaxEdgeQueuePerFace = 8192;
-        std::vector<ChunkRequest> m_faceEdgeQueue[kOctahedronFaces];
-        size_t                    m_faceEdgeHead[kOctahedronFaces] = {};
-        uint32_t                  m_streamFrame = 0;                   // Counts UpdateStreamingSimulation calls (request staleness)
-        uint32_t                  m_edgeRefineStartsThisFrame = 0;     // Edge-driven refinements into already-resident children begun this frame (capped, see kEdgeRefineStartsPerFrame)
         // Refinement pacing (see UpdateStreamingSimulation): new cross-fades started this frame, the frame's
         // budget of starts (UINT32_MAX = unlimited), and the starts deferred to a later frame by the budget.
-        uint32_t                  m_refineStartsThisFrame = 0, m_refineStartBudget = 0, m_refineStartsDeferred = 0;
-        uint32_t                  m_deliverySeqCounter = 0;            // Last StreamChunk::deliverySeq handed out
         // Streaming order after a rotation (see UpdateStreamingSimulation): the scheduler ranks its faces from
         // has arrived
-        int                       BlockTargetLOD(const StreamChunk& c, const XMFLOAT3& eye) const; // The level a block should render at from its own distance to the eye
-        float                     m_streamSettleTimer = 0.0f;          // Seconds since the camera last moved
-        bool                      m_streamReorderPending = false;      // The camera moved; re-evaluate once it settles
-        XMFLOAT3                  m_orderEye = { 0, 0, 0 };
-        bool                      m_orderEyeValid = false;
-        XMFLOAT3                  m_pendingOrderEye = { 0, 0, 0 };
-        std::vector<StreamChunk*> m_finishBatch;
-        float                     m_finishBatchTimer = 0.0f;
-        bool                      m_finishBatchPending = false;
-        std::vector<std::pair<uint32_t, uint32_t>> m_refineDeferred;  // Groups the pacing deferred this frame: (rank = the children's latest deliverySeq, start cost in chunks); sorted at the next frame's start to set m_refineAdmitSeqLimit
-        uint32_t                  m_refineAdmitSeqLimit = 0;           // This frame a deferred group may start only if its rank is at or below this (delivery order); UINT32_MAX = no ordering (budget unlimited)
-        float                     m_refinePacingTraceTimer = 0.0f;     // Once-per-second trace line while starts are being deferred
-        uint32_t                  m_extraDeliveries = 0;               // Diagnostic: deliveries of blocks that had already been delivered since the last reset (re-streamed after an eviction)
-        uint32_t                  m_redeliveredBlocks = 0;             // Diagnostic: distinct blocks delivered more than once since the last reset
-        void  ClearFaceEdgeQueues();                                // Drops every queued edge request (streaming reset)
-        void  HealStaleRequestFlags();                              // Periodic safety net: clears isRequested / isEvictionPending on non-resident blocks no queue holds, so a lost request cannot leave a permanent hole
-        uint32_t m_residencyEpoch = 0;                              // Bumped whenever any block stops being resident (evict, reset, decay); the scheduler restarts its cursors on a change
         void  DrawOctahedronGlyph();                                   // Streaming tab: the octahedron's upper and lower faces, visible ones lit, each with its fill progress
         DetailGrid                            m_detailGrid;         // Detail grid for the loaded model: from the package (v7+) or built from LOD 0 on load / preprocess; written into exported packages
-        std::vector<StreamChunk*>             m_rendererSourceChunks; // Source chunk pointers corresponding to m_rendererMeshletChunks
-        std::vector<PackedSurfelGPU>          m_unifiedPackedSurfels; // Global zero-copy packed surfel buffer
-        std::vector<SurfelVertex>            m_unifiedRawSurfels;    // Global zero-copy raw surfel buffer
-        std::vector<PackedSplatGPU>          m_unifiedSplats;        // Splat mode: global zero-copy Gaussian records (same offsets as the packed buffer)
-        std::vector<uint8_t>                 m_unifiedSH;            // Splat mode: their spherical-harmonics stream
-        std::vector<size_t>                   m_lodTotalSurfels;   // Total surfels per LOD level
-        std::vector<size_t>                   m_lodResidentSurfels;// Resident surfels per LOD level
 
         // Throttling for frustum priority re-sorting & UI indicator stabilization
-        XMFLOAT3 m_lastStreamCamPos = { 1e9f, 1e9f, 1e9f };
-        float    m_lastStreamYaw = 1e9f;
-        float    m_lastStreamPitch = 1e9f;
-        float    m_priorityUpdateTimer = 0.0f;
-        float    m_equalizerUpdateTimer = 0.0f;
-        std::vector<float>    m_smoothedLodResidentPct;
-        std::vector<uint32_t> m_smoothedLodResidentBlocks;
-        bool     m_streamStateDirty = true;
-        uint32_t m_lastActiveTransitions = 0; // Simultaneously mid-transition chunk count from the previous frame; forces instant transition completion under overload (see UpdateStreamingSimulation)
 
-        float  m_morphTestDebounceTimer = 0.0f;
 
         void   InitStreamingSimulation();
         void   UpdateStreamingSimulation(double dtSeconds);
@@ -584,6 +463,10 @@ namespace Surfels
         double                   m_lodCalStableSeconds = 0.0; // How long the render list has been unchanged with no cross-fade running
         float                    m_lodCalFit = 0.0f;
         void  StepLodCalibration();    // Once per frame, before the UI
+        bool   m_streamTest = false;         // --stream-test: a scripted Evict at 5G, for streaming baselines (StepStreamTest)
+        int    m_streamTestPhase = 0;
+        double m_streamTestSeconds = 0.0;
+        void   StepStreamTest();
         void  FinishLodCalibration();  // Compares the captures and writes the report
         void  SetSplatDrawAsSurfels(bool asSurfels);        // Draw Splats as Surfels, as the checkbox applies it (re-stamps the chunks' fade value)
         // Loupe (L): a box that follows the mouse over the viewport, drawn again

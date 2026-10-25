@@ -147,6 +147,9 @@ namespace Surfels
             "--lod-quality-test <folder>\n"
             "  Once the model has fully streamed in, render it at every LOD switch distance, compare each level against level 0 at the same distance (PSNR, SSIM), write the images and report.md to the folder, and quit.\n"
             "\n"
+            "--stream-test\n"
+            "  Once the model has fully streamed in, select the 5G profile, press Evict at the launch view, let the refill run for 60 s and quit. The trace log records it: a repeatable streaming baseline.\n"
+            "\n"
             "--lod-calibration <folder>\n"
             "  Once the model has fully streamed in, render the launch view at three distances with level 0 everywhere, the model-wide level rule and per-block levels at a range of pixel thresholds, compare each with level 0 (PSNR, SSIM, splats drawn) and write report.md, results.csv and the images to the folder.\n"
             "\n"
@@ -179,6 +182,11 @@ namespace Surfels
             {
                 m_lodTestFolder = args[++i];
                 LogTransitionTrace("Command line: --lod-quality-test %s", m_lodTestFolder.c_str());
+            }
+            else if (a == "--stream-test")
+            {
+                m_streamTest = true;
+                LogTransitionTrace("Command line: --stream-test");
             }
             else if (a == "--lod-calibration" && i + 1 < args.size())
             {
@@ -616,7 +624,6 @@ namespace Surfels
         }
     }
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
     // Persists the current config-file-backed settings back to disk
     void SurfelsApp::SaveConfigFile()
@@ -665,6 +672,7 @@ namespace Surfels
     // Boots the renderer, loads config, and auto-loads the startup dataset (or waits for the user to pick one)
     void SurfelsApp::OnCreate()
     {
+        StreamRuntime::SetTrace([](const char* line) { LogTransitionTrace("%s", line); });
         {
             FILE* fp = fopen(kTraceLogFilename, "w");
             if (fp)
@@ -909,7 +917,7 @@ namespace Surfels
 
         ImGuiIO& io = ImGui::GetIO();
         io.DisplaySize = ImVec2((float)m_Width, (float)m_Height);
-        m_streamStateDirty = true;
+        m_stream.m_streamStateDirty = true;
 
         // Keep the model's relative size when the window is resized: rescale the camera distance by the
         // ratio of the fit distance for the new size to the one for the old size. This preserves any
@@ -946,7 +954,7 @@ namespace Surfels
         m_waveletResult.lodLevels.clear();
         m_rendererSurfels.clear();
         m_rendererRawSurfels.clear();
-        m_rendererMeshletChunks.clear();
+        m_stream.m_rendererMeshletChunks.clear();
         m_rendererOctreeChunks.clear();
         m_loadedFilePath = "No dataset loaded";
         m_rendererSourceDescription = "No model active";
@@ -1414,16 +1422,16 @@ namespace Surfels
         }
 
         // Partition into GPU micro-meshlets (64 surfels per meshlet chunk)
-        m_rendererMeshletChunks.clear();
+        m_stream.m_rendererMeshletChunks.clear();
         SpatialOctree::PartitionIntoMeshletChunks(
             m_rendererRawSurfels,
-            m_rendererMeshletChunks,
+            m_stream.m_rendererMeshletChunks,
             64,
             m_enableMortonOrder
         );
         // Sorted Gaussian pipeline: dilationMorph is the level 0 Gaussian fade-in weight (see AppendChunkToRenderer);
         // chunks resident at load show Gaussians at once, so they carry 1. Drawn as surfels: the surfel value (0).
-        if (m_splatMode && !m_splatDrawAsSurfels) for (auto& mc : m_rendererMeshletChunks) mc.dilationMorph = 1.0f;
+        if (m_splatMode && !m_splatDrawAsSurfels) for (auto& mc : m_stream.m_rendererMeshletChunks) mc.dilationMorph = 1.0f;
 
         // Re-quantize to guarantee exact alignment with meshlet ordering
         m_rendererSurfels = Quantizer::QuantizeSurfels(m_rendererRawSurfels, m_aabbMin, m_aabbMax);
@@ -1533,8 +1541,8 @@ namespace Surfels
         m_state.pSurfels = m_rendererSurfels.data();
         m_state.pRawSurfels = m_rendererRawSurfels.data();
         m_state.surfelCount = (uint32_t)m_rendererSurfels.size();
-        m_state.pChunks = m_rendererMeshletChunks.data();
-        m_state.chunkCount = (uint32_t)m_rendererMeshletChunks.size();
+        m_state.pChunks = m_stream.m_rendererMeshletChunks.data();
+        m_state.chunkCount = (uint32_t)m_stream.m_rendererMeshletChunks.size();
         m_state.aabbMin = m_aabbMin;
         m_state.aabbExtents = m_extents;
         m_state.renderMode = m_splatMode ? SplatRenderMode() : (m_enableQuantization ? 1 : 2);
@@ -1979,6 +1987,66 @@ namespace Surfels
         }
     }
 
+    // ---- Streaming runtime host (libs/bluesec-codec/StreamRuntime.h) -------------------------------------
+
+    void SurfelsApp::SyncStreamInputs()
+    {
+        StreamSettings& s = m_stream.settings;
+        s.autoLOD = m_autoLOD; s.selectedPreviewLOD = m_selectedPreviewLOD;
+        s.lodScreenSpace = m_lodScreenSpace; s.lodPixelSpacing = m_lodPixelSpacing; s.lodPerBlock = m_lodPerBlock;
+        s.streamingPolicy = m_streamingPolicy; s.enableStreamingSimulation = m_enableStreamingSimulation; s.isStreamingPaused = m_isStreamingPaused;
+        s.unthrottledBandwidth = m_unthrottledBandwidth; s.bandwidthThrottleMBps = m_bandwidthThrottleMBps; s.ringBufferCapacityMB = m_ringBufferCapacityMB;
+        s.enableStreamDecay = m_enableStreamDecay; s.streamDecayRate = m_streamDecayRate; s.demoteChunks = m_demoteChunks;
+        s.enableDitheredTransitions = m_enableDitheredTransitions; s.ditherTransitionDurationSec = m_ditherTransitionDurationSec;
+        s.prioritizeFrustumAndProximity = m_prioritizeFrustumAndProximity; s.conservativeNeighborBufferMargin = m_conservativeNeighborBufferMargin;
+        s.enableSilhouetteLOD0 = m_enableSilhouetteLOD0; s.highlightSilhouetteChunks = m_highlightSilhouetteChunks;
+        s.silhouetteLODBias = m_silhouetteLODBias; s.silhouetteThreshold = m_silhouetteThreshold; s.dilationMorphAmount = m_dilationMorphAmount;
+        s.showChunkStream = m_showChunkStream; s.chunkStreamDuration = m_chunkStreamDuration; s.splatDrawAsSurfels = m_splatDrawAsSurfels;
+        StreamCamera& c = m_stream.camera;
+        c.pitch = m_pitch; c.yaw = m_yaw; c.distance = m_distance; c.target = m_target;
+        c.detachCamera = m_detachCamera; c.detachedPitch = m_detachedPitch; c.detachedYaw = m_detachedYaw;
+        c.detachedDistance = m_detachedDistance; c.detachedTarget = m_detachedTarget;
+        c.width = m_Width; c.height = m_Height;
+    }
+
+    void SurfelsApp::ApplyStreamFrame()
+    {
+        if (!m_stream.m_frameProduced) return;
+        m_frameTraversalMs = m_stream.m_frameTraversalMs;
+        m_state.surfelCount = (uint32_t)(m_splatMode ? m_stream.m_unifiedSplats.size() : m_enableQuantization ? (!m_stream.m_unifiedPackedSurfels.empty() ? m_stream.m_unifiedPackedSurfels.size() : m_rendererSurfels.size()) : (!m_stream.m_unifiedRawSurfels.empty() ? m_stream.m_unifiedRawSurfels.size() : m_rendererRawSurfels.data() ? m_rendererRawSurfels.size() : 0));
+        m_state.chunkCount = m_stream.FrameChunkCount();
+        m_state.pSurfels = !m_stream.m_unifiedPackedSurfels.empty() ? m_stream.m_unifiedPackedSurfels.data() : m_rendererSurfels.data();
+        m_state.pRawSurfels = !m_stream.m_unifiedRawSurfels.empty() ? m_stream.m_unifiedRawSurfels.data() : m_rendererRawSurfels.data();
+        m_state.pSplats = m_stream.m_unifiedSplats.empty() ? nullptr : m_stream.m_unifiedSplats.data();
+        m_state.pSplatSH = m_stream.m_unifiedSH.empty() ? nullptr : m_stream.m_unifiedSH.data();
+        m_state.pChunks = m_stream.m_rendererMeshletChunks.data();
+        m_state.useChunkedPipeline = (m_state.chunkCount > 0);
+    }
+
+    void SurfelsApp::InitStreamingSimulation()
+    {
+        if (m_residentLODs.empty()) PrecacheResidentLODs();
+        m_stream.m_levels = &m_residentLODs;
+        m_stream.m_waveletLevels = (int)m_waveletResult.lodLevels.size();
+        m_stream.m_aabbMin = m_aabbMin; m_stream.m_aabbMax = m_aabbMax; m_stream.m_center = m_center; m_stream.m_extents = m_extents;
+        m_stream.m_lodSortFrameMin = m_lodSortFrameMin; m_stream.m_lodSortFrameMax = m_lodSortFrameMax;
+        m_stream.m_detailGrid = m_detailGrid;
+        m_stream.m_enableMortonOrder = m_enableMortonOrder;
+        m_stream.m_splatMode = m_splatMode;
+        m_stream.m_splatParams = m_splatParams;
+        m_stream.m_bytesPerRenderPoint = BytesPerRenderPoint();
+        SyncStreamInputs();
+        m_stream.InitStreamingSimulation();
+        ComputeSplatSoftness();
+        m_ringBufferCapacityMB = m_stream.settings.ringBufferCapacityMB; // The runtime defaults the ring buffer to its slider ceiling
+    }
+
+    void SurfelsApp::ResetStreamingSimulation() { SyncStreamInputs(); m_stream.ResetStreamingSimulation(); ApplyStreamFrame(); }
+    void SurfelsApp::ClearResidentStream() { SyncStreamInputs(); m_stream.ClearResidentStream(); ApplyStreamFrame(); }
+    void SurfelsApp::UpdateStreamingSimulation(double dtSeconds) { SyncStreamInputs(); m_stream.UpdateStreamingSimulation(dtSeconds); ApplyStreamFrame(); }
+    void SurfelsApp::TriggerSilhouetteEdgeMorphTest() { SyncStreamInputs(); m_stream.TriggerSilhouetteEdgeMorphTest(); }
+    void SurfelsApp::CalibrateDecay() { SyncStreamInputs(); m_stream.CalibrateDecay(); }
+
     // Highest spherical-harmonics band with a non-zero coefficient in any source Gaussian (bands 1, 2, 3 are
     // coefficients 0-2, 3-7 and 8-14, three channels each), over a sample of up to 200k of them: a 3DGS file
     // without f_rest carries none, a degree-1 export only band 1.
@@ -2029,7 +2097,7 @@ namespace Surfels
 
         if (m_enableStreamingSimulation)
         {
-            m_streamStateDirty = true;
+            m_stream.m_streamStateDirty = true;
             return;
         }
 
@@ -2038,8 +2106,8 @@ namespace Surfels
             PrecacheResidentLODs();
         }
 
-        m_lastStreamCamPos = { 1e9f, 1e9f, 1e9f };
-        m_streamStateDirty = true;
+        m_stream.m_lastStreamCamPos = { 1e9f, 1e9f, 1e9f };
+        m_stream.m_streamStateDirty = true;
 
         m_state.aabbMin = m_aabbMin;
         m_state.aabbExtents = m_extents;
@@ -2079,17 +2147,11 @@ namespace Surfels
         }
     }
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
     // Runs the full wavelet pipeline over m_chunks and writes the resulting single-file .sflw package
     void SurfelsApp::ProcessAndExport(const std::string& outputPath)
@@ -2216,7 +2278,7 @@ namespace Surfels
             m_chunks.clear();
             m_rendererSurfels.clear();
             m_rendererRawSurfels.clear();
-            m_rendererMeshletChunks.clear();
+            m_stream.m_rendererMeshletChunks.clear();
             m_rendererOctreeChunks.clear();
             m_waveletResult = WaveletDecompositionResult();
             m_loadedFilePath = "No dataset loaded";
@@ -2246,22 +2308,16 @@ namespace Surfels
         }
     }
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
     void SurfelsApp::UpdateCamera(const ImGuiIO& io)
     {
+        SyncStreamInputs(); // The auto LOD below asks the runtime's LOD rule, which reads the settings and the viewport
         const float cy = cosf(m_pitch), sy = sinf(m_pitch);
         const float sx = sinf(m_yaw), cx = cosf(m_yaw);
         XMFLOAT3 rightDir(-cx, 0.0f, sx);
@@ -2350,8 +2406,12 @@ namespace Surfels
         if (m_loupeEnabled && !m_loupePinned && m_loupeDrag == 0 && !overInset && !io.WantCaptureMouse && io.MousePos.x >= 0.0f && io.MousePos.y >= 0.0f)
             m_loupeCenter = io.MousePos;
 
+        // A scripted run (--lod-calibration, --stream-test) owns the camera: a key or a mouse wheel reaching
+        // the window from someone working beside it moved the camera mid-measurement and spoiled the run
+        const bool scriptedCamera = !m_lodCalFolder.empty() || m_streamTest;
+
         // Keyboard Controls: Arrow Keys (Shift=Pan, No Shift=Rotate), W/S/PageUp/PageDown Zoom
-        if (!io.WantCaptureKeyboard)
+        if (!io.WantCaptureKeyboard && !scriptedCamera)
         {
             if (shiftDown)
             {
@@ -2424,7 +2484,7 @@ namespace Surfels
             m_distance = std::max(0.1f, std::min(1000.0f, m_distance));
         }
 
-        if (!io.WantCaptureMouse && m_loupeDrag == 0)
+        if (!io.WantCaptureMouse && m_loupeDrag == 0 && !scriptedCamera)
         {
             if (shiftDown)
             {
@@ -2485,8 +2545,8 @@ namespace Surfels
                 // Detach Camera: the level follows the frozen camera's distance, not the observer's.
                 const float lodDistance = m_detachCamera ? m_detachedDistance : m_distance;
                 int maxLODIndex = (int)m_waveletResult.lodLevels.size() - 1;
-                const bool screenSpace = m_lodScreenSpace && (int)m_lodSpacing.size() > maxLODIndex && maxLODIndex > 0 && m_lodSpacing[0] > 0.0f;
-                const float targetFloatLOD = ContinuousLodAtDistance(lodDistance, screenSpace);
+                const bool screenSpace = m_lodScreenSpace && (int)m_stream.m_lodSpacing.size() > maxLODIndex && maxLODIndex > 0 && m_stream.m_lodSpacing[0] > 0.0f;
+                const float targetFloatLOD = m_stream.ContinuousLodAtDistance(lodDistance, screenSpace);
 
                 // Schmitt-trigger hysteresis to prevent border oscillation when zooming. Screen space: step
                 // coarser only once the next level's spacing is within the pixel threshold, and back finer a
@@ -2514,7 +2574,7 @@ namespace Surfels
                     }
                     else
                     {
-                        m_streamStateDirty = true;
+                        m_stream.m_streamStateDirty = true;
                     }
                 }
             }
@@ -2561,7 +2621,7 @@ namespace Surfels
         m_state.silhouetteExteriorOnly = m_silhouetteExteriorOnly;
 
         uint32_t totalBasePoints = (uint32_t)(!m_residentLODs.empty() ? m_residentLODs[0].rawSurfels.size() : (!m_rawSurfels.empty() ? m_rawSurfels.size() : m_rendererSurfels.size()));
-        uint32_t totalBaseChunks = (uint32_t)(!m_residentLODs.empty() ? m_residentLODs[0].meshletChunks.size() : (!m_chunks.empty() ? m_chunks.size() : m_rendererMeshletChunks.size()));
+        uint32_t totalBaseChunks = (uint32_t)(!m_residentLODs.empty() ? m_residentLODs[0].meshletChunks.size() : (!m_chunks.empty() ? m_chunks.size() : m_stream.m_rendererMeshletChunks.size()));
         m_state.totalDatasetSurfels = totalBasePoints;
         m_state.totalDatasetChunks = totalBaseChunks;
 
@@ -2586,28 +2646,28 @@ namespace Surfels
             {
                 m_state.renderMode = SplatRenderMode();
                 ApplySplatRenderState();
-                m_state.pSplats = m_unifiedSplats.empty() ? nullptr : m_unifiedSplats.data();
-                m_state.pSplatSH = m_unifiedSH.empty() ? nullptr : m_unifiedSH.data();
+                m_state.pSplats = m_stream.m_unifiedSplats.empty() ? nullptr : m_stream.m_unifiedSplats.data();
+                m_state.pSplatSH = m_stream.m_unifiedSH.empty() ? nullptr : m_stream.m_unifiedSH.data();
                 m_state.pSurfels = nullptr;
                 m_state.pRawSurfels = nullptr;
-                m_state.surfelCount = (uint32_t)m_unifiedSplats.size();
+                m_state.surfelCount = (uint32_t)m_stream.m_unifiedSplats.size();
             }
             else if (m_enableQuantization)
             {
                 m_state.renderMode = 1;
-                m_state.pSurfels = !m_unifiedPackedSurfels.empty() ? m_unifiedPackedSurfels.data() : m_rendererSurfels.data();
+                m_state.pSurfels = !m_stream.m_unifiedPackedSurfels.empty() ? m_stream.m_unifiedPackedSurfels.data() : m_rendererSurfels.data();
                 m_state.pRawSurfels = nullptr;
-                m_state.surfelCount = (uint32_t)(!m_unifiedPackedSurfels.empty() ? m_unifiedPackedSurfels.size() : m_rendererSurfels.size());
+                m_state.surfelCount = (uint32_t)(!m_stream.m_unifiedPackedSurfels.empty() ? m_stream.m_unifiedPackedSurfels.size() : m_rendererSurfels.size());
             }
             else
             {
                 m_state.renderMode = 2;
-                m_state.pRawSurfels = !m_unifiedRawSurfels.empty() ? m_unifiedRawSurfels.data() : m_rendererRawSurfels.data();
+                m_state.pRawSurfels = !m_stream.m_unifiedRawSurfels.empty() ? m_stream.m_unifiedRawSurfels.data() : m_rendererRawSurfels.data();
                 m_state.pSurfels = nullptr;
-                m_state.surfelCount = (uint32_t)(!m_unifiedRawSurfels.empty() ? m_unifiedRawSurfels.size() : m_rendererRawSurfels.size());
+                m_state.surfelCount = (uint32_t)(!m_stream.m_unifiedRawSurfels.empty() ? m_stream.m_unifiedRawSurfels.size() : m_rendererRawSurfels.size());
             }
-            m_state.pChunks = m_rendererMeshletChunks.data();
-            m_state.chunkCount = (uint32_t)m_rendererMeshletChunks.size();
+            m_state.pChunks = m_stream.m_rendererMeshletChunks.data();
+            m_state.chunkCount = (uint32_t)m_stream.m_rendererMeshletChunks.size();
         }
         else
         {
@@ -2996,8 +3056,8 @@ namespace Surfels
                                 if (ImGui::IsItemHovered()) ImGui::SetTooltip("On: every block of the model takes its own level from its own distance to the eye, by the rule above -- the near side refines, the far side and the edges turning away stay coarser, so fewer splats are streamed and drawn for the same look. Off: one level for the whole model, set by its near side. Remembered across sessions.");
                             }
                             const int lvlNow = std::max(0, std::min(maxLODIndex, m_selectedPreviewLOD));
-                            if (lvlNow < (int)m_lodSpacing.size() && m_lodSpacing[lvlNow] > 0.0f)
-                                ImGui::TextDisabled("Level %d spacing on screen: %.2f px", lvlNow, m_lodSpacing[lvlNow] * LodFocalPixels() / LodEffectiveDistance(m_detachCamera ? m_detachedDistance : m_distance));
+                            if (lvlNow < (int)m_stream.m_lodSpacing.size() && m_stream.m_lodSpacing[lvlNow] > 0.0f)
+                                ImGui::TextDisabled("Level %d spacing on screen: %.2f px", lvlNow, m_stream.m_lodSpacing[lvlNow] * m_stream.LodFocalPixels() / m_stream.LodEffectiveDistance(m_detachCamera ? m_detachedDistance : m_distance));
                             ImGui::Unindent(12.0f);
                         }
 
@@ -3023,7 +3083,7 @@ namespace Surfels
 
                     if (ImGui::Checkbox("Dithered LOD Transitions", &m_enableDitheredTransitions))
                     {
-                        m_streamStateDirty = true;
+                        m_stream.m_streamStateDirty = true;
                     }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Stochastic screen-space Bayer dithering to smoothly blend LOD transitions and eliminate popping.");
 
@@ -3033,13 +3093,13 @@ namespace Surfels
                         ImGui::PushItemWidth(100.0f);
                         if (ImGui::SliderFloat("##DitherDurationTab", &m_ditherTransitionDurationSec, 0.05f, 5.0f, "%.2f s"))
                         {
-                            m_streamStateDirty = true;
+                            m_stream.m_streamStateDirty = true;
                         }
                         ImGui::PopItemWidth();
                     }
                     if (ImGui::Checkbox("Demote Chunks on Zoom Out", &m_demoteChunks))
                     {
-                        m_streamStateDirty = true;
+                        m_stream.m_streamStateDirty = true;
                     }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Off: once a chunk has refined into its children it stays refined when you zoom out or its edge flag drops, so detail never fades back to the coarser level (Decay still reclaims memory). On: children cross-fade back to the parent and are evicted, as in v1.2.0.");
 
@@ -3047,7 +3107,7 @@ namespace Surfels
 #if 0 // DYNAMIC SILHOUETTE: GPU silhouette chunk processing switched off for now (re-enable by restoring this block)
                     if (ImGui::Checkbox("Highlight Edge Chunks", &m_highlightSilhouetteChunks))
                     {
-                        m_streamStateDirty = true;
+                        m_stream.m_streamStateDirty = true;
                     }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Visualizer toggle: highlights the active silhouette edge chunks.");
 #endif // DYNAMIC SILHOUETTE
@@ -3056,7 +3116,7 @@ namespace Surfels
 
                     if (ImGui::Checkbox("Show ONLY Locked Chunks (Transition / Edge)", &m_showOnlyLockedChunks))
                     {
-                        m_streamStateDirty = true;
+                        m_stream.m_streamStateDirty = true;
                     }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Isolates active dynamic workload: hides static model geometry and renders ONLY chunks that are currently locked in transition or detected on the silhouette edge.");
 
@@ -3065,8 +3125,8 @@ namespace Surfels
                     uint32_t totalActiveChunks = 0;
                     if (m_enableStreamingSimulation)
                     {
-                        totalActiveChunks = (uint32_t)m_rendererSourceChunks.size();
-                        for (const auto* pChunk : m_rendererSourceChunks)
+                        totalActiveChunks = (uint32_t)m_stream.m_rendererSourceChunks.size();
+                        for (const auto* pChunk : m_stream.m_rendererSourceChunks)
                         {
                             if (pChunk && pChunk->isSilhouette) liveEdgeChunks++;
                         }
@@ -3086,7 +3146,7 @@ namespace Surfels
 
                     if (ImGui::Checkbox("GPU Silhouette Edge Refinement (Option 2)", &m_enableSilhouetteLOD0))
                     {
-                        m_streamStateDirty = true;
+                        m_stream.m_streamStateDirty = true;
                     }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Recovers Level 0 fine chunks along 2D outer silhouettes and interior self-occlusion edges detected on GPU.");
 
@@ -3102,13 +3162,13 @@ namespace Surfels
                         // dragging, or a value that just happens to stay 0) instead of the real value.
                         if (ImGui::SliderInt("Silhouette LOD Bias", &m_silhouetteLODBias, 0, 4, "Bias: %.0f"))
                         {
-                            m_streamStateDirty = true;
+                            m_stream.m_streamStateDirty = true;
                         }
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("LOD level bias for silhouette edges: renders fine edges using Level N - Bias (minimum Level 0).");
 
                         if (ImGui::SliderFloat("Silhouette Angle", &m_silhouetteThreshold, 0.10f, 0.70f, "%.2f"))
                         {
-                            m_streamStateDirty = true;
+                            m_stream.m_streamStateDirty = true;
                         }
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Grazing angle dot product threshold |N . V| to classify boundary chunks as silhouette.");
 
@@ -3179,10 +3239,10 @@ namespace Surfels
                     }
                     // Splat Radius Scale, Auto Splat Size and its Coverage sized the surfel discs, which are gone;
                     // their defaults still size the silhouette prepass's coarse discs (m_state.lodRadius).
-                    if (!m_lodSpacing.empty())
+                    if (!m_stream.m_lodSpacing.empty())
                     {
                         std::string sp = "Level spacing:";
-                        for (size_t l = 0; l < m_lodSpacing.size(); l++) { char b[40]; snprintf(b, sizeof(b), " L%zu %.4g", l, m_lodSpacing[l]); sp += b; }
+                        for (size_t l = 0; l < m_stream.m_lodSpacing.size(); l++) { char b[40]; snprintf(b, sizeof(b), " L%zu %.4g", l, m_stream.m_lodSpacing[l]); sp += b; }
                         ImGui::TextDisabled("%s", sp.c_str());
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Median nearest-neighbour distance of each level's points, in model units (measured on load).");
                     }
@@ -3247,7 +3307,7 @@ namespace Surfels
                     ImGui::TextColored(ImVec4(0.4f, 0.85f, 1.0f, 1.0f), "Temporal Filtering & Anti-Aliasing (TAA):");
                     if (ImGui::Checkbox("Enable Temporal Dither Resolver (TAA)", &m_enableTemporalFiltering))
                     {
-                        m_streamStateDirty = true;
+                        m_stream.m_streamStateDirty = true;
                     }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Smooths stochastic Bayer dither patterns into seamless photo-realistic alpha dissolves,\nand eliminates splat edge shimmer via temporal history accumulation.");
 
@@ -3255,19 +3315,19 @@ namespace Surfels
                     {
                         if (ImGui::SliderFloat("Temporal Blend Weight (Alpha)", &m_temporalBlendWeight, 0.05f, 0.50f, "%.2f (Lower = Smoother)"))
                         {
-                            m_streamStateDirty = true;
+                            m_stream.m_streamStateDirty = true;
                         }
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Blend weight for current frame. 0.10-0.15 delivers optimal 6-frame smooth dither dissipation without ghosting.");
 
                         if (ImGui::Checkbox("Sub-Pixel Camera Jitter (Halton 2,3)", &m_enableSubpixelJitter))
                         {
-                            m_streamStateDirty = true;
+                            m_stream.m_streamStateDirty = true;
                         }
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Applies sub-pixel projection jitter to reconstruct crisp anti-aliased splat edges when stationary.");
 
                         if (ImGui::Checkbox("Variance Color Box Clamping (Anti-Ghosting)", &m_enableVarianceClamping))
                         {
-                            m_streamStateDirty = true;
+                            m_stream.m_streamStateDirty = true;
                         }
                         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Clamps reprojected history to 3x3 neighborhood YCoCg bounding box to eliminate ghosting during rapid camera motion.");
                     }
@@ -3390,12 +3450,12 @@ namespace Surfels
                     ImGui::TextDisabled("Order: base envelope > edge chunks > visible octahedron faces > rest");
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("The two coarsest levels always land first so there is a solid envelope. Silhouette edge chunks come next. Then the streaming scheduler serves the faces of the bounding octahedron the camera can see, together, while faces out of view wait their turn; the remaining view requests follow.");
                     DrawOctahedronGlyph();
-                    ImGui::TextDisabled("Re-deliveries since reset: %u blocks streamed more than once (%u extra deliveries)", m_redeliveredBlocks, m_extraDeliveries);
+                    ImGui::TextDisabled("Re-deliveries since reset: %u blocks streamed more than once (%u extra deliveries)", m_stream.m_redeliveredBlocks, m_stream.m_extraDeliveries);
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Diagnostic. A block counts here when it is delivered, later evicted, and delivered again. With a still camera this should stay at zero; it rises only when something evicts blocks the view still wants (decay, or a demotion that used to evict).");
-                    if (m_refineStartBudget == UINT32_MAX)
-                        ImGui::TextDisabled("Active transitions: %u. Refinement starts deferred: %u (budget unlimited)", m_lastActiveTransitions, m_refineStartsDeferred);
+                    if (m_stream.m_refineStartBudget == UINT32_MAX)
+                        ImGui::TextDisabled("Active transitions: %u. Refinement starts deferred: %u (budget unlimited)", m_stream.m_lastActiveTransitions, m_stream.m_refineStartsDeferred);
                     else
-                        ImGui::TextDisabled("Active transitions: %u. Refinement starts deferred: %u (budget %u chunks)", m_lastActiveTransitions, m_refineStartsDeferred, m_refineStartBudget);
+                        ImGui::TextDisabled("Active transitions: %u. Refinement starts deferred: %u (budget %u chunks)", m_stream.m_lastActiveTransitions, m_stream.m_refineStartsDeferred, m_stream.m_refineStartBudget);
 
                     // Bandwidth Preset Buttons
                     ImGui::Text("Network Profiles:");
@@ -3425,7 +3485,7 @@ namespace Surfels
                     ImGui::PopStyleColor();
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Removes bandwidth throttle caps and streams at uncapped maximum rate.");
 
-                    float maxRingMB = MaxRingBufferMB();
+                    float maxRingMB = m_stream.MaxRingBufferMB();
 
                     if (m_unthrottledBandwidth)
                     {
@@ -3445,20 +3505,20 @@ namespace Surfels
                     ImGui::SliderFloat("GPU Ring Buffer Size", &m_ringBufferCapacityMB, 4.0f, maxRingMB, "%.0f MB");
 
                     // Streaming Progress Bar
-                    float deliveredMB = m_simulatedBytesDelivered / (1024.0f * 1024.0f);
-                    float totalMB = m_totalStreamBytes / (1024.0f * 1024.0f);
+                    float deliveredMB = m_stream.m_simulatedBytesDelivered / (1024.0f * 1024.0f);
+                    float totalMB = m_stream.m_totalStreamBytes / (1024.0f * 1024.0f);
                     char progressOverlay[128];
-                    if (m_evictedSurfelCount > 0)
+                    if (m_stream.m_evictedSurfelCount > 0)
                     {
                         snprintf(progressOverlay, sizeof(progressOverlay), "%.1f / %.1f MB (%.0f%%) | %u in RingBuffer (%zu Evicted)",
-                            deliveredMB, totalMB, m_streamRefinementProgress * 100.0f, m_state.surfelCount, m_evictedSurfelCount);
+                            deliveredMB, totalMB, m_stream.m_streamRefinementProgress * 100.0f, m_state.surfelCount, m_stream.m_evictedSurfelCount);
                     }
                     else
                     {
                         snprintf(progressOverlay, sizeof(progressOverlay), "%.1f / %.1f MB (%.0f%%) | %u resident pts",
-                            deliveredMB, totalMB, m_streamRefinementProgress * 100.0f, m_state.surfelCount);
+                            deliveredMB, totalMB, m_stream.m_streamRefinementProgress * 100.0f, m_state.surfelCount);
                     }
-                    ImGui::ProgressBar(m_streamRefinementProgress, ImVec2(-1, 20), progressOverlay);
+                    ImGui::ProgressBar(m_stream.m_streamRefinementProgress, ImVec2(-1, 20), progressOverlay);
 
                     // Playback Controls
                     if (ImGui::Button("Re-Stream (Reset)", ImVec2(125, 24)))
@@ -3473,14 +3533,14 @@ namespace Surfels
                     ImGui::SameLine();
                     if (ImGui::Button("Instant Full Load", ImVec2(110, 24)))
                     {
-                        m_simulatedBytesDelivered = m_totalStreamBytes;
-                        m_streamRefinementProgress = 1.0f;
+                        m_stream.m_simulatedBytesDelivered = m_stream.m_totalStreamBytes;
+                        m_stream.m_streamRefinementProgress = 1.0f;
                         UpdateStreamingSimulation(1.0);
                     }
 
                     if (ImGui::Checkbox("Freeze Rendering & Memory (Eliminate Flickering)", &m_freezeRenderingAndMemory))
                     {
-                        m_streamStateDirty = true;
+                        m_stream.m_streamStateDirty = true;
                     }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Completely freezes streaming simulation, LOD transitions, memory evictions, and edge recalculations.\nEliminates all flickering and jitter artifacts when movement is paused.");
 
@@ -3792,8 +3852,8 @@ namespace Surfels
                     uint32_t statsTotalChunks = 0;
                     if (m_enableStreamingSimulation)
                     {
-                        statsTotalChunks = (uint32_t)m_rendererSourceChunks.size();
-                        for (const auto* pChunk : m_rendererSourceChunks)
+                        statsTotalChunks = (uint32_t)m_stream.m_rendererSourceChunks.size();
+                        for (const auto* pChunk : m_stream.m_rendererSourceChunks)
                         {
                             if (pChunk && pChunk->isSilhouette) statsEdgeChunks++;
                         }
@@ -3901,11 +3961,8 @@ namespace Surfels
         }
     }
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
     // Draws the per-LOD-level residency bar graph plus the Evict/Decay Rate/Policy controls beside it
     void SurfelsApp::DrawLODResidencyEqualizer()
@@ -3940,17 +3997,17 @@ namespace Surfels
             m_target.z + m_distance * cy * cx
         );
 
-        if (m_smoothedLodResidentPct.size() != (size_t)numLODs)
+        if (m_stream.m_smoothedLodResidentPct.size() != (size_t)numLODs)
         {
-            m_smoothedLodResidentPct.assign(numLODs, 0.0f);
-            m_smoothedLodResidentBlocks.assign(numLODs, 0);
+            m_stream.m_smoothedLodResidentPct.assign(numLODs, 0.0f);
+            m_stream.m_smoothedLodResidentBlocks.assign(numLODs, 0);
         }
 
-        m_equalizerUpdateTimer += (float)(m_deltaTime / 1000.0f);
-        bool updateTextMetrics = (m_equalizerUpdateTimer >= 0.15f);
+        m_stream.m_equalizerUpdateTimer += (float)(m_deltaTime / 1000.0f);
+        bool updateTextMetrics = (m_stream.m_equalizerUpdateTimer >= 0.15f);
         if (updateTextMetrics)
         {
-            m_equalizerUpdateTimer = 0.0f;
+            m_stream.m_equalizerUpdateTimer = 0.0f;
         }
 
         // Base segment count on the top row (Coarsest Base LOD)
@@ -3969,12 +4026,12 @@ namespace Surfels
             int numSegments = baseSegments * (1 << rowIdx);
             const float barHeight = 14.0f;
 
-            const auto* pLevelChunks = (lodIdx < (int)m_lodStreamChunks.size()) ? &m_lodStreamChunks[lodIdx] : nullptr;
+            const auto* pLevelChunks = (lodIdx < (int)m_stream.m_lodStreamChunks.size()) ? &m_stream.m_lodStreamChunks[lodIdx] : nullptr;
             size_t T = pLevelChunks ? pLevelChunks->size() : 0;
 
             // Lower level mip for child refinement calculation
             int childLodIdx = lodIdx - 1;
-            const auto* pChildChunks = (childLodIdx >= 0 && childLodIdx < (int)m_lodStreamChunks.size()) ? &m_lodStreamChunks[childLodIdx] : nullptr;
+            const auto* pChildChunks = (childLodIdx >= 0 && childLodIdx < (int)m_stream.m_lodStreamChunks.size()) ? &m_stream.m_lodStreamChunks[childLodIdx] : nullptr;
             size_t TChild = pChildChunks ? pChildChunks->size() : 0;
 
             // Calculate residency stats
@@ -3982,7 +4039,7 @@ namespace Surfels
             uint32_t exactResidentBlocks = 0;
             if (m_enableStreamingSimulation)
             {
-                residentPts = (lodIdx < (int)m_lodResidentSurfels.size()) ? m_lodResidentSurfels[lodIdx] : 0;
+                residentPts = (lodIdx < (int)m_stream.m_lodResidentSurfels.size()) ? m_stream.m_lodResidentSurfels[lodIdx] : 0;
                 if (pLevelChunks)
                 {
                     for (const auto& c : *pLevelChunks)
@@ -3997,17 +4054,17 @@ namespace Surfels
                 exactResidentBlocks = totalBlocks;
             }
 
-            size_t totalLevelPts = (lodIdx < (int)m_lodTotalSurfels.size() && m_lodTotalSurfels[lodIdx] > 0) ? m_lodTotalSurfels[lodIdx] : totalPts;
+            size_t totalLevelPts = (lodIdx < (int)m_stream.m_lodTotalSurfels.size() && m_stream.m_lodTotalSurfels[lodIdx] > 0) ? m_stream.m_lodTotalSurfels[lodIdx] : totalPts;
             float rawResidentPct = (totalLevelPts > 0) ? std::min(100.0f, (float)residentPts / (float)totalLevelPts * 100.0f) : 100.0f;
 
-            if (updateTextMetrics || m_smoothedLodResidentBlocks[lodIdx] == 0)
+            if (updateTextMetrics || m_stream.m_smoothedLodResidentBlocks[lodIdx] == 0)
             {
-                m_smoothedLodResidentPct[lodIdx] = rawResidentPct;
-                m_smoothedLodResidentBlocks[lodIdx] = exactResidentBlocks;
+                m_stream.m_smoothedLodResidentPct[lodIdx] = rawResidentPct;
+                m_stream.m_smoothedLodResidentBlocks[lodIdx] = exactResidentBlocks;
             }
 
-            float residentPct = m_smoothedLodResidentPct[lodIdx];
-            uint32_t residentBlocks = m_smoothedLodResidentBlocks[lodIdx];
+            float residentPct = m_stream.m_smoothedLodResidentPct[lodIdx];
+            uint32_t residentBlocks = m_stream.m_smoothedLodResidentBlocks[lodIdx];
 
             bool isActiveLOD = (lodIdx == m_selectedPreviewLOD);
 
@@ -4202,34 +4259,34 @@ namespace Surfels
 
         ImGui::SameLine();
         ImGui::PushItemWidth(availWidth - 165.0f);
-        if (ImGui::SliderFloat("##DecaySlider", &m_streamDecayRate, 0.0f, kMaxDecayRate, "Decay Rate: %.2f"))
+        if (ImGui::SliderFloat("##DecaySlider", &m_streamDecayRate, 0.0f, StreamRuntime::kMaxDecayRate, "Decay Rate: %.2f"))
         {
-            m_streamStateDirty = true;
+            m_stream.m_streamStateDirty = true;
             CalibrateDecay();
         }
         if (ImGui::IsItemHovered())
         {
-            float drainSeconds = DecayFullDrainSeconds();
-            if (m_enableStreamDecay && m_streamDecayRate > 0.0f && m_decayBytesPerSec > 0.0f)
+            float drainSeconds = m_stream.DecayFullDrainSeconds();
+            if (m_enableStreamDecay && m_streamDecayRate > 0.0f && m_stream.m_decayBytesPerSec > 0.0f)
             {
                 const float inflow = m_unthrottledBandwidth ? 0.0f : m_bandwidthThrottleMBps;
-                const float outflowMB = m_decayBytesPerSec / (1024.0f * 1024.0f);
+                const float outflowMB = m_stream.m_decayBytesPerSec / (1024.0f * 1024.0f);
                 char ref[48];
-                if (m_decayReferenceBandwidthBps > 0.0f) snprintf(ref, sizeof(ref), "%.1f MB/s", m_decayReferenceBandwidthBps / (1024.0f * 1024.0f)); else snprintf(ref, sizeof(ref), "Full");
+                if (m_stream.m_decayReferenceBandwidthBps > 0.0f) snprintf(ref, sizeof(ref), "%.1f MB/s", m_stream.m_decayReferenceBandwidthBps / (1024.0f * 1024.0f)); else snprintf(ref, sizeof(ref), "Full");
                 ImGui::SetTooltip("Decay outflow %.1f MB/s, fixed when the toggle or slider last changed (reference bandwidth %s: a full drain of every evictable level in ~%.1f s at that bandwidth).\nThe bandwidth throttle is now the knob: current inflow %s, so the net drain is %.1f MB/s.",
                     outflowMB, ref, drainSeconds, m_unthrottledBandwidth ? "Full (uncapped)" : "", outflowMB - inflow);
             }
             else if (m_streamDecayRate <= 0.0f)
-                ImGui::SetTooltip("0 = no decay. Drag right to drain unused detail out of memory.\nIndependent of bandwidth: at 10 it clears everything but the two pinned\ncoarsest levels in %.0f s on any bandwidth setting.", kDecayFullDrainSecondsAtMaxRate);
+                ImGui::SetTooltip("0 = no decay. Drag right to drain unused detail out of memory.\nIndependent of bandwidth: at 10 it clears everything but the two pinned\ncoarsest levels in %.0f s on any bandwidth setting.", StreamRuntime::kDecayFullDrainSecondsAtMaxRate);
             else
                 ImGui::SetTooltip("Full drain of all evictable levels in ~%.1f s, on any bandwidth setting.\nAt 10 it clears everything but the two pinned coarsest levels in %.0f s.",
-                    drainSeconds, kDecayFullDrainSecondsAtMaxRate);
+                    drainSeconds, StreamRuntime::kDecayFullDrainSecondsAtMaxRate);
         }
         ImGui::PopItemWidth();
         ImGui::SameLine();
         if (ImGui::Checkbox("Decay", &m_enableStreamDecay))
         {
-            m_streamStateDirty = true;
+            m_stream.m_streamStateDirty = true;
             CalibrateDecay();
         }
         if (ImGui::IsItemHovered())
@@ -4244,7 +4301,7 @@ namespace Surfels
         if (ImGui::RadioButton("Conservative##Eq", &policyRadio2, 0))
         {
             m_streamingPolicy = StreamingPolicy::Conservative;
-            m_streamStateDirty = true;
+            m_stream.m_streamStateDirty = true;
         }
         if (ImGui::IsItemHovered())
         {
@@ -4254,7 +4311,7 @@ namespace Surfels
         if (ImGui::RadioButton("Greedy##Eq", &policyRadio2, 1))
         {
             m_streamingPolicy = StreamingPolicy::Greedy;
-            m_streamStateDirty = true;
+            m_stream.m_streamStateDirty = true;
         }
         if (ImGui::IsItemHovered())
         {
@@ -4272,7 +4329,7 @@ namespace Surfels
         std::string label = std::string("Refinement Visualizer") + idSuffix;
         if (ImGui::Checkbox(label.c_str(), &m_showChunkStream))
         {
-            m_streamStateDirty = true;
+            m_stream.m_streamStateDirty = true;
         }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Visualizer for progressive loading: every chunk that arrives is filled with a semi-transparent tint. The newest chunks -- the leading edge of the growing model -- glow bright, then settle to the regular tint and fade out over the duration below. Press Evict to watch the whole model grow back in the scheduler's order. Named in the top-left banner while it is on.");
         if (!m_showChunkStream) return;
@@ -4288,7 +4345,6 @@ namespace Surfels
         ImGui::Unindent(12.0f);
     }
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
     // Splat mode: how soft the level 0 Gaussians are relative to their point spacing, so the coarse levels'
     // discs can be sized to read the same (Match Level 0 Softness). The footprint of a record is
@@ -4305,7 +4361,7 @@ namespace Surfels
         m_splatLevel0Footprint = 0.0f;
         m_splatSoftnessRatio = 0.0f;
         m_splatDiscMatchFactor = 1.5f;
-        if (!m_splatMode || m_residentLODs.empty() || m_residentLODs[0].splats.empty() || m_lodSpacing.empty()) return;
+        if (!m_splatMode || m_residentLODs.empty() || m_residentLODs[0].splats.empty() || m_stream.m_lodSpacing.empty()) return;
         const std::vector<PackedSplatGPU>& records = m_residentLODs[0].splats;
         const size_t total = records.size();
         const size_t samples = std::min<size_t>(total, 65536);
@@ -4324,15 +4380,13 @@ namespace Surfels
         if (footprints.empty()) return;
         std::nth_element(footprints.begin(), footprints.begin() + footprints.size() / 2, footprints.end());
         m_splatLevel0Footprint = footprints[footprints.size() / 2];
-        const float spacing0 = m_lodSpacing[0];
+        const float spacing0 = m_stream.m_lodSpacing[0];
         m_splatSoftnessRatio = (spacing0 > 0.0f) ? m_splatLevel0Footprint / spacing0 : 0.0f;
         m_splatDiscMatchFactor = std::clamp(sqrtf(8.0f) * m_splatSoftnessRatio, 1.5f, 4.0f);
         LogTransitionTrace("SplatSoftness: level 0 median footprint %.5f, spacing %.5f, ratio %.2f, disc radius factor %.2f", m_splatLevel0Footprint, spacing0, m_splatSoftnessRatio, m_splatDiscMatchFactor);
     }
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
-    // [Removed from the public history: proprietary streaming runtime, now in libs/gstx/StreamRuntime]
 
     // Streaming tab: the bounding octahedron as two diamonds. Seen from above, an octahedron projects to
     // a square standing on a corner whose diagonals split it into its four upper faces; the left diamond
@@ -4342,8 +4396,8 @@ namespace Surfels
     void SurfelsApp::DrawOctahedronGlyph()
     {
         uint32_t visible = 0;
-        for (int f = 0; f < kOctahedronFaces; f++) if (m_streamOrder.VisibleFaceMask() & (1u << f)) visible++;
-        ImGui::TextDisabled("Bounding octahedron: %u of %d faces visible, %zu blocks in this frame's scratch load list", visible, kOctahedronFaces, m_scratchLoadList.size());
+        for (int f = 0; f < kOctahedronFaces; f++) if (m_stream.m_streamOrder.VisibleFaceMask() & (1u << f)) visible++;
+        ImGui::TextDisabled("Bounding octahedron: %u of %d faces visible, %zu blocks in this frame's scratch load list", visible, kOctahedronFaces, m_stream.m_scratchLoadList.size());
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Faces of the octahedron around the model that the camera can currently see. Each owns the part of the model behind it; the scheduler streams the visible faces together and the hidden ones afterwards, so the model completes in the background. The inner triangles show each face's fill progress.");
 
         const float R = 30.0f;
@@ -4362,8 +4416,8 @@ namespace Surfels
                 if (((f & 2) != 0) != upper) continue;
                 const float sx = (f & 1) ? 1.0f : -1.0f, sz = (f & 4) ? 1.0f : -1.0f;
                 ImVec2 px(c.x + sx * R, c.y), pz(c.x, c.y + sz * R);
-                const bool vis = (m_streamOrder.VisibleFaceMask() & (1u << f)) != 0;
-                const float t = vis ? std::max(0.0f, std::min(1.0f, (m_streamOrder.FaceFacing(f) + 0.15f) / 1.15f)) : 0.0f;
+                const bool vis = (m_stream.m_streamOrder.VisibleFaceMask() & (1u << f)) != 0;
+                const float t = vis ? std::max(0.0f, std::min(1.0f, (m_stream.m_streamOrder.FaceFacing(f) + 0.15f) / 1.15f)) : 0.0f;
                 // Bevelled look: each face is shaded as one side of a low pyramid seen from above, lit from
                 // the upper left (both halves are drawn that way so they read alike); its two ridge edges
                 // (centre to rim) are light on the lit side and dark on the shaded side, its rim edge dark.
@@ -4378,7 +4432,7 @@ namespace Surfels
                 // Fill opacity is the face's residency: 0% with nothing loaded, 80% with every block loaded,
                 // every grade between. The outline and cross bars below are always fully opaque.
                 float done = 0.0f;
-                if (m_streamOrder.FaceTotal(f) > 0) done = 1.0f - (float)std::min(m_streamOrder.FaceRemaining(f), m_streamOrder.FaceTotal(f)) / (float)m_streamOrder.FaceTotal(f);
+                if (m_stream.m_streamOrder.FaceTotal(f) > 0) done = 1.0f - (float)std::min(m_stream.m_streamOrder.FaceRemaining(f), m_stream.m_streamOrder.FaceTotal(f)) / (float)m_stream.m_streamOrder.FaceTotal(f);
                 const ImU32 fill = shaded(shade, (int)(204.0f * std::max(0.0f, std::min(1.0f, done))));
                 if (pass == 1)
                 {
@@ -4394,9 +4448,9 @@ namespace Surfels
                 dl->AddTriangleFilled(c, px, pz, fill);
             }
             // Camera marker: its horizontal direction, on this half if the camera is on this side of the equator.
-            const bool camHere = (m_streamOrder.CameraDirection()[1] >= 0.0f) == upper;
-            const float h = sqrtf(m_streamOrder.CameraDirection()[0] * m_streamOrder.CameraDirection()[0] + m_streamOrder.CameraDirection()[2] * m_streamOrder.CameraDirection()[2]);
-            const float mx = (h > 1e-4f) ? m_streamOrder.CameraDirection()[0] / h : 0.0f, mz = (h > 1e-4f) ? m_streamOrder.CameraDirection()[2] / h : 0.0f;
+            const bool camHere = (m_stream.m_streamOrder.CameraDirection()[1] >= 0.0f) == upper;
+            const float h = sqrtf(m_stream.m_streamOrder.CameraDirection()[0] * m_stream.m_streamOrder.CameraDirection()[0] + m_stream.m_streamOrder.CameraDirection()[2] * m_stream.m_streamOrder.CameraDirection()[2]);
+            const float mx = (h > 1e-4f) ? m_stream.m_streamOrder.CameraDirection()[0] / h : 0.0f, mz = (h > 1e-4f) ? m_stream.m_streamOrder.CameraDirection()[2] / h : 0.0f;
             const float reach = std::min(1.0f, h + 0.15f) * (R + 6.0f); // Toward the centre as the camera goes overhead
             dl->AddCircleFilled(ImVec2(c.x + mx * reach, c.y + mz * reach), camHere ? 3.5f : 2.0f, camHere ? IM_COL32(255, 220, 90, 255) : IM_COL32(255, 220, 90, 90));
         };
@@ -4410,7 +4464,7 @@ namespace Surfels
             {
                 char b[96];
                 snprintf(b, sizeof(b), "\n  face %d (%c%c%c): %u / %u, %zu edge requests %s", f, (f & 1) ? '+' : '-', (f & 2) ? '+' : '-', (f & 4) ? '+' : '-',
-                    m_streamOrder.FaceRemaining(f), m_streamOrder.FaceTotal(f), m_faceEdgeQueue[f].size() - m_faceEdgeHead[f], (m_streamOrder.VisibleFaceMask() & (1u << f)) ? "(visible)" : "");
+                    m_stream.m_streamOrder.FaceRemaining(f), m_stream.m_streamOrder.FaceTotal(f), m_stream.m_faceEdgeQueue[f].size() - m_stream.m_faceEdgeHead[f], (m_stream.m_streamOrder.VisibleFaceMask() & (1u << f)) ? "(visible)" : "");
                 tip += b;
             }
             ImGui::SetTooltip("%s", tip.c_str());
@@ -5725,6 +5779,7 @@ namespace Surfels
         UpdateCamera(ImGui::GetIO());
         if (!m_lodTestFolder.empty()) StepLodQualityTest();
         if (!m_lodCalFolder.empty()) StepLodCalibration();
+        if (m_streamTest) StepStreamTest();
         const auto tUi = std::chrono::high_resolution_clock::now();
         BuildUI();
         m_frameUiMs = std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - tUi).count();
@@ -5735,7 +5790,7 @@ namespace Surfels
         m_state.arrivalGlowIntensity = m_arrivalGlowIntensity;
         m_state.arrivalGlowHue = m_arrivalGlowHue;
         m_state.autoSplatSize = m_autoSplatSize;
-        for (int l = 0; l < 8; l++) m_state.lodRadius[l] = (l < (int)m_lodSpacing.size()) ? m_lodSpacing[l] * m_autoSplatCoverage : 0.0f;
+        for (int l = 0; l < 8; l++) m_state.lodRadius[l] = (l < (int)m_stream.m_lodSpacing.size()) ? m_stream.m_lodSpacing[l] * m_autoSplatCoverage : 0.0f;
         // Splat mode: every level (kSplatDiscMinLevel and up; 0 while kSplatGaussianLevel0 is false) draws as camera-facing discs of
         // the level's point spacing times kSplatDiscCoverage (neither the Coverage slider nor Auto Splat Size
         // applies); 0 = no measurement, the level draws Gaussians. 1.5 overlaps neighbouring discs enough that
@@ -5750,7 +5805,7 @@ namespace Surfels
         // (the shader keeps the Gaussian and clamps its scales to the level spacing x the cap factor).
         for (int l = 0; l < 8; l++)
         {
-            const float spacing = (l < (int)m_lodSpacing.size()) ? m_lodSpacing[l] : 0.0f;
+            const float spacing = (l < (int)m_stream.m_lodSpacing.size()) ? m_stream.m_lodSpacing[l] : 0.0f;
             m_state.splatDiscRadius[l] = !m_splatCoarseAsGaussians ? spacing * splatDiscFactor
                                        : (m_splatCoarseGaussianCap > 0.0f ? -spacing * m_splatCoarseGaussianCap : 0.0f);
         }
@@ -5854,9 +5909,9 @@ namespace Surfels
         // The render mode follows SplatRenderMode() at the next state selection; re-stamp the chunks'
         // dilationMorph now (the sorted pipeline's fade weight, or the surfel value) without a re-partition
         const float morph = m_splatDrawAsSurfels ? 0.0f : 1.0f;
-        for (auto& mc : m_rendererMeshletChunks) mc.dilationMorph = morph;
+        for (auto& mc : m_stream.m_rendererMeshletChunks) mc.dilationMorph = morph;
         for (auto& lod : m_residentLODs) for (auto& mc : lod.meshletChunks) mc.dilationMorph = morph;
-        m_streamStateDirty = true;
+        m_stream.m_streamStateDirty = true;
     }
 
     // LOD quality test (see SurfelsApp.h). Runs on the static per-level sets (streaming off), so each capture
@@ -5868,17 +5923,17 @@ namespace Surfels
         const int maxLevel = (int)m_waveletResult.lodLevels.size() - 1;
         if (!m_lodTestRunning)
         {
-            if (maxLevel <= 0 || (int)m_lodSpacing.size() <= maxLevel || m_residentLODs.empty()) return;
-            if (m_enableStreamingSimulation && (m_totalStreamBytes <= 0.0f || m_simulatedBytesDelivered < m_totalStreamBytes * 0.999f))
+            if (maxLevel <= 0 || (int)m_stream.m_lodSpacing.size() <= maxLevel || m_residentLODs.empty()) return;
+            if (m_enableStreamingSimulation && (m_stream.m_totalStreamBytes <= 0.0f || m_stream.m_simulatedBytesDelivered < m_stream.m_totalStreamBytes * 0.999f))
             {
                 m_lodTestShotSeconds += m_deltaTime / 1000.0;
                 return;
             }
-            LogTransitionTrace("LOD quality test: stream fully resident after %.1f s (%.1f MB); starting captures", m_lodTestShotSeconds, m_simulatedBytesDelivered / (1024.0f * 1024.0f));
+            LogTransitionTrace("LOD quality test: stream fully resident after %.1f s (%.1f MB); starting captures", m_lodTestShotSeconds, m_stream.m_simulatedBytesDelivered / (1024.0f * 1024.0f));
             for (int lvl = 0; lvl <= maxLevel; lvl++)
             {
                 size_t resident = 0, total = 0;
-                if (lvl < (int)m_lodStreamChunks.size()) for (const auto& c : m_lodStreamChunks[lvl]) { total++; if (c.isResident) resident++; }
+                if (lvl < (int)m_stream.m_lodStreamChunks.size()) for (const auto& c : m_stream.m_lodStreamChunks[lvl]) { total++; if (c.isResident) resident++; }
                 LogTransitionTrace("LOD quality test: level %d resident %zu / %zu blocks", lvl, resident, total);
             }
 
@@ -5896,7 +5951,7 @@ namespace Surfels
                 const bool screenSpace = (rule == 1);
                 for (int L = 1; L <= maxLevel; L++)
                 {
-                    const float d = LodSwitchDistance(L, screenSpace) * 1.001f;
+                    const float d = m_stream.LodSwitchDistance(L, screenSpace) * 1.001f;
                     auto add = [&](int level, bool gauss, int repeat, float cap = 0.0f)
                     {
                         LodTestShot s;
@@ -5999,15 +6054,48 @@ namespace Surfels
         }
     }
 
+    // --stream-test: once fully resident, the launch view, 5G and Greedy, Evict, 60 s of refill, then quit
+    void SurfelsApp::StepStreamTest()
+    {
+        if (m_stream.m_lodStreamChunks.empty()) return;
+        if (m_streamTestPhase == 0)
+        {
+            m_unthrottledBandwidth = true;
+            if (m_stream.m_totalStreamBytes <= 0.0f || m_stream.m_simulatedBytesDelivered < m_stream.m_totalStreamBytes * 0.999f) return;
+            m_autoRotate = false; m_enableStreamDecay = false; m_loupeEnabled = false;
+            if (m_detachCamera) SetDetachCamera(false);
+            m_yaw = 0.6f; m_pitch = 0.35f; m_target = m_center; ApplyFitDistance();
+            m_streamingPolicy = StreamingPolicy::Greedy;
+            m_unthrottledBandwidth = false; m_bandwidthThrottleMBps = 7.5f;
+            m_streamTestSeconds = 0.0;
+            m_streamTestPhase = 1;
+            return;
+        }
+        m_streamTestSeconds += m_deltaTime / 1000.0;
+        if (m_streamTestPhase == 1 && m_streamTestSeconds >= 3.0)
+        {
+            LogTransitionTrace("Stream test: Evict at 5G (7.5 MB/s), launch view");
+            ClearResidentStream();
+            m_streamTestSeconds = 0.0;
+            m_streamTestPhase = 2;
+        }
+        else if (m_streamTestPhase == 2 && m_streamTestSeconds >= 60.0)
+        {
+            LogTransitionTrace("Stream test: done after 60 s");
+            m_streamTestPhase = 3;
+            PostQuitMessage(0);
+        }
+    }
+
     // --lod-calibration: see LodCalShot in SurfelsApp.h
     void SurfelsApp::StepLodCalibration()
     {
         const int maxLevel = (int)m_waveletResult.lodLevels.size() - 1;
         if (!m_lodCalRunning)
         {
-            if (maxLevel <= 0 || (int)m_lodSpacing.size() <= maxLevel || m_lodStreamChunks.empty()) return;
+            if (maxLevel <= 0 || (int)m_stream.m_lodSpacing.size() <= maxLevel || m_stream.m_lodStreamChunks.empty()) return;
             m_unthrottledBandwidth = true;
-            if (m_totalStreamBytes <= 0.0f || m_simulatedBytesDelivered < m_totalStreamBytes * 0.999f) return;
+            if (m_stream.m_totalStreamBytes <= 0.0f || m_stream.m_simulatedBytesDelivered < m_stream.m_totalStreamBytes * 0.999f) return;
 
             m_autoRotate = false;
             m_enableStreamDecay = false;
@@ -6076,16 +6164,16 @@ namespace Surfels
         // a high frame rate. A shot that never settles is captured after 60 s and marked
         m_lodCalShotSeconds += m_deltaTime / 1000.0;
         uint64_t splats = 0;
-        for (const StreamChunk* pc : m_rendererSourceChunks) splats += pc->rawSurfels.size();
-        const bool still = (m_lastActiveTransitions == 0 && splats == m_lodCalLastSplats);
+        for (const StreamChunk* pc : m_stream.m_rendererSourceChunks) splats += pc->rawSurfels.size();
+        const bool still = (m_stream.m_lastActiveTransitions == 0 && splats == m_lodCalLastSplats);
         m_lodCalStableSeconds = still ? m_lodCalStableSeconds + m_deltaTime / 1000.0 : 0.0;
         m_lodCalStableFrames = still ? m_lodCalStableFrames + 1 : 0;
         m_lodCalLastSplats = splats;
         if (m_lodCalStableSeconds >= 2.5 || m_lodCalShotSeconds > 60.0)
         {
             shot.splats = splats;
-            shot.chunks = (uint32_t)m_rendererSourceChunks.size();
-            for (const StreamChunk* pc : m_rendererSourceChunks) shot.perLevel[std::min(7, std::max(0, pc->lodLevel))] += pc->rawSurfels.size();
+            shot.chunks = (uint32_t)m_stream.m_rendererSourceChunks.size();
+            for (const StreamChunk* pc : m_stream.m_rendererSourceChunks) shot.perLevel[std::min(7, std::max(0, pc->lodLevel))] += pc->rawSurfels.size();
             shot.seconds = (float)m_lodCalShotSeconds;
             shot.settled = (m_lodCalStableSeconds >= 2.5);
             m_pRenderer->RequestSceneCapture();
@@ -6171,7 +6259,7 @@ namespace Surfels
            << ". Each row renders the model at the distance where the rule switches to the given level, and compares it with level 0 at the same distance "
               "(PSNR over RGB and SSIM over luma, both inside the model's bounding box). `L0 again` is a second level 0 capture: the TAA noise floor.\n\n";
         md << "Level spacing (median nearest neighbour):";
-        for (size_t l = 0; l < m_lodSpacing.size(); l++) md << " L" << l << " " << m_lodSpacing[l] * 1000.0f << " mm";
+        for (size_t l = 0; l < m_stream.m_lodSpacing.size(); l++) md << " L" << l << " " << m_stream.m_lodSpacing[l] * 1000.0f << " mm";
         md << "\n\n";
 
         bool asSurfels = false;
@@ -6218,7 +6306,7 @@ namespace Surfels
                     if (!r.shot) continue;
                     const double psnr = ImageCompare::Psnr(ref->image, r.shot->image, rect);
                     const double ssim = ImageCompare::Ssim(ref->image, r.shot->image, rect);
-                    const float spacingPx = (r.level < (int)m_lodSpacing.size()) ? m_lodSpacing[r.level] * LodFocalPixels() / LodEffectiveDistance(ref->distance) : 0.0f;
+                    const float spacingPx = (r.level < (int)m_stream.m_lodSpacing.size()) ? m_stream.m_lodSpacing[r.level] * m_stream.LodFocalPixels() / m_stream.LodEffectiveDistance(ref->distance) : 0.0f;
                     char line[256];
                     snprintf(line, sizeof(line), "| L%d | %.3f | L%d %s | %.2f px | %.2f | %.4f |\n", L, ref->distance, r.level, r.name.c_str(), spacingPx, psnr, ssim);
                     md << line;

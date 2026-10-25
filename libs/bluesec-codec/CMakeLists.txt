@@ -25,6 +25,8 @@ add_library(bluesec-codec STATIC
     OcclusionVolume.cpp
     StreamOrder.h
     StreamOrder.cpp
+    StreamRuntime.h
+    StreamRuntime.cpp
     DetailHeatmap.h
     DetailHeatmap.cpp
     CodecBuild.h
