@@ -548,6 +548,8 @@ namespace Surfels
 
             m_pDevice->GetDevice()->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_pCopyFence));
             SetName(m_pCopyFence, "SurfelsRenderer::m_pCopyFence");
+            m_pDevice->GetDevice()->CreateFence(0, D3D12_FENCE_FLAG_NONE, IID_PPV_ARGS(&m_pGraphicsProgressFence));
+            SetName(m_pGraphicsProgressFence, "SurfelsRenderer::m_pGraphicsProgressFence");
             m_copyFenceEvent = CreateEvent(nullptr, FALSE, FALSE, nullptr);
             m_copyFenceValue = 0;
         }
@@ -864,6 +866,7 @@ namespace Surfels
         FlushCopyQueue();
         if (m_copyFenceEvent) { CloseHandle(m_copyFenceEvent); m_copyFenceEvent = nullptr; }
         if (m_pCopyFence) { m_pCopyFence->Release(); m_pCopyFence = nullptr; }
+        if (m_pGraphicsProgressFence) { m_pGraphicsProgressFence->Release(); m_pGraphicsProgressFence = nullptr; }
         if (m_pCopyCmdList) { m_pCopyCmdList->Release(); m_pCopyCmdList = nullptr; }
         if (m_pCopyAllocator) { m_pCopyAllocator->Release(); m_pCopyAllocator = nullptr; }
         if (m_pCopyQueue) { m_pCopyQueue->Release(); m_pCopyQueue = nullptr; }
@@ -993,6 +996,10 @@ namespace Surfels
     void SurfelsRenderer::EnsureSplatSortBuffers(uint32_t paddedSlots)
     {
         if (paddedSlots <= m_splatSortCapacitySlots) return;
+        // Grow by doubling: the slot count climbs every frame while a model refines (parents and children
+        // both in the list), and growing to the exact count reallocated, with a full GPU flush, every time
+        // it crossed the next 1024 slots -- most frames of a refinement.
+        paddedSlots = std::max(paddedSlots, m_splatSortCapacitySlots * 2u);
         m_pDevice->GPUFlush(D3D12_COMMAND_LIST_TYPE_DIRECT);
         if (m_pSlotInfoBuffer) { m_pSlotInfoBuffer->Release(); m_pSlotInfoBuffer = nullptr; }
         if (m_pSplatPairsA) { m_pSplatPairsA->Release(); m_pSplatPairsA = nullptr; }
@@ -2048,6 +2055,11 @@ namespace Surfels
         pSwapChain->WaitForSwapChain();
         const auto tWaitEnd = std::chrono::high_resolution_clock::now();
 
+        // Marks the end of everything submitted to the graphics queue before this frame; this frame's copy
+        // waits on it (see the copy-queue upload below)
+        if (m_pGraphicsProgressFence != nullptr)
+            m_pDevice->GetGraphicsQueue()->Signal(m_pGraphicsProgressFence, ++m_graphicsProgressValue);
+
         // Safely map silhouette bitmask readback buffer from previous completed frame
         if (m_pSilhouetteReadbackBuffer != nullptr && !m_silhouetteBitmaskCPU.empty())
         {
@@ -2558,6 +2570,13 @@ namespace Surfels
 
                     m_pCopyCmdList->Close();
                     ID3D12CommandList* ppCopyLists[] = { m_pCopyCmdList };
+                    // The destinations are the buffers the previous frame's sort and draw read, and that frame
+                    // may still be running on the graphics queue: the copy waits for everything submitted to
+                    // it before this frame (the progress fence signalled at the top of OnRender). Without the
+                    // wait the copy landed mid-draw and the previous frame drew a half-replaced list -- single
+                    // splats, patches or the whole model wrong for one frame, while the list changed every frame.
+                    if (m_pGraphicsProgressFence != nullptr)
+                        m_pCopyQueue->Wait(m_pGraphicsProgressFence, m_graphicsProgressValue);
                     m_pCopyQueue->ExecuteCommandLists(1, ppCopyLists);
 
                     uint64_t fenceVal = ++m_copyFenceValue;

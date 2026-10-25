@@ -448,6 +448,8 @@ namespace Surfels
         ID3D12CommandQueue*        m_pCopyQueue = nullptr;
         ID3D12CommandAllocator*    m_pCopyAllocator = nullptr;
         ID3D12GraphicsCommandList* m_pCopyCmdList = nullptr;
+        ID3D12Fence*               m_pGraphicsProgressFence = nullptr; // Signalled on the graphics queue at the top of each OnRender: the copy queue waits on it before overwriting buffers the previous frame reads
+        uint64_t                   m_graphicsProgressValue = 0;
         ID3D12Fence*               m_pCopyFence = nullptr;
         uint64_t                   m_copyFenceValue = 0;
         HANDLE                     m_copyFenceEvent = nullptr;

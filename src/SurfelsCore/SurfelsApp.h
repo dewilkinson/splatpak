@@ -333,6 +333,8 @@ namespace Surfels
             XMFLOAT3 aabbMin = { 0, 0, 0 };
             XMFLOAT3 aabbMax = { 0, 0, 0 };
             size_t   childBegin = 0;              // The block's children at the next finer level: m_lodStreamChunks[lodLevel - 1][childBegin, childEnd). The finer
+            size_t   parentIndex = SIZE_MAX;      // The block's parent at the next coarser level (SIZE_MAX at the coarsest level, or when the levels are not nested)
+            bool     appendedLastFrame = false;
         };
 
         struct ChunkRequest
