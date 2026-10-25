@@ -562,6 +562,9 @@ namespace Surfels
         int    m_loupeViz = 0;                       // Inset display: 0 normal, 1 splat outlines, 2 random colour per splat, 3 centres (Shift+V cycles it)
         int    m_splatViz = 0;                       // The same display for the whole model (Renderer tab "Splat Display"; V cycles it)
         ImVec2 m_loupeCenter = ImVec2(-1.0f, -1.0f); // Back-buffer pixels; negative = not placed yet (centre of the view)
+        bool   m_loupePinned = false;                // The box stays put instead of following the mouse (a click inside it, or Space, toggles)
+        bool   m_loupeBoxPressed = false;            // The left button went down inside the box (a click toggles the pin on release)
+        ImVec2 m_loupeBoxPressPos = ImVec2(0.0f, 0.0f);
         float  m_rightPanelWidth = 0.0f;             // From BuildUI, for placing the inset
         float  m_bannerBottomY = 0.0f;               // Bottom edge of the render-mode banner last frame (0 = none); the inset sits below it
         void   DrawLoupeOverlay();                   // The box and the inset's frame and zoom label (the inset itself is the renderer's)

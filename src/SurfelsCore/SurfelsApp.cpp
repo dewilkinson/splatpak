@@ -782,6 +782,12 @@ namespace Surfels
                 m_loupeEnabled = !m_loupeEnabled;
                 return true;
             }
+            // Space pins the loupe's box where it is, or lets it follow the mouse again.
+            if (msg.wParam == VK_SPACE && m_loupeEnabled && (msg.lParam & (1 << 30)) == 0 && !ImGui::GetIO().WantCaptureKeyboard)
+            {
+                m_loupePinned = !m_loupePinned;
+                return true;
+            }
             // V cycles the splat display (normal, outlines, colours, centres) for the whole model; Shift+V cycles
             // the loupe's own.
             if (msg.wParam == 'V' && !ctrlPressed && (msg.lParam & (1 << 30)) == 0 && !ImGui::GetIO().WantCaptureKeyboard)
@@ -2190,9 +2196,30 @@ namespace Surfels
             }
         }
 
-        // The loupe's box follows the mouse while it is over the viewport -- not over the inset itself, nor while
-        // the inset is being dragged (L toggles the loupe: see OnEvent).
-        if (m_loupeEnabled && m_loupeDrag == 0 && !overInset && !io.WantCaptureMouse && io.MousePos.x >= 0.0f && io.MousePos.y >= 0.0f)
+        // A click inside the loupe's box pins it where it is, and another unpins it (Space too: see OnEvent).
+        // A click is a press and release that hardly move: a left-drag that starts in the box still orbits.
+        if (m_loupeEnabled && m_loupeRect.z > m_loupeRect.x)
+        {
+            const float zoom = std::max(1.0f, m_loupeZoom);
+            const ImVec2 half(0.5f * (m_loupeRect.z - m_loupeRect.x) / zoom, 0.5f * (m_loupeRect.w - m_loupeRect.y) / zoom);
+            const ImVec2 m = io.MousePos;
+            const bool inBox = fabsf(m.x - m_loupeCenter.x) <= half.x && fabsf(m.y - m_loupeCenter.y) <= half.y;
+            if (io.MouseClicked[0] && inBox && m_loupeDrag == 0 && !overInset && !io.WantCaptureMouse)
+            {
+                m_loupeBoxPressed = true;
+                m_loupeBoxPressPos = m;
+            }
+            if (m_loupeBoxPressed && io.MouseReleased[0])
+            {
+                m_loupeBoxPressed = false;
+                if (fabsf(m.x - m_loupeBoxPressPos.x) < 4.0f && fabsf(m.y - m_loupeBoxPressPos.y) < 4.0f)
+                    m_loupePinned = !m_loupePinned;
+            }
+        }
+
+        // The loupe's box follows the mouse while it is over the viewport -- unless pinned, and not over the inset
+        // itself, nor while the inset is being dragged (L toggles the loupe: see OnEvent).
+        if (m_loupeEnabled && !m_loupePinned && m_loupeDrag == 0 && !overInset && !io.WantCaptureMouse && io.MousePos.x >= 0.0f && io.MousePos.y >= 0.0f)
             m_loupeCenter = io.MousePos;
 
         // Keyboard Controls: Arrow Keys (Shift=Pan, No Shift=Rotate), W/S/PageUp/PageDown Zoom
@@ -4583,7 +4610,15 @@ namespace Surfels
         ImDrawList* dl = ImGui::GetOverlayDrawList();
         const ImU32 frame = IM_COL32(255, 210, 80, 230);
         const ImVec2 half(0.5f * inset.x / zoom, 0.5f * inset.y / zoom);
-        dl->AddRect(ImVec2(m_loupeCenter.x - half.x, m_loupeCenter.y - half.y), ImVec2(m_loupeCenter.x + half.x, m_loupeCenter.y + half.y), frame, 0.0f, ~0, 1.5f);
+        const ImVec2 boxMin(m_loupeCenter.x - half.x, m_loupeCenter.y - half.y), boxMax(m_loupeCenter.x + half.x, m_loupeCenter.y + half.y);
+        if (m_loupePinned)
+        {
+            // Pinned: a frosted grey tint and a darker border (the inset still shows the area under it untinted)
+            dl->AddRectFilled(boxMin, boxMax, IM_COL32(205, 208, 214, 70));
+            dl->AddRect(boxMin, boxMax, IM_COL32(150, 110, 30, 255), 0.0f, ~0, 2.0f);
+        }
+        else
+            dl->AddRect(boxMin, boxMax, frame, 0.0f, ~0, 1.5f);
         dl->AddRect(ImVec2(destX - 1.0f, destY - 1.0f), ImVec2(destX + inset.x + 1.0f, destY + inset.y + 1.0f), frame, 0.0f, ~0, 2.0f);
         // What a drag would grab lights up under the mouse and while dragged: an edge (two for a corner), or the
         // whole frame for a move
@@ -4638,7 +4673,7 @@ namespace Surfels
                 { "Zoom",   m_loupeEnabled ? "wheel \xC2\xB7 right-drag \xC2\xB7 Up/Down" : "wheel \xC2\xB7 right-drag \xC2\xB7 W/S \xC2\xB7 Up/Down" },
                 { "Pan",    "Shift + drag \xC2\xB7 Shift + arrows" },
                 { "Splats", "V display" },
-                { "Loupe",  m_loupeEnabled ? "L off \xC2\xB7 W/S magnify \xC2\xB7 Shift+V display" : "L" },
+                { "Loupe",  m_loupeEnabled ? "L off \xC2\xB7 W/S magnify \xC2\xB7 Shift+V display \xC2\xB7 click box/Space pin" : "L" },
             };
             const float bindingColumn = ImGui::CalcTextSize("Rotate").x + 14.0f; // Fixed verb column so the proportional font still lines up
             for (const Hint& h : hints)
