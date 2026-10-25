@@ -571,6 +571,15 @@ namespace Surfels
         ImVec4 m_rightPanelRect = ImVec4(0.0f, 0.0f, 0.0f, 0.0f); // the loupe's box is kept out of them
         float  m_bannerBottomY = 0.0f;               // Bottom edge of the render-mode banner last frame (0 = none); the inset sits below it
         void   DrawLoupeOverlay();                   // The box and the inset's frame and zoom label (the inset itself is the renderer's)
+        // A pinned box is anchored to the surface under it: the point and the patch's half-height in world units
+        // at pin time (at m_loupeAnchorZoom), re-projected every frame so zoom and orbit keep the same subregion
+        XMFLOAT3 m_loupeAnchorWorld = { 0, 0, 0 };
+        float  m_loupeAnchorHalfWorld = 0.0f;
+        float  m_loupeAnchorZoom = 8.0f;
+        bool   m_loupeAnchorValid = false;
+        float  m_loupeEffectiveZoom = 8.0f;          // The magnification drawn last frame (m_loupeZoom, or the anchored box's)
+        void   SetLoupePinned(bool pinned);          // Pins (capturing the anchor) or releases the box
+        bool   ProjectLiveCamera(const XMFLOAT3& world, ImVec2& screen, float& viewDepth) const; // World point -> window pixels and view depth, live camera
 
         // Right panel sections: drawn in m_rightPanelOrder (section ids, see BuildUI), each open or collapsed per
         // m_rightPanelOpen. Dragging a section's title bar up or down moves it; order and open state are saved in

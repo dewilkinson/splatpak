@@ -805,7 +805,7 @@ namespace Surfels
             // Space pins the loupe's box where it is, or lets it follow the mouse again.
             if (msg.wParam == VK_SPACE && m_loupeEnabled && (msg.lParam & (1 << 30)) == 0 && !ImGui::GetIO().WantCaptureKeyboard)
             {
-                m_loupePinned = !m_loupePinned;
+                SetLoupePinned(!m_loupePinned);
                 return true;
             }
             // V cycles the splat display (normal, outlines, colours, centres) for the whole model; Shift+V cycles
@@ -2271,7 +2271,7 @@ namespace Surfels
         // A click is a press and release that hardly move: a left-drag that starts in the box still orbits.
         if (m_loupeEnabled && m_loupeRect.z > m_loupeRect.x)
         {
-            const float zoom = std::max(1.0f, m_loupeZoom);
+            const float zoom = std::max(1.0f, m_loupeEffectiveZoom); // As drawn last frame (a pinned box sizes itself; see DrawLoupeOverlay)
             const ImVec2 half(0.5f * (m_loupeRect.z - m_loupeRect.x) / zoom, 0.5f * (m_loupeRect.w - m_loupeRect.y) / zoom);
             const ImVec2 m = io.MousePos;
             const bool inBox = fabsf(m.x - m_loupeCenter.x) <= half.x && fabsf(m.y - m_loupeCenter.y) <= half.y;
@@ -2284,7 +2284,7 @@ namespace Surfels
             {
                 m_loupeBoxPressed = false;
                 if (fabsf(m.x - m_loupeBoxPressPos.x) < 4.0f && fabsf(m.y - m_loupeBoxPressPos.y) < 4.0f)
-                    m_loupePinned = !m_loupePinned;
+                    SetLoupePinned(!m_loupePinned);
             }
         }
 
@@ -4659,6 +4659,74 @@ namespace Surfels
     // kept inside the window (below the menu bar) when the window shrinks. Neither the box nor the inset ever
     // enters a side panel: where one would, it is pushed out the shorter way (sideways off the full-height left
     // panel; sideways or below the right panel, whose height follows its open sections).
+    // The live camera's eye, view direction and view-projection (the same as the frame's, see OnRender)
+    static void LiveCamera(const XMFLOAT3& target, float distance, float pitch, float yaw, float aspect, XMFLOAT3& eye, XMFLOAT3& forward, XMMATRIX& viewProj)
+    {
+        const float cy = cosf(pitch), sy = sinf(pitch), sx = sinf(yaw), cx = cosf(yaw);
+        eye = XMFLOAT3(target.x + distance * cy * sx, target.y + distance * sy, target.z + distance * cy * cx);
+        const XMVECTOR e = XMLoadFloat3(&eye), at = XMLoadFloat3(&target);
+        XMStoreFloat3(&forward, XMVector3Normalize(XMVectorSubtract(at, e)));
+        viewProj = XMMatrixMultiply(XMMatrixLookAtRH(e, at, XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f)), XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect, 0.1f, 500.0f));
+    }
+
+    bool SurfelsApp::ProjectLiveCamera(const XMFLOAT3& world, ImVec2& screen, float& viewDepth) const
+    {
+        if (m_Width == 0 || m_Height == 0) return false;
+        XMFLOAT3 eye, fwd; XMMATRIX viewProj;
+        LiveCamera(m_target, m_distance, m_pitch, m_yaw, (float)m_Width / (float)m_Height, eye, fwd, viewProj);
+        viewDepth = (world.x - eye.x) * fwd.x + (world.y - eye.y) * fwd.y + (world.z - eye.z) * fwd.z;
+        XMFLOAT4 clip;
+        XMStoreFloat4(&clip, XMVector4Transform(XMVectorSet(world.x, world.y, world.z, 1.0f), viewProj));
+        if (clip.w <= 1e-4f) return false;
+        screen = ImVec2((clip.x / clip.w * 0.5f + 0.5f) * (float)m_Width, (0.5f - clip.y / clip.w * 0.5f) * (float)m_Height);
+        return true;
+    }
+
+    // Pinning captures the anchor: the depth of the front surface under the box (the nearest fifth of the
+    // level 0 points that project into it, a sample of up to a million), the point on the box's centre ray at
+    // that depth, and the box's half-height in world units there. With no points under the box the anchor
+    // sits on the plane through the orbit target.
+    void SurfelsApp::SetLoupePinned(bool pinned)
+    {
+        m_loupePinned = pinned;
+        m_loupeAnchorValid = false;
+        if (!pinned || m_Width == 0 || m_Height == 0) return;
+        XMFLOAT3 eye, fwd; XMMATRIX viewProj;
+        LiveCamera(m_target, m_distance, m_pitch, m_yaw, (float)m_Width / (float)m_Height, eye, fwd, viewProj);
+        const float zoom = std::max(1.0f, m_loupeEffectiveZoom);
+        const ImVec2 half(0.5f * m_loupeSize.x / zoom, 0.5f * m_loupeSize.y / zoom);
+        const std::vector<SurfelVertex>& pts = !m_rendererRawSurfels.empty() ? m_rendererRawSurfels : m_rawSurfels;
+        const size_t stride = std::max<size_t>(1, pts.size() / 1000000);
+        std::vector<float> depths;
+        for (size_t i = 0; i < pts.size(); i += stride)
+        {
+            const XMFLOAT3& p = pts[i].position;
+            XMFLOAT4 clip;
+            XMStoreFloat4(&clip, XMVector4Transform(XMVectorSet(p.x, p.y, p.z, 1.0f), viewProj));
+            if (clip.w <= 1e-4f) continue;
+            const float sx = (clip.x / clip.w * 0.5f + 0.5f) * (float)m_Width, sy = (0.5f - clip.y / clip.w * 0.5f) * (float)m_Height;
+            if (fabsf(sx - m_loupeCenter.x) <= half.x && fabsf(sy - m_loupeCenter.y) <= half.y)
+                depths.push_back((p.x - eye.x) * fwd.x + (p.y - eye.y) * fwd.y + (p.z - eye.z) * fwd.z);
+        }
+        float depth = (m_target.x - eye.x) * fwd.x + (m_target.y - eye.y) * fwd.y + (m_target.z - eye.z) * fwd.z;
+        if (!depths.empty())
+        {
+            std::nth_element(depths.begin(), depths.begin() + depths.size() / 5, depths.end());
+            depth = depths[depths.size() / 5];
+        }
+        if (depth <= 1e-4f) return;
+        // The centre ray: the box centre unprojected at the near plane, from the eye, scaled to the depth
+        const float ndcX = m_loupeCenter.x / (float)m_Width * 2.0f - 1.0f, ndcY = 1.0f - m_loupeCenter.y / (float)m_Height * 2.0f;
+        const XMVECTOR nearPt = XMVector3TransformCoord(XMVectorSet(ndcX, ndcY, 0.0f, 1.0f), XMMatrixInverse(nullptr, viewProj));
+        XMFLOAT3 dir;
+        XMStoreFloat3(&dir, XMVector3Normalize(XMVectorSubtract(nearPt, XMLoadFloat3(&eye))));
+        const float along = depth / std::max(1e-4f, dir.x * fwd.x + dir.y * fwd.y + dir.z * fwd.z);
+        m_loupeAnchorWorld = XMFLOAT3(eye.x + dir.x * along, eye.y + dir.y * along, eye.z + dir.z * along);
+        m_loupeAnchorHalfWorld = half.y * 2.0f * depth * tanf(0.5f * XM_PIDIV4) / (float)m_Height;
+        m_loupeAnchorZoom = m_loupeZoom; // W/S afterwards scales the patch by m_loupeAnchorZoom / m_loupeZoom
+        m_loupeAnchorValid = true;
+    }
+
     void SurfelsApp::DrawLoupeOverlay()
     {
         m_state.loupeEnabled = false;
@@ -4680,8 +4748,24 @@ namespace Surfels
             }
         };
         if (m_loupeCenter.x < 0.0f) m_loupeCenter = ImVec2(0.5f * (float)m_Width, 0.5f * (float)m_Height);
-        const float zoom = m_loupeZoom;
         const ImVec2 inset(std::floor(std::min(m_loupeSize.x, (float)m_Width)), std::floor(std::min(m_loupeSize.y, (float)m_Height)));
+        // A pinned box holds onto the patch of surface it was pinned over (CaptureLoupeAnchor): its centre is
+        // that point projected with the live camera, and its size the patch's world size at the point's
+        // depth, so zooming or orbiting the model keeps the same subregion in the inset. The magnification
+        // follows (W/S still scales the patch); it bottoms out at 1x, where the box is the inset's size.
+        float zoom = m_loupeZoom;
+        if (m_loupePinned && m_loupeAnchorValid)
+        {
+            ImVec2 screen; float depth = 0.0f;
+            if (ProjectLiveCamera(m_loupeAnchorWorld, screen, depth) && depth > 1e-4f)
+            {
+                const float worldHalfY = m_loupeAnchorHalfWorld * (m_loupeAnchorZoom / std::max(1e-3f, m_loupeZoom));
+                const float pxPerWorld = (float)m_Height / (2.0f * depth * tanf(0.5f * XM_PIDIV4));
+                zoom = std::clamp(0.5f * inset.y / std::max(1e-3f, worldHalfY * pxPerWorld), 1.0f, kLoupeZoomMax);
+                m_loupeCenter = screen;
+            }
+        }
+        m_loupeEffectiveZoom = zoom;
         if (m_loupePos.x < 0.0f)
             m_loupePos = ImVec2((float)m_Width - m_rightPanelWidth - inset.x - 14.0f, std::max(56.0f, m_bannerBottomY + 10.0f));
         {
