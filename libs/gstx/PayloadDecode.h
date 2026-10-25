@@ -9,8 +9,8 @@
 
 #pragma once
 #include <vector>
+#include <cstddef>
 #include <cstdint>
-#include "../../src/SurfelsCore/WaveletTypes.h"
 
 namespace Surfels
 {
@@ -18,7 +18,7 @@ namespace Surfels
     {
     public:
         // Undoes the entropy stage of one payload: false when the bytes are not a payload of this codec or do
-        // not decode to exactly dstSize bytes. codec is SFLWFileHeader::payloadCodec (PayloadCodecId).
+        // not decode to exactly dstSize bytes. codec is the header's payloadCodec: 0 = run-length stage, 1 = Brotli.
         static bool Decompress(const uint8_t* src, size_t srcSize, uint8_t* dst, size_t dstSize, uint32_t codec);
 
         // One payload all the way back to interleaved records: entropy stage, then the byte-plane transpose

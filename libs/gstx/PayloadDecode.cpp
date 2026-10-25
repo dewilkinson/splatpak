@@ -5,6 +5,7 @@
 // See PayloadDecode.h.
 
 #include "PayloadDecode.h"
+#include "../../src/SurfelsCore/WaveletTypes.h"
 #include "ByteShuffle.h"
 #include <brotli/decode.h>
 
