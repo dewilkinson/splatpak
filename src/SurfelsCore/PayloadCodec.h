@@ -2,7 +2,7 @@
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// The entropy stage of .sflw payloads (Clause 8 of docs/SFLW_FORMAT_SPECIFICATION.md). A level's
+// The entropy stage of .gstx payloads (Clause 8 of docs/GSTX_FORMAT_SPECIFICATION.md). A level's
 // records, or its spherical-harmonics stream, already transposed into byte planes by
 // ByteShuffle::Shuffle, go through one of these coders, named by the header's payloadCodec field:
 //

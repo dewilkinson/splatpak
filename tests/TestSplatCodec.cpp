@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Splat mode round trip: loads a 3D Gaussian Splatting .ply with its full attributes, encodes and
-// decodes the records in memory, bakes a splat-mode .sflw (surfel format 1) through the packager,
+// decodes the records in memory, bakes a splat-mode .gstx (surfel format 1) through the packager,
 // reloads it, and checks that every level-0 Gaussian survives within the format's quantisation.
 //
 //   TestSplatCodec <input.ply> <output-base> [max-points] [sh-degree]
@@ -139,7 +139,7 @@ int main(int argc, char** argv)
     }
     StreamPackager::SFLWPackageData pkg;
     std::string reason;
-    if (!StreamPackager::LoadPackage(outputBase + ".sflw", pkg, &reason))
+    if (!StreamPackager::LoadPackage(outputBase + ".gstx", pkg, &reason))
     {
         std::cerr << "LoadPackage failed: " << reason << std::endl;
         return 1;
@@ -185,7 +185,7 @@ int main(int argc, char** argv)
     std::cout << "Package round trip: position " << maxPosErr << ", SH " << maxPkgShErr << " of max, SH stream " << totalSH << " bytes" << std::endl;
     Check(levels == maxLODs + 1, "levels in package", (double)levels, (double)(maxLODs + 1));
 
-    std::ifstream out(outputBase + ".sflw", std::ios::ate | std::ios::binary);
+    std::ifstream out(outputBase + ".gstx", std::ios::ate | std::ios::binary);
     const uint64_t packageBytes = out.is_open() ? (uint64_t)out.tellg() : 0;
     std::cout << "Package: " << packageBytes / (1024.0 * 1024.0) << " MB for " << surfels.size() << " splats over " << levels << " levels ("
               << (double)packageBytes / (double)std::max<size_t>(1, surfels.size()) << " bytes per level-0 splat, all levels included; "

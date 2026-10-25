@@ -2,7 +2,7 @@
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// Reads and writes the self-contained .sflw binary stream container (header, per-chunk
+// Reads and writes the self-contained .gstx binary stream container (header, per-chunk
 // LOD payloads, optional occlusion volume, and an embedded chunk manifest table): runs
 // each chunk through the wavelet/quantize/shuffle/compress pipeline on export, and
 // restores the full multi-LOD chunk hierarchy (plus any baked occlusion volume) on import.
@@ -48,7 +48,7 @@ namespace Surfels
             const SplatBakeInput* splat = nullptr,              // Splat mode (v8+, surfel format 1); nullptr = 8-byte surfel records
             uint32_t payloadCodec = PayloadCodec::kDefault)     // Entropy stage of every payload (v9+); see PayloadCodec.h
         {
-            std::string sflwPath = outputBasepath + ".sflw";
+            std::string sflwPath = outputBasepath + ".gstx";
 
             std::ofstream sflwOut(sflwPath, std::ios::binary);
             if (!sflwOut.is_open())
@@ -77,7 +77,7 @@ namespace Surfels
 
             // Write File Header placeholder
             SFLWFileHeader header = {};
-            header.magic = SFLW_MAGIC;
+            header.magic = GSTX_MAGIC; // "GSTX" from version 10 (WaveletTypes.h)
             header.version = SFLW_VERSION;
             header.numChunks = (uint32_t)chunks.size();
             header.maxLOD = maxLODs;
@@ -431,7 +431,7 @@ namespace Surfels
                 outPackage.header.sourceFileBytes = 0;
             }
 
-            // v4+ packages carry their chunk manifest inside the .sflw; older ones kept it in a
+            // v4+ packages carry their chunk manifest inside the .gstx; older ones kept it in a
             // companion .json next to the file.
             if (outPackage.header.version >= 4)
             {

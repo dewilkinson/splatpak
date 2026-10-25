@@ -2,19 +2,19 @@
 
 > Want to use the app? Start with the [User Guide](docs/USER_GUIDE.md). This README covers the architecture and the build.
 
-SplatLab is a DirectX 12 renderer and toolchain for streaming very large 3D Gaussian Splatting scenes. A scan of millions of Gaussians (or a plain point cloud, which gets a Gaussian at each point) is packaged once into a compact, multi-resolution `.sflw` file, then streamed and drawn on the GPU as sorted, alpha-blended 3D Gaussians. Every splat is culled, sorted and cross-faded on the GPU each frame, straight from a buffer of packed 20-byte records. There is no vertex or index buffer in the pipeline.
+SplatLab is a DirectX 12 renderer and toolchain for streaming very large 3D Gaussian Splatting scenes. A scan of millions of Gaussians (or a plain point cloud, which gets a Gaussian at each point) is packaged once into a compact, multi-resolution `.gstx` file, then streamed and drawn on the GPU as sorted, alpha-blended 3D Gaussians. Every splat is culled, sorted and cross-faded on the GPU each frame, straight from a buffer of packed 20-byte records. There is no vertex or index buffer in the pipeline.
 
 ## Screenshots
 
-| .SFLW Bake | Renderer | Streaming |
+| GSTx Bake | Renderer | Streaming |
 |---|---|---|
-| ![.SFLW Bake tab: preprocessing parameters and the baked occlusion volume](docs/images/sl-01.png) | ![Renderer tab: runtime LOD, refinement visualizer and occlusion volume controls](docs/images/sl-02.png) | ![Streaming tab: the bounding octahedron glyph, network profiles and the LOD residency graph](docs/images/sl-03.png) |
+| ![GSTx Bake tab: preprocessing parameters and the baked occlusion volume](docs/images/sl-01.png) | ![Renderer tab: runtime LOD, refinement visualizer and occlusion volume controls](docs/images/sl-02.png) | ![Streaming tab: the bounding octahedron glyph, network profiles and the LOD residency graph](docs/images/sl-03.png) |
 
-The Cthulhu Statue scan (3.3 M points, 748 MB raw) streamed from a 44 MB `.sflw` package. The .SFLW Bake tab bakes the package, the Renderer tab drives LOD and the visualisers, and the Streaming tab shows the bounding octahedron and per-level residency.
+The Cthulhu Statue scan (3.3 M points, 748 MB raw) streamed from a 44 MB `.gstx` package. The GSTx Bake tab bakes the package, the Renderer tab drives LOD and the visualisers, and the Streaming tab shows the bounding octahedron and per-level residency.
 
 ## How it works
 
-- **Wavelet LOD pyramid.** The preprocessor partitions the scan into cubic chunks along a Morton Z-order curve, then runs a second-generation lifting wavelet decomposition with deadband sparsification over each chunk. The result is a pyramid of detail levels per chunk, written to a single `.sflw` file. At runtime chunks stream in and out of a bandwidth-throttled GPU ring buffer according to screen-space error and camera distance, with dithered (8x8 Bayer) cross-fades between levels so refinement never pops.
+- **Wavelet LOD pyramid.** The preprocessor partitions the scan into cubic chunks along a Morton Z-order curve, then runs a second-generation lifting wavelet decomposition with deadband sparsification over each chunk. The result is a pyramid of detail levels per chunk, written to a single `.gstx` file. At runtime chunks stream in and out of a bandwidth-throttled GPU ring buffer according to screen-space error and camera distance, with dithered (8x8 Bayer) cross-fades between levels so refinement never pops.
 - **GPU silhouette detection.** A compute pass renders a low-resolution item and depth buffer, extracts screen-space silhouette edges on the GPU, and biases streaming to refine those edges first. Contours stay crisp while the rest of a receding object coarsens.
 - **Interior occlusion volume.** The preprocessor can bake a solid, coloured voxel body of the model into the package, stored as a compact octree with a chain of coarser levels. The renderer draws it as depth-writing cubes, choosing the level each frame from how large its cells are on screen, so far-side surfels are occluded rather than bleeding through a sparse near side.
 - **GPU-driven culling and sorting.** Per-chunk frustum culling and normal-cone backface culling run in the amplification shader, a compute pre-pass produces depth keys and the `ExecuteIndirect` arguments, and a GPU bitonic sort keeps overlapping splats in order for alpha blending. No CPU round trip.
@@ -26,11 +26,11 @@ The apps sit on AMD's [Cauldron](https://github.com/GPUOpen-LibrariesAndSDKs/Cau
 
 ## Solution structure
 
-1. **`SplatLab` (Tools)**. `tools/SurfelsPreprocess/main.cpp`, a few lines that start the shared app in Studio mode: the .SFLW Bake, Renderer and Streaming tabs in one window. The default startup project and what the User Guide describes.
+1. **`SplatLab` (Tools)**. `tools/SurfelsPreprocess/main.cpp`, a few lines that start the shared app in Studio mode: the GSTx Bake, Renderer and Streaming tabs in one window. The default startup project and what the User Guide describes.
 
 2. **`Surfels_DX12` (Apps)**. `src/DX12/main.cpp`, the same few lines starting the shared app in Viewer mode: the Renderer and Streaming tabs with the generator hidden. Same renderer, fallback, TAA, silhouette prepass, occlusion volume and streaming simulator by construction.
 
-3. **`surfels_core` (Core)**. `src/SurfelsCore/`, the static library both executables are built from: the app shell (`SurfelsApp`, with its Studio / Viewer mode and command-line parsing), the renderer (`SurfelsRenderer`), the `.ply` / `.splat` / `.sog` loaders, the octree, quantizer and packager, the `.sflw` types and format validators (`WaveletTypes.h`), the HLSL shaders (copied to `bin/ShaderLibDX` at build time) and the shared `WinMain` body with its crash-dump handlers (`AppEntry.cpp`). Anything both apps need lives here. The console tools include its headers directly and need neither a GPU nor Cauldron.
+3. **`surfels_core` (Core)**. `src/SurfelsCore/`, the static library both executables are built from: the app shell (`SurfelsApp`, with its Studio / Viewer mode and command-line parsing), the renderer (`SurfelsRenderer`), the `.ply` / `.splat` / `.sog` loaders, the octree, quantizer and packager, the `.gstx` types and format validators (`WaveletTypes.h`), the HLSL shaders (copied to `bin/ShaderLibDX` at build time) and the shared `WinMain` body with its crash-dump handlers (`AppEntry.cpp`). Anything both apps need lives here. The console tools include its headers directly and need neither a GPU nor Cauldron.
 
 4. **`bluesec-codec` (Core)**. `libs/bluesec-codec/`, the algorithm core: the lifting-wavelet decomposition, the byte-plane shuffle (and the run-length stage packages before format v9 were coded with), the interior occlusion volume generator, the streaming scheduler with the detail grid it reads, and the streaming runtime that SplatLab drives (`StreamRuntime.h`: residency, delivery, refinement and the render list). The entropy stage of every package written now is Brotli (`libs/brotli/`, MIT, compiled into the library), encoded by open code in `src/SurfelsCore/PayloadCodec.h` and decoded by the library's open `PayloadDecode`: on the Cthulhu scan it takes the shuffled splat records 20% smaller than the run-length stage did and the spherical-harmonics stream 15% smaller, which that stage could not compress at all. In this repository the codec modules are proprietary source: each module is a public header (data structures and declarations) plus a `.cpp` implementation, built as a static library that `SplatLab`, `Surfels_DX12` and the console tools link against. **This subtree is not covered by the repository's Apache-2.0 `LICENSE`**; see `libs/bluesec-codec/README.md` for the boundary and its limits. A static library keeps source out of ordinary distribution but does not prevent disassembly of a shipped binary, and the shader source under `src/SurfelsCore/Shaders/` ships as plain text in `bin/ShaderLibDX/` regardless.
 
@@ -42,9 +42,9 @@ The apps sit on AMD's [Cauldron](https://github.com/GPUOpen-LibrariesAndSDKs/Cau
 
 `https://github.com/dewilkinson/splatlab` is a generated public mirror of this repository. The proprietary source of `bluesec-codec` is replaced by prebuilt `.lib` binaries of the same code, with open stand-in sources as a fallback, so the public build has the full feature set while the algorithm source never appears in its history. `python scripts/sync-public-repo.py`, run from a clean working tree, rebuilds the mirror: it strips the proprietary paths from every commit, rewrites the contents of past revisions through `scripts/public-history-scrub.py` (the streaming scheduler and detail-grid scoring lived inside the app source before 2026-09-07, so those passages, the paragraphs describing them and the commit messages naming them are removed from every public commit), drops in the stand-ins, compiles this repository's codec into the prebuilt `.lib` files, swaps a few README passages, builds the result, regenerates the bundled packages, runs the stress test and pushes every branch and tag. `--no-push` inspects the result first; `--no-prebuilt-codec` publishes a stand-in-only build. `scripts/build-release.py` assembles the release zip from the built public tree.
 
-### Package format (`.sflw`)
+### Package format (`.gstx`)
 
-A package is one self-contained binary file (format version 8; the normative layout is in [`docs/SFLW_FORMAT_SPECIFICATION.md`](docs/SFLW_FORMAT_SPECIFICATION.md)):
+A package is one self-contained binary file (format version 8; the normative layout is in [`docs/GSTX_FORMAT_SPECIFICATION.md`](docs/GSTX_FORMAT_SPECIFICATION.md)):
 
 | Section | Contents |
 |---|---|
@@ -55,7 +55,7 @@ A package is one self-contained binary file (format version 8; the normative lay
 | SH table | splat packages only (v8+): one record per chunk level giving the offset and size of its spherical-harmonics payload |
 | Manifest table | one `ChunkManifestRecord` per chunk (id, bounds, centre, radius, LOD count) followed by its `ChunkLODHeader` array (surfel count, byte sizes, payload offset, geometric error) |
 
-Every offset is absolute, so the manifest is written last and the header patched once all offsets are known. Formats 1 to 3 kept the manifest in a companion `.json`, which both apps still read when it sits next to the `.sflw`. Loading validates the header, the manifest and every payload and reports a specific reason when a file is not a valid package. See `src/SurfelsCore/WaveletTypes.h` for the structs and the version history.
+Every offset is absolute, so the manifest is written last and the header patched once all offsets are known. Formats 1 to 3 kept the manifest in a companion `.json`, which both apps still read when it sits next to the `.gstx`. Loading validates the header, the manifest and every payload and reports a specific reason when a file is not a valid package. See `src/SurfelsCore/WaveletTypes.h` for the structs and the version history.
 
 ### Command line
 
@@ -68,7 +68,7 @@ Surfels_DX12.exe [options] [file]
 
 | Option | Effect |
 |---|---|
-| `file` | A `.sflw` package to open, or in Studio mode a `.ply` / `.splat` to preprocess. Dropping a file on the executable does the same. Without it, the `startup_dataset` from `config.json` opens. |
+| `file` | A `.gstx` package to open, or in Studio mode a `.ply` / `.splat` to preprocess. Dropping a file on the executable does the same. Without it, the `startup_dataset` from `config.json` opens. |
 | `--viewer` | Viewer mode: the Renderer and Streaming tabs only. The default for `Surfels_DX12.exe`. |
 | `--studio` | Studio mode: all three tabs. The default for `SplatLab.exe`. |
 | `--render-path <p>` | GPU path for this run: `auto`, `mesh`, `vs6` or `vs5`. Overrides `render_path` in `config.json` without changing it. |
@@ -95,7 +95,7 @@ Open the generated solution in `build/` (`Surfels_DX12.slnx` with the VS 2026 ge
 
 ### Runtime configuration
 
-The apps read an optional `config.json` from the working directory or a few parent directories (`surfels_config.ini` is also accepted). Keys read: `startup_dataset` (opened when no file is given), `render_path` (`auto`, `mesh`, `vs6`, `vs5`), `occlusion_shave_bias` (extra cells added to the occlusion volume's automatic cull band, for a noisy scan that still shows cubes poking through), `show_control_hints`, `show_occlusion_volume` and `refinement_visualizer` (the two display toggles, on by default), `lod_screen_space` and `lod_pixel_spacing` (the auto LOD rule: a coarser level is used once its point spacing is at most that many pixels on screen), `splat_coarse_as_gaussians` and `splat_coarse_gaussian_cap` (splat packages: levels 1 and up drawn as their own Gaussians, scales capped at that multiple of the level spacing), `splat_disc_match_level0`, `right_panel_order` and `right_panel_open` (the statistics panel's section order and which sections are open), `left_panel_collapsed` and `right_panel_collapsed` (the side panels folded to their title bar), `loupe_size` and `loupe_pos` (the loupe inset's size and place) and `last_dialog_folder`. The file written when none exists also lists a few informational defaults that are not parsed. Without a config file the bundled `assets/dwarves/dwarves.sflw` loads; `assets/cthulu/cthulu.sflw` and `assets/venus/venus.sflw` can be opened from the File menu. All three are regenerated with `CompressVenus` (`CompressVenus <input.ply> <output base path>`) whenever the pipeline changes.
+The apps read an optional `config.json` from the working directory or a few parent directories (`surfels_config.ini` is also accepted). Keys read: `startup_dataset` (opened when no file is given), `render_path` (`auto`, `mesh`, `vs6`, `vs5`), `occlusion_shave_bias` (extra cells added to the occlusion volume's automatic cull band, for a noisy scan that still shows cubes poking through), `show_control_hints`, `show_occlusion_volume` and `refinement_visualizer` (the two display toggles, on by default), `lod_screen_space` and `lod_pixel_spacing` (the auto LOD rule: a coarser level is used once its point spacing is at most that many pixels on screen), `splat_coarse_as_gaussians` and `splat_coarse_gaussian_cap` (splat packages: levels 1 and up drawn as their own Gaussians, scales capped at that multiple of the level spacing), `splat_disc_match_level0`, `right_panel_order` and `right_panel_open` (the statistics panel's section order and which sections are open), `left_panel_collapsed` and `right_panel_collapsed` (the side panels folded to their title bar), `loupe_size` and `loupe_pos` (the loupe inset's size and place) and `last_dialog_folder`. The file written when none exists also lists a few informational defaults that are not parsed. Without a config file the bundled `assets/dwarves/dwarves.gstx` loads; `assets/cthulu/cthulu.gstx` and `assets/venus/venus.gstx` can be opened from the File menu. All three are regenerated with `CompressVenus` (`CompressVenus <input.ply> <output base path>`) whenever the pipeline changes.
 
 Both example scans come from [SuperSplat](https://superspl.at) and carry their authors' Creative Commons terms, which govern the datasets and the packages derived from them independently of the software's license. See the `LICENSE.txt` beside each: the Cthulhu Statue by Christoph Schindelar is CC BY 4.0, and the Venus de Milo scan by Nicolas Diolez is CC BY-NC 4.0 (**non-commercial use only**).
 

@@ -42,7 +42,7 @@ viewed above level 0 keeps a clean rim.
   silhouette against the background is masked.
 - Surfel disc modes (tangent discs and billboards). The controls are hidden outside splat mode.
 - Packages without an occlusion volume: rendering is unchanged; only the warning is shown.
-- Any change to the `.sflw` format or to the occlusion volume bake.
+- Any change to the `.gstx` format or to the occlusion volume bake.
 
 ## Constraints
 - Render paths: mesh shaders, vertex-shader SM6 and vertex-shader SM5 must all render the mask with

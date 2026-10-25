@@ -2,7 +2,7 @@
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// Smoke test: loads a .sflw package (the path given, or models/venus.sflw) and prints its format
+// Smoke test: loads a .gstx package (the path given, or assets/venus/venus.gstx) and prints its format
 // version, payload codec and chunk/surfel counts, to sanity check StreamPackager::LoadPackage
 // without needing the full viewer or preprocessor app.
 
@@ -11,7 +11,7 @@
 
 int main(int argc, char** argv)
 {
-    const std::string path = argc > 1 ? argv[1] : "models/venus.sflw";
+    const std::string path = argc > 1 ? argv[1] : "assets/venus/venus.gstx";
     Surfels::StreamPackager::SFLWPackageData pkg;
     std::string reason;
     bool ok = Surfels::StreamPackager::LoadPackage(path, pkg, &reason);

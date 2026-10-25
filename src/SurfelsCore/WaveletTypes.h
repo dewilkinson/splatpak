@@ -2,7 +2,7 @@
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// Shared data types for the wavelet streaming pipeline: the .sflw file format (magic/
+// Shared data types for the wavelet streaming pipeline: the .gstx file format (magic/
 // version/header), GPU-packed surfel and meshlet-chunk structs, and the pack/unpack
 // helpers that convert between them. Included by every preprocessor and viewer file
 // that touches surfel or chunk data, on both the CPU and (conceptually) GPU side.
@@ -29,9 +29,10 @@ namespace Surfels
     // lose precision on real-world geospatial datasets (e.g. absolute UTM/ECEF coordinates).
     static constexpr double kGeospatialOffsetThreshold = 10000.0;
 
-    // Magic bytes for .sflw binary stream container ("SFLW" in ASCII)
+    // Magic bytes of a package: "GSTX" in ASCII from format version 10 (.gstx), "SFLW" before it (.sflw, still read)
+    static constexpr uint32_t GSTX_MAGIC = 0x58545347;
     static constexpr uint32_t SFLW_MAGIC = 0x574C4653;
-    static constexpr uint32_t SFLW_VERSION = 9; // v9 adds payloadCodec: the entropy stage of every payload, Brotli (see PayloadCodec.h). v8 adds surfelFormat, the splat record and the SH stream (see docs/SFLW_FORMAT_SPECIFICATION.md). v2 adds SFLWFileHeader::splatRadius (appended at the
+    static constexpr uint32_t SFLW_VERSION = 10; // v10 renames the format GSTx: magic GSTX, suffix .gstx, no layout change. v9 adds payloadCodec: the entropy stage of every payload, Brotli (see PayloadCodec.h). v8 adds surfelFormat, the splat record and the SH stream (see docs/GSTX_FORMAT_SPECIFICATION.md). v2 adds SFLWFileHeader::splatRadius (appended at the
                                                  // struct's end so v1 files still read correctly -- see
                                                  // the version check in StreamPackager::LoadPackage).
                                                  // v3 adds an optional occlusion voxel array, appended
@@ -39,7 +40,7 @@ namespace Surfels
                                                  // are 0 on v1/v2 files and on v3 files that simply chose
                                                  // not to bake one.
                                                  // v4 folds the chunk manifest (previously a companion
-                                                 // .json file) into the .sflw itself as a binary table at
+                                                 // .json file) into the .gstx itself as a binary table at
                                                  // SFLWFileHeader::manifestOffset, so a package is a
                                                  // single self-contained file. v1-v3 files still load via
                                                  // their companion .json (see ParseLegacyJsonManifest).
@@ -85,7 +86,7 @@ namespace Surfels
     //                mask existed, which the shader treats as "all six faces exposed".
     //
     // There is deliberately no live shrink/shave at draw time: the erosion is baked, because the volume
-    // travels inside the .sflw and the viewer should show exactly what was packaged.
+    // travels inside the .gstx and the viewer should show exactly what was packaged.
     struct OcclusionVoxelGPU
     {
         XMFLOAT3 center;
@@ -283,7 +284,7 @@ namespace Surfels
         std::vector<ChunkLODHeader> lods;
     };
 
-    // Global file header for .sflw package
+    // Global file header for .gstx package
     struct SFLWFileHeader
     {
         uint32_t magic;
@@ -324,7 +325,7 @@ namespace Surfels
         uint32_t payloadCodec;         // v9+ only -- the entropy stage of every payload (PayloadCodecId); pre-v9 files are PAYLOAD_CODEC_LIBRARY
     };
 
-    // On-disk form of one ChunkManifest entry in a v4+ .sflw's embedded manifest table. The table
+    // On-disk form of one ChunkManifest entry in a v4+ .gstx's embedded manifest table. The table
     // lives at SFLWFileHeader::manifestOffset and holds SFLWFileHeader::numChunks entries, each a
     // ChunkManifestRecord immediately followed by numLODs ChunkLODHeader records.
     struct ChunkManifestRecord
@@ -337,7 +338,7 @@ namespace Surfels
         uint32_t numLODs;
     };
 
-    // Reads the v4+ embedded manifest table out of an already-open .sflw stream. Leaves the stream
+    // Reads the v4+ embedded manifest table out of an already-open .gstx stream. Leaves the stream
     // position wherever the table ended; callers seek by absolute offset for everything else anyway.
     inline bool ReadEmbeddedManifest(std::istream& in, const SFLWFileHeader& header, std::vector<ChunkManifest>& outChunks)
     {
@@ -372,7 +373,7 @@ namespace Surfels
         return true;
     }
 
-    // ---- .sflw format validation --------------------------------------------------------------
+    // ---- .gstx format validation --------------------------------------------------------------
     // Shared by every loader (StreamPackager::LoadPackage for SplatLab and the tests, StreamingManager
     // for the standalone viewer) so a bad package is diagnosed the same way everywhere. Each check
     // fills outReason with a sentence a user can act on; the caller decides how to show it.
@@ -401,12 +402,18 @@ namespace Surfels
         char buf[256];
         if (headerBytesRead < 8)
         {
-            outReason = "The file is too small to be a .sflw package (it has no header).";
+            outReason = "The file is too small to be a .gstx package (it has no header).";
             return false;
         }
-        if (h.magic != SFLW_MAGIC)
+        if (h.magic != GSTX_MAGIC && h.magic != SFLW_MAGIC)
         {
-            snprintf(buf, sizeof(buf), "Not a .sflw package: the file signature is 0x%08X, expected 0x%08X (\"SFLW\").", h.magic, SFLW_MAGIC);
+            snprintf(buf, sizeof(buf), "Not a .gstx package: the file signature is 0x%08X, expected 0x%08X (\"GSTX\") or, for an older .sflw package, 0x%08X (\"SFLW\").", h.magic, GSTX_MAGIC, SFLW_MAGIC);
+            outReason = buf;
+            return false;
+        }
+        if ((h.magic == GSTX_MAGIC) != (h.version >= 10))
+        {
+            snprintf(buf, sizeof(buf), "The package header is inconsistent: signature \"%s\" with format version %u (GSTX starts at version 10, SFLW ends at 9).", h.magic == GSTX_MAGIC ? "GSTX" : "SFLW", h.version);
             outReason = buf;
             return false;
         }
@@ -417,7 +424,7 @@ namespace Surfels
         }
         if (h.version > SFLW_VERSION)
         {
-            snprintf(buf, sizeof(buf), "The package uses .sflw format version %u, but this build only reads up to version %u. It was written by a newer SplatLab.", h.version, SFLW_VERSION);
+            snprintf(buf, sizeof(buf), "The package uses .gstx format version %u, but this build only reads up to version %u. It was written by a newer SplatLab.", h.version, SFLW_VERSION);
             outReason = buf;
             return false;
         }
@@ -544,12 +551,12 @@ namespace Surfels
     inline const char* SFLWRebakeAdvice()
     {
         return "If the file was copied or downloaded, retry with a fresh copy. Otherwise re-bake it: open the original "
-               ".ply or .splat in SplatLab's .SFLW Bake tab and use Save Compressed Package (.sflw). Packages "
+               ".ply or .splat in SplatLab's GSTx Bake tab and use Save Compressed Package (.gstx). Packages "
                "written by the proprietary codec and by the open stand-in codec are not interchangeable, so a "
                "package must be baked with the same codec build that will read it.";
     }
 
-    // Parses the companion .json manifest that v1-v3 packages shipped alongside their .sflw. Only
+    // Parses the companion .json manifest that v1-v3 packages shipped alongside their .gstx. Only
     // needed to keep those older files loadable; v4+ packages embed the manifest (ReadEmbeddedManifest).
     // Deliberately a minimal scanner for the exact schema StreamPackager used to write, not a general
     // JSON parser.
@@ -642,19 +649,30 @@ namespace Surfels
         return !outChunks.empty();
     }
 
-    // Given any of "<base>", "<base>.sflw", or a legacy "<base>.json", returns the .sflw path and the
-    // legacy companion .json path (only consulted for v1-v3 files).
+    // Given any of "<base>", "<base>.gstx", an older "<base>.sflw", or a legacy "<base>.json", returns the
+    // package path and the legacy companion .json path (only consulted for v1-v3 files). The extension
+    // given wins when that file exists; otherwise whichever of .gstx and .sflw exists (.gstx first), so a
+    // path saved before the bundled packages were rebaked as .gstx still opens.
     inline void ResolvePackagePaths(const std::string& inputPath, std::string& outSflwPath, std::string& outJsonPath)
     {
         std::string lowerPath = inputPath;
         std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::tolower);
         std::string base = inputPath;
-        if (lowerPath.size() >= 5 && (lowerPath.compare(lowerPath.size() - 5, 5, ".sflw") == 0 ||
+        std::string ext;
+        if (lowerPath.size() >= 5 && (lowerPath.compare(lowerPath.size() - 5, 5, ".gstx") == 0 ||
+                                      lowerPath.compare(lowerPath.size() - 5, 5, ".sflw") == 0 ||
                                       lowerPath.compare(lowerPath.size() - 5, 5, ".json") == 0))
         {
             base = inputPath.substr(0, inputPath.size() - 5);
+            ext = inputPath.substr(inputPath.size() - 5);
         }
-        outSflwPath = base + ".sflw";
+        auto exists = [](const std::string& path) { return std::ifstream(path, std::ios::binary).good(); };
+        if (!ext.empty() && lowerPath.compare(lowerPath.size() - 5, 5, ".json") != 0 && exists(inputPath))
+            outSflwPath = inputPath;
+        else if (exists(base + ".gstx") || !exists(base + ".sflw"))
+            outSflwPath = base + ".gstx";
+        else
+            outSflwPath = base + ".sflw";
         outJsonPath = base + ".json";
     }
 

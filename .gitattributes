@@ -1,3 +1,4 @@
 *.ply filter=lfs diff=lfs merge=lfs -text
 *.lib filter=lfs diff=lfs merge=lfs -text
 *.sflw filter=lfs diff=lfs merge=lfs -text
+*.gstx filter=lfs diff=lfs merge=lfs -text

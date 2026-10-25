@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Command-line packager: loads a .ply (a 3DGS scene, or a plain point cloud shown as Gaussians at its
-// points, see PointCloudGaussians.h) and writes the same .sflw that SplatLab's "Save Compressed
+// points, see PointCloudGaussians.h) and writes the same .gstx that SplatLab's "Save Compressed
 // Package" would produce for it with default settings -- octree chunking, the wavelet LOD pyramid,
 // 20-byte Gaussian records, the baked interior occlusion volume, and the source file size in the header.
 // Used to regenerate the bundled assets without the GUI, and as an end-to-end pipeline smoke test.
@@ -89,7 +89,7 @@ int main(int argc, char** argv)
     }
 
     auto chunks = Surfels::SpatialOctree::PartitionIntoChunks(surfels, chunkSize);
-    std::cout << "Partitioned into " << chunks.size() << " chunks. Packaging to " << outputBase << ".sflw..." << std::endl;
+    std::cout << "Partitioned into " << chunks.size() << " chunks. Packaging to " << outputBase << ".gstx..." << std::endl;
 
     Surfels::SplatBakeInput splatInput;
     splatInput.attributes = &splatAttrs;
@@ -101,9 +101,9 @@ int main(int argc, char** argv)
         return 1;
     }
 
-    std::ifstream out(outputBase + ".sflw", std::ios::ate | std::ios::binary);
+    std::ifstream out(outputBase + ".gstx", std::ios::ate | std::ios::binary);
     uint64_t packageBytes = out.is_open() ? (uint64_t)out.tellg() : 0;
-    std::cout << "Successfully generated " << outputBase << ".sflw: " << packageBytes / (1024.0 * 1024.0) << " MB, "
+    std::cout << "Successfully generated " << outputBase << ".gstx: " << packageBytes / (1024.0 * 1024.0) << " MB, "
               << (packageBytes > 0 ? (double)sourceFileBytes / (double)packageBytes : 0.0) << "x vs source, "
               << occlusion.size() << " occluder blocks in " << occlusionMips.mipCount << " mips (";
     for (uint32_t k = 0; k < occlusionMips.mipCount; k++)

@@ -5,7 +5,7 @@
 // The shared app shell behind both executables. In Studio mode it is SplatLab: the whole
 // offline preprocessing pipeline (load -> octree chunk -> wavelet decompose -> quantize ->
 // export) plus the runtime streaming simulation and every ImGui panel. In Viewer mode it is
-// the standalone Surfels viewer: the same class with the .SFLW Bake tab, its menu items
+// the standalone Surfels viewer: the same class with the GSTx Bake tab, its menu items
 // and its shortcuts hidden, so the viewer is SplatLab's Renderer and Streaming tabs by
 // construction rather than a second copy of them. SurfelsRenderer handles the actual GPU work;
 // this class is everything else -- UI, file I/O, and the streaming/decay/silhouette simulation.
@@ -43,7 +43,7 @@ namespace Surfels
     public:
         // Which product this instance is (see the file header). Viewer hides everything that only
         // makes sense with a raw point cloud loaded: the generator tab, Open Raw / Generate Benchmark /
-        // Save Package, and Ctrl+O opens a .sflw instead of a .ply.
+        // Save Package, and Ctrl+O opens a .gstx instead of a .ply.
         enum class Mode { Studio, Viewer };
 
         explicit SurfelsApp(LPCSTR name, Mode mode = Mode::Studio);
@@ -102,7 +102,7 @@ namespace Surfels
         void ReportDeviceLostAndExit(const std::string& message);
 
         std::string OpenFileDialog(const char* filter, const char* title = "Open File", const char* defaultExt = nullptr);
-        std::string SaveFileDialog(const char* filter, const char* defaultExt = "sflw", const char* title = "Save File");
+        std::string SaveFileDialog(const char* filter, const char* defaultExt = "gstx", const char* title = "Save File");
 
         Mode                      m_mode = Mode::Studio;
         SurfelsRenderer*          m_pRenderer = nullptr;
@@ -135,7 +135,7 @@ namespace Surfels
         XMFLOAT3 m_aabbMax = { 0, 0, 0 };
         XMFLOAT3 m_center  = { 0, 0, 0 };
         XMFLOAT3 m_extents = { 0, 0, 0 };
-        uint64_t m_sourceFileBytes = 0;     // Size of the original .ply/.splat on disk; travels inside the .sflw (v5 header) so the ratio survives a reload
+        uint64_t m_sourceFileBytes = 0;     // Size of the original .ply/.splat on disk; travels inside the .gstx (v5 header) so the ratio survives a reload
         float    m_rawFileSizeMB = 0.0f;
         float    m_compressedSizeMB = 0.0f;
         float    m_compressionRatio = 1.0f;
@@ -165,7 +165,7 @@ namespace Surfels
         // Dataset auto-loaded on launch when no file is passed on the command line (see OnCreate()).
         // Configurable via config.json/surfels_config.ini ("startup_dataset") so a different default
         // can be swapped in without recompiling. Tried as-is and at a few relative CWD depths.
-        std::string m_startupDatasetPath = "assets/dwarves/dwarves.sflw";
+        std::string m_startupDatasetPath = "assets/dwarves/dwarves.gstx";
 
         // Interior Occlusion Volume: solid depth-writing cubes baked at preprocessing time so far-side
         // surfels can't show through gaps in the near side. Optional and disabled by default.
@@ -184,8 +184,8 @@ namespace Surfels
         OcclusionVolume::Grid m_occlusionGrid;
         void  BuildOcclusionGrid();
         uint32_t m_occlusionVoxelsVersion = 0;   // Incremented whenever m_occlusionVoxels is rebuilt or cleared (renderer re-upload trigger)
-        uint32_t m_occlusionSafetyNetVersion = UINT32_MAX; // m_occlusionVoxelsVersion right after the .SFLW Bake tab's fallback bake last fired (see BuildUI): equal = already tried for this volume state
-        std::vector<OcclusionVoxelGPU> m_occlusionVoxels; // Baked result -- from BuildOcclusionVolume() or loaded from an .sflw's package
+        uint32_t m_occlusionSafetyNetVersion = UINT32_MAX; // m_occlusionVoxelsVersion right after the GSTx Bake tab's fallback bake last fired (see BuildUI): equal = already tried for this volume state
+        std::vector<OcclusionVoxelGPU> m_occlusionVoxels; // Baked result -- from BuildOcclusionVolume() or loaded from an .gstx's package
         OcclusionMipTable m_occlusionMips;       // Mip layout of m_occlusionVoxels (see OcclusionMipTable): from Bake, or the loaded package's header
         int   m_occlusionMipOverride = -1;       // Viewer: -1 = renderer picks the mip from projected cell size; 0.. = force that mip (debug / side-by-side compare)
         bool  m_enableOcclusionCulling    = true;  // Viewer: "Show Occlusion Volume" -- draw the volume and depth-test splats against it (on by default)

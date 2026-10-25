@@ -2,10 +2,10 @@
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// Console driver for the occlusion volume generator: loads a .sflw package, decodes its LOD0
+// Console driver for the occlusion volume generator: loads a .gstx package, decodes its LOD0
 // surfels, runs OcclusionVolume::BuildGrid + Bake at a few shave settings and prints the trace,
 // so the generator can be exercised and tuned without the GUI or a GPU.
-//   TestOcclusionVolume <package.sflw> [resolution|0=auto] [shave ...]
+//   TestOcclusionVolume <package.gstx> [resolution|0=auto] [shave ...]
 
 #include <iostream>
 #include <string>
@@ -15,7 +15,7 @@
 
 int main(int argc, char** argv)
 {
-    std::string path = (argc > 1) ? argv[1] : "assets/cthulu/cthulu.sflw";
+    std::string path = (argc > 1) ? argv[1] : "assets/cthulu/cthulu.gstx";
     int resolution = (argc > 2) ? atoi(argv[2]) : 0;
     std::vector<float> shaves;
     for (int i = 3; i < argc; i++) shaves.push_back((float)atof(argv[i]));

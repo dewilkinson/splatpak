@@ -2,7 +2,7 @@
 // Surfels Core -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// Decoding of .sflw payloads (Clause 8 of docs/SFLW_FORMAT_SPECIFICATION.md), inside the codec library
+// Decoding of .gstx payloads (Clause 8 of docs/GSTX_FORMAT_SPECIFICATION.md), inside the codec library
 // so every host (SplatLab, the streaming runtime, the UE5 plugin) reads packages through one reader.
 // Open code: the entropy stages it undoes are the codec library's own run-length stage (payload codec 0)
 // and Brotli (payload codec 1, RFC 7932; libs/brotli is compiled into this library).

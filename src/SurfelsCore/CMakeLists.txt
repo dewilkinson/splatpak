@@ -1,6 +1,6 @@
 # surfels_core -- everything SplatLab and the standalone Surfels_DX12 viewer share: the app
 # shell (SurfelsApp, with its Studio / Viewer mode), the renderer, the loaders, the octree /
-# quantizer / packager, the .sflw types and validators, the shaders, and the WinMain body
+# quantizer / packager, the .gstx types and validators, the shaders, and the WinMain body
 # (AppEntry). Each executable is a few-line main.cpp that links this library, so a change made
 # here reaches both apps at once instead of having to be made twice.
 #

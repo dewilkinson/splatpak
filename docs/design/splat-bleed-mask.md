@@ -88,7 +88,7 @@ flowchart LR
 ## Public / private placement
 All files are public app code in `src/SurfelsCore` and `docs/`. The mask consumes the occlusion
 volume through the existing `State::pOcclusionVoxels` and mip table and reuses the packaged data
-as is. No file in `libs/bluesec-codec` changes, no `.sflw` field is added, and nothing here
+as is. No file in `libs/bluesec-codec` changes, no `.gstx` field is added, and nothing here
 depends on `docs/private/` or any other path the public sync strips.
 
 ## Decisions

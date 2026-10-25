@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // GPU-free driver for the streaming runtime (libs/bluesec-codec/StreamRuntime.h): loads a splat package
-// (the path given, or assets/cthulu/cthulu.sflw), hands its levels to the runtime the way SplatLab does,
+// (the path given, or assets/cthulu/cthulu.gstx), hands its levels to the runtime the way SplatLab does,
 // evicts, then streams at a fixed 1/60 s step and 50 MB/s while the camera closes in and orbits. Prints
 // per-level residency and the render list size once a simulated second. The step is fixed, so two runs
 // print the same lines; the exit code is 0 when level 0 ends fully resident.
@@ -19,7 +19,7 @@ using namespace Surfels;
 
 int main(int argc, char** argv)
 {
-    const std::string path = argc > 1 ? argv[1] : "assets/cthulu/cthulu.sflw";
+    const std::string path = argc > 1 ? argv[1] : "assets/cthulu/cthulu.gstx";
     StreamPackager::SFLWPackageData pkg;
     std::string reason;
     if (!StreamPackager::LoadPackage(path, pkg, &reason) || !pkg.IsSplatPackage())

@@ -1,6 +1,8 @@
-# SFLW Package Format Specification
+# GSTx Package Format Specification
 
-**Surfels Wavelet Stream Package (`.sflw`), Format Version 8**
+**GSTx Gaussian Stream Package (`.gstx`), Format Version 10**
+
+Packages written before version 10 carry the signature "SFLW" and the suffix `.sflw`; the layout is the same, and readers accept both (Clause 12.2).
 
 Document status: Approved. Supersedes the description of format versions 1 through 7 that lived in code comments. This document is maintained with the format: every change to a structure, a field or a version number is reflected here in the same change set.
 
@@ -10,7 +12,7 @@ Document status: Approved. Supersedes the description of format versions 1 throu
 
 ### 1.1 Scope
 
-This specification defines the binary layout and the semantics of the `.sflw` container: the file that SplatLab writes when a point cloud or a 3D Gaussian Splatting scene is baked, and that SplatLab, the Surfels viewer and the console tools read. It covers:
+This specification defines the binary layout and the semantics of the `.gstx` container: the file that SplatLab writes when a point cloud or a 3D Gaussian Splatting scene is baked, and that SplatLab, the Surfels viewer and the console tools read. It covers:
 
 - the file header and its version-dependent extent;
 - the chunk manifest and the per-chunk level-of-detail (LOD) table;
@@ -92,8 +94,8 @@ The header is a single structure whose extent depends on the format version: eac
 
 | Offset | Type | Field | Since | Description |
 |---:|---|---|:-:|---|
-| 0 | `u32` | `magic` | 1 | Shall be `0x574C4653` ("SFLW" as ASCII bytes `53 46 4C 57`). |
-| 4 | `u32` | `version` | 1 | Format version, 1 to 9. |
+| 0 | `u32` | `magic` | 1 | Shall be `0x58545347` ("GSTX" as ASCII bytes `47 53 54 58`) from version 10, and `0x574C4653` ("SFLW", bytes `53 46 4C 57`) for versions 1 to 9. |
+| 4 | `u32` | `version` | 1 | Format version, 1 to 10. |
 | 8 | `u32` | `numChunks` | 1 | Number of chunks; shall be at least 1. |
 | 12 | `u32` | `maxLOD` | 1 | Number of coarser levels requested at bake time (levels per chunk are at most `maxLOD + 1`). |
 | 16 | `u64` | `totalSurfelsLOD0` | 1 | Sum of the level-0 record counts over all chunks. |
@@ -138,6 +140,7 @@ The header is a single structure whose extent depends on the format version: eac
 | 7 | 168 | adds the detail grid |
 | 8 | 200 | adds the record format, the splat quantisation parameters and the SH table |
 | 9 | 208 | adds the payload codec |
+| 10 | 208 | no new fields; the signature becomes "GSTX" |
 
 A file shorter than the extent of its declared version is truncated and shall be rejected.
 
@@ -294,7 +297,7 @@ At `detailGridOffset`, `detailGridDims[0] × detailGridDims[1] × detailGridDims
 
 A conforming writer:
 
-1. shall write `version` 8 and every field of Clause 6.1;
+1. shall write `magic` "GSTX", `version` 10 and every field of Clause 6.1, to a file with the suffix `.gstx`;
 2. shall write `surfelFormat`, `splatRecordBytes`, `shDegree` and `shRecordBytes` consistently with Clauses 6.1 and 7;
 3. shall write every payload with the record format declared in the header;
 4. shall, for `surfelFormat` 1 with `shDegree` > 0, write the SH table with exactly one entry per LOD header;
@@ -305,7 +308,7 @@ A conforming writer:
 
 A conforming reader:
 
-1. shall reject a file whose `magic` differs from Clause 6.1 or whose `version` is 0 or greater than 8;
+1. shall reject a file whose `magic` is neither signature of Clause 6.1, whose signature does not match its `version` ("GSTX" with 10 or later, "SFLW" with 1 to 9), or whose `version` is 0 or greater than 10;
 2. shall read only the header extent of the file's version (Table 6.2) and shall supply the defaults of Annex B for absent fields;
 3. shall validate the manifest against the file size and the declared record size before decoding;
 4. shall reject a `surfelFormat` it does not implement, and shall treat every pre-version-8 file as `surfelFormat` 0;
@@ -340,6 +343,7 @@ The reference renderer draws a splat package the way the PlayCanvas / SuperSplat
 
 | Version | Date | Change |
 |:-:|---|---|
+| 10 | 2026-10-25 | The format is named GSTx: signature "GSTX", suffix `.gstx`. No layout change; "SFLW" packages still read. |
 | 9 | 2026-10-25 | Payload codec field; Brotli as the entropy stage. |
 | 8 | 2026-09-07 | Record format field, the 20-byte splat record, the SH stream and table, splat scale range. This document created. |
 | 7 | 2026-09-07 | Detail grid. |

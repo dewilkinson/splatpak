@@ -133,13 +133,13 @@ namespace Surfels
             "  Surfels_DX12.exe [options] [file]\n"
             "\n"
             "file\n"
-            "  A .sflw package to open, or (Studio mode) a .ply or .splat point cloud to preprocess. Dropping a file on the executable does the same. Without it the startup_dataset from config.json is opened.\n"
+            "  A .gstx package to open, or (Studio mode) a .ply or .splat point cloud to preprocess. Dropping a file on the executable does the same. Without it the startup_dataset from config.json is opened.\n"
             "\n"
             "--viewer\n"
             "  Viewer mode: the Renderer and Streaming tabs only (the default for Surfels_DX12.exe).\n"
             "\n"
             "--studio\n"
-            "  Studio mode: the .SFLW Bake, Renderer and Streaming tabs (the default for SplatLab.exe).\n"
+            "  Studio mode: the GSTx Bake, Renderer and Streaming tabs (the default for SplatLab.exe).\n"
             "\n"
             "--render-path <p>\n"
             "  GPU path for this run: auto, mesh, vs6 or vs5. Overrides render_path in config.json without changing it.\n"
@@ -200,7 +200,7 @@ namespace Surfels
         }
     }
 
-    // Places to look for a file given relative to the repo layout (e.g. "assets/cthulu/cthulu.sflw" or
+    // Places to look for a file given relative to the repo layout (e.g. "assets/cthulu/cthulu.gstx" or
     // "config.json"): relative to the working directory at a few depths, then relative to the folder
     // the executable lives in (bin/) at the same depths. The working directory depends on how the app
     // was launched -- bin/ from the launch scripts, the repo root or a build sub-folder from Visual
@@ -740,7 +740,7 @@ namespace Surfels
         // already called earlier in OnCreate() -- so a different default can be swapped in without
         // recompiling). This intentionally does NOT fall back to any external "datasets" scratch
         // folder the user might separately have configured, so a default launch keeps working even if
-        // that external folder gets cleared out. The default points at a pre-built .sflw package (fast,
+        // that external folder gets cleared out. The default points at a pre-built .gstx package (fast,
         // streaming-ready) rather than a raw .ply, which would mean re-running the full wavelet
         // preprocessing pipeline over millions of points on every single launch -- LoadFile() below
         // still auto-detects extension, so a config override to a .ply/.splat path works too, just
@@ -759,11 +759,19 @@ namespace Surfels
             std::vector<std::string> startupPaths = ResolveRelativeCandidates(m_startupDatasetPath);
 
             bool loaded = false;
-            for (const auto& path : startupPaths)
+            for (auto path : startupPaths)
             {
-                std::ifstream check(path, std::ios::binary);
-                if (!check.good()) continue;
-                check.close();
+                // A startup_dataset saved before the bundled packages were rebaked names a .sflw that is now
+                // a .gstx (and the reverse): try the other suffix of the same package before moving on
+                const auto exists = [](const std::string& f) { return std::ifstream(f, std::ios::binary).good(); };
+                if (!exists(path) && path.size() > 5)
+                {
+                    std::string ext = path.substr(path.size() - 5);
+                    std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
+                    const char* other = ext == ".sflw" ? ".gstx" : ext == ".gstx" ? ".sflw" : nullptr;
+                    if (other && exists(path.substr(0, path.size() - 5) + other)) path = path.substr(0, path.size() - 5) + other;
+                }
+                if (!exists(path)) continue;
                 LogTransitionTrace("Startup: loading dataset '%s'", path.c_str());
                 if (LoadFile(path))
                 {
@@ -782,7 +790,7 @@ namespace Surfels
                 char cwd[MAX_PATH] = {};
                 GetCurrentDirectoryA(MAX_PATH, cwd);
                 LogTransitionTrace("Startup: no dataset loaded -- '%s' not found relative to cwd '%s' or the executable", m_startupDatasetPath.c_str(), cwd);
-                m_statusMessage = IsViewerOnly() ? "Ready. Use File -> Open to load a .sflw package."
+                m_statusMessage = IsViewerOnly() ? "Ready. Use File -> Open to load a .gstx package."
                                                  : "Ready. Use File -> Open to load a .ply or .splat dataset.";
                 m_statusIsSuccess = true;
             }
@@ -1160,7 +1168,7 @@ namespace Surfels
             }
 
             pFileSave->SetFileTypes((UINT)fileTypes.size(), fileTypes.data());
-            std::wstring wDefExt = defaultExt ? std::wstring(defaultExt, defaultExt + strlen(defaultExt)) : L"sflw";
+            std::wstring wDefExt = defaultExt ? std::wstring(defaultExt, defaultExt + strlen(defaultExt)) : L"gstx";
             pFileSave->SetDefaultExtension(wDefExt.c_str());
             if (title && strlen(title) > 0)
             {
@@ -1244,7 +1252,7 @@ namespace Surfels
     {
         std::string lowerPath = filepath;
         std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::tolower);
-        if (lowerPath.size() >= 5 && (lowerPath.substr(lowerPath.size() - 5) == ".sflw" || lowerPath.substr(lowerPath.size() - 5) == ".json"))
+        if (lowerPath.size() >= 5 && (lowerPath.substr(lowerPath.size() - 5) == ".gstx" || lowerPath.substr(lowerPath.size() - 5) == ".sflw" || lowerPath.substr(lowerPath.size() - 5) == ".json"))
         {
             return LoadSFLWFile(filepath);
         }
@@ -1258,7 +1266,7 @@ namespace Surfels
         }
     }
 
-    // Loads a pre-compressed .sflw package and restores the full multi-LOD chunk hierarchy from it.
+    // Loads a pre-compressed .gstx package and restores the full multi-LOD chunk hierarchy from it.
     // An invalid package (bad signature, newer format version, truncated file, payload the linked codec
     // cannot decode) raises a Retry / Cancel dialog that explains the fault and how to re-bake; Retry
     // re-reads the file, which is what a user wants after re-copying or re-saving it.
@@ -1266,7 +1274,7 @@ namespace Surfels
     {
         for (;;)
         {
-            m_statusMessage = "Loading compressed 3DGS stream package (.sflw)...";
+            m_statusMessage = "Loading compressed 3DGS stream package (.gstx)...";
             std::string reason;
             // Loaded into a temporary: only a Gaussian package replaces the current one. Packages of 8-byte
             // surfel discs (record format 0, every package before splat mode) are no longer drawn; the
@@ -1280,7 +1288,7 @@ namespace Surfels
                     break;
                 }
                 reason = "This is a surfel package (8-byte oriented discs), which this version no longer draws: it shows 3D Gaussian packages only. "
-                         "Open the source .ply or .splat it was baked from on the .SFLW Bake tab and save a new package.";
+                         "Open the source .ply or .splat it was baked from on the GSTx Bake tab and save a new package.";
             }
 
             m_statusMessage = "Failed to load compressed package: " + filepath + " -- " + reason;
@@ -1290,7 +1298,7 @@ namespace Surfels
             const std::string dialogText =
                 std::string(AppTitle()) + " could not load this package:\n\n" + filepath + "\n\n" + reason + "\n\n" +
                 SFLWRebakeAdvice() + "\n\nRetry loads the file again. Cancel leaves the current model in place.";
-            const std::string dialogTitle = std::string(AppTitle()) + " - Invalid .sflw Package";
+            const std::string dialogTitle = std::string(AppTitle()) + " - Invalid .gstx Package";
             const int choice = MessageBoxA(nullptr, dialogText.c_str(), dialogTitle.c_str(), MB_RETRYCANCEL | MB_ICONWARNING);
             if (choice != IDRETRY)
                 return false;
@@ -1334,7 +1342,7 @@ namespace Surfels
 
         // Start from the volume baked into the package (v3+ only; empty otherwise -- see
         // StreamPackager::LoadPackage). A baked volume was built from the ORIGINAL raw point cloud, which
-        // is strictly better data than anything reconstructable here (the .sflw round-trip through
+        // is strictly better data than anything reconstructable here (the .gstx round-trip through
         // 8-byte quantization is lossy -- Venus's dense-interior splats visibly regressed the first time
         // this unconditionally rebuilt on every load). So keep the baked cubes as-is when present; only
         // fall back to generating one here if the package genuinely didn't ship with one (see further
@@ -1438,7 +1446,7 @@ namespace Surfels
 
         // Populate wavelet result metadata for the full LOD hierarchy. The package stores every LOD
         // level per chunk (m_loadedPackage.chunkManifests[c].lods / chunkLODSurfels[c][lvl]) -- this
-        // used to only ever read back level 0, so a loaded .sflw would show a single LOD everywhere
+        // used to only ever read back level 0, so a loaded .gstx would show a single LOD everywhere
         // (residency equalizer, decay, silhouette refinement, PrecacheResidentLODs/InitStreamingSimulation
         // all key off m_waveletResult.lodLevels.size()) regardless of how many levels the file actually
         // contains. Reassemble each level by concatenating that level's already-decompressed surfels
@@ -1552,7 +1560,7 @@ namespace Surfels
             m_pRenderer->FlushGPU();
         }
 
-        // Stay on the .SFLW Bake tab: it is the primary workflow and its live controls (shave,
+        // Stay on the GSTx Bake tab: it is the primary workflow and its live controls (shave,
         // colour grade) act on the model just loaded. The Renderer tab is one click away.
 
         {
@@ -1688,7 +1696,7 @@ namespace Surfels
         {
             std::string ext = foundPath.size() > 5 ? foundPath.substr(foundPath.size() - 5) : "";
             std::transform(ext.begin(), ext.end(), ext.begin(), ::tolower);
-            if (ext == ".sflw")
+            if (ext == ".gstx" || ext == ".sflw")
             {
                 if (LoadSFLWFile(foundPath))
                 {
@@ -1832,7 +1840,7 @@ namespace Surfels
         m_selectedPreviewLOD = 0; // Default to LOD 0 (100% full dataset)
 
         // Compression estimates
-        // Package size as the bake would write it: every level ships in full inside the .sflw, so every
+        // Package size as the bake would write it: every level ships in full inside the .gstx, so every
         // level's records (plus the SH stream in splat mode) are byte-plane shuffled and put through the
         // payload codec at the package quality (the header, manifest and occlusion volume are negligible
         // next to the payloads). Brotli at that quality runs well under 1 MB/s per core, so the estimate
@@ -2154,7 +2162,7 @@ namespace Surfels
 
 
 
-    // Runs the full wavelet pipeline over m_chunks and writes the resulting single-file .sflw package
+    // Runs the full wavelet pipeline over m_chunks and writes the resulting single-file .gstx package
     void SurfelsApp::ProcessAndExport(const std::string& outputPath)
     {
         if (m_rawSurfels.empty()) return;
@@ -2170,13 +2178,13 @@ namespace Surfels
         splatInput.shDegree = BakeSHDegree();
         if (StreamPackager::PackageDataset(outputPath, m_chunks, m_maxLODLevels, deadbandMeters, m_state.splatRadius, m_occlusionVoxels, m_sourceFileBytes, &m_occlusionMips, &m_detailGrid, m_splatMode ? &splatInput : nullptr))
         {
-            std::ifstream pkg(outputPath + ".sflw", std::ios::ate | std::ios::binary);
+            std::ifstream pkg(outputPath + ".gstx", std::ios::ate | std::ios::binary);
             if (pkg.is_open())
             {
                 m_compressedSizeMB = (float)(uint64_t)pkg.tellg() / (1024.0f * 1024.0f);
                 m_compressionRatio = m_rawFileSizeMB > 0.0f ? (m_rawFileSizeMB / std::max(0.001f, m_compressedSizeMB)) : 1.0f;
             }
-            m_statusMessage = "Success! Created " + outputPath + ".sflw (" + std::to_string(m_compressedSizeMB) + " MB, " + std::to_string(m_compressionRatio) + "x vs source)";
+            m_statusMessage = "Success! Created " + outputPath + ".gstx (" + std::to_string(m_compressedSizeMB) + " MB, " + std::to_string(m_compressionRatio) + "x vs source)";
             m_statusIsSuccess = true;
         }
         else
@@ -2208,7 +2216,7 @@ namespace Surfels
         }
         case PendingAction::OpenCompressedFile:
         {
-            std::string file = OpenFileDialog("Surfels Wavelet Package (*.sflw)\0*.sflw\0", "Open Compressed Model (.sflw)", "sflw");
+            std::string file = OpenFileDialog("GSTx Package (*.gstx; older *.sflw)\0*.gstx;*.sflw\0", "Open Compressed Model (.gstx)", "gstx");
             if (!file.empty())
             {
                 LoadSFLWFile(file);
@@ -2222,10 +2230,10 @@ namespace Surfels
         }
         case PendingAction::ExportStream:
         {
-            std::string savePath = SaveFileDialog("Surfels Wavelet Package (*.sflw)\0*.sflw\0", "sflw", "Save Compressed Package (.sflw)");
+            std::string savePath = SaveFileDialog("GSTx Package (*.gstx)\0*.gstx\0", "gstx", "Save Compressed Package (.gstx)");
             if (!savePath.empty())
             {
-                if (savePath.size() > 5 && savePath.substr(savePath.size() - 5) == ".sflw")
+                if (savePath.size() > 5 && (savePath.substr(savePath.size() - 5) == ".gstx" || savePath.substr(savePath.size() - 5) == ".sflw"))
                 {
                     savePath = savePath.substr(0, savePath.size() - 5);
                 }
@@ -2726,7 +2734,7 @@ namespace Surfels
                 {
                     m_pendingAction = PendingAction::OpenFile;
                 }
-                if (ImGui::MenuItem("Open Compressed Model... (.sflw)", IsViewerOnly() ? "Ctrl+O" : "Ctrl+L"))
+                if (ImGui::MenuItem("Open Compressed Model... (.gstx)", IsViewerOnly() ? "Ctrl+O" : "Ctrl+L"))
                 {
                     m_pendingAction = PendingAction::OpenCompressedFile;
                 }
@@ -2738,7 +2746,7 @@ namespace Surfels
                 ImGui::Separator();
                 bool hasModel = !m_rawSurfels.empty();
 
-                if (!IsViewerOnly() && ImGui::MenuItem("Save Compressed Package (.sflw)...", "Ctrl+S", false, hasModel))
+                if (!IsViewerOnly() && ImGui::MenuItem("Save Compressed Package (.gstx)...", "Ctrl+S", false, hasModel))
                 {
                     m_pendingAction = PendingAction::ExportStream;
                 }
@@ -2810,7 +2818,7 @@ namespace Surfels
         // it shows Renderer and Streaming, unnumbered, across the same width.
         {
             struct TabDef { const char* label; int index; };
-            const TabDef studioTabs[] = { { "1. .SFLW Bake", 0 }, { "2. Renderer", 1 }, { "3. Streaming", 2 } };
+            const TabDef studioTabs[] = { { "1. GSTx Bake", 0 }, { "2. Renderer", 1 }, { "3. Streaming", 2 } };
             const TabDef viewerTabs[] = { { "Renderer", 1 }, { "Streaming", 2 } };
             const TabDef* tabs    = IsViewerOnly() ? viewerTabs : studioTabs;
             const int     numTabs = IsViewerOnly() ? 2 : 3;
@@ -2829,7 +2837,7 @@ namespace Surfels
         ImGui::Separator();
 
         // =========================================================================
-        // TAB 1: SURFEL GENERATOR PREPROCESSOR (Raw Model -> Octree -> Wavelet Decimation -> SFLW Export)
+        // TAB 1: SURFEL GENERATOR PREPROCESSOR (Raw Model -> Octree -> Wavelet Decimation -> GSTx Export)
         // =========================================================================
         if (m_activeTab == 0)
         {
@@ -2852,11 +2860,11 @@ namespace Surfels
             {
                 ImGui::Spacing();
                 ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.5f, 1.0f), "Save Compressed Model:");
-                if (ImGui::Button("Save Compressed Package (.sflw)...", ImVec2(-1, 28)))
+                if (ImGui::Button("Save Compressed Package (.gstx)...", ImVec2(-1, 28)))
                 {
                     m_pendingAction = PendingAction::ExportStream;
                 }
-                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Compresses and saves the multi-resolution dataset, with the current parameters and occlusion volume, into a single self-contained .sflw stream package.");
+                if (ImGui::IsItemHovered()) ImGui::SetTooltip("Compresses and saves the multi-resolution dataset, with the current parameters and occlusion volume, into a single self-contained .gstx stream package.");
             }
 
             ImGui::Spacing();
@@ -2956,7 +2964,7 @@ namespace Surfels
                     }
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Erodes the solid further inside the model. Cubes that would poke through the splat surface are always removed first (see the count below), so 0 = the largest volume that stays inside the model and 10 = a thin core along the model's length. Thin and thick parts shrink together. Rebuilds live; baked into the package.");
                     // Colour grade of the baked colour. Applied when each block's colour is packed, so it
-                    // ships in the .sflw like the shape does; rebuilds live off the cached grid.
+                    // ships in the .gstx like the shape does; rebuilds live off the cached grid.
                     bool gradeChanged = false;
                     gradeChanged |= ImGui::SliderFloat("Hue Shift", &m_occlusionHueShift, -180.0f, 180.0f, "%.0f deg");
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rotates the hue of every occluder block by this many degrees around the colour wheel. 0 = as sampled from the splats.");
@@ -3007,7 +3015,7 @@ namespace Surfels
             ImGui::Spacing();
             if (m_isLoadedFromSFLW)
             {
-                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "Source: Loaded .sflw Package");
+                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "Source: Loaded .gstx Package");
             }
             else if (!m_rawSurfels.empty())
             {
@@ -3018,11 +3026,11 @@ namespace Surfels
                 ImGui::TextDisabled("No active model loaded in renderer.");
             }
 
-            if (ImGui::Button("Load Compressed Model (.sflw)...", ImVec2(-1, 26)))
+            if (ImGui::Button("Load Compressed Model (.gstx)...", ImVec2(-1, 26)))
             {
                 m_pendingAction = PendingAction::OpenCompressedFile;
             }
-            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Directly loads and streams a pre-compressed .sflw model from disk, overriding memory data structures.");
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Directly loads and streams a pre-compressed .gstx model from disk, overriding memory data structures.");
 
             ImGui::Separator();
 
@@ -3189,10 +3197,10 @@ namespace Surfels
                 {
                     if (ImGui::CollapsingHeader("Interior Occlusion Volume", ImGuiTreeNodeFlags_DefaultOpen))
                     {
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The baked occluder solid packaged with this model (%zu cubes). Its shape and colour are fixed here; to change the shave, hue, saturation or brightness, use the Interior Occlusion Volume controls on the 1. .SFLW Bake tab and re-save the package.", m_occlusionVoxels.size());
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("The baked occluder solid packaged with this model (%zu cubes). Its shape and colour are fixed here; to change the shave, hue, saturation or brightness, use the Interior Occlusion Volume controls on the 1. GSTx Bake tab and re-save the package.", m_occlusionVoxels.size());
                         DrawOcclusionVolumeControls();
-                        ImGui::TextDisabled("Shape and colour are baked: adjust them on the .SFLW Bake tab.");
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Switch to 1. .SFLW Bake for the Shave, Hue Shift, Saturation and Brightness sliders, then Save Compressed Package to bake the result into the .sflw.");
+                        ImGui::TextDisabled("Shape and colour are baked: adjust them on the GSTx Bake tab.");
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Switch to 1. GSTx Bake for the Shave, Hue Shift, Saturation and Brightness sliders, then Save Compressed Package to bake the result into the .gstx.");
                     }
                 }
 
@@ -3948,7 +3956,7 @@ namespace Surfels
                 ImGui::Spacing();
 
                 ImGui::TextWrapped(IsViewerOnly()
-                    ? "The standalone viewer for .sflw surfel packages: progressive wavelet streaming with high-performance DirectX 12 Mesh Shader surfel rendering. The same renderer and streaming tabs as SplatLab, without the generator."
+                    ? "The standalone viewer for .gstx Gaussian splat packages: progressive wavelet streaming with DirectX 12 Gaussian rendering. The same renderer and streaming tabs as SplatLab, without the generator."
                     : "A multi-resolution point cloud preprocessor and progressive wavelet streaming pipeline built for high-performance DirectX 12 Mesh Shader surfel rendering.");
                 ImGui::Spacing();
                 ImGui::TextDisabled("(c) 2026 Blueshell LLC. All rights reserved.");
@@ -4950,8 +4958,8 @@ namespace Surfels
     }
 
     // Shared enable/view-only controls for the baked occlusion volume, drawn identically from both the
-    // .SFLW Bake tab (right after baking) and the Renderer tab (while viewing). Shape parameters
-    // (resolution, shave) live only on the .SFLW Bake tab: the volume is baked into the .sflw, so
+    // GSTx Bake tab (right after baking) and the Renderer tab (while viewing). Shape parameters
+    // (resolution, shave) live only on the GSTx Bake tab: the volume is baked into the .gstx, so
     // the viewer shows exactly what was packaged and offers nothing that would change it. "View
     // Occlusion Volume Only" is intentionally independent of "Show Occlusion Volume" -- wanting to
     // just look at the volume shouldn't require also turning on splat culling against it.
@@ -5003,7 +5011,7 @@ namespace Surfels
     }
 
     // Rebuilds the occlusion volume from the current checkbox/sliders, or clears it when generation is
-    // off. Called live from the .SFLW Bake sliders (the bake is grid work over the raw points --
+    // off. Called live from the GSTx Bake sliders (the bake is grid work over the raw points --
     // fast enough to drag) and on every full pipeline recompute. A freshly baked volume is shown straight
     // away unless Show Occlusion Volume was switched off (m_showOcclusionSetting), which a bake respects.
     void SurfelsApp::RefreshOcclusionVolume()

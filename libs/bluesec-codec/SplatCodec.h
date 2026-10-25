@@ -3,8 +3,8 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Splat mode: the 20-byte 3D Gaussian record (PackedSplatGPU) and its spherical-harmonics
-// side stream, as written into .sflw packages of surfel format 1 (see
-// docs/SFLW_FORMAT_SPECIFICATION.md). This header is the data contract; the encoder, the
+// side stream, as written into .gstx packages of surfel format 1 (see
+// docs/GSTX_FORMAT_SPECIFICATION.md). This header is the data contract; the encoder, the
 // decoder and the level derivation live in SplatCodec.cpp inside the bluesec-codec library.
 
 #pragma once
