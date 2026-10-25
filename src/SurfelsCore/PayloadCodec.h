@@ -24,8 +24,8 @@
 #include <atomic>
 #include <algorithm>
 #include "WaveletTypes.h"
-#include "../../libs/bluesec-codec/ByteShuffle.h"
-#include "../../libs/bluesec-codec/PayloadDecode.h"
+#include "../../libs/gstx/ByteShuffle.h"
+#include "../../libs/gstx/PayloadDecode.h"
 #include <brotli/encode.h>
 
 namespace Surfels

@@ -16,7 +16,7 @@
 #include <algorithm>
 #include <cmath>
 #include "WaveletTypes.h"
-#include "../../libs/bluesec-codec/SplatCodec.h"
+#include "../../libs/gstx/SplatCodec.h"
 
 namespace Surfels
 {

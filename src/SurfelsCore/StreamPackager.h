@@ -16,10 +16,10 @@
 #include <vector>
 #include "SpatialOctree.h"
 #include "Quantizer.h"
-#include "../../libs/bluesec-codec/DetailHeatmap.h"
-#include "../../libs/bluesec-codec/LiftingWavelet.h"
-#include "../../libs/bluesec-codec/ByteShuffle.h"
-#include "../../libs/bluesec-codec/SplatCodec.h"
+#include "../../libs/gstx/DetailHeatmap.h"
+#include "../../libs/gstx/LiftingWavelet.h"
+#include "../../libs/gstx/ByteShuffle.h"
+#include "../../libs/gstx/SplatCodec.h"
 #include "PayloadCodec.h"
 
 namespace Surfels

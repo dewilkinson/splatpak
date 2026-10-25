@@ -11,23 +11,23 @@
 // this class is everything else -- UI, file I/O, and the streaming/decay/silhouette simulation.
 
 #pragma once
-#include "../../libs/bluesec-codec/OcclusionVolume.h"
-#include "../../libs/bluesec-codec/DetailHeatmap.h"
-#include "../../libs/bluesec-codec/StreamOrder.h"
-#include "../../libs/bluesec-codec/CodecBuild.h"
-#include "../../libs/bluesec-codec/SplatCodec.h"
+#include "../../libs/gstx/OcclusionVolume.h"
+#include "../../libs/gstx/DetailHeatmap.h"
+#include "../../libs/gstx/StreamOrder.h"
+#include "../../libs/gstx/CodecBuild.h"
+#include "../../libs/gstx/SplatCodec.h"
 #include "stdafx.h"
 #include "SurfelsRenderer.h"
 #include "SyntheticGenerator.h"
 #include "PLYLoader.h"
 #include "SPLATLoader.h"
 #include "SpatialOctree.h"
-#include "../../libs/bluesec-codec/LiftingWavelet.h"
+#include "../../libs/gstx/LiftingWavelet.h"
 #include "Quantizer.h"
-#include "../../libs/bluesec-codec/ByteShuffle.h"
+#include "../../libs/gstx/ByteShuffle.h"
 #include "StreamPackager.h"
 #include "PointCloudGaussians.h"
-#include "../../libs/bluesec-codec/StreamRuntime.h"
+#include "../../libs/gstx/StreamRuntime.h"
 #include "ImageCompare.h"
 #include <commdlg.h>
 #include <string>
@@ -260,7 +260,7 @@ namespace Surfels
 
         // Pre-cached resident GPU/CPU LOD buffers for zero-hitch instantaneous transitions
         std::vector<ResidentLOD> m_residentLODs;
-        // The streaming runtime (libs/bluesec-codec/StreamRuntime.h): it owns the blocks, residency, delivery and
+        // The streaming runtime (libs/gstx/StreamRuntime.h): it owns the blocks, residency, delivery and
         // the render list; the app feeds it the levels above, its settings and the camera, and draws its output
         StreamRuntime m_stream;
         void SyncStreamInputs();   // The UI settings and the camera, into m_stream (every frame, and before any call into it)
@@ -368,7 +368,7 @@ namespace Surfels
         bool   m_enableSubpixelJitter       = true;   // 8-phase Halton(2,3) sub-pixel camera jitter
         bool   m_enableVarianceClamping     = true;   // 3x3 YCoCg neighborhood variance color box clamping (anti-ghosting)
 
-        // Streaming tab: the streaming order's bounding octahedron (libs/bluesec-codec/StreamOrder.h, owned by m_stream)
+        // Streaming tab: the streaming order's bounding octahedron (libs/gstx/StreamOrder.h, owned by m_stream)
         void  DrawOctahedronGlyph();                                   // Streaming tab: the octahedron's upper and lower faces, visible ones lit, each with its fill progress
         DetailGrid                            m_detailGrid;         // Detail grid for the loaded model: from the package (v7+) or built from LOD 0 on load / preprocess; written into exported packages
 

@@ -60,7 +60,7 @@ namespace Surfels
                                                  // detailGridCellSize, detailGridOffset): one byte per
                                                  // cell over the model's bounds, stored after the
                                                  // occlusion voxels, an input to the streaming order
-                                                 // (libs/bluesec-codec/DetailHeatmap.h). Older readers
+                                                 // (libs/gstx/DetailHeatmap.h). Older readers
                                                  // ignore it.
 
     // Upper bound on the occlusion volume mip chain: mip 0 plus up to three coarser levels. Blocks fall
@@ -69,7 +69,7 @@ namespace Surfels
     static constexpr uint32_t kMaxOcclusionMips = 4;
 
     #pragma pack(push, 1)
-    // One baked occluder block of the interior occlusion volume (libs/bluesec-codec/OcclusionVolume.h).
+    // One baked occluder block of the interior occlusion volume (libs/gstx/OcclusionVolume.h).
     // The volume is a closed voxel solid of the model sitting just inside the surfel shell, stored as an
     // adaptive octree: the finest cubes hug the surface while the interior is covered by a few big ones,
     // and blocks with no exposed face are dropped, since a closed occluder only needs its skin. halfSize

@@ -5,7 +5,7 @@
 # here reaches both apps at once instead of having to be made twice.
 #
 # The console test tools include headers from this directory directly (they need no GPU or
-# Cauldron) and link only bluesec-codec; see tests/CMakeLists.txt.
+# Cauldron) and link only gstx; see tests/CMakeLists.txt.
 cmake_minimum_required(VERSION 3.24)
 
 project(SurfelsCore)
@@ -57,8 +57,8 @@ target_include_directories(surfels_core PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
 
 # Cauldron_DX12 doesn't itself propagate the D3D12/DXGI system libs or the AGS SDK it calls
 # into, so they are listed here once and reach both executables through this target. DbgHelp
-# backs the minidump writer in AppEntry.cpp. bluesec-codec carries Brotli (the payload entropy stage).
-target_link_libraries(surfels_core PUBLIC Cauldron_DX12 ImGUI amd_ags d3d12 dxgi DbgHelp bluesec-codec)
+# backs the minidump writer in AppEntry.cpp. gstx carries Brotli (the payload entropy stage).
+target_link_libraries(surfels_core PUBLIC Cauldron_DX12 ImGUI amd_ags d3d12 dxgi DbgHelp gstx)
 add_dependencies(surfels_core copied_surfels_core_shaders)
 
 set_target_properties(surfels_core PROPERTIES

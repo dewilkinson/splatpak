@@ -2,7 +2,7 @@
 // Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// GPU-free driver for the streaming runtime (libs/bluesec-codec/StreamRuntime.h): loads a splat package
+// GPU-free driver for the streaming runtime (libs/gstx/StreamRuntime.h): loads a splat package
 // (the path given, or assets/cthulu/cthulu.gstx), hands its levels to the runtime the way SplatLab does,
 // evicts, then streams at a fixed 1/60 s step and 50 MB/s while the camera closes in and orbits. Prints
 // per-level residency and the render list size once a simulated second. The step is fixed, so two runs
@@ -13,7 +13,7 @@
 #include <numeric>
 #include "../src/SurfelsCore/StreamPackager.h"
 #include "../src/SurfelsCore/SpatialOctree.h"
-#include "../libs/bluesec-codec/StreamRuntime.h"
+#include "../libs/gstx/StreamRuntime.h"
 
 using namespace Surfels;
 

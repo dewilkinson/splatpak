@@ -1,4 +1,4 @@
-# bluesec-codec
+# gstx
 
 The streaming order and heatmap scoring moved here on 2026-09-07 (the 1.2 branch). Until then they
 lived inside the app source and were published as Apache-2.0 in the public mirror; the sync script
@@ -19,7 +19,7 @@ decision -- don't assume the top-level `LICENSE` file extends to it.
 Each module here is split into a public header (data structures and function
 declarations -- the API contract callers need) and a `.cpp` implementation (the actual
 algorithm). Only the headers are visible to anything that links against the compiled
-`bluesec-codec.lib`; the `.cpp` sources never need to leave this directory for the project to
+`gstx.lib`; the `.cpp` sources never need to leave this directory for the project to
 build and run. This is a source-distribution boundary, not an anti-reverse-engineering
 measure -- a shipped binary can still be disassembled by a sufficiently motivated party, DXIL
 shaders in particular ship as plain-text `.hlsl` next to every executable today (see

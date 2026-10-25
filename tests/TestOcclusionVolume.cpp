@@ -11,7 +11,7 @@
 #include <string>
 #include <vector>
 #include "../src/SurfelsCore/StreamPackager.h"
-#include "../libs/bluesec-codec/OcclusionVolume.h"
+#include "../libs/gstx/OcclusionVolume.h"
 
 int main(int argc, char** argv)
 {

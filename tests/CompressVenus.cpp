@@ -17,7 +17,7 @@
 #include "../src/SurfelsCore/SpatialOctree.h"
 #include "../src/SurfelsCore/StreamPackager.h"
 #include "../src/SurfelsCore/PointCloudGaussians.h"
-#include "../libs/bluesec-codec/OcclusionVolume.h"
+#include "../libs/gstx/OcclusionVolume.h"
 
 int main(int argc, char** argv)
 {
@@ -64,7 +64,7 @@ int main(int argc, char** argv)
     std::cout << "Loaded " << surfels.size() << " points, extent " << maxDim << ". chunk=" << chunkSize
               << " lods=" << maxLODs << " deadband=" << deadbandMeters * 1000.0f << "mm" << std::endl;
 
-    // Detail grid (v7+): an input to the streaming order, baked from the original cloud (libs/bluesec-codec/DetailHeatmap.h)
+    // Detail grid (v7+): an input to the streaming order, baked from the original cloud (libs/gstx/DetailHeatmap.h)
     Surfels::DetailGrid detailGrid = Surfels::DetailGrid::Build(surfels, minP, maxP);
     std::cout << "Detail heatmap: detail grid " << detailGrid.nx << "x" << detailGrid.ny << "x" << detailGrid.nz
               << " cells (" << detailGrid.cellSize << " m), " << detailGrid.occupiedCells << " occupied" << std::endl;

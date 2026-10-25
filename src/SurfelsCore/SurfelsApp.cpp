@@ -9,7 +9,7 @@
 #include "SurfelsApp.h"
 #include <chrono>
 #include <cfloat>
-#include "../../libs/bluesec-codec/OcclusionVolume.h"
+#include "../../libs/gstx/OcclusionVolume.h"
 #include <DirectXCollision.h>
 #include <iomanip>
 #include <sstream>
@@ -1996,7 +1996,7 @@ namespace Surfels
         }
     }
 
-    // ---- Streaming runtime host (libs/bluesec-codec/StreamRuntime.h) -------------------------------------
+    // ---- Streaming runtime host (libs/gstx/StreamRuntime.h) -------------------------------------
 
     void SurfelsApp::SyncStreamInputs()
     {

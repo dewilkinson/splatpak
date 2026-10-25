@@ -20,7 +20,7 @@
 #include "../src/SurfelsCore/PLYLoader.h"
 #include "../src/SurfelsCore/SpatialOctree.h"
 #include "../src/SurfelsCore/StreamPackager.h"
-#include "../libs/bluesec-codec/SplatCodec.h"
+#include "../libs/gstx/SplatCodec.h"
 
 using namespace Surfels;
 
