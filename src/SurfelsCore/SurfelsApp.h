@@ -188,6 +188,7 @@ namespace Surfels
         OcclusionMipTable m_occlusionMips;       // Mip layout of m_occlusionVoxels (see OcclusionMipTable): from Bake, or the loaded package's header
         int   m_occlusionMipOverride = -1;       // Viewer: -1 = renderer picks the mip from projected cell size; 0.. = force that mip (debug / side-by-side compare)
         bool  m_enableOcclusionCulling    = true;  // Viewer: "Show Occlusion Volume" -- draw the volume and depth-test splats against it (on by default)
+        bool  m_showOcclusionSetting      = true;  // The user's choice for the toggle above (the checkbox, config show_occlusion_volume): a load or a bake shows the volume only if this is on
         bool  m_showOcclusionVolumeOnly   = false; // Viewer: debug view -- render only the occluder geometry
         void  BuildOcclusionVolume();
         void  RefreshOcclusionVolume(); // Rebuild (or clear) from the current checkbox/sliders and make it visible

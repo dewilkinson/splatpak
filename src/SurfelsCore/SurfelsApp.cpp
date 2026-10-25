@@ -454,7 +454,8 @@ namespace Surfels
                         {
                             std::string val = line.substr(eqPos + 1);
                             const bool on = !(val.find("false") != std::string::npos || val.find('0') != std::string::npos);
-                            (toggle == 0 ? m_enableOcclusionCulling : m_showChunkStream) = on;
+                            if (toggle == 0) m_enableOcclusionCulling = m_showOcclusionSetting = on;
+                            else m_showChunkStream = on;
                         }
                     }
 
@@ -610,7 +611,7 @@ namespace Surfels
             out << "  \"default_deadband_mm\": 3.0,\n";
             out << "  \"occlusion_shave_bias\": " << m_occlusionShaveBiasCells << ",\n";
             out << "  \"show_control_hints\": " << (m_showControlHints ? "true" : "false") << ",\n";
-            out << "  \"show_occlusion_volume\": " << (m_enableOcclusionCulling ? "true" : "false") << ",\n";
+            out << "  \"show_occlusion_volume\": " << (m_showOcclusionSetting ? "true" : "false") << ",\n";
             out << "  \"refinement_visualizer\": " << (m_showChunkStream ? "true" : "false") << ",\n";
             out << "  \"splat_disc_match_level0\": " << (m_splatDiscMatchLevel0 ? "true" : "false") << ",\n";
             out << "  \"splat_draw_as_surfels\": " << (m_splatDrawAsSurfels ? "true" : "false") << ",\n";
@@ -1489,7 +1490,7 @@ namespace Surfels
         }
         else
         {
-            m_enableOcclusionCulling = true; // Show Occlusion Volume: on by default whenever one exists
+            m_enableOcclusionCulling = m_showOcclusionSetting; // Show Occlusion Volume: on whenever one exists, unless switched off
         }
 
         // Setup active renderer state pointing to renderer's dedicated buffers
@@ -4883,7 +4884,11 @@ namespace Surfels
     // just look at the volume shouldn't require also turning on splat culling against it.
     void SurfelsApp::DrawOcclusionVolumeControls()
     {
-        ImGui::Checkbox("Show Occlusion Volume", &m_enableOcclusionCulling);
+        if (ImGui::Checkbox("Show Occlusion Volume", &m_enableOcclusionCulling))
+        {
+            m_showOcclusionSetting = m_enableOcclusionCulling;
+            SaveConfigFile(); // Remembered (show_occlusion_volume): the next load or bake follows it
+        }
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Draws the baked interior occlusion volume (%zu cubes) and depth-tests the splats against it, so far-side surfels don't show through gaps in the near side. On by default.", m_occlusionVoxels.size());
 
         ImGui::Checkbox("View Occlusion Volume Only", &m_showOcclusionVolumeOnly);
@@ -4926,8 +4931,8 @@ namespace Surfels
 
     // Rebuilds the occlusion volume from the current checkbox/sliders, or clears it when generation is
     // off. Called live from the Surfel Generator sliders (the bake is grid work over the raw points --
-    // fast enough to drag) and on every full pipeline recompute. A freshly baked volume is switched on
-    // straight away so the change is visible without also hunting for the Renderer-tab toggle.
+    // fast enough to drag) and on every full pipeline recompute. A freshly baked volume is shown straight
+    // away unless Show Occlusion Volume was switched off (m_showOcclusionSetting), which a bake respects.
     void SurfelsApp::RefreshOcclusionVolume()
     {
         if (m_generateOcclusionVolume)
@@ -4935,7 +4940,7 @@ namespace Surfels
             BuildOcclusionVolume();
             if (!m_occlusionVoxels.empty())
             {
-                m_enableOcclusionCulling = true;
+                m_enableOcclusionCulling = m_showOcclusionSetting;
             }
         }
         else
