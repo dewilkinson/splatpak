@@ -496,19 +496,6 @@ namespace Surfels
                         }
                     }
 
-                    // Splat mode, Draw Splats as Surfels on/off (JSON or INI); see SplatRenderMode.
-                    {
-                        size_t hPos = line.find("\"splat_draw_as_surfels\":");
-                        size_t eqPos = std::string::npos;
-                        if (hPos != std::string::npos) eqPos = line.find(':', hPos);
-                        else if (line.find("splat_draw_as_surfels=") != std::string::npos) eqPos = line.find('=');
-                        if (eqPos != std::string::npos)
-                        {
-                            std::string val = line.substr(eqPos + 1);
-                            m_splatDrawAsSurfels = !(val.find("false") != std::string::npos || val.find('0') != std::string::npos);
-                        }
-                    }
-
                     // Render path (JSON or INI): "auto" (default), "mesh", "vs6" (vertex shaders, Shader
                     // Model 6.0) or "vs5" (vertex shaders through the legacy Shader Model 5.1 compiler).
                     // Anything but auto forces that fallback on capable hardware, for testing; a path the
@@ -3108,29 +3095,16 @@ namespace Surfels
                 {
                     ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Active Display: %u points", m_state.surfelCount);
 
-                    static const char* s_orientNames[] = { "Normal-Oriented Tangent Discs (Smooth Surface)", "Camera-Facing Billboards (3D Gaussian Splats)" };
-                    int orientIdx = (int)m_state.orientMode;
-                    if (ImGui::Combo("Surfel Orientation", &orientIdx, s_orientNames, IM_ARRAYSIZE(s_orientNames)))
-                    {
-                        m_state.orientMode = (uint32_t)orientIdx;
-                    }
+                    // Surfels are drawn as normal-oriented tangent discs and splat packages as sorted Gaussians;
+                    // the Surfel Orientation dropdown and Draw Splats as Surfels were removed from the panel
+                    // (the LOD quality test still switches a splat package to surfels for its comparison shots)
                     if (m_splatMode)
                     {
-                        bool drawAsSurfels = m_splatDrawAsSurfels;
-                        if (ImGui::Checkbox("Draw Splats as Surfels", &drawAsSurfels))
-                        {
-                            SetSplatDrawAsSurfels(drawAsSurfels);
-                            SaveConfigFile();
-                        }
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Draws the package's Gaussians as opaque, depth-tested discs through the surfel pipeline: no per-frame sort, no blending. Auto Splat Size and its Coverage, Splat Radius Scale and Surfel Orientation apply (Normal-Oriented uses each Gaussian's own orientation), and the dithered level transitions dissolve between two surfaces instead of sparkling. The colour is the record's base colour plus its harmonics, unlit. Off restores the sorted Gaussian pipeline. Remembered across sessions.");
                         static const char* s_blendNames[] = { "Display space (reference viewer)", "Linear (sRGB target)" };
-                        // Greyed out while the package is drawn as surfels (nothing is blended): shown, edits are dropped
-                        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, m_splatDrawAsSurfels ? 0.45f : 1.0f);
                         int blendShown = m_splatBlendSpace;
-                        if (ImGui::Combo("Splat Blending", &blendShown, s_blendNames, IM_ARRAYSIZE(s_blendNames)) && !m_splatDrawAsSurfels)
+                        if (ImGui::Combo("Splat Blending", &blendShown, s_blendNames, IM_ARRAYSIZE(s_blendNames)))
                             m_splatBlendSpace = blendShown;
-                        ImGui::PopStyleVar();
-                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where the Gaussians are blended. Display space blends the stored colours as they are, which is what the training rasterizer and SuperSplat do. Linear decodes them first and lets the sRGB target encode the result: physically tidier, slightly different from the reference. No effect while Draw Splats as Surfels is on.");
+                        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Where the Gaussians are blended. Display space blends the stored colours as they are, which is what the training rasterizer and SuperSplat do. Linear decodes them first and lets the sRGB target encode the result: physically tidier, slightly different from the reference.");
                         // Greyed out while kSplatGaussianLevel0 is false (it refers to the Gaussian level 0): shown, but
                         // edits go to a copy and are dropped; the saved value still sizes the discs of every level
                         ImGui::PushStyleVar(ImGuiStyleVar_Alpha, kSplatGaussianLevel0 ? 1.0f : 0.45f);
