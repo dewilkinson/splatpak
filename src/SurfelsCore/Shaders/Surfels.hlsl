@@ -56,7 +56,7 @@ struct MeshletChunk
     uint   surfelCount;
     float  blendWeight;
     uint   lodLevel;
-    float  dilationMorph; // Morph dilation factor for silhouette reconstruction; splat mode (g_RenderMode == 3): the chunk's opacity weight for the level 1 -> 0 hand-over instead (0 = invisible .. 1 = the records' opacity, see BuildGaussianSplat); mode 4 carries the surfel value (0 for a splat package)
+    float  dilationMorph; // Morph dilation factor for silhouette reconstruction; splat mode (g_RenderMode == 3): the chunk's opacity weight for its LOD cross-fade instead (0 = invisible .. 1 = the records' opacity, see BuildGaussianSplat; the Bayer dither below is skipped in that mode); mode 4 carries the surfel value (0 for a splat package)
     float  isSilhouette;  // 1.0 if silhouette chunk, 0.0 otherwise
     float3 coneAxis;      // Average unit normal vector of cluster
     float  coneCutoff;    // cos(theta_max) of cluster normal cone (-1.0 = disabled)
@@ -1750,7 +1750,9 @@ float4 mainPS(VSOut i) : SV_Target
 
     // True screen-space Bayer matrix stochastic dithering:
     // an exact complementary stochastic cross-dissolve between parent and child chunks in screen space.
-    if (g_EnableDithering == 1 && abs(i.blendWeight) < 0.999)
+    // Not in splat mode (sorted Gaussians), where the cross-fade is the chunk's opacity weight instead
+    // (MeshletChunk.dilationMorph): a stipple over soft Gaussians showed as flickering blobs.
+    if (g_EnableDithering == 1 && abs(i.blendWeight) < 0.999 && g_RenderMode != 3)
     {
         uint2 screenPixel = (uint2)i.pos.xy;
         float bayerThreshold = GetBayer8x8(screenPixel);

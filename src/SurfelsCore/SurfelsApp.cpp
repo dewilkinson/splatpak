@@ -22,9 +22,9 @@ namespace Surfels
 {
     static constexpr const char* kTraceLogFilename = "lod_transition_trace.log";
 
-    // Splat packages: the Gaussian level 0 (the reference 3DGS rendering of the finest level, with the
-    // level 1 -> 0 opacity hand-over in UpdateStreamingSimulation) is on: full Gaussian splat rendering is
-    // the default. Levels 1 and up draw as discs (kSplatDiscMinLevel = 1 in Surfels.hlsl, which must agree),
+    // Splat packages: the Gaussian level 0 (the reference 3DGS rendering of the finest level) is on: full
+    // Gaussian splat rendering is the default, and every LOD cross-fade is an opacity fade (see
+    // AppendChunkToRenderer). Levels 1 and up draw as discs (kSplatDiscMinLevel = 1 in Surfels.hlsl, which must agree),
     // and Match Level 0 Softness sizes them from the level 0 Gaussians. Set false, and kSplatDiscMinLevel to
     // 0, to draw every level as discs.
     static constexpr bool kSplatGaussianLevel0 = true;

@@ -452,10 +452,6 @@ namespace Surfels
         size_t                    m_faceEdgeHead[kOctahedronFaces] = {};
         uint32_t                  m_streamFrame = 0;                   // Counts UpdateStreamingSimulation calls (request staleness)
         uint32_t                  m_edgeRefineStartsThisFrame = 0;     // Edge-driven refinements into already-resident children begun this frame (capped, see kEdgeRefineStartsPerFrame)
-        float                     m_traverseSplatFade = 1.0f;          // Splat mode: opacity weight the traversal hands the chunks it appends during a level 1 -> 0 hand-over (parent 1 - t, children t; see CASE 2 and AppendChunkToRenderer); 1 otherwise
-        uint32_t                  m_splatLevel0Waiting = 0;            // Splat mode, this frame's traversal: nodes on the path to level 0 (target level 0) still waiting for children to arrive
-        uint32_t                  m_splatLevel0Starts = 0;             // Splat mode, this frame's traversal: level 1 -> 0 hand-overs begun (traced when non-zero)
-        bool                      m_splatLevel0AllArrived = false;     // Splat mode, from the previous frame: nothing on the path to level 0 is still streaming, so the level 1 -> 0 hand-overs may begin, all in the same frame (the whole level 0 fades in at once)
         // Refinement pacing (see UpdateStreamingSimulation): new cross-fades started this frame, the frame's
         // budget of starts (UINT32_MAX = unlimited), and the starts deferred to a later frame by the budget.
         uint32_t                  m_refineStartsThisFrame = 0, m_refineStartBudget = 0, m_refineStartsDeferred = 0;
