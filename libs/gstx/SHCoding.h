@@ -223,8 +223,19 @@ namespace Splat
         // Writer: sh[l] holds level l's SH stream (interleaved, absolute, already snapped). The coarsest level is left
         // absolute; every finer level becomes YCoCg(point) - YCoCg(prediction), byte by byte modulo 256. The caller then
         // applies the colour transform to the coarsest level only.
+        // Every level's parent map (ParentMap of level l into level l + 1), for a caller that codes one set of records with
+        // several SH choices (the RDO analysis): the maps depend only on the records' positions
+        static void ParentMaps(const std::vector<const uint8_t*>& records, const std::vector<size_t>& counts, size_t recordBytes,
+                               std::vector<std::vector<uint32_t>>& out)
+        {
+            out.assign(records.size() > 0 ? records.size() - 1 : 0, {});
+            for (size_t l = 0; l + 1 < records.size(); l++)
+                ParentMap(records[l], counts[l], records[l + 1], counts[l + 1], recordBytes, out[l]);
+        }
+
         static void EncodeResiduals(const std::vector<const uint8_t*>& records, const std::vector<size_t>& counts, size_t recordBytes,
-                                    std::vector<std::vector<uint8_t>*>& sh, size_t shBytes, const uint8_t bits[3])
+                                    std::vector<std::vector<uint8_t>*>& sh, size_t shBytes, const uint8_t bits[3],
+                                    const std::vector<std::vector<uint32_t>>* parentMaps = nullptr)
         {
             if (sh.size() < 2 || shBytes == 0) return;
             uint8_t tables[3][256];
@@ -233,8 +244,9 @@ namespace Splat
             // From the finest level up, so every prediction reads its parent's absolute bytes
             for (size_t l = 0; l + 1 < sh.size(); l++)
             {
-                std::vector<uint32_t> parent;
-                ParentMap(records[l], counts[l], records[l + 1], counts[l + 1], recordBytes, parent);
+                std::vector<uint32_t> built;
+                if (!parentMaps || l >= parentMaps->size()) ParentMap(records[l], counts[l], records[l + 1], counts[l + 1], recordBytes, built);
+                const std::vector<uint32_t>& parent = (parentMaps && l < parentMaps->size()) ? (*parentMaps)[l] : built;
                 std::vector<uint8_t>& level = *sh[l];
                 const std::vector<uint8_t>& coarser = *sh[l + 1];
                 std::vector<uint8_t> prediction(shBytes);

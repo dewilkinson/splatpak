@@ -7,6 +7,13 @@
 // evicts, then streams at a fixed 1/60 s step and 50 MB/s while the camera closes in and orbits. Prints
 // per-level residency and the render list size once a simulated second. The step is fixed, so two runs
 // print the same lines; the exit code is 0 when level 0 ends fully resident.
+//
+//   TestStreamRuntime [package] [--conservative] [--release] [--far]
+//
+// --conservative / --release choose the streaming policy and Release Unused LOD Segments; --far stops the approach at
+// two model sizes, so the view renders a coarser level and the policies differ. With any of them the run checks the
+// policy instead: Greedy streams everything (Release: every level down to its floor, nothing finer resident out of
+// view), Conservative leaves part of the view's level unloaded; and in every case few blocks are delivered twice.
 
 #include <cstdio>
 #include <cmath>
@@ -19,7 +26,17 @@ using namespace Splat;
 
 int main(int argc, char** argv)
 {
-    const std::string path = argc > 1 ? argv[1] : "assets/cthulu/cthulu.gstx";
+    std::string path = "assets/cthulu/cthulu.gstx";
+    bool conservative = false, release = false, far = false;
+    for (int a = 1; a < argc; a++)
+    {
+        const std::string arg = argv[a];
+        if (arg == "--conservative") conservative = true;
+        else if (arg == "--release") release = true;
+        else if (arg == "--far") far = true;
+        else path = arg;
+    }
+    const bool policyRun = conservative || release || far;
     StreamPackager::SFLWPackageData pkg;
     std::string reason;
     if (!StreamPackager::LoadPackage(path, pkg, &reason) || !pkg.IsSplatPackage())
@@ -76,6 +93,8 @@ int main(int argc, char** argv)
     rt.camera.target = rt.m_center;
     rt.settings.unthrottledBandwidth = false;
     rt.settings.bandwidthThrottleMBps = 50.0f;
+    rt.settings.streamingPolicy = conservative ? StreamSettings::Policy::Conservative : StreamSettings::Policy::Greedy;
+    rt.settings.releaseUnusedSegments = release;
     rt.InitStreamingSimulation();
     printf("%s: %zu levels, %zu blocks, %.1f MB\n", path.c_str(), numLevels, rt.m_allStreamChunkPtrs.size(), rt.m_totalStreamBytes / (1024.0f * 1024.0f));
     rt.ClearResidentStream();
@@ -87,7 +106,7 @@ int main(int argc, char** argv)
     for (int frame = 1; frame <= 1200; frame++)
     {
         const float t = frame / 60.0f;
-        rt.camera.distance = maxDim * (4.0f - 3.0f * std::min(1.0f, t / 5.0f));
+        rt.camera.distance = maxDim * (4.0f - (far ? 2.0f : 3.0f) * std::min(1.0f, t / 5.0f));
         rt.camera.yaw = 0.6f + 1.5708f * std::max(0.0f, std::min(1.0f, (t - 5.0f) / 5.0f));
         rt.settings.selectedPreviewLOD = std::max(0, (int)floorf(rt.ContinuousLodAtDistance(rt.camera.distance, false) + 0.35f));
         rt.UpdateStreamingSimulation(dt);
@@ -100,6 +119,25 @@ int main(int argc, char** argv)
         }
     }
     const bool full = rt.m_lodResidentSplats[0] == rt.m_lodTotalSplats[0];
-    printf("Level 0 %s\n", full ? "fully resident" : "NOT fully resident");
-    return full ? 0 : 1;
+    if (!policyRun)
+    {
+        printf("Level 0 %s\n", full ? "fully resident" : "NOT fully resident");
+        return full ? 0 : 1;
+    }
+    // The policy checks, at the final (still) view
+    auto pct = [&](int l) { return rt.m_lodTotalSplats[l] ? 100.0 * rt.m_lodResidentSplats[l] / rt.m_lodTotalSplats[l] : 0.0; };
+    const int view = rt.settings.selectedPreviewLOD;
+    int failures = 0;
+    printf("%s%s: view level %d, greedy floor %d, %u blocks delivered more than once (%u extra deliveries)\n",
+        conservative ? "Conservative" : "Greedy", release ? " + Release Unused LOD Segments" : "", view, rt.GreedyFloor(), rt.m_redeliveredBlocks, rt.m_extraDeliveries);
+    if (!conservative && !release)
+        for (size_t l = 0; l < numLevels; l++) if (pct((int)l) < 99.9) { printf("FAIL: Greedy left level %zu at %.1f%%\n", l, pct((int)l)); failures++; }
+    if (!conservative && release)
+        for (int l = rt.GreedyFloor(); l < (int)numLevels; l++) if (pct(l) < 99.9) { printf("FAIL: Greedy + Release left level %d (at or above the floor) at %.1f%%\n", l, pct(l)); failures++; }
+    if (conservative && pct(view) > 99.9 && view < (int)numLevels - 2)
+    { printf("FAIL: Conservative loaded all of level %d, the far side included\n", view); failures++; }
+    if (rt.m_extraDeliveries > rt.m_allStreamChunkPtrs.size() / 50)
+    { printf("FAIL: %u extra deliveries, over 2%% of the blocks\n", rt.m_extraDeliveries); failures++; }
+    printf("TestStreamRuntime policy: %s\n", failures ? "FAIL" : "ok");
+    return failures ? 1 : 0;
 }

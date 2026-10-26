@@ -94,6 +94,7 @@ ByteAddressBuffer             g_SHBuffer     : register(t6);
 StructuredBuffer<uint2>       g_SortedSplats : register(t7); // Per-frame depth order, far to near: x = key, y = slot
 StructuredBuffer<uint2>       g_SlotInfo     : register(t8); // Per slot: x = splat index, y = chunk index | SLOT_CULLED_BIT
 #define SLOT_CULLED_BIT 0x80000000u
+#define SLOT_FROZEN_BIT 0x40000000u // Detach Camera: the frozen camera culls the chunk, by frustum or occlusion (drawn red)
 
 cbuffer SplatCB : register(b0)
 {
@@ -832,6 +833,26 @@ float3 SplatColor(uint splatIndex, float3 pos, float3 dc, float shScale, float w
     return color;
 }
 
+// Detach Camera mode, splat mode: what the frozen camera would not see stays on screen as translucent, unlit red,
+// so the observer sees the frozen camera's view in colour against the rest of the model, like the
+// disc modes' culled pass (BuildSplat). Culled: the chunk is outside the frozen frustum
+// or hidden behind the occluder mesh (frozenCulled, from the sort), or the splat lies on the far half of the model as seen from the frozen camera (decided by
+// position: Gaussians carry no reliable normal). Keeps a little of the splat's brightness so the shape still
+// reads. Returns true when the splat was tinted.
+bool DetachedCulledTint(float3 pos, bool frozenCulled, inout float3 color, inout float alpha)
+{
+    if (g_UseDetachedCullCam != 1) return false;
+    float3 modelCentre = g_AABBMin + g_AABBExtents * 0.5;
+    float3 frozenForward = modelCentre - g_CullEyePos;
+    float fwdLen = length(frozenForward);
+    frozenForward = fwdLen > 1e-4 ? frozenForward / fwdLen : float3(0, 0, -1);
+    if (!frozenCulled && dot(pos - modelCentre, frozenForward) <= 0.0) return false;
+    float luma = dot(color, float3(0.299, 0.587, 0.114));
+    color = float3(0.30 + 0.45 * luma, 0.04, 0.04);
+    alpha *= 0.35;
+    return true;
+}
+
 // Decodes one Gaussian and projects it the way the reference viewer does: the 3D covariance from
 // rotation and scales, the perspective Jacobian at the splat's view-space position, a 0.3 pixel
 // dilation, the 2D eigen-decomposition, quad half-axes of 2 * sqrt(2 * lambda) pixels, and the
@@ -843,8 +864,9 @@ float3 SplatColor(uint splatIndex, float3 pos, float3 dc, float shScale, float w
 // the cross-fade runs, so the two layers' weights sum to one at every pixel (no stipple, no loss of
 // coverage) and the Gaussians' tails grow in with t instead of appearing at full strength. At fade 1
 // (every chunk outside that hand-over) the paths run exactly as before. wave is the chunk's
-// arrival-glow wave for SplatColor (0 when not chunked or not just delivered: no glow).
-bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, out GaussianSplat gs)
+// arrival-glow wave for SplatColor (0 when not chunked or not just delivered: no glow). frozenCulled:
+// Detach Camera mode, the chunk is outside the frozen camera's frustum (see DetachedCulledTint).
+bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, bool frozenCulled, out GaussianSplat gs)
 {
     gs.clipCenter = s_culledClipPos; gs.axis1 = float2(0.0, 0.0); gs.axis2 = float2(0.0, 0.0); gs.uvScale = 0.0; gs.color = float3(0.0, 0.0, 0.0); gs.alpha = 0.0; gs.disc = 0.0; gs.solid = 0.0;
 
@@ -895,6 +917,7 @@ bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, out G
         // (a sub-pixel disc drops its opaque-dot rule while fading so it can fade at all).
         float discAlpha = max(opacity, g_SplatDiscOpacityFloor);
         if (fade < 0.999) { discAlpha *= saturate(fade); solid = 0.0; }
+        if (DetachedCulledTint(pos, frozenCulled, gs.color, discAlpha)) solid = 0.0;
         gs.alpha = discAlpha;
         gs.disc = 1.0;
         gs.solid = solid;
@@ -951,6 +974,8 @@ bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, out G
     // Colour: DC plus the harmonics for this view direction, clamped at black
     float3 color = SplatColor(splatIndex, pos, dc, shScale, wave, g_SplatBlendSpace == 1, lod);
 
+    DetachedCulledTint(pos, frozenCulled, color, opacity);
+
     // Shrink the quad to where the Gaussian times opacity falls below 1/255
     float clipS = min(1.0, sqrt(max(0.0, log(opacity * 255.0))) * 0.5);
 
@@ -973,12 +998,14 @@ bool SplatFromSlot(uint slot, out GaussianSplat gs, out float blendWeight)
     if (pair.y >= g_SplatSlotCount) return false;
     uint2 info = g_SlotInfo[pair.y];
     if (info.y & SLOT_CULLED_BIT) return false;
+    const bool frozenCulled = (info.y & SLOT_FROZEN_BIT) != 0;
+    const uint chunkIdx = info.y & ~SLOT_FROZEN_BIT;
     uint lod = 0;     // The chunk's level (0 when the pipeline is not chunked): coarse levels draw as discs
     float fade = 1.0; // The chunk's opacity weight for the level 1 -> 0 hand-over (1 when not chunked)
     float wave = 0.0; // The chunk's arrival-glow wave (0 when not chunked; see SplatColor)
-    if (g_UseChunkedPipeline == 1 && info.y < g_TotalChunks)
+    if (g_UseChunkedPipeline == 1 && chunkIdx < g_TotalChunks)
     {
-        MeshletChunk chunk = g_ChunkBuffer[info.y];
+        MeshletChunk chunk = g_ChunkBuffer[chunkIdx];
         blendWeight = chunk.blendWeight;
         lod = chunk.lodLevel;
         fade = chunk.dilationMorph;
@@ -986,7 +1013,7 @@ bool SplatFromSlot(uint slot, out GaussianSplat gs, out float blendWeight)
         if (g_ShowOnlyLocked == 1 && !ChunkIsLocked(chunk)) return false;
     }
     if (info.x >= g_SplatCount) return false;
-    const bool built = BuildGaussianSplat(info.x, lod, fade, wave, gs);
+    const bool built = BuildGaussianSplat(info.x, lod, fade, wave, frozenCulled, gs);
     if (built && g_SplatViz == 2) gs.color = SplatVizColor(info.x);
     return built;
 }
@@ -1729,8 +1756,9 @@ float4 SplatVizShade(VSOut i, float d)
         markColor = saturate(i.color * 1.6 + 0.15);
         a = max(mark, f * i.splatAlpha * 0.35);
     }
-    else // 3: a round dot about three pixels across at the centre, over a faint fill
+    else // 3: a round dot about three pixels across at the centre, and nothing else
     {
+        // No fill of the splat's colour: only the centres (and the occlusion volume or shadow mesh, when shown) are on screen
         // The distance to the centre in screen pixels: the quad's uv is affine in screen space, so its
         // per-pixel derivatives are constant and inverting them maps this pixel's uv offset to pixels.
         // (Thresholding sqrt(d) against fwidth broke at the centre itself: the cone's gradient flips sign
@@ -1741,7 +1769,7 @@ float4 SplatVizShade(VSOut i, float d)
         const float2 px = (abs(det) > 1e-12) ? float2(cy.y * c.x - cy.x * c.y, cx.x * c.y - cx.y * c.x) / det : float2(1e6, 1e6);
         mark = 1.0 - saturate(length(px) - 1.0);
         markColor = float3(1.0, 0.95, 0.4);
-        a = max(mark, f * i.splatAlpha * 0.25);
+        a = mark;
     }
     if (a < 1.0 / 255.0) discard;
     const float3 c = lerp(i.color * 0.55, markColor, mark);

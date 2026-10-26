@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cstring>
 #include <cstdio>
+#include <unordered_map>
 #include "../src/SplatCore/PLYLoader.h"
 #include "../src/SplatCore/SpatialOctree.h"
 #include "../src/SplatCore/StreamPackager.h"
@@ -34,6 +35,17 @@ static void Check(bool ok, const char* what, double got, double limit)
         std::cerr << "FAIL: " << what << " (" << got << " > " << limit << ")" << std::endl;
         g_failures++;
     }
+}
+
+// A chunk's SH stream split into its records, sorted: level 0 is stored in Morton order (see the round trip
+// below), so streams are compared as sets of records
+static std::vector<std::string> SortedRecords(const std::vector<uint8_t>& stream, size_t recordBytes)
+{
+    std::vector<std::string> out;
+    for (size_t o = 0; recordBytes > 0 && o + recordBytes <= stream.size(); o += recordBytes)
+        out.emplace_back((const char*)stream.data() + o, recordBytes);
+    std::sort(out.begin(), out.end());
+    return out;
 }
 
 static float QuatDot(const XMFLOAT4& a, const XMFLOAT4& b)
@@ -215,7 +227,7 @@ int main(int argc, char** argv)
             SplatCodec::Encode(chunks[c].splats, attrs, 0, p5.splatParams, records, sh);
             RequantiseSH(sh.data(), records.size(), p5.header.shRecordBytes, bake5.shBits);
             compared++;
-            if (sh != p5.chunkLODSH[c][0]) mismatched++;
+            if (SortedRecords(sh, p5.header.shRecordBytes) != SortedRecords(p5.chunkLODSH[c][0], p5.header.shRecordBytes)) mismatched++;
         }
         Check(compared > 0 && mismatched == 0, "5-bit SH package decodes to the drawn (requantised) SH", (double)mismatched, 0);
         std::ifstream f5(outputBase + "_sh5.gstx", std::ios::ate | std::ios::binary);
@@ -224,6 +236,14 @@ int main(int argc, char** argv)
         std::remove((outputBase + "_sh5.gstx").c_str());
     }
 
+    // Level 0 is stored in Morton order (LiftingWavelet sorts it so lifting pairs spatial neighbours), not in the
+    // bake input's order, so each decoded Gaussian is matched to the source Gaussians at its position: the
+    // position error is the distance to the nearest one, the SH error the smallest among those within the
+    // quantisation step.
+    const float gExt = std::max(pkg.header.globalBoundsMax.x - pkg.header.globalBoundsMin.x, std::max(pkg.header.globalBoundsMax.y - pkg.header.globalBoundsMin.y, pkg.header.globalBoundsMax.z - pkg.header.globalBoundsMin.z));
+    const float posTol = gExt / 65535.0f * 1.5f;
+    auto cellKey = [&](int x, int y, int z) { return ((uint64_t)(uint32_t)(x + (1 << 20)) << 42) | ((uint64_t)(uint32_t)(y + (1 << 20)) << 21) | (uint64_t)(uint32_t)(z + (1 << 20)); };
+    auto cellOf = [&](float v) { return (int)std::floor(v / posTol); };
     size_t total0 = 0, totalSH = 0, levels = 0;
     double maxPosErr = 0, maxPkgShErr = 0;
     for (size_t c = 0; c < pkg.chunkManifests.size(); c++)
@@ -236,25 +256,42 @@ int main(int argc, char** argv)
         SplatCodec::Decode(pkg.chunkLODSplats[c][0], sh.empty() ? nullptr : sh.data(), sh.size(), pkg.splatParams, 0, 0, back, backAttrs);
         total0 += back.size();
         totalSH += sh.size();
-        // The chunk's level-0 points are the bake input in order (the packager decomposes per chunk)
+        // The chunk's level-0 points are the bake input (the packager decomposes per chunk), reordered
         const auto& src = chunks[c].splats;
         Check(back.size() == src.size(), "chunk level-0 count", (double)back.size(), (double)src.size());
         const uint32_t shCoeffs = SplatCodec::SHCoefficientsPerChannel(shDegree) * 3;
-        for (size_t i = 0; i < std::min(back.size(), src.size()); i++)
+        std::unordered_map<uint64_t, std::vector<uint32_t>> grid;
+        for (uint32_t i = 0; i < (uint32_t)src.size(); i++)
+            grid[cellKey(cellOf(src[i].position.x), cellOf(src[i].position.y), cellOf(src[i].position.z))].push_back(i);
+        for (size_t i = 0; i < back.size(); i++)
         {
-            maxPosErr = std::max(maxPosErr, (double)std::max(std::fabs(src[i].position.x - back[i].position.x), std::max(std::fabs(src[i].position.y - back[i].position.y), std::fabs(src[i].position.z - back[i].position.z))));
-            if (shCoeffs > 0)
+            const XMFLOAT3& p = back[i].position;
+            const int cx = cellOf(p.x), cy = cellOf(p.y), cz = cellOf(p.z);
+            float nearest = 1e30f, shErr = 1e30f;
+            for (int dz = -1; dz <= 1; dz++) for (int dy = -1; dy <= 1; dy++) for (int dx = -1; dx <= 1; dx++)
             {
-                const SplatAttributes& sa = attrs[src[i].sourceIndex];
-                float shMax = 0.0f, err = 0.0f;
-                for (uint32_t k = 0; k < shCoeffs; k++) shMax = std::max(shMax, std::fabs(sa.sh[k]));
-                for (uint32_t k = 0; k < shCoeffs; k++) err = std::max(err, std::fabs(sa.sh[k] - backAttrs[i].sh[k]));
-                maxPkgShErr = std::max(maxPkgShErr, (double)(err / std::max(shMax, 1e-6f)));
+                auto it = grid.find(cellKey(cx + dx, cy + dy, cz + dz));
+                if (it == grid.end()) continue;
+                for (uint32_t s : it->second)
+                {
+                    const XMFLOAT3& q = src[s].position;
+                    const float d = std::max(std::fabs(q.x - p.x), std::max(std::fabs(q.y - p.y), std::fabs(q.z - p.z)));
+                    nearest = std::min(nearest, d);
+                    if (shCoeffs > 0 && d <= posTol)
+                    {
+                        const SplatAttributes& sa = attrs[src[s].sourceIndex];
+                        float shMax = 0.0f, err = 0.0f;
+                        for (uint32_t k = 0; k < shCoeffs; k++) shMax = std::max(shMax, std::fabs(sa.sh[k]));
+                        for (uint32_t k = 0; k < shCoeffs; k++) err = std::max(err, std::fabs(sa.sh[k] - backAttrs[i].sh[k]));
+                        shErr = std::min(shErr, err / std::max(shMax, 1e-6f));
+                    }
+                }
             }
+            maxPosErr = std::max(maxPosErr, (double)nearest);
+            if (shCoeffs > 0) maxPkgShErr = std::max(maxPkgShErr, (double)shErr);
         }
     }
-    const float gExt = std::max(pkg.header.globalBoundsMax.x - pkg.header.globalBoundsMin.x, std::max(pkg.header.globalBoundsMax.y - pkg.header.globalBoundsMin.y, pkg.header.globalBoundsMax.z - pkg.header.globalBoundsMin.z));
-    Check(maxPosErr <= gExt / 65535.0f * 1.5f, "package position error", maxPosErr, gExt / 65535.0f * 1.5f);
+    Check(maxPosErr <= posTol, "package position error", maxPosErr, posTol);
     Check(total0 == splats.size(), "package level-0 count", (double)total0, (double)splats.size());
     if (shDegree > 0) Check(maxPkgShErr <= 1.0 / 127.0 + 2e-3, "package spherical harmonics", maxPkgShErr, 1.0 / 127.0);
     std::cout << "Package round trip: position " << maxPosErr << ", SH " << maxPkgShErr << " of max, SH stream " << totalSH << " bytes" << std::endl;

@@ -71,12 +71,6 @@ namespace Splat
     };
 
 
-    enum class StreamingPolicy
-    {
-        Conservative = 0, // The view's own requests cover only visible chunks + a local neighbour buffer, and detail the view drops back from is evicted. The scheduler's face streams run in both policies (see StreamOrder.h)
-        Greedy       = 1  // Refines visible chunks first, then continues pre-fetching remaining background chunks
-    };
-
 
     struct ResidentLOD
     {
@@ -96,7 +90,6 @@ namespace Splat
         bool            lodScreenSpace = true;               // Screen-space LOD rule
         float           lodPixelSpacing = 1.0f;              // Its pixel threshold
         bool            lodPerBlock = false;                 // Per-block levels
-        StreamingPolicy streamingPolicy = StreamingPolicy::Greedy;
         bool            enableStreamingSimulation = true;
         bool            isStreamingPaused = false;
         bool            unthrottledBandwidth = true;
@@ -105,10 +98,24 @@ namespace Splat
         bool            enableStreamDecay = false;
         float           streamDecayRate = 5.0f;
         bool            demoteChunks = false;
+        // Release Unused LOD Segments: a segment is evicted once nothing draws it any more. Zooming out demotes
+        // (as demoteChunks) and a finished demotion evicts the finer segments below it; requests and the
+        // scheduler's prefetch stop at the view's level, and the view's own requests cover only what is in view
+        // plus a neighbour buffer (neighborBufferMargin), so detail the view leaves is evicted and nothing streams
+        // it back. The two coarsest levels stay resident as always. Off (the default), everything that arrives
+        // stays, and the scheduler keeps prefetching down to level 0 until the whole model is resident.
+        bool            releaseUnusedSegments = false;
+        // What streams besides the view's own requests. Conservative: only what the view needs -- the blocks in view plus
+        // the neighbour buffer, each down to its own level -- and nothing in the background. Greedy (the default): the
+        // stream carries on in the background regardless of the view; with releaseUnusedSegments it loads every block of
+        // every level down to the finest level any visible block renders at (GreedyFloor), model-wide, and releases only
+        // what lies finer than that, so nothing it loads is released again.
+        enum class Policy : int { Conservative = 0, Greedy = 1 };
+        Policy          streamingPolicy = Policy::Greedy;
         bool            enableDitheredTransitions = true;
         float           ditherTransitionDurationSec = 0.75f;
         bool            prioritizeFrustumAndProximity = true;
-        float           conservativeNeighborBufferMargin = 1.35f;
+        float           neighborBufferMargin = 1.35f;      // Release Unused LOD Segments: frustum margin of the neighbour buffer
         bool            enableSilhouetteLOD0 = false;
         bool            highlightSilhouetteChunks = false;
         int             silhouetteLODBias = 2;
@@ -147,6 +154,7 @@ namespace Splat
 
         // Inputs, set before InitStreamingSimulation (the host keeps m_levels alive while the runtime is in use)
         const std::vector<ResidentLOD>* m_levels = nullptr;  // Every level of the model, finest first, each in the same spatial order over the model bounds
+        int               m_greedyFloor = 0;
         int               m_waveletLevels = 0;               // Number of levels the model has (the LOD rule's range)
         XMFLOAT3          m_aabbMin = { 0, 0, 0 }, m_aabbMax = { 0, 0, 0 }, m_center = { 0, 0, 0 }, m_extents = { 0, 0, 0 };
         XMFLOAT3          m_lodSortFrameMin = { 0, 0, 0 }, m_lodSortFrameMax = { 0, 0, 0 };
@@ -169,6 +177,8 @@ namespace Splat
         float ContinuousLodAtDepth(float viewDepth) const;
         bool PerBlockLodActive() const;
         int BlockTargetLOD(const StreamChunk& c, const XMFLOAT3& eye) const;
+        bool Greedy() const { return settings.streamingPolicy == StreamSettings::Policy::Greedy; }
+        int  GreedyFloor() const { return m_greedyFloor; } // Greedy with releaseUnusedSegments: the finest level a visible block renders at (this frame)
         float LodSwitchDistance(int level, bool screenSpace) const;
         float EvictableStreamBytes() const;
         void CalibrateDecay();

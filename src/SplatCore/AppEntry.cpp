@@ -128,19 +128,31 @@ int Splat::RunSplatPakApp(HINSTANCE hInstance, LPSTR lpCmdLine, int nCmdShow, co
                 forwarded += "--render-path " + args[++i] + " ";
                 continue;
             }
-            if (a == "--stream-test")
+            if (a == "--stream-test" || a == "--remember-settings")
             {
                 forwarded += a + " ";
                 continue;
             }
-            if (a == "--lod-quality-test" || a == "--lod-calibration")
+            if (a == "--lod-quality-test" || a == "--lod-calibration" || a == "--bake-to" || a == "--capture-views" || a == "--reference")
             {
                 if (i + 1 >= args.size())
                 {
-                    ShowUsage(windowName, a + " needs an output folder");
+                    ShowUsage(windowName, a + (a == "--bake-to" ? " needs an output file" : " needs a folder"));
                     return 2;
                 }
                 forwarded += a + " \"" + args[++i] + "\" ";
+                continue;
+            }
+            if (a == "--sh-degree" || a == "--sh-bits")
+            {
+                const int v = (i + 1 < args.size()) ? atoi(args[i + 1].c_str()) : 0;
+                const bool ok = (a == "--sh-degree") ? (v >= 1 && v <= 3) : (v == 8 || v == 6 || v == 5 || v == 4);
+                if (!ok)
+                {
+                    ShowUsage(windowName, a == "--sh-degree" ? "--sh-degree needs 1, 2 or 3" : "--sh-bits needs 8, 6, 5 or 4");
+                    return 2;
+                }
+                forwarded += a + " " + args[++i] + " ";
                 continue;
             }
             if (!a.empty() && (a[0] == '-' || (a[0] == '/' && a.size() == 2)))

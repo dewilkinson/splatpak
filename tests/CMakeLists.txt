@@ -100,3 +100,23 @@ set_target_properties(TestStreamRuntime PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_HOME_DIRECTORY}"
     DEBUG_POSTFIX "d"
 )
+
+add_executable(TestRdo ${CMAKE_CURRENT_SOURCE_DIR}/TestRdo.cpp)
+target_link_libraries(TestRdo PRIVATE gstx)
+set_target_properties(TestRdo PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    FOLDER "Tests"
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_HOME_DIRECTORY}"
+    DEBUG_POSTFIX "d"
+)
+
+add_executable(TestStreamOrder ${CMAKE_CURRENT_SOURCE_DIR}/TestStreamOrder.cpp)
+target_link_libraries(TestStreamOrder PRIVATE gstx)
+set_target_properties(TestStreamOrder PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    FOLDER "Tests"
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_HOME_DIRECTORY}"
+    DEBUG_POSTFIX "d"
+)

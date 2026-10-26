@@ -11,6 +11,7 @@
 #include <vector>
 #include <cstdint>
 #include "../../src/SplatCore/WaveletTypes.h"
+#include "LiftingWavelet.h"
 
 namespace Splat
 {
@@ -50,12 +51,24 @@ namespace Splat
         // an isotropic Gaussian sized from the splat's disc radius, fully opaque, DC colour only.
         static SplatAttributes DefaultAttributes(const SplatPoint& splat);
 
+        // The coarse levels' Gaussians: every coarse point of the pyramid stands for its two children (see
+        // WaveletDecompositionResult), so it takes one Gaussian merged from theirs -- position, colour and harmonics as
+        // means weighted by opacity, the covariance of the pair (both children's covariances plus their
+        // spread about the mean), and the opacity that keeps the pair's coverage -- instead of one child's Gaussian
+        // grown and made more opaque. Fills result.mergedAttributes and points every coarse point at its entry
+        // (sourceIndex = sourceAttributes.size() + entry), with the merged position and colour. Level 0 points take
+        // their Gaussian from sourceAttributes. The open stand-in library leaves the pyramid as it is.
+        static void MergeLevels(WaveletDecompositionResult& result, const std::vector<SplatAttributes>& sourceAttributes);
+
         // Encodes one level. splats[i].sourceIndex selects the entry of sourceAttributes the point's
-        // Gaussian comes from (kNoSplatSource -> DefaultAttributes). outRecords gets one PackedSplatGPU
-        // per splat; outSH gets splats.size() * SHRecordBytes(params.shDegree) bytes (empty for degree 0).
+        // Gaussian comes from (kNoSplatSource -> DefaultAttributes), grown to the level; an index past
+        // the end of sourceAttributes selects merged[index - sourceAttributes.size()] (MergeLevels), used as
+        // it is. outRecords gets one PackedSplatGPU per splat; outSH gets splats.size() *
+        // SHRecordBytes(params.shDegree) bytes (empty for degree 0).
         static void Encode(const std::vector<SplatPoint>& splats, const std::vector<SplatAttributes>& sourceAttributes,
                            uint32_t level, const SplatEncodeParams& params,
-                           std::vector<PackedSplatGPU>& outRecords, std::vector<uint8_t>& outSH);
+                           std::vector<PackedSplatGPU>& outRecords, std::vector<uint8_t>& outSH,
+                           const std::vector<SplatAttributes>* merged = nullptr);
 
         // Decodes one level back to splats plus attributes. sh may be null (no SH stream). Every decoded
         // splat gets sourceIndex = sourceIndexBase + i, so a caller appending outAttributes to its

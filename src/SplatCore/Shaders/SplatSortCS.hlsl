@@ -11,7 +11,17 @@
 // Slots are padded to a multiple of BLOCK (1024) with sentinel pairs (key and value 0xFFFFFFFF);
 // culled slots also carry the maximum key. LSD radix sorting is stable, so the culled slots (all
 // below the real count in the input) end up ahead of the sentinels; the draw walks the first
-// g_SlotCount slots and skips culled ones.
+// g_SlotCount slots and skips culled ones. In Detach Camera mode (g_DetachedCull) nothing is dropped:
+// a chunk outside the frozen camera's frustum is sorted like any other and its slots carry
+// SLOT_FROZEN_BIT, so the draw paints them red instead of hiding them.
+//
+// Occlusion culling (g_OcclusionCull): before the expand, OccClearCS and OccRasterCS rasterise the
+// package's occluder mesh -- the solid body inside the model -- from the culling camera into a small
+// grid (g_OccWidth x g_OccHeight) holding, per pixel, the nearest occluder depth (clip w). Each triangle
+// is written at its farthest vertex's depth, so the grid is never nearer than the mesh. ExpandCS then
+// drops a chunk when its bounding box, grown by a pixel, lies behind the occluder at every pixel it
+// covers: such a chunk cannot show (the splats are depth-tested against the same mesh), so it is
+// neither sorted nor drawn. Detach Camera keeps it, flagged like a frustum-culled chunk.
 
 cbuffer SplatSortCB : register(b0)
 {
@@ -25,7 +35,12 @@ cbuffer SplatSortCB : register(b0)
     float3   g_AABBExtents;
     uint     g_NumBlocks;      // Padded slots / BLOCK
     uint     g_PaddedSlotCount;
-    uint     g_Pad0, g_Pad1, g_Pad2;
+    uint     g_DetachedCull;   // 1 = Detach Camera: keep chunks outside the frozen frustum, flagged SLOT_FROZEN_BIT
+    uint     g_OcclusionCull;  // 1 = drop chunks hidden behind the occluder mesh (see the header)
+    uint     g_OccTriCount;    // Occluder mesh triangles
+    uint     g_OccWidth;       // Occlusion grid size in pixels
+    uint     g_OccHeight;
+    uint     g_Pad3, g_Pad4;
 };
 
 struct PackedSplat { uint w0, w1, w2, w3, w4; };
@@ -54,7 +69,18 @@ RWStructuredBuffer<uint2>       g_PairsIn       : register(u1); // x = key, y = 
 RWStructuredBuffer<uint2>       g_PairsOut      : register(u2);
 RWStructuredBuffer<uint>        g_Hist          : register(u3); // [digit * numBlocks + block]
 
+struct OccluderVertex { float3 position; uint colour; uint normal; }; // ShadowMeshDisplay's 20-byte vertex
+StructuredBuffer<uint>           g_OccIndices  : register(t3);
+StructuredBuffer<OccluderVertex> g_OccVertices : register(t4);
+RWStructuredBuffer<uint>         g_OccDepth    : register(u4); // Per grid pixel: nearest occluder depth (clip w) as float bits; OCC_EMPTY = none
+RWStructuredBuffer<uint>         g_OccCulled   : register(u5); // [0] chunks, [1] splats dropped by occlusion (statistics)
+
 #define SLOT_CULLED_BIT 0x80000000u
+#define SLOT_FROZEN_BIT 0x40000000u
+#define OCC_EMPTY 0x7F7FFFFFu  // FLT_MAX: no occluder in this pixel
+#define OCC_NEAR 0.1           // The projection's near plane: geometry nearer than this is never treated as occluded or occluding
+#define OCC_MAX_TRI_PIXELS 8192u   // A triangle covering more of the grid than this is skipped (conservative: occludes nothing)
+#define OCC_MAX_CHUNK_PIXELS 4096u // A chunk covering more of the grid than this is never culled
 #define BLOCK 1024
 #define THREADS 256
 #define PER_THREAD 4
@@ -90,8 +116,98 @@ bool ChunkInFrustum(MeshletChunk chunk)
     return (outsideLeft < 8) && (outsideRight < 8) && (outsideBottom < 8) && (outsideTop < 8) && (outsideNear < 8) && (outsideFar < 8);
 }
 
+// Projects a world point with the culling camera into occlusion-grid pixels: x, y and the clip w (depth)
+float3 OccProject(float3 p)
+{
+    float4 c = mul(g_CullViewProj, float4(p, 1.0));
+    float iw = 1.0 / max(c.w, 1e-6);
+    return float3((c.x * iw * 0.5 + 0.5) * g_OccWidth, (-c.y * iw * 0.5 + 0.5) * g_OccHeight, c.w);
+}
+
+// Empties the occlusion grid and the statistics counters
+[numthreads(256, 1, 1)]
+void OccClearCS(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x < g_OccWidth * g_OccHeight) g_OccDepth[id.x] = OCC_EMPTY;
+    if (id.x < 2) g_OccCulled[id.x] = 0;
+}
+
+float OccEdge(float2 a, float2 b, float2 p) { return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x); }
+
+// One thread per occluder triangle: writes the triangle's farthest depth into every grid pixel whose
+// centre it covers, keeping the nearest per pixel. A triangle crossing the near plane is skipped.
+[numthreads(64, 1, 1)]
+void OccRasterCS(uint3 id : SV_DispatchThreadID)
+{
+    if (id.x >= g_OccTriCount) return;
+    float3 a = OccProject(g_OccVertices[g_OccIndices[id.x * 3 + 0]].position);
+    float3 b = OccProject(g_OccVertices[g_OccIndices[id.x * 3 + 1]].position);
+    float3 c = OccProject(g_OccVertices[g_OccIndices[id.x * 3 + 2]].position);
+    if (min(a.z, min(b.z, c.z)) <= OCC_NEAR) return;
+    float area = OccEdge(a.xy, b.xy, c.xy);
+    if (abs(area) < 1e-8) return;
+    if (area < 0.0) { float3 s = b; b = c; c = s; } // Either winding: make it counter-clockwise in grid space
+    int x0 = max(0, (int)floor(min(a.x, min(b.x, c.x))));
+    int y0 = max(0, (int)floor(min(a.y, min(b.y, c.y))));
+    int x1 = min((int)g_OccWidth - 1, (int)floor(max(a.x, max(b.x, c.x))));
+    int y1 = min((int)g_OccHeight - 1, (int)floor(max(a.y, max(b.y, c.y))));
+    if (x1 < x0 || y1 < y0 || (uint)((x1 - x0 + 1) * (y1 - y0 + 1)) > OCC_MAX_TRI_PIXELS) return;
+    uint depthBits = asuint(max(a.z, max(b.z, c.z))); // Positive floats order like their bits
+    for (int y = y0; y <= y1; y++)
+        for (int x = x0; x <= x1; x++)
+        {
+            float2 p = float2(x + 0.5, y + 0.5);
+            if (OccEdge(a.xy, b.xy, p) >= 0.0 && OccEdge(b.xy, c.xy, p) >= 0.0 && OccEdge(c.xy, a.xy, p) >= 0.0)
+            {
+                uint prev;
+                InterlockedMin(g_OccDepth[y * g_OccWidth + x], depthBits, prev);
+            }
+        }
+}
+
+groupshared uint gs_OccSeen;
+
+// Whether the chunk lies behind the occluder at every grid pixel its bounding box covers (grown by one
+// pixel, which absorbs the half pixel by which the raster's centre sampling can overreach a triangle's
+// edge). The group's 64 threads scan the rectangle together; every thread of the group must call it.
+bool ChunkOccluded(MeshletChunk chunk, uint threadId)
+{
+    float3 bMin = chunk.aabbMin;
+    float3 bMax = chunk.aabbMin + chunk.aabbExtents;
+    float nearW = 1e30;
+    float2 lo = float2(1e30, 1e30), hi = float2(-1e30, -1e30);
+    bool crossesNear = false;
+    [unroll]
+    for (int i = 0; i < 8; i++)
+    {
+        float3 p = OccProject(float3((i & 1) ? bMax.x : bMin.x, (i & 2) ? bMax.y : bMin.y, (i & 4) ? bMax.z : bMin.z));
+        if (p.z <= OCC_NEAR) crossesNear = true;
+        nearW = min(nearW, p.z);
+        lo = min(lo, p.xy);
+        hi = max(hi, p.xy);
+    }
+    int x0 = max(0, (int)floor(lo.x) - 1), y0 = max(0, (int)floor(lo.y) - 1);
+    int x1 = min((int)g_OccWidth - 1, (int)floor(hi.x) + 1), y1 = min((int)g_OccHeight - 1, (int)floor(hi.y) + 1);
+    uint w = (uint)max(0, x1 - x0 + 1), h = (uint)max(0, y1 - y0 + 1);
+    bool candidate = !crossesNear && w > 0 && h > 0 && w * h <= OCC_MAX_CHUNK_PIXELS;
+
+    if (threadId == 0) gs_OccSeen = 0;
+    GroupMemoryBarrierWithGroupSync();
+    if (candidate)
+    {
+        for (uint k = threadId; k < w * h; k += 64)
+        {
+            uint idx = (uint)(y0 + (int)(k / w)) * g_OccWidth + (uint)(x0 + (int)(k % w));
+            if (asfloat(g_OccDepth[idx]) >= nearW) { InterlockedOr(gs_OccSeen, 1u); break; }
+        }
+    }
+    GroupMemoryBarrierWithGroupSync();
+    return candidate && gs_OccSeen == 0;
+}
+
 // One 64-thread group per chunk of the render list: fills the chunk's slots with their splat
-// index, chunk index and depth key. A chunk outside the frustum has every slot flagged culled.
+// index, chunk index and depth key. A chunk outside the frustum has every slot flagged culled (or, in
+// Detach Camera mode, flagged frozen-culled and still sorted); so has a chunk hidden behind the occluder.
 [numthreads(64, 1, 1)]
 void ExpandCS(uint3 groupId : SV_GroupID, uint threadId : SV_GroupThreadID)
 {
@@ -99,7 +215,19 @@ void ExpandCS(uint3 groupId : SV_GroupID, uint threadId : SV_GroupThreadID)
     if (chunkIdx >= g_TotalChunks) return;
     MeshletChunk chunk = g_Chunks[chunkIdx];
     uint base = g_ChunkSlotBase[chunkIdx];
-    bool visible = ChunkInFrustum(chunk);
+    bool inFrustum = ChunkInFrustum(chunk);
+    // An if, not ?: or &&: HLSL before 2021 evaluates both sides of those, and the grid is only valid when culling is on.
+    // The condition is uniform across the group, as ChunkOccluded's barriers need.
+    bool occluded = false;
+    if (g_OcclusionCull == 1 && inFrustum)
+        occluded = ChunkOccluded(chunk, threadId);
+    if (occluded && threadId == 0)
+    {
+        InterlockedAdd(g_OccCulled[0], 1u);
+        InterlockedAdd(g_OccCulled[1], chunk.splatCount);
+    }
+    bool kept = inFrustum && !occluded;
+    bool visible = kept || g_DetachedCull == 1;
     for (uint t = threadId; t < chunk.splatCount; t += 64)
     {
         uint slot = base + t;
@@ -113,7 +241,7 @@ void ExpandCS(uint3 groupId : SV_GroupID, uint threadId : SV_GroupThreadID)
             float3 pos = g_AABBMin + float3((s.w0 & 0xFFFFu) / 65535.0, ((s.w0 >> 16) & 0xFFFFu) / 65535.0, (s.w1 & 0xFFFFu) / 65535.0) * g_AABBExtents;
             float depth = dot(pos - g_CamPos, g_CamForward);
             key = 0xFFFFFFFEu - FloatToOrderableUint(depth); // Far first, and never the sentinel value
-            info = chunkIdx;
+            info = kept ? chunkIdx : (chunkIdx | SLOT_FROZEN_BIT);
         }
         g_SlotInfo[slot] = uint2(splatIndex, info);
         g_PairsIn[slot] = uint2(key, slot);

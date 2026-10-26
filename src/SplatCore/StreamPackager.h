@@ -189,6 +189,8 @@ namespace Splat
 
                 // 1. Decompose via Lifting Wavelet
                 auto waveletResult = LiftingWavelet::DecomposeChunk(chunk.splats, maxLODs, deadbandThreshold);
+                // Splat mode: every coarse point takes the Gaussian merged from its two children
+                if (splatMode) SplatCodec::MergeLevels(waveletResult, *splat->attributes);
 
                 ChunkManifest cm = {};
                 cm.chunkId = chunk.chunkId;
@@ -217,7 +219,7 @@ namespace Splat
                     el.count = lods[l].splats.size();
                     if (splatMode)
                     {
-                        SplatCodec::Encode(lods[l].splats, *splat->attributes, lods[l].level, splatParams, el.splats, el.sh);
+                        SplatCodec::Encode(lods[l].splats, *splat->attributes, lods[l].level, splatParams, el.splats, el.sh, &waveletResult.mergedAttributes);
                         RequantiseSH(el.sh.data(), el.count, header.shRecordBytes, splat->shBits);
                         if (!el.sh.empty())
                         {

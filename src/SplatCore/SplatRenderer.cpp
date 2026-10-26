@@ -196,7 +196,7 @@ namespace Splat
                           : (swapFmt == DXGI_FORMAT_R8G8B8A8_UNORM_SRGB) ? DXGI_FORMAT_R8G8B8A8_UNORM
                           : swapFmt;
 
-            CD3DX12_ROOT_PARAMETER sortParams[8];
+            CD3DX12_ROOT_PARAMETER sortParams[12];
             sortParams[0].InitAsConstantBufferView(0, 0);   // b0 - SplatSortCB
             sortParams[1].InitAsShaderResourceView(0, 0);   // t0 - splats
             sortParams[2].InitAsShaderResourceView(1, 0);   // t1 - chunks
@@ -205,8 +205,12 @@ namespace Splat
             sortParams[5].InitAsUnorderedAccessView(1, 0);  // u1 - pairs in
             sortParams[6].InitAsUnorderedAccessView(2, 0);  // u2 - pairs out
             sortParams[7].InitAsUnorderedAccessView(3, 0);  // u3 - histogram
+            sortParams[8].InitAsShaderResourceView(3, 0);   // t3 - occluder mesh indices
+            sortParams[9].InitAsShaderResourceView(4, 0);   // t4 - occluder mesh vertices
+            sortParams[10].InitAsUnorderedAccessView(4, 0); // u4 - occlusion depth grid
+            sortParams[11].InitAsUnorderedAccessView(5, 0); // u5 - occlusion statistics
             CD3DX12_ROOT_SIGNATURE_DESC sortRs = {};
-            sortRs.NumParameters = 8;
+            sortRs.NumParameters = 12;
             sortRs.pParameters = sortParams;
             Microsoft::WRL::ComPtr<ID3DBlob> pSortBlob, pSortErr;
             if (SUCCEEDED(D3D12SerializeRootSignature(&sortRs, D3D_ROOT_SIGNATURE_VERSION_1, &pSortBlob, &pSortErr)))
@@ -231,6 +235,8 @@ namespace Splat
             CreateSortPSO("HistogramCS", &m_pSplatHistPSO);
             CreateSortPSO("ScanCS", &m_pSplatScanPSO);
             CreateSortPSO("ScatterCS", &m_pSplatScatterPSO);
+            CreateSortPSO("OccClearCS", &m_pOccClearPSO);
+            CreateSortPSO("OccRasterCS", &m_pOccRasterPSO);
 
             D3D12_DESCRIPTOR_HEAP_DESC rtvHeapDesc = {};
             rtvHeapDesc.Type = D3D12_DESCRIPTOR_HEAP_TYPE_RTV;
@@ -1011,6 +1017,11 @@ namespace Splat
         if (m_pSplatPairsB) { m_pSplatPairsB->Release(); m_pSplatPairsB = nullptr; }
         if (m_pSplatHistBuffer) { m_pSplatHistBuffer->Release(); m_pSplatHistBuffer = nullptr; }
         m_splatSortCapacitySlots = 0;
+        if (m_pOccDepthBuffer) { m_pOccDepthBuffer->Release(); m_pOccDepthBuffer = nullptr; }
+        if (m_pOccCountBuffer) { m_pOccCountBuffer->Release(); m_pOccCountBuffer = nullptr; }
+        if (m_pOccCountReadback) { m_pOccCountReadback->Unmap(0, nullptr); m_pOccCountReadback->Release(); m_pOccCountReadback = nullptr; m_pOccCountMapped = nullptr; }
+        if (m_pOccClearPSO) { m_pOccClearPSO->Release(); m_pOccClearPSO = nullptr; }
+        if (m_pOccRasterPSO) { m_pOccRasterPSO->Release(); m_pOccRasterPSO = nullptr; }
         if (m_pSplatExpandPSO) { m_pSplatExpandPSO->Release(); m_pSplatExpandPSO = nullptr; }
         if (m_pSplatHistPSO) { m_pSplatHistPSO->Release(); m_pSplatHistPSO = nullptr; }
         if (m_pSplatScanPSO) { m_pSplatScanPSO->Release(); m_pSplatScanPSO = nullptr; }
@@ -1154,6 +1165,33 @@ namespace Splat
             return;
         }
 
+        // Occlusion culling: the occluder mesh (a package's solid inner body) shown and the culling pipeline built
+        const bool occlusionCull = pState->enableOcclusionCulling && m_occluderMesh.indexCount >= 3 && m_occluderMesh.vertices != nullptr
+                                && m_pOccClearPSO != nullptr && m_pOccRasterPSO != nullptr;
+        const uint32_t occKey = occlusionCull ? (m_occluderMesh.version + 1u) : 0u;
+        if (occKey != m_occLastKey || memcmp(&cullViewProj, &m_occLastCullViewProj, sizeof(XMFLOAT4X4)) != 0)
+        {
+            m_occLastKey = occKey;
+            m_occLastCullViewProj = cullViewProj;
+            m_splatSortNeedsRun = true;
+        }
+
+        // The counters of the newest sort the GPU has surely finished (written kOccReadbackSlots - 1 frames ago or more)
+        m_occFrame++;
+        if (m_pOccCountMapped != nullptr)
+        {
+            uint64_t best = 0; int bestSlot = -1;
+            for (uint32_t s = 0; s < kOccReadbackSlots; s++)
+                if (m_occSlotSerial[s] > best && m_occSlotFrame[s] + (kOccReadbackSlots - 1) <= m_occFrame) { best = m_occSlotSerial[s]; bestSlot = (int)s; }
+            if (bestSlot >= 0) { m_occCulledChunks = m_pOccCountMapped[bestSlot * 2]; m_occCulledSplats = m_pOccCountMapped[bestSlot * 2 + 1]; }
+        }
+        if (!occlusionCull) m_occCulledChunks = m_occCulledSplats = 0;
+        m_cullStats.occlusionCulledChunks = m_occCulledChunks;
+        m_cullStats.occlusionCulledSplats = m_occCulledSplats;
+        m_cullStats.asPassedChunks -= std::min(m_cullStats.asPassedChunks, m_occCulledChunks);
+        m_cullStats.asPassedSplats -= std::min(m_cullStats.asPassedSplats, m_occCulledSplats);
+        m_cullStats.msDrawnSplats -= std::min(m_cullStats.msDrawnSplats, m_occCulledSplats);
+
         const uint32_t slotCount = m_splatSlotCount;
         const uint32_t padded = (slotCount + 1023u) & ~1023u;
         const uint32_t numBlocks = padded / 1024u;
@@ -1191,8 +1229,11 @@ namespace Splat
             XMFLOAT3   camForward;  uint32_t slotCount;
             XMFLOAT3   aabbMin;     uint32_t pass;
             XMFLOAT3   aabbExtents; uint32_t numBlocks;
-            uint32_t   paddedSlotCount; uint32_t pad0, pad1, pad2;
+            uint32_t   paddedSlotCount; uint32_t detachedCull, occlusionCull, occTriCount;
+            uint32_t   occWidth, occHeight, pad3, pad4;
         };
+        const uint32_t occWidth = kOccGridWidth;
+        const uint32_t occHeight = std::clamp((uint32_t)std::lround(kOccGridWidth / std::max(0.25f, pState->aspectRatio)), 16u, kOccGridMaxPixels / kOccGridWidth);
         auto bindCB = [&](uint32_t pass)
         {
             SplatSortCB* pCB = nullptr;
@@ -1203,7 +1244,9 @@ namespace Splat
             pCB->camForward = forward;      pCB->slotCount = slotCount;
             pCB->aabbMin = pState->aabbMin; pCB->pass = pass;
             pCB->aabbExtents = pState->aabbExtents; pCB->numBlocks = numBlocks;
-            pCB->paddedSlotCount = padded;  pCB->pad0 = pCB->pad1 = pCB->pad2 = 0;
+            pCB->paddedSlotCount = padded;  pCB->detachedCull = pState->detachCullCamera ? 1u : 0u;
+            pCB->occlusionCull = occlusionCull ? 1u : 0u; pCB->occTriCount = m_occluderMesh.indexCount / 3u;
+            pCB->occWidth = occWidth;       pCB->occHeight = occHeight; pCB->pad3 = pCB->pad4 = 0;
             pCmdLst->SetComputeRootConstantBufferView(0, addr);
             return true;
         };
@@ -1220,6 +1263,39 @@ namespace Splat
         D3D12_RESOURCE_BARRIER uavHist = CD3DX12_RESOURCE_BARRIER::UAV(m_pSplatHistBuffer);
         D3D12_RESOURCE_BARRIER uavInfo = CD3DX12_RESOURCE_BARRIER::UAV(m_pSlotInfoBuffer);
 
+        // 0. Occlusion: the occluder mesh rasterised from the culling camera into the depth grid. The grid and counters
+        // exist whenever the pipeline does, so no root view of the sort is ever null.
+        if (m_pOccClearPSO != nullptr && m_pOccDepthBuffer == nullptr)
+        {
+            auto makeBuffer = [&](uint64_t bytes, D3D12_HEAP_TYPE heap, D3D12_RESOURCE_FLAGS flags, D3D12_RESOURCE_STATES state, ID3D12Resource** ppOut, const char* name)
+            {
+                CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(bytes);
+                desc.Flags = flags;
+                ThrowIfFailed(m_pDevice->GetDevice()->CreateCommittedResource(&CD3DX12_HEAP_PROPERTIES(heap), D3D12_HEAP_FLAG_NONE, &desc, state, nullptr, IID_PPV_ARGS(ppOut)));
+                SetName(*ppOut, name);
+            };
+            makeBuffer((uint64_t)kOccGridMaxPixels * 4u, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &m_pOccDepthBuffer, "SplatRenderer::m_pOccDepthBuffer");
+            makeBuffer(8u, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &m_pOccCountBuffer, "SplatRenderer::m_pOccCountBuffer");
+            makeBuffer((uint64_t)kOccReadbackSlots * 8u, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, &m_pOccCountReadback, "SplatRenderer::m_pOccCountReadback");
+            void* mapped = nullptr;
+            if (SUCCEEDED(m_pOccCountReadback->Map(0, nullptr, &mapped))) m_pOccCountMapped = (const uint32_t*)mapped;
+        }
+        pCmdLst->SetComputeRootShaderResourceView(8, occlusionCull ? m_occluderMesh.indices->GetGPUVirtualAddress() : 0);
+        pCmdLst->SetComputeRootShaderResourceView(9, occlusionCull ? m_occluderMesh.vertices->GetGPUVirtualAddress() : 0);
+        pCmdLst->SetComputeRootUnorderedAccessView(10, m_pOccDepthBuffer ? m_pOccDepthBuffer->GetGPUVirtualAddress() : 0);
+        pCmdLst->SetComputeRootUnorderedAccessView(11, m_pOccCountBuffer ? m_pOccCountBuffer->GetGPUVirtualAddress() : 0);
+        if (occlusionCull)
+        {
+            if (!bindCB(0)) return;
+            D3D12_RESOURCE_BARRIER uavOcc[2] = { CD3DX12_RESOURCE_BARRIER::UAV(m_pOccDepthBuffer), CD3DX12_RESOURCE_BARRIER::UAV(m_pOccCountBuffer) };
+            pCmdLst->SetPipelineState(m_pOccClearPSO);
+            pCmdLst->Dispatch((occWidth * occHeight + 255u) / 256u, 1, 1);
+            pCmdLst->ResourceBarrier(2, uavOcc);
+            pCmdLst->SetPipelineState(m_pOccRasterPSO);
+            pCmdLst->Dispatch((m_occluderMesh.indexCount / 3u + 63u) / 64u, 1, 1);
+            pCmdLst->ResourceBarrier(1, &uavOcc[0]);
+        }
+
         // 1. Expand the chunks into slots with their keys
         pCmdLst->SetComputeRootUnorderedAccessView(5, m_pSplatPairsA->GetGPUVirtualAddress());
         pCmdLst->SetComputeRootUnorderedAccessView(6, m_pSplatPairsB->GetGPUVirtualAddress());
@@ -1228,6 +1304,19 @@ namespace Splat
         pCmdLst->Dispatch(pState->chunkCount, 1, 1);
         D3D12_RESOURCE_BARRIER afterExpand[2] = { uavA, uavInfo };
         pCmdLst->ResourceBarrier(2, afterExpand);
+
+        // The occlusion counters go to this sort's readback slot (read a few frames later, above)
+        if (occlusionCull && m_pOccCountMapped != nullptr)
+        {
+            const uint32_t slot = (uint32_t)(m_occSortSerial % kOccReadbackSlots);
+            D3D12_RESOURCE_BARRIER toCopy = CD3DX12_RESOURCE_BARRIER::Transition(m_pOccCountBuffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+            pCmdLst->ResourceBarrier(1, &toCopy);
+            pCmdLst->CopyBufferRegion(m_pOccCountReadback, slot * 8u, m_pOccCountBuffer, 0, 8u);
+            D3D12_RESOURCE_BARRIER toUav = CD3DX12_RESOURCE_BARRIER::Transition(m_pOccCountBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+            pCmdLst->ResourceBarrier(1, &toUav);
+            m_occSlotSerial[slot] = ++m_occSortSerial;
+            m_occSlotFrame[slot] = m_occFrame;
+        }
 
         // 2. Four radix passes, ping-ponging A -> B -> A -> B -> A
         for (uint32_t pass = 0; pass < 4; pass++)
@@ -3625,10 +3714,10 @@ namespace Splat
         }
 
         // Scene capture: copy the finished scene (the back buffer is a render target again on both the
-        // TAA and the direct path) before the ImGui overlay lands on it.
+        // TAA and the direct path) before the ImGui overlay lands on it, or after it for a capture with the UI.
         D3D12_PLACED_SUBRESOURCE_FOOTPRINT captureFootprint = {};
         bool captureIssued = false;
-        if (m_captureRequested)
+        auto issueCapture = [&]()
         {
             m_captureRequested = false;
             const D3D12_RESOURCE_DESC bbDesc = pBackBuffer->GetDesc();
@@ -3651,7 +3740,8 @@ namespace Splat
             D3D12_RESOURCE_BARRIER toRt = CD3DX12_RESOURCE_BARRIER::Transition(pBackBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET);
             pCmdLst->ResourceBarrier(1, &toRt);
             captureIssued = true;
-        }
+        };
+        if (m_captureRequested && !m_captureWithUI) issueCapture();
 
         // Set backbuffer as render target for ImGui UI overlay
         D3D12_CPU_DESCRIPTOR_HANDLE backRtv = *pSwapChain->GetCurrentBackBufferRTV();
@@ -3662,6 +3752,7 @@ namespace Splat
         m_imGui.Draw(pCmdLst);
         auto uiEnd = std::chrono::high_resolution_clock::now();
         m_metrics.uiDrawTimeMs = std::chrono::duration<float, std::milli>(uiEnd - uiStart).count();
+        if (m_captureRequested && m_captureWithUI) issueCapture();
 
         {
             D3D12_RESOURCE_BARRIER toPresent = CD3DX12_RESOURCE_BARRIER::Transition(pBackBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);

@@ -655,6 +655,8 @@ namespace Splat
         uint32_t asFrustumCulledSplats = 0;// Splat in frustum-culled chunks
         uint32_t asConeCulledChunks = 0;    // Chunks culled by normal cone backface test
         uint32_t asConeCulledSplats = 0;   // Splat in cone-culled chunks
+        uint32_t occlusionCulledChunks = 0; // Chunks hidden behind the occluder mesh, dropped by the splat sort (read back from the GPU)
+        uint32_t occlusionCulledSplats = 0; // Splats in those chunks
         uint32_t asPassedChunks = 0;        // Chunks passed AS -> dispatched to MS
         uint32_t asPassedSplats = 0;       // Splat dispatched to MS
         

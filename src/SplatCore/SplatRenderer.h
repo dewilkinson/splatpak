@@ -196,7 +196,8 @@ namespace Splat
         // Scene capture (LOD quality test): the next frame copies the finished scene -- after TAA, before
         // the ImGui overlay -- to the CPU. TakeSceneCapture hands it over once, as tightly packed RGBA8
         // in display space (the bytes the swapchain shows).
-        void RequestSceneCapture() { m_captureRequested = true; }
+        // The next frame's back buffer, read back by TakeSceneCapture: the scene alone, or withUI as presented (the ImGui overlay too)
+        void RequestSceneCapture(bool withUI = false) { m_captureRequested = true; m_captureWithUI = withUI; }
         bool TakeSceneCapture(std::vector<uint8_t>& rgba, uint32_t& width, uint32_t& height);
 
 
@@ -391,6 +392,24 @@ namespace Splat
         ID3D12PipelineState*       m_pSplatHistPSO = nullptr;
         ID3D12PipelineState*       m_pSplatScanPSO = nullptr;
         ID3D12PipelineState*       m_pSplatScatterPSO = nullptr;
+        // Occlusion culling of chunks in the sort (SplatSortCS.hlsl): the occluder mesh rasterised into a small depth grid
+        ID3D12PipelineState*       m_pOccClearPSO = nullptr;
+        ID3D12PipelineState*       m_pOccRasterPSO = nullptr;
+        ID3D12Resource*            m_pOccDepthBuffer = nullptr;      // uint per grid pixel, kOccGridMaxPixels
+        ID3D12Resource*            m_pOccCountBuffer = nullptr;      // [0] chunks, [1] splats dropped by occlusion
+        ID3D12Resource*            m_pOccCountReadback = nullptr;    // kOccReadbackSlots copies of the counters, read a few frames later
+        const uint32_t*            m_pOccCountMapped = nullptr;
+        static constexpr uint32_t  kOccGridWidth = 256;
+        static constexpr uint32_t  kOccGridMaxPixels = 256 * 256;
+        static constexpr uint32_t  kOccReadbackSlots = 4;
+        uint64_t                   m_occSortSerial = 0;              // Sorts run (the readback slot is serial % kOccReadbackSlots)
+        uint64_t                   m_occSlotSerial[kOccReadbackSlots] = {};
+        uint64_t                   m_occFrame = 0;
+        uint64_t                   m_occSlotFrame[kOccReadbackSlots] = {};
+        uint32_t                   m_occCulledChunks = 0;            // Last counts read back
+        uint32_t                   m_occCulledSplats = 0;
+        uint32_t                   m_occLastKey = 0;                 // Occlusion settings the last sort ran with: a change re-runs it
+        XMFLOAT4X4                 m_occLastCullViewProj = {};
         ID3D12Resource*            m_pSlotInfoBuffer = nullptr;      // uint2 per padded slot
         ID3D12Resource*            m_pSplatPairsA = nullptr;         // uint2 (key, slot) per padded slot; the sorted result after four passes
         ID3D12Resource*            m_pSplatPairsB = nullptr;
@@ -508,6 +527,7 @@ namespace Splat
         CAULDRON_DX12::PostProcCS  m_silhouetteEdgeExtractCS;
         ID3D12Resource*            m_pSilhouetteBitmaskGpuBuffer = nullptr;
         ID3D12Resource*            m_pSilhouetteReadbackBuffer = nullptr;
+        bool                       m_captureWithUI = false;
         ID3D12Resource*            m_pCaptureReadback = nullptr;     // Scene capture (see RequestSceneCapture); sized for the back buffer
         uint64_t                   m_captureReadbackBytes = 0;
         bool                       m_captureRequested = false;

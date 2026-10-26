@@ -35,6 +35,11 @@
 #include <string>
 #include <map>
 #include "ShadowMeshDisplay.h"
+#include "RdoProfile.h"
+#include "EntropyProfile.h"
+#include <chrono>
+#include <future>
+#include <memory>
 #include <vector>
 
 namespace Splat
@@ -95,7 +100,9 @@ namespace Splat
             ExportPLY,
             ExportSPLAT,
             CloseDataset,
-            ExitApp
+            ExitApp,
+            LocateReencodeSource,  // Re-encode: the package's source scan was not found beside it
+            ReencodeSaveAs         // Re-encode: where to write the package
         };
 
         void BuildUI();
@@ -141,7 +148,9 @@ namespace Splat
         uint64_t m_sourceFileBytes = 0;     // Size of the original .ply/.splat on disk; travels inside the .gstx (v5 header) so the ratio survives a reload
         float    m_rawFileSizeMB = 0.0f;
         float    m_compressedSizeMB = 0.0f;
-        float    m_compressionRatio = 0.0f;  // 0 = nothing to compare (no model, or no source size)
+        float    m_transformedMB = 0.0f;     // Tier 4: every level's records and SH as the codec receives them (uncompressed)
+        float    m_transformedSHMB = 0.0f;   // Of which the spherical harmonics
+        float    m_compressionRatio = 0.0f;
         float    m_deadbandZeroPercent = 0.0f;
 
         // GUI Options & Parameters
@@ -242,7 +251,7 @@ namespace Splat
         // levels), kept for comparison (the LOD quality test measures both). Saved in config.json.
         bool  m_lodScreenSpace       = true;
         float m_lodPixelSpacing      = 1.0f;
-        bool  m_lodPerBlock          = false;                    // Screen-space LOD per block: each block's level from its own distance to the eye (BlockTargetLOD); off = one level for the whole model from its near side. Off by default until the pixel threshold is calibrated for it: at 1 px it draws 57% fewer splats than the model-wide level but is visibly softer, since a coarse level drawn as merged Gaussians does not match a finer one even at sub-pixel point spacing
+        bool  m_lodPerBlock          = true;                     // Screen-space LOD per block (on by default): each block's level from its own distance to the eye (BlockTargetLOD); off = one level for the whole model from its near side. At 1 px it draws 57% fewer splats than the model-wide level but is visibly softer, since a coarse level drawn as merged Gaussians does not match a finer one even at sub-pixel point spacing; a lower pixel threshold trades some of the saving back
         bool  m_autoRotate           = false; // Disabled by default
         bool  m_showControlHints     = true;  // Viewport: draw the faint rotate/zoom/pan reminder at the bottom-right (see DrawControlHints); saved in config.json
         int         m_renderPathOverride = -1;     // "render_path" from config.json or --render-path: -1 auto, else SplatRenderer::RenderPath to force (testing)
@@ -280,12 +289,13 @@ namespace Splat
             int   maxLODs    = 4;
             int   shQuality  = 2;
             int   shPrecision = 0; // Index into kSHPrecisionBits: 0 = 8 bits (lossless)
+            uint8_t shBandBits[3] = { 8, 8, 8 }; // Bits per SH coefficient for bands 1-3: the RDO choice, or SH Precision's bits for all three
             float deadbandMM = 3.0f;
             bool  occlusion  = true;
             bool operator==(const BakeParams& o) const
             {
                 return chunkSize == o.chunkSize && maxLODs == o.maxLODs && shQuality == o.shQuality && shPrecision == o.shPrecision &&
-                       deadbandMM == o.deadbandMM && occlusion == o.occlusion;
+                       memcmp(shBandBits, o.shBandBits, 3) == 0 && deadbandMM == o.deadbandMM && occlusion == o.occlusion;
             }
             bool operator!=(const BakeParams& o) const { return !(*this == o); }
         };
@@ -296,7 +306,7 @@ namespace Splat
             const std::vector<SplatAttributes>* attributes = nullptr;
             bool     splatMode = false;
             uint32_t shDegree = 0; // The degree the bake keeps (BakeSHDegree for this source)
-            uint8_t  shBits = 8;   // Bits per SH coefficient (StreamPackager.h RequantiseSH); 8 = as encoded
+            uint8_t  shBits[3] = { 8, 8, 8 }; // Bits per SH coefficient per band (StreamPackager.h RequantiseSH); 8 = as encoded
         };
         // What the v11 colour transform (YCoCg-R) does to a bake's data, from the size estimate's sample: entropy
         // (mean order-0 over the byte planes) and Brotli size, as percentage changes against plain RGB
@@ -308,6 +318,8 @@ namespace Splat
             bool valid = false;                                          // Splat-mode bakes only
         };
         ColourEstimate m_colourEstimate;
+        EntropyProfile m_entropy;                    // Tiers 2-4 in bits per byte (EntropyProfile.h): from the bake, or measured on a loaded package
+        void MeasurePackageEntropy();                // m_entropy for the loaded package, on a sample of its chunks
         // Everything a bake produces: built on the worker, swapped in by ApplyBake on the UI thread
         struct BakeResult
         {
@@ -317,7 +329,9 @@ namespace Splat
             WaveletDecompositionResult waveletResult;
             SplatEncodeParams splatParams;
             float compressedSizeMB = 0.0f;
+            float transformedMB = 0.0f, transformedSHMB = 0.0f; // Tier 4 (see m_transformedMB)
             ColourEstimate colourEstimate;
+            EntropyProfile entropy;
             std::vector<ResidentLOD> residentLODs;
             StreamRuntime stream;
             OcclusionVolume::Grid occlusionGrid;
@@ -392,6 +406,81 @@ namespace Splat
         // to coarser steps inside their 8-bit slots (lossy, no format change), so Brotli packs them tighter.
         static constexpr uint8_t kSHPrecisionBits[4] = { 8, 6, 5, 4 };
         int      m_shPrecision = 0;
+        uint8_t  m_shBandBits[3] = { 8, 8, 8 };     // What the bake requantises the SH to, per band: SH Precision's bits, or the RDO choice
+        void     SetSHPrecision(int precision) { m_shPrecision = std::clamp(precision, 0, 3); for (uint8_t& b : m_shBandBits) b = SHBitsFor(m_shPrecision); }
+
+        // ---- Compression (RDO): docs/design/gstx-rdo.md, phase 1 -------------------------------------------------------
+        RdoAnalysisResult   m_rdo;                  // The last analysis (or a loaded profile's)
+        uint64_t            m_rdoHash = 0;          // The scan it measured (BakeTuningCache hash)
+        BakeParams          m_rdoParams;            // The bake it measured (levels and deadband decide its pyramid)
+        RdoAnalysis::Target m_rdoTarget;
+        int                 m_rdoChoice = -1;       // Index into m_rdo.points
+        bool                m_rdoOverride = false;  // The SH settings are set by hand instead of by the target
+        int                 m_rdoNetwork = 1;       // Streaming target's link: 0 3G, 1 4G, 2 5G, 3 custom
+        std::chrono::steady_clock::time_point m_rdoStart;
+        std::unique_ptr<RdoProfile> m_pendingRdoProfile; // A profile waiting for its scan to finish opening
+        bool   RdoStale() const { return !m_rdo.Valid() || m_rdoHash == 0 || m_rdoHash != m_sourceHash || m_rdoParams.maxLODs != m_bakedParams.maxLODs || m_rdoParams.deadbandMM != m_bakedParams.deadbandMM; }
+        void   DrawRdoMenu();
+        void   DrawRdoPlot();
+        void   StartRdoAnalysis();
+        void   ApplyRdoChoice(int choice);   // The chosen candidate's SH settings become the bake's
+        void   SaveRdoProfile();
+        // Every analysis is kept in <root>/rdo-profiles: one identical to what would be measured (the scan's hash, the levels
+        // and deadband, the analysis constants) is used instead of analysing; a new one is stored under a unique name
+        RdoProfile  MakeRdoProfile() const;          // What Save Profile writes: the analysis, target and choice of the scan open
+        std::string RdoProfileFolder() const { return GetProjectRootFolder() + "\\rdo-profiles"; }
+        static bool FindRdoProfile(const std::string& folder, uint64_t hash, int maxLODs, float deadbandMM, RdoProfile& out, std::string& path);
+        void   StoreRdoProfile();
+        std::string m_lastRdoProfilePath;             // The profile last stored or reused (StoreRdoProfile, StartRdoAnalysis)
+        std::string m_rdoPackagePath;                 // The package whose footer m_rdo came from (PackageRdoFooter); empty = not from a package
+        void   AdoptRdoAnalysis(const RdoProfile& p); // A stored analysis becomes the curve; the target and SH settings stay as they are
+        static std::string NewRdoProfilePath(const std::string& folder, const std::string& scan, int maxLODs, float deadbandMM); // <scan>_L<levels>_D<deadband>, numbered when taken
+        // Re-encode's confirmation: which profile it will store or reuse, worked out in the background (the scan's hash)
+        struct ReencodeProfilePlan { std::string path; bool reuse = false; };
+        std::future<ReencodeProfilePlan> m_reencodeProfilePlan;
+        ReencodeProfilePlan m_reencodeProfile;
+        bool m_reencodeProfileReady = false;
+        void StartReencodeProfilePlan();
+        void   LoadRdoProfile();
+        void   ApplyRdoProfile(const RdoProfile& profile);
+        void   StepPendingRdoProfile();
+        std::string m_rdoSourcePath;                // The scan m_rdo measured: a package is matched to its analysis through its source scan
+
+        // ---- Streaming tab: the encoding on screen, checked against the selected network profile, and Re-encode -------
+        // Each row of the Encoding panel may carry a warning (a triangle, with why and what a re-encode changes). Without an
+        // RDO analysis of the scan, times are the whole model's; with one, a typical close view's, as the RDO target uses.
+        enum EncodingRow { kEncDegree, kEncBits, kEncLevels, kEncChunks, kEncOcclusion, kEncFirstView, kEncFullDetail, kEncRowCount };
+        struct EncodingReport
+        {
+            bool     valid = false, package = false, viewBased = false;
+            uint32_t shDegree = 0;
+            uint8_t  shBits[3] = { 8, 8, 8 };
+            int      levels = 0;
+            size_t   blocks = 0;               // Level 0 blocks: what view-first streaming can choose between
+            bool     occlusion = false;
+            double   packageBytes = 0.0, firstBytes = 0.0, fullBytes = 0.0;
+            double   bandwidthMBps = 0.0;      // 0 = Full (uncapped)
+            std::string profile;               // "4G (2 MB/s)"
+            std::string warn[kEncRowCount];    // Empty = nothing to fix on that row
+            // What a re-encode would change: -1 / 0 = keep
+            int      recMaxLODs = -1;
+            float    recChunk = 0.0f;
+            bool     recOcclusion = false;
+            int      rdoPick = -1;             // Index into m_rdo.points: the RDO choice for this network (analysis available)
+            bool     Any() const { for (const auto& w : warn) if (!w.empty()) return true; return false; }
+        };
+        EncodingReport AssessEncoding() const;
+        void   DrawEncodingPanel();
+        std::string m_packagePath;                  // The .gstx on screen (opened, or saved this session); empty = none
+        mutable std::string m_packageSourceFor, m_packageSource; // FindSourceScan's cache: the package and its source scan
+        std::string FindSourceScan() const;         // The package's source scan: beside it (.ply / .splat), or remembered in bake_tunings.json
+        enum class Reencode { Idle, Confirm, Open, Structure, Analyse, Bake, Save, Reload };
+        Reencode    m_reencode = Reencode::Idle;
+        EncodingReport m_reencodeReport;            // What the re-encode fixes (taken when it was confirmed)
+        std::string m_reencodeSource, m_reencodeOutput; // The scan it bakes from, and the package it writes (without .gstx)
+        bool        m_reencodeReload = false;       // A package was on screen: open the new one when written
+        void   StepReencode();
+        void   FailReencode(const std::string& why);
         static uint8_t SHBitsFor(int precision) { return kSHPrecisionBits[std::clamp(precision, 0, 3)]; }
         // The bake keeps the SH Quality degree, but never more bands than the source carries: extra bands would
         // only store zeros (a source without harmonics, or a package baked at a lower degree).
@@ -408,9 +497,10 @@ namespace Splat
 
 
 
-        StreamingPolicy m_streamingPolicy           = StreamingPolicy::Greedy; // Greedy (default) or Conservative
-        float  m_conservativeNeighborBufferMargin   = 1.35f;  // Frustum margin for pre-fetching local neighbors in conservative mode
+        float  m_neighborBufferMargin               = 1.35f;  // Frustum margin for pre-fetching local neighbours with Release Unused LOD Segments
         bool   m_enableDitheredTransitions  = true;   // Stochastic screen-space Bayer dithering for smooth LOD transitions
+        int    m_streamingPolicy            = 1;      // Streaming policy: 0 Conservative, 1 Greedy (StreamSettings::Policy); radio buttons under Release Unused LOD Segments
+        bool   m_releaseUnusedSegments      = true;   // On by default (user, 2026-10-26); scripted runs turn it off (they wait for the whole model). Streaming tab "Release Unused LOD Segments" (StreamRuntime::Settings::releaseUnusedSegments)
         bool   m_demoteChunks               = false;  // Demote Chunks on Zoom Out. Off: detail already shown stays when the view coarsens (decay can still drain it). On: it fades back to the coarser level and is dropped
         bool   m_autoSplatSize       = true;   // Auto Splat Size: disc radius from each level's point spacing (m_lodSpacing x m_autoSplatCoverage), not the size classes
         float  m_autoSplatCoverage   = 1.2f;   // Disc radius as a multiple of the level's typical point spacing
@@ -568,6 +658,28 @@ namespace Splat
         int    m_streamTestPhase = 0;
         double m_streamTestSeconds = 0.0;
         void   StepStreamTest();
+        // A scripted run (a test, a calibration, --bake-to, --capture-views): nobody is there to answer a dialog
+        uint64_t m_sourceHash = 0;                  // Hash of the scan file loaded (BakeTuningCache): its bakes are remembered against it; 0 = a package, or nothing loaded
+        bool   Unattended() const { return !m_lodTestFolder.empty() || !m_lodCalFolder.empty() || m_streamTest || !m_cliBakeOutput.empty() || !m_viewCapFolder.empty(); }
+        // --capture-views: level 0 from eight directions (plus the first again: the noise floor), written as .rgba files
+        // and, with --reference, compared with another package's capture (StepViewCapture)
+        std::string              m_viewCapFolder;
+        std::string              m_viewCapReference;
+        bool                     m_viewCapRunning = false;
+        size_t                   m_viewCapIndex = 0;
+        bool                     m_viewCapRequested = false;
+        double                   m_viewCapStableSeconds = 0.0;
+        uint64_t                 m_viewCapLastSplats = 0;
+        float                    m_viewCapFit = 0.0f;
+        std::vector<RgbaImage>   m_viewCapImages;
+        void   StepViewCapture();
+        void   FinishViewCapture();
+        // A level's refinement-visualizer tint (Splat.hlsl kArrivalGlowLevelHue, rotated by Glow Hue) at the given HSV
+        // saturation and value: the Level tint legend and the residency graph share it
+        ImVec4 LevelTint(int lod, float saturation, float value) const;
+        std::string m_cliBakeOutput;         // --bake-to: bake the command-line scan, save the package here and quit (StepCliBake)
+        bool   m_cliRemember = false;            // --remember-settings: the bake's settings are also remembered for the scan (BakeTuningCache)
+        void   StepCliBake();
         void  FinishLodCalibration();  // Compares the captures and writes the report
         void  SetSplatDrawAsDiscs(bool asSplats);        // Draw Splats as Splat, as the checkbox applies it (re-stamps the chunks' fade value)
         // Loupe (L): a box that follows the mouse over the viewport, drawn again
@@ -586,7 +698,7 @@ namespace Splat
         ImVec4 m_loupeRect = ImVec4(0.0f, 0.0f, 0.0f, 0.0f); // Inset x0, y0, x1, y1 last frame (for grabbing it)
         int    m_loupeDrag = 0;                      // The drag in progress (kLoupeDrag* bits); 0 = none
         int    m_loupeHover = 0;                     // What a drag would do from where the mouse is (highlighted)
-        bool   m_loupeEnabled = false;
+        bool   m_loupeEnabled = true;                // Shown by default (user, 2026-10-26)
         float  m_loupeZoom = 8.0f;
         int    m_loupeViz = 0;                       // Inset display: 0 normal, 1 splat outlines, 2 random colour per splat, 3 centres (Shift+V cycles it)
         int    m_splatViz = 0;                       // The same display for the whole model (Renderer tab "Splat Display"; V cycles it)
@@ -598,7 +710,27 @@ namespace Splat
         ImVec4 m_leftPanelRect = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);  // Side panels' x0, y0, x1, y1 this frame (from BuildUI):
         ImVec4 m_rightPanelRect = ImVec4(0.0f, 0.0f, 0.0f, 0.0f); // the loupe's box is kept out of them
         bool   m_leftPanelCollapsed = false;          // Side panels folded to their title bar (the arrow on it; config left_panel_collapsed,
-        bool   m_rightPanelCollapsed = false;         // right_panel_collapsed): the space goes to the viewport and the loupe
+        bool   m_rightPanelCollapsed = false;
+        // Presentation Mode: its own panel under the analytics panel, folded like the side panels (present_panel_collapsed).
+        // Each subsection is a list of presets, each setting the view, the visualizers and the loupe to demo one feature
+        // (DrawPresentationPanel); the choice is shown but nothing is held: a preset applies once, when it is picked.
+        ImVec4 m_presentPanelRect = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+        bool   m_presentPanelCollapsed = false;
+        static constexpr int kPresetNone = -1, kPresetClear = 0, kPresetPoints = 1, kPresetOutlines = 2, kPresetFull = 3, kPresetCulling = 4;
+        int    m_presentSplatPreset = kPresetNone;
+        int    m_presentStreamPreset = kPresetNone;
+        void   DrawPresentationPanel(float x, float width, float maxHeight);
+        void   ApplyPresentationClear();             // Clear: no model, the launch view, the visualizers back to normal, no loupe
+        void   ResetPresentationCamera();            // Live camera, no auto-rotate: what every preset but Culling starts from
+        void   PlaceLoupeBottomRight();              // The loupe in the bottom-right corner of the viewport
+        // Every preset switch saves a screenshot of the window once it has settled (a backup should a demo crash):
+        // Pictures\SplatPak Presentation\<time> <subsection> - <preset>.png
+        std::string m_presentShotName;
+        double m_presentShotTimer = -1.0;            // Seconds until the screenshot is taken; negative = none pending
+        bool   m_presentShotRequested = false;
+        void   SchedulePresentationShot(const std::string& name) { m_presentShotName = name; m_presentShotTimer = 1.5; m_presentShotRequested = false; }
+        void   StepPresentationShot();               // Once per frame, before the UI
+        void   SavePresentationShot();               // After the frame's render, once the capture is in         // right_panel_collapsed): the space goes to the viewport and the loupe
         void   RecordSidePanel(ImVec4& rect, bool& collapsed); // Inside a side panel: its on-screen rectangle (the title bar while folded), and remembers a fold
         void   SetNextSidePanelCollapse(const ImVec4& rect, bool collapsed); // Before a side panel: a click on its title bar's arrow folds or unfolds it
         float  m_bannerBottomY = 0.0f;               // Bottom edge of the render-mode banner last frame (0 = none); the inset sits below it

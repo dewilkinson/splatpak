@@ -47,6 +47,7 @@ add_subdirectory(libs/gstx)
 add_subdirectory(src/SplatCore)   # splat_core: everything both executables share (must precede them)
 add_subdirectory(src/DX12)
 add_subdirectory(tools/SplatPak)
+add_subdirectory(tools/SplatPakWorker)
 add_subdirectory(tests)
 
 # Never run a stale binary: before any executable links, every .exe/.pdb in bin/ is deleted (both
