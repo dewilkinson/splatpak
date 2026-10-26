@@ -3470,7 +3470,7 @@ namespace Splat
                 ImGui::Text("• Total Raw Vertices: %u", (uint32_t)m_rawSplats.size());
                 ImGui::Text("• Partitioned Chunks: %u", (uint32_t)m_chunks.size());
                 ImGui::Text("• Raw Uncompressed:   %.2f MB", m_rawFileSizeMB);
-                ImGui::Text("• Tier 4 Compressed:  %.2f MB (%.1fx)", m_compressedSizeMB, m_compressionRatio);
+                ImGui::Text("• Tier 5 Compressed:  %.2f MB (%.1fx)", m_compressedSizeMB, m_compressionRatio);
             }
         }
         // =========================================================================
@@ -4138,8 +4138,8 @@ namespace Splat
                     ImGui::Text("Tier 3 (Morton Swizzle):  Contiguous 8-channel planes");
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 3 Morton Swizzle & Transposition: Interleaves 3D spatial coordinate bits via Z-order curve and transposes 8-byte structures into 8 contiguous channels to maximize entropy redundancy.");
 
-                    ImGui::Text("Tier 4 (Codec: YCoCg + SH residuals + Byte planes + Brotli): %.2f MB", m_compressedSizeMB);
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 4 Entropy Codec: the package as it would be written -- every level's records and spherical-harmonics stream, colour stored as YCoCg and each level's harmonics as the difference from the coarser level's (both lossless), transposed into byte planes and Brotli-compressed at quality 11. Every level ships in full, so this is about twice the level 0 data above before compression. Estimated from a sample while a bake is being set up; a loaded package shows its real file size.");
+                    ImGui::Text("Tier 4 (Transform: YCoCg + SH residuals + Byte planes)");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 4 Transforms: every level's records and spherical-harmonics stream, colour stored as YCoCg and each level's harmonics as the difference from the coarser level's (both lossless), then transposed into byte planes, so the codec below sees small, regular values.");
 
                     // What the colour transform bought: entropy and size side by side (entropy alone can mislead)
                     if (m_colourEstimate.valid)
@@ -4158,6 +4158,9 @@ namespace Splat
                         ImGui::TextDisabled("  YCoCg colour: %s; SH residuals: %s", (tr & (PAYLOAD_TRANSFORM_RECORD_YCOCG | PAYLOAD_TRANSFORM_SH_YCOCG)) ? "used" : "not used",
                                             (tr & PAYLOAD_TRANSFORM_SH_RESIDUAL) ? "used" : "not used");
                     }
+
+                    ImGui::Text("Tier 5 (Codec: Brotli): %.2f MB", m_compressedSizeMB);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 5 Entropy Codec: the package as it would be written -- the transformed byte planes Brotli-compressed at quality 11. Every level ships in full, so this is about twice the level 0 data above before compression. Estimated from a sample while a bake is being set up; a loaded package shows its real file size.");
 
                     ImGui::Separator();
                     ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.4f, 1.0f), "TOTAL COMPRESSION:    %.2fx (%.2f MB -> %.2f MB)", tier2Reduction, m_rawFileSizeMB, tier2MB);
@@ -5194,7 +5197,7 @@ namespace Splat
     bool SplatLabApp::RightPanelSectionHeader(int slot, int section, int& swapSlotA, int& swapSlotB)
     {
         static const char* s_titles[kRightSectionCount] = {
-            "Real-Time Performance & Stage Timings", "4-Tier Compression Results", "LOD Residency",
+            "Real-Time Performance & Stage Timings", "5-Tier Compression Results", "LOD Residency",
             "Wavelet Multi-Resolution Pyramid", "Input Model Metrics", "Geometry Optimisations & Culling Stats", "Spatial Partitioning" };
         const ImGuiIO& io = ImGui::GetIO();
         if (!io.MouseDown[0] && !io.MouseReleased[0]) m_rightDragMoved = false;
