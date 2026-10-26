@@ -1,8 +1,8 @@
 # GSTx Package Format Specification
 
-**GSTx Gaussian Stream Package (`.gstx`), Format Version 12**
+**GSTx Gaussian Stream Package (`.gstx`), Format Version 13**
 
-Packages written before version 10 carry the signature "SFLW" and the suffix `.sflw`; the layout is the same, and readers accept both (Clause 13.2).
+This document specifies format version 13, the only version readers accept. A package of an earlier version (including those signed "SFLW", suffix `.sflw`) is baked again from its source.
 
 Document status: Approved. Supersedes the description of format versions 1 through 7 that lived in code comments. This document is maintained with the format: every change to a structure, a field or a version number is reflected here in the same change set.
 
@@ -14,7 +14,7 @@ Document status: Approved. Supersedes the description of format versions 1 throu
 
 This specification defines the binary layout and the semantics of the `.gstx` container: the file that SplatLab writes when a point cloud or a 3D Gaussian Splatting scene is baked, and that SplatLab, the Points viewer and the console tools read. It covers:
 
-- the file header and its version-dependent extent;
+- the file header;
 - the chunk manifest and the per-chunk level-of-detail (LOD) table;
 - the two per-point record formats (the 8-byte oriented-disc point and the 20-byte 3D Gaussian);
 - the spherical-harmonics stream of splat-mode packages;
@@ -93,12 +93,12 @@ A reader shall locate every structure through the offsets in the header and the 
 
 ### 6.1 Layout
 
-The header is a single structure whose extent depends on the format version: each version appended fields to the previous layout without moving earlier fields. A reader shall read at most the number of bytes given in Table 6.2 for the file's version and shall treat every field beyond that extent as absent.
+The header is a single structure of 240 bytes. The Since column records the format version that introduced each field (informative).
 
 | Offset | Type | Field | Since | Description |
 |---:|---|---|:-:|---|
-| 0 | `u32` | `magic` | 1 | Shall be `0x58545347` ("GSTX" as ASCII bytes `47 53 54 58`) from version 10, and `0x574C4653` ("SFLW", bytes `53 46 4C 57`) for versions 1 to 9. |
-| 4 | `u32` | `version` | 1 | Format version, 1 to 13. |
+| 0 | `u32` | `magic` | 1 | Shall be `0x58545347` ("GSTX" as ASCII bytes `47 53 54 58`). |
+| 4 | `u32` | `version` | 1 | Format version: shall be 13. |
 | 8 | `u32` | `numChunks` | 1 | Number of chunks; shall be at least 1. |
 | 12 | `u32` | `maxLOD` | 1 | Number of coarser levels requested at bake time (levels per chunk are at most `maxLOD + 1`). |
 | 16 | `u64` | `totalSplatsLOD0` | 1 | Sum of the level-0 record counts over all chunks. |
@@ -134,29 +134,13 @@ The header is a single structure whose extent depends on the format version: eac
 | 232 | `u64` | `occluderMeshBytes` | 13 | Size of the occluder mesh section in bytes; 0 when there is none. |
 | 240 | | *end* | | |
 
-### 6.2 Header extent by version
+### 6.2 Header size
 
-| Version | Header bytes | Notes |
-|:-:|---:|---|
-| 1 | 72 | |
-| 2 | 76 | adds `splatRadius` |
-| 3 | 88 | adds the occlusion voxel count and offset |
-| 4 | 96 | adds the embedded manifest; earlier versions keep the manifest in a companion `.json` file (Annex A) |
-| 5 | 104 | adds `sourceFileBytes` |
-| 6 | 140 | adds the occlusion mip table |
-| 7 | 168 | adds the detail grid |
-| 8 | 200 | adds the record format, the splat quantisation parameters and the SH table |
-| 9 | 208 | adds the payload codec |
-| 10 | 208 | no new fields; the signature becomes "GSTX" |
-| 11 | 208 | `payloadTransforms` takes over the trailing padding |
-| 12 | 224 | adds the shadow mesh section's offset and size |
-| 13 | 240 | adds the occluder mesh section's offset and size |
-
-A file shorter than the extent of its declared version is truncated and shall be rejected.
+A file shorter than 240 bytes is truncated and shall be rejected.
 
 ### 6.3 Chunk manifest
 
-At `manifestOffset` (version 4 and later) the file holds `numChunks` entries, each a chunk record immediately followed by its LOD headers.
+At `manifestOffset` the file holds `numChunks` entries, each a chunk record immediately followed by its LOD headers.
 
 Chunk record (44 bytes):
 
@@ -236,12 +220,12 @@ A level's records are laid out contiguously (`splatCount × splatRecordBytes` by
 
 | `payloadCodec` | Entropy stage |
 |:-:|---|
-| 0 | The codec library's own stage; its encoding is codec-defined (Clause 1.3). Every package before version 9 uses it. |
+| 0 | The codec library's own stage; its encoding is codec-defined (Clause 1.3). |
 | 1 | Brotli (RFC 7932): the payload is one Brotli stream that decodes to exactly `uncompressedByteSize` bytes. Written with the largest standard window that covers the input (at most 2²⁴ bytes), so any decoder handles it. |
 
 A payload that does not decode, or that decodes to a different size, shall be reported as such and shall not be silently skipped. A reader that does not know the declared codec shall reject the package.
 
-### 8.1 Colour transform (version 11)
+### 8.1 Colour transform
 
 The transform is reversible YCoCg-R in 8-bit modular arithmetic. With every operation modulo 256 and `h(v)` the value `v` read as a signed byte (two's complement), shifted right by one with sign extension (the floor of `v / 2`), and returned as a byte:
 
@@ -306,7 +290,7 @@ At `occlusionVoxelOffset`, `occlusionVoxelCount` voxels of 20 bytes each:
 
 ### 10.2 Mip table
 
-Version 6 and later describe the array as `occlusionMipCount` consecutive mips, mip 0 first, of `occlusionMipBlockCount[m]` voxels each with finest cube edge `occlusionMipCellSize[m]`. A reader shall treat a version 3 to 5 file, or a table whose counts do not sum to `occlusionVoxelCount`, as a single mip covering the whole array.
+The array holds `occlusionMipCount` consecutive mips, mip 0 first, of `occlusionMipBlockCount[m]` voxels each with finest cube edge `occlusionMipCellSize[m]`. A reader shall treat a table whose counts do not sum to `occlusionVoxelCount` as a single mip covering the whole array.
 
 ## 11. Detail grid
 
@@ -357,38 +341,15 @@ A conforming writer:
 
 A conforming reader:
 
-1. shall reject a file whose `magic` is neither signature of Clause 6.1, whose signature does not match its `version` ("GSTX" with 10 or later, "SFLW" with 1 to 9), or whose `version` is 0 or greater than 13;
-2. shall read only the header extent of the file's version (Table 6.2) and shall supply the defaults of Annex B for absent fields;
+1. shall reject a file whose `magic` is not "GSTX" or whose `version` is not 13, saying which version it found;
+2. shall reject a file shorter than the header (Clause 6.2);
 3. shall validate the manifest against the file size and the declared record size before decoding;
-4. shall reject a `recordFormat` it does not implement, and shall treat every pre-version-8 file as `recordFormat` 0;
+4. shall reject a `recordFormat` it does not implement;
 5. may ignore the SH stream (drawing the DC colour only) but shall then still validate the SH table;
 6. shall report a payload the linked codec cannot decode as an error;
 7. shall undo the transforms declared in `payloadTransforms` (Clause 8.1), and shall reject a package that declares one it does not know.
 
-## Annex A (informative): pre-version-4 companion manifest
-
-Versions 1 to 3 kept the chunk manifest in a JSON file next to the package (`<name>.json`) with the same fields as Clause 6.3. Readers of this specification's reference implementation still accept such files.
-
-## Annex B (informative): defaults for absent header fields
-
-| Field | Default when absent |
-|---|---|
-| `splatRadius` | 1.0 |
-| `occlusionVoxelCount`, `occlusionVoxelOffset` | 0 |
-| `manifestOffset` | 0 (companion JSON manifest) |
-| `sourceFileBytes` | 0 |
-| `occlusionMipCount` | 0 (one mip covering the array) |
-| `detailGridDims`, `detailGridCellSize`, `detailGridOffset` | 0 (no grid) |
-| `recordFormat` | 0 |
-| `shDegree`, `shRecordBytes`, `shManifestOffset` | 0 |
-| `splatRecordBytes` | 8 |
-| `splatScaleLog2Min`, `splatScaleLog2Max` | 0 (unused for format 0) |
-| `payloadCodec` | 0 (the codec library's stage) |
-| `payloadTransforms` | 0 (no transform) |
-| `shadowMeshOffset`, `shadowMeshBytes` | 0 (no shadow mesh) |
-| `occluderMeshOffset`, `occluderMeshBytes` | 0 (no occluder mesh) |
-
-## Annex C (informative): rendering model of format 1
+## Annex A (informative): rendering model of format 1
 
 The reference renderer draws a splat package the way the PlayCanvas / SuperSplat viewer draws a 3D Gaussian Splatting scene: the covariance of Clause 7.2 is projected with the perspective Jacobian at the splat's view-space position, dilated by 0.3 pixel on the diagonal, and eigen-decomposed; a quad of half-axes `2 × sqrt(2 × λ)` pixels is emitted, shrunk to where the Gaussian times opacity falls below 1/255; the fragment alpha is `(e^(−4A) − e^(−4)) / (1 − e^(−4)) × opacity` with A the squared distance in quad units; splats are composited far to near with premultiplied alpha, in display space by default.
 
@@ -396,7 +357,7 @@ The reference renderer draws a splat package the way the PlayCanvas / SuperSplat
 
 | Version | Date | Change |
 |:-:|---|---|
-| 13 | 2026-10-26 | Occluder mesh section (Clause 12.1): the occlusion volume as a mesh, in place of the voxel array; offset and size appended to the header, which grows to 240 bytes. |
+| 13 | 2026-10-26 | Occluder mesh section (Clause 12.1): the occlusion volume as a mesh, in place of the voxel array; offset and size appended to the header, which grows to 240 bytes. Readers read version 13 only: the header extents of earlier versions, the companion JSON manifest and the defaults for absent fields are removed, and the rendering annex becomes Annex A. |
 | 12 | 2026-10-26 | Shadow mesh section (Clause 12): offset and size appended to the header, which grows to 224 bytes. Conformance moves to Clause 13. |
 | 11 | 2026-10-25 | `payloadTransforms` in the former padding at offset 204: colour stored as reversible YCoCg-R in records and SH (Clause 8.1). Header size unchanged. |
 | 10 | 2026-10-25 | The format is named GSTx: signature "GSTX", suffix `.gstx`. No layout change; "SFLW" packages still read. |

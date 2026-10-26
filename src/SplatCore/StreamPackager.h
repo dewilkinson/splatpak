@@ -6,7 +6,6 @@
 // LOD payloads, optional occlusion volume, and an embedded chunk manifest table): runs
 // each chunk through the wavelet/quantize/shuffle/compress pipeline on export, and
 // restores the full multi-LOD chunk hierarchy (plus any baked occlusion volume) on import.
-// Packages written before v4 kept their manifest in a companion .json; those still load.
 
 #pragma once
 #include <fstream>
@@ -501,19 +500,16 @@ namespace Splat
         {
             SFLWFileHeader header = {};
             std::vector<ChunkManifest> chunkManifests;
-            std::vector<std::vector<PackedPointGPU>> chunkLOD0Splats; // kept for existing callers (== chunkLODPoints[c][0])
-            std::vector<std::vector<std::vector<PackedPointGPU>>> chunkLODPoints; // [chunkIndex][lodLevelIndex] -> splats (splat format 0; empty vectors on a splat package)
-            // Splat packages (header.recordFormat == RECORD_FORMAT_SPLAT20): the records and the SH stream
-            // per chunk LOD, plus the parameters that decode them (SplatCodec::Decode). chunkLODPoints stays empty.
+            // The records and the SH stream per chunk LOD, plus the parameters that decode them (SplatCodec::Decode)
             std::vector<std::vector<std::vector<PackedSplatGPU>>> chunkLODSplats;
             std::vector<std::vector<std::vector<uint8_t>>>        chunkLODSH;
             SplatEncodeParams splatParams;
-            bool IsSplatPackage() const { return header.version >= 8 && header.recordFormat == RECORD_FORMAT_SPLAT20; }
-            std::vector<OcclusionVoxelGPU> occlusionVoxels; // v3+ only; empty on older files or files with no volume baked
-            OcclusionMipTable occlusionMips;                // Mip layout of occlusionVoxels (v6+); a pre-v6 volume is presented as one mip
-            DetailGrid detailGrid;                          // v7+ only; invalid (nx == 0) on older files -- the app rebuilds one from LOD 0
-            ShadowMesh shadowMesh;                          // v12+ only; empty when the package has no mesh section
-            ShadowMesh occluderMesh;                        // v13+ only; when present the package has no voxel volume
+            bool IsSplatPackage() const { return header.recordFormat == RECORD_FORMAT_SPLAT20; } // Every package that loads
+            std::vector<OcclusionVoxelGPU> occlusionVoxels; // Empty when no volume was baked, or the package has an occluder mesh
+            OcclusionMipTable occlusionMips;                // Mip layout of occlusionVoxels
+            DetailGrid detailGrid;                          // Invalid (nx == 0) when none was stored -- the app rebuilds one from LOD 0
+            ShadowMesh shadowMesh;                          // Empty when the package has no mesh section
+            ShadowMesh occluderMesh;                        // When present the package has no voxel volume
             uint64_t totalSplats = 0;
             size_t totalCompressedBytes = 0;
         };
@@ -525,8 +521,7 @@ namespace Splat
         // standalone viewer's StreamingManager reports the same faults the same way.
         static bool LoadPackage(const std::string& inputPath, SFLWPackageData& outPackage, std::string* outError = nullptr)
         {
-            std::string sflwPath, jsonPath;
-            ResolvePackagePaths(inputPath, sflwPath, jsonPath);
+            const std::string sflwPath = ResolvePackagePath(inputPath);
 
             auto fail = [&](const std::string& reason) -> bool
             {
@@ -545,8 +540,7 @@ namespace Splat
             const uint64_t fileSize = (uint64_t)sflwIn.tellg();
             sflwIn.seekg(0, std::ios::beg);
 
-            // One full-struct read; a shorter (older-version) header legitimately reads fewer bytes,
-            // so clear the resulting failbit and let the validator decide from gcount() and version.
+            // One full-struct read; a short file reads fewer bytes, so clear the failbit and let the validator decide
             outPackage.header = {};
             sflwIn.read(reinterpret_cast<char*>(&outPackage.header), sizeof(SFLWFileHeader));
             const size_t headerBytesRead = (size_t)sflwIn.gcount();
@@ -558,78 +552,9 @@ namespace Splat
                 return fail(reason);
             }
 
-            // splatRadius was appended to SFLWFileHeader in version 2. A version-1 file is shorter than
-            // sizeof(SFLWFileHeader), so the read above ran past its true header boundary into the start
-            // of chunk 0's compressed data (harmless -- every subsequent read seeks by absolute offset,
-            // never relative to this position), leaving splatRadius holding misinterpreted chunk bytes
-            // rather than a real value. Only trust it on version 2+; default to 1.0 otherwise.
-            if (outPackage.header.version < 2)
+            if (!ReadEmbeddedManifest(sflwIn, outPackage.header, outPackage.chunkManifests))
             {
-                outPackage.header.splatRadius = 1.0f;
-            }
-
-            // occlusionVoxelCount/Offset were appended in version 3, same reasoning as splatRadius above --
-            // on a shorter (v1/v2) file these fields hold misinterpreted chunk bytes, not real values.
-            if (outPackage.header.version < 3)
-            {
-                outPackage.header.occlusionVoxelCount = 0;
-                outPackage.header.occlusionVoxelOffset = 0;
-            }
-
-            // manifestOffset was appended in version 4; same reasoning again.
-            if (outPackage.header.version < 4)
-            {
-                outPackage.header.manifestOffset = 0;
-            }
-            if (outPackage.header.version < 5)
-            {
-                outPackage.header.sourceFileBytes = 0;
-            }
-
-            // v4+ packages carry their chunk manifest inside the .gstx; older ones kept it in a
-            // companion .json next to the file.
-            if (outPackage.header.version >= 4)
-            {
-                if (!ReadEmbeddedManifest(sflwIn, outPackage.header, outPackage.chunkManifests))
-                {
-                    return fail("The embedded chunk manifest could not be read; the package is corrupt or truncated.");
-                }
-            }
-            else if (!ParseLegacyJsonManifest(jsonPath, outPackage.chunkManifests))
-            {
-                return fail("This is a pre-v4 package and its companion manifest " + jsonPath + " is missing or unreadable.");
-            }
-            // The record format fields were appended in version 8; older files hold 8-byte splats.
-            if (outPackage.header.version < 8)
-            {
-                outPackage.header.recordFormat = RECORD_FORMAT_POINT8;
-                outPackage.header.shDegree = 0;
-                outPackage.header.splatRecordBytes = (uint32_t)sizeof(PackedPointGPU);
-                outPackage.header.shRecordBytes = 0;
-                outPackage.header.splatScaleLog2Min = 0.0f;
-                outPackage.header.splatScaleLog2Max = 0.0f;
-                outPackage.header.shManifestOffset = 0;
-            }
-            // The payload codec field was appended in version 9; older files went through the codec library's own stage.
-            if (outPackage.header.version < 9)
-            {
-                outPackage.header.payloadCodec = PAYLOAD_CODEC_LIBRARY;
-            }
-            // The transform field took over the trailing padding in version 11; writers always zeroed it before
-            if (outPackage.header.version < 11)
-            {
-                outPackage.header.payloadTransforms = 0;
-            }
-            // The shadow mesh fields were appended in version 12 (an older header ends before them)
-            if (outPackage.header.version < 12)
-            {
-                outPackage.header.shadowMeshOffset = 0;
-                outPackage.header.shadowMeshBytes = 0;
-            }
-            if (outPackage.header.version < 13)
-            {
-                outPackage.header.occluderMeshOffset = 0;
-                outPackage.header.occluderMeshBytes = 0;
+                return fail("The embedded chunk manifest could not be read; the package is corrupt or truncated.");
             }
             const bool splatPackage = outPackage.IsSplatPackage();
             const uint32_t recordBytes = SplatRecordBytes(outPackage.header.recordFormat);
@@ -665,8 +590,6 @@ namespace Splat
                 }
             }
 
-            outPackage.chunkLOD0Splats.resize(outPackage.chunkManifests.size());
-            outPackage.chunkLODPoints.resize(outPackage.chunkManifests.size());
             outPackage.chunkLODSplats.resize(splatPackage ? outPackage.chunkManifests.size() : 0);
             outPackage.chunkLODSH.resize(splatPackage ? outPackage.chunkManifests.size() : 0);
             outPackage.totalSplats = 0;
@@ -678,7 +601,6 @@ namespace Splat
                 const auto& cm = outPackage.chunkManifests[c];
                 if (cm.lods.empty()) continue;
 
-                outPackage.chunkLODPoints[c].resize(cm.lods.size());
                 if (splatPackage)
                 {
                     outPackage.chunkLODSplats[c].resize(cm.lods.size());
@@ -699,9 +621,8 @@ namespace Splat
                         return fail(buf);
                     }
 
-                    // A payload the codec rejects used to be skipped silently, leaving that LOD empty and
-                    // the model full of holes. It is corrupt data, or (the codec library's stage, pre-v9) a
-                    // package baked with the other codec build (proprietary vs. open stand-in) -- fail loudly.
+                    // A payload the codec rejects is corrupt data, or (the codec library's stage) a package baked
+                    // with the other codec build (proprietary vs. open stand-in) -- fail loudly.
                     std::vector<uint8_t> shuffled(lodHeader.uncompressedByteSize);
                     if (!PayloadCodec::Decompress(compressedBytes.data(), compressedBytes.size(), shuffled.data(), lodHeader.uncompressedByteSize, outPackage.header.payloadCodec))
                     {
@@ -745,44 +666,11 @@ namespace Splat
                             outPackage.totalCompressedBytes += shRecords[r].compressedByteSize;
                         }
                     }
-                    else
-                    {
-                        outPackage.chunkLODPoints[c][l].resize(lodHeader.splatCount);
-                        ByteShuffle::Unshuffle(
-                            shuffled.data(),
-                            reinterpret_cast<uint8_t*>(outPackage.chunkLODPoints[c][l].data()),
-                            lodHeader.splatCount,
-                            sizeof(PackedPointGPU)
-                        );
-                    }
                     if (l == 0)
                     {
                         outPackage.totalSplats += lodHeader.splatCount;
                     }
                 }
-
-                // Kept for existing callers that only ever wanted the finest level (empty on a splat package).
-                outPackage.chunkLOD0Splats[c] = outPackage.chunkLODPoints[c][0];
-            }
-
-            // The occlusion mip table was appended in version 6; on older files those fields hold
-            // misinterpreted bytes (same reasoning as splatRadius above), so zero them and let the
-            // whole voxel array be presented as a single mip below.
-            if (outPackage.header.version < 6)
-            {
-                outPackage.header.occlusionMipCount = 0;
-                for (uint32_t k = 0; k < kMaxOcclusionMips; k++)
-                {
-                    outPackage.header.occlusionMipBlockCount[k] = 0;
-                    outPackage.header.occlusionMipCellSize[k]   = 0.0f;
-                }
-            }
-            // The detail heatmap grid was appended in version 7; same reasoning again.
-            if (outPackage.header.version < 7)
-            {
-                outPackage.header.detailGridDims[0] = outPackage.header.detailGridDims[1] = outPackage.header.detailGridDims[2] = 0;
-                outPackage.header.detailGridCellSize = 0.0f;
-                outPackage.header.detailGridOffset = 0;
             }
 
             outPackage.occlusionVoxels.clear();
@@ -794,8 +682,7 @@ namespace Splat
                 sflwIn.read(reinterpret_cast<char*>(outPackage.occlusionVoxels.data()),
                     outPackage.header.occlusionVoxelCount * sizeof(OcclusionVoxelGPU));
 
-                // v6+ carries the mip layout; a pre-v6 file, or a table that does not add up to the
-                // array, is treated as one mip covering everything (which renders exactly as before).
+                // A mip table that does not add up to the array is treated as one mip covering everything
                 OcclusionMipTable mips;
                 mips.mipCount = (outPackage.header.occlusionMipCount <= kMaxOcclusionMips) ? outPackage.header.occlusionMipCount : kMaxOcclusionMips;
                 for (uint32_t k = 0; k < mips.mipCount; k++)
@@ -808,7 +695,7 @@ namespace Splat
                 outPackage.occlusionMips = mips;
             }
 
-            // Detail heatmap grid (v7+). Sanity-check the dimensions before trusting the offset.
+            // Detail heatmap grid. Sanity-check the dimensions before trusting the offset.
             outPackage.detailGrid = DetailGrid{};
             {
                 const SFLWFileHeader& h = outPackage.header;
@@ -827,7 +714,7 @@ namespace Splat
                 }
             }
 
-            // Shadow mesh section (v12+)
+            // Shadow mesh section
             outPackage.shadowMesh = ShadowMesh{};
             if (outPackage.header.shadowMeshOffset != 0)
             {
@@ -842,7 +729,7 @@ namespace Splat
                 }
             }
 
-            // Occluder mesh section (v13+)
+            // Occluder mesh section
             outPackage.occluderMesh = ShadowMesh{};
             if (outPackage.header.occluderMeshOffset != 0)
             {

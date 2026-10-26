@@ -48,7 +48,7 @@ A package is one self-contained binary file (format version 8; the normative lay
 
 | Section | Contents |
 |---|---|
-| `SFLWFileHeader` | magic, version, chunk and LOD counts, global bounds, splat radius, the size of the original input file (so the compression ratio survives a reload), absolute offsets of the manifest, the occlusion volume with its mip table (v6+) and the detail grid (v7+) |
+| `SFLWFileHeader` | magic, version, chunk and LOD counts, global bounds, splat radius, the size of the original input file (so the compression ratio survives a reload), absolute offsets of the manifest, the occlusion volume with its mip table, the detail grid, and the shadow and occluder mesh sections |
 | Chunk LOD payloads | one compressed blob per chunk per level, in export order: 8-byte point records (format 0) or 20-byte 3D Gaussians (format 1, v8+), each followed in splat packages by the level's spherical-harmonics stream |
 | Occlusion voxels | optional `OcclusionVoxelGPU` array holding the mip chain back to back, mip 0 first; a pre-v6 reader that draws the whole array still sees a correct volume |
 | Detail grid | optional `uint8` grid, one byte per cell over the model's bounds, read by the streaming scheduler; see `libs/gstx/DetailHeatmap.h` |

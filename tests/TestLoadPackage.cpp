@@ -26,7 +26,7 @@ int main(int argc, char** argv)
     std::cout << std::endl;
     for (size_t i = 0; i < pkg.chunkManifests.size(); i++)
     {
-        std::cout << "Chunk " << i << ": id=" << pkg.chunkManifests[i].chunkId << " LODs=" << pkg.chunkManifests[i].lods.size() << " splats=" << pkg.chunkLOD0Splats[i].size() << std::endl;
+        std::cout << "Chunk " << i << ": id=" << pkg.chunkManifests[i].chunkId << " LODs=" << pkg.chunkManifests[i].lods.size() << " splats=" << (pkg.chunkLODSplats[i].empty() ? 0 : pkg.chunkLODSplats[i][0].size()) << std::endl;
     }
     return ok ? 0 : 1;
 }

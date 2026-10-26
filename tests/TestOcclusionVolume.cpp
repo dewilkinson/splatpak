@@ -31,24 +31,14 @@ int main(int argc, char** argv)
     std::cout << "Package detail grid " << pkg.detailGrid.nx << "x" << pkg.detailGrid.ny << "x" << pkg.detailGrid.nz
               << " (" << pkg.detailGrid.occupiedCells << " occupied cells)" << std::endl;
     std::vector<Splat::SplatPoint> points;
-    if (pkg.IsSplatPackage())
+    // Level 0 of each chunk (positions are all the grid needs, so the SH stream is left out)
+    for (const auto& c : pkg.chunkLODSplats)
     {
-        // Splat packages carry 20-byte Gaussian records instead of splats: decode level 0 of each chunk
-        // (positions are all the grid needs, so the SH stream is left out).
-        for (const auto& c : pkg.chunkLODSplats)
-        {
-            if (c.empty()) continue;
-            std::vector<Splat::SplatPoint> decoded;
-            std::vector<Splat::SplatAttributes> attributes;
-            Splat::SplatCodec::Decode(c[0], nullptr, 0, pkg.splatParams, 0, 0, decoded, attributes);
-            points.insert(points.end(), decoded.begin(), decoded.end());
-        }
-    }
-    else
-    {
-        std::vector<Splat::PackedPointGPU> packed;
-        for (const auto& c : pkg.chunkLOD0Splats) packed.insert(packed.end(), c.begin(), c.end());
-        points = Splat::Quantizer::UnquantizePoints(packed, pkg.header.globalBoundsMin, pkg.header.globalBoundsMax);
+        if (c.empty()) continue;
+        std::vector<Splat::SplatPoint> decoded;
+        std::vector<Splat::SplatAttributes> attributes;
+        Splat::SplatCodec::Decode(c[0], nullptr, 0, pkg.splatParams, 0, 0, decoded, attributes);
+        points.insert(points.end(), decoded.begin(), decoded.end());
     }
     std::cout << "Loaded " << points.size() << " LOD0 splats from " << pkg.chunkManifests.size() << " chunks; package volume had "
               << pkg.occlusionVoxels.size() << " cubes in " << pkg.occlusionMips.mipCount << " mips (";

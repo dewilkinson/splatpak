@@ -38,6 +38,7 @@ namespace
     double Dot(D3 a, D3 b) { return a.x * b.x + a.y * b.y + a.z * b.z; }
     D3 Cross(D3 a, D3 b) { return { a.y * b.z - a.z * b.y, a.z * b.x - a.x * b.z, a.x * b.y - a.y * b.x }; }
     double Len(D3 a) { return std::sqrt(Dot(a, a)); }
+    D3 Norm(D3 a) { return Mul(a, 1.0 / Len(a)); }
     D3 P(const XMFLOAT3& p) { return { p.x, p.y, p.z }; }
     D3 P(const ShadowMeshVec3& p) { return { p.x, p.y, p.z }; }
 
@@ -155,7 +156,7 @@ int main(int argc, char** argv)
         const XMFLOAT3 mn = pkg.header.globalBoundsMin, mx = pkg.header.globalBoundsMax;
         const double diag = Len(Sub(P(mx), P(mn)));
 
-        ShadowMesh mesh = pkg.shadowMesh;
+        ShadowMesh mesh = getenv("SHADOWMESH_REBUILD") ? ShadowMesh{} : pkg.shadowMesh; // SHADOWMESH_REBUILD: build it here
         const char* source = "from the package";
         if (mesh.Empty())
         {
@@ -241,23 +242,57 @@ int main(int argc, char** argv)
             }
             return s;
         };
+        // Also left out: splats no view from outside reaches, such as the inner walls of a hollow the builder filled behind
+        // a sparse scan's holes. A splat is visible when it is the frontmost one in its 0.5%-of-the-diagonal pixel of an
+        // orthographic view from any of 64 directions around the model.
+        std::vector<uint8_t> visible(points.size(), 0);
+        {
+            const double px = 0.005 * diag;
+            const D3 c = Mul(Add(P(mn), P(mx)), 0.5);
+            for (int k = 0; k < 64; k++)
+            {
+                // Fibonacci sphere directions, and a basis across each
+                const double zf = 1.0 - (2.0 * k + 1.0) / 64.0, rf = std::sqrt(1.0 - zf * zf), phi = k * 2.399963229728653;
+                const D3 v{ rf * std::cos(phi), rf * std::sin(phi), zf };
+                const D3 u = Norm(Cross(std::abs(v.z) < 0.9 ? D3{ 0, 0, 1 } : D3{ 1, 0, 0 }, v)), w = Cross(v, u);
+                const int half = (int)std::ceil(diag / px), side = 2 * half + 1;
+                std::vector<std::pair<double, uint32_t>> front((size_t)side * side, { -1e30, UINT32_MAX });
+                for (uint32_t i = 0; i < points.size(); i++)
+                {
+                    if (attrs[points[i].sourceIndex].opacity < 0.5f) continue; // Faint splats hide nothing
+                    const D3 q = Sub(P(points[i].position), c);
+                    const int a = (int)std::floor(Dot(q, u) / px) + half, b = (int)std::floor(Dot(q, w) / px) + half;
+                    if (a < 0 || b < 0 || a >= side || b >= side) continue;
+                    auto& f = front[(size_t)b * side + a];
+                    const double depth = Dot(q, v);
+                    if (depth > f.first) f = { depth, i };
+                }
+                for (const auto& f : front) if (f.second != UINT32_MAX) visible[f.second] = 1;
+            }
+        }
         TriangleGrid tg(m, 0.01 * diag, 0.05 * diag);
         const size_t stride = std::max<size_t>(1, points.size() / 300000);
         std::vector<double> d;
         std::vector<size_t> measured;
-        size_t translucent = 0, isolated = 0, sampled = 0;
+        size_t translucent = 0, isolated = 0, hidden = 0, sampled = 0;
         for (size_t i = 0; i < points.size(); i += stride)
         {
             sampled++;
             if (support(i) < 1.0) { translucent++; continue; }
             if (nearest(P(points[i].position), i, 2) > 0.01 * diag) { isolated++; continue; }
+            if (!visible[i]) { hidden++; continue; }
             d.push_back(tg.Distance(P(points[i].position)) / diag);
             measured.push_back(i);
         }
         const double q50 = Quantile(d, 0.5), q95 = Quantile(d, 0.95), q999 = Quantile(d, 0.999);
-        printf("  measured %zu of %zu sampled splats (%zu in translucent haze, %zu isolated left out)\n", measured.size(), sampled, translucent, isolated);
+        printf("  measured %zu of %zu sampled splats (%zu in translucent haze, %zu isolated, %zu seen from no direction left out)\n", measured.size(), sampled, translucent, isolated, hidden);
         if (getenv("SHADOWMESH_DIAG"))
         {
+            // Splats over 1% from the mesh: inside it (the mesh fills past them) or outside (the mesh falls short)
+            size_t farInside = 0, farOutside = 0;
+            for (size_t j = 0; j < measured.size(); j++)
+                if (d[j] > 0.01) (Winding(mesh.levels[0], P(points[measured[j]].position)) > 0.5 ? farInside : farOutside)++;
+            printf("    splats over 1%% from the mesh: %zu inside it, %zu outside\n", farInside, farOutside);
             int shown = 0;
             for (size_t j = 0; j < measured.size() && shown < 12; j++)
                 if (d[j] > 0.02)

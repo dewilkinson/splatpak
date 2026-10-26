@@ -30,39 +30,11 @@ namespace Splat
     // lose precision on real-world geospatial datasets (e.g. absolute UTM/ECEF coordinates).
     static constexpr double kGeospatialOffsetThreshold = 10000.0;
 
-    // Magic bytes of a package: "GSTX" in ASCII from format version 10 (.gstx), "SFLW" before it (.sflw, still read)
+    // Magic bytes of a package: "GSTX" in ASCII (.gstx)
     static constexpr uint32_t GSTX_MAGIC = 0x58545347;
-    static constexpr uint32_t SFLW_MAGIC = 0x574C4653;
-    static constexpr uint32_t SFLW_VERSION = 13; // v13 adds the occluder mesh section (occluderMeshOffset/Bytes, header 240 bytes); a package that carries one has no voxel volume. v12 adds the shadow mesh section (shadowMeshOffset/Bytes; ShadowMeshCodec.h) and grows the header to 224 bytes. v11 adds payloadTransforms in the old trailing padding: colour stored as YCoCg-R (see ColourTransform.h). v10 renames the format GSTx: magic GSTX, suffix .gstx, no layout change. v9 adds payloadCodec: the entropy stage of every payload, Brotli (see PayloadCodec.h). v8 adds recordFormat, the splat record and the SH stream (see docs/GSTX_FORMAT_SPECIFICATION.md). v2 adds SFLWFileHeader::splatRadius (appended at the
-                                                 // struct's end so v1 files still read correctly -- see
-                                                 // the version check in StreamPackager::LoadPackage).
-                                                 // v3 adds an optional occlusion voxel array, appended
-                                                 // after all chunk LOD data; occlusionVoxelCount/Offset
-                                                 // are 0 on v1/v2 files and on v3 files that simply chose
-                                                 // not to bake one.
-                                                 // v4 folds the chunk manifest (previously a companion
-                                                 // .json file) into the .gstx itself as a binary table at
-                                                 // SFLWFileHeader::manifestOffset, so a package is a
-                                                 // single self-contained file. v1-v3 files still load via
-                                                 // their companion .json (see ParseLegacyJsonManifest).
-                                                 // v5 adds sourceFileBytes: the size of the original
-                                                 // input file (.ply/.splat) the package was built from,
-                                                 // so the compression ratio shown is always that file
-                                                 // against this one. 0 on v1-v4 files or when unknown.
-                                                 // v6 adds the occlusion volume mip table (occlusionMipCount,
-                                                 // occlusionMipBlockCount[], occlusionMipCellSize[]): the
-                                                 // voxel array now holds a nested chain of volumes, mip 0
-                                                 // (the finest, exactly what v3-v5 stored) first, followed
-                                                 // by progressively coarser conservative downsamples. A v5
-                                                 // reader draws the whole array and still sees a correct
-                                                 // volume, because every coarser mip lies strictly inside
-                                                 // mip 0's skin (see OcclusionMipTable).
-                                                 // v7 adds the detail grid (detailGridDims,
-                                                 // detailGridCellSize, detailGridOffset): one byte per
-                                                 // cell over the model's bounds, stored after the
-                                                 // occlusion voxels, an input to the streaming order
-                                                 // (libs/gstx/DetailHeatmap.h). Older readers
-                                                 // ignore it.
+    // The format version written, and the only one read: packages of earlier versions are baked again from their
+    // source. The history of the layout is in docs/GSTX_FORMAT_SPECIFICATION.md.
+    static constexpr uint32_t SFLW_VERSION = 13;
 
     // Upper bound on the occlusion volume mip chain: mip 0 plus up to three coarser levels. Blocks fall
     // by roughly 4x per level (the skin is a surface), so the whole chain costs about a third more than
@@ -97,7 +69,7 @@ namespace Splat
     #pragma pack(pop)
     static_assert(sizeof(OcclusionVoxelGPU) == 20, "OcclusionVoxelGPU must be exactly 20 bytes");
 
-    // Layout of the occlusion volume mip chain inside one OcclusionVoxelGPU array (v6+ packages, and the
+    // Layout of the occlusion volume mip chain inside one OcclusionVoxelGPU array (in a package, and the
     // in-memory result of OcclusionVolume::Bake). Mip 0 is the finest volume, the skin just inside the
     // splat surface; each further mip is a coarser level that lies inside the one below it and can never
     // protrude, with its own exposed-face masks. The renderer draws exactly ONE mip per frame, chosen so
@@ -105,11 +77,11 @@ namespace Splat
     // fine skin is sub-pixel work and too tight for the big coarse-LOD splats it is paired with, so the
     // cube size grows together with the splat LOD in view.
     //
-    // The blocks of all mips are stored back to back, mip 0 first, so a pre-v6 reader that draws the
-    // whole array still renders correctly (the coarser mips are hidden inside mip 0's skin).
+    // The blocks of all mips are stored back to back, mip 0 first (the coarser mips lie hidden inside mip 0's
+    // skin, so drawing the whole array still renders correctly).
     struct OcclusionMipTable
     {
-        uint32_t mipCount = 0;                          // 0 = no volume; 1 = level-0 only (what v3-v5 packages hold)
+        uint32_t mipCount = 0;                          // 0 = no volume; 1 = level-0 only
         uint32_t blockCount[kMaxOcclusionMips] = {};    // Blocks per mip, in array order (mip 0 first)
         float    cellSize[kMaxOcclusionMips] = {};      // Finest cube edge of each mip; cellSize[k] = cellSize[0] * 2^k
 
@@ -212,7 +184,7 @@ namespace Splat
     // Which per-point record a package's LOD payloads hold (SFLWFileHeader::recordFormat, v8+).
     enum SplatFormat : uint32_t
     {
-        RECORD_FORMAT_POINT8  = 0, // PackedPointGPU: 8-byte oriented disc (every package before v8)
+        RECORD_FORMAT_POINT8  = 0, // PackedPointGPU: 8-byte oriented disc (no longer read)
         RECORD_FORMAT_SPLAT20  = 1, // PackedSplatGPU: 20-byte 3D Gaussian, plus an optional spherical-harmonics stream
     };
 
@@ -298,44 +270,38 @@ namespace Splat
         double   globalOriginZ;
         XMFLOAT3 globalBoundsMin;
         XMFLOAT3 globalBoundsMax;
-        float    splatRadius; // v2+ only (SFLW_VERSION >= 2) -- garbage/unset on files packaged by v1.
-                               // Always check header.version before trusting this field; see
-                               // StreamPackager::LoadPackage, which falls back to 1.0f otherwise.
-        uint32_t occlusionVoxelCount;  // v3+ only -- 0 (and occlusionVoxelOffset unset/ignored) on v1/v2
-        uint64_t occlusionVoxelOffset; // files, or on a v3 file that chose not to generate a volume.
-        uint64_t manifestOffset;       // v4+ only -- absolute byte offset of the embedded chunk manifest
-                                       // table (see ChunkManifestRecord). 0 / unset on v1-v3 files, which
-                                       // keep their manifest in a companion .json instead.
-        uint64_t sourceFileBytes;      // v5+ only -- byte size of the original input file this package was
-                                       // built from (0 = unknown). Compression ratio = this / package size.
-        uint32_t occlusionMipCount;    // v6+ only -- occlusion volume mips stored back to back in the voxel
-                                       // array (mip 0 first); see OcclusionMipTable. On v3-v5 files the whole
-                                       // array is one mip (StreamPackager::LoadPackage synthesizes the table).
-        uint32_t occlusionMipBlockCount[kMaxOcclusionMips]; // v6+ only -- blocks per mip; sums to occlusionVoxelCount
-        float    occlusionMipCellSize[kMaxOcclusionMips];   // v6+ only -- finest cube edge of each mip
-        uint32_t detailGridDims[3];    // v7+ only -- detail heatmap grid resolution (x, y, z); all 0 = no grid stored
-        float    detailGridCellSize;   // v7+ only -- cell edge in metres; the grid's origin is globalBoundsMin
-        uint64_t detailGridOffset;     // v7+ only -- absolute offset of the dims[0]*dims[1]*dims[2] uint8 score array (see DetailGrid)
-        uint32_t recordFormat;         // v8+ only -- SplatFormat of every LOD payload (0 = 8-byte splat, 1 = 20-byte splat). Pre-v8 files are format 0.
-        uint32_t shDegree;             // v8+ only -- splat mode: spherical-harmonics degree stored in the SH stream (0 = DC only, 1 or 3)
-        uint32_t splatRecordBytes;     // v8+ only -- bytes per record in a LOD payload (sizeof(PackedSplatGPU) for format 1)
-        uint32_t shRecordBytes;        // v8+ only -- bytes per point in the SH stream (9 for degree 1, 45 for degree 3, 0 for none)
-        float    splatScaleLog2Min;    // v8+ only -- splat mode: log2 scale mapped to byte 0 of the record's scale fields
-        float    splatScaleLog2Max;    // v8+ only -- splat mode: log2 scale mapped to byte 255
-        uint64_t shManifestOffset;     // v8+ only -- absolute offset of the SHLODRecord table (one per chunk LOD, manifest order); 0 = no SH stream
-        uint32_t payloadCodec;         // v9+ only -- the entropy stage of every payload (PayloadCodecId); pre-v9 files are PAYLOAD_CODEC_LIBRARY
-        uint32_t payloadTransforms;    // v11+ only -- PayloadTransformBits (ColourTransform.h), in what was padding before; pre-v11 files are 0
-        uint64_t shadowMeshOffset;     // v12+ only -- absolute offset of the shadow mesh section (ShadowMeshCodec.h); 0 = no mesh
-        uint64_t shadowMeshBytes;      // v12+ only -- the section's size in bytes
-        uint64_t occluderMeshOffset;   // v13+ only -- absolute offset of the occluder mesh section (same encoding); 0 = none
-        uint64_t occluderMeshBytes;    // v13+ only -- its size in bytes
+        float    splatRadius;          // Disc radius scale the model was authored with
+        uint32_t occlusionVoxelCount;  // Voxels of the occlusion volume; 0 = none (a package with an occluder mesh has none)
+        uint64_t occlusionVoxelOffset; // Absolute offset of the voxel array
+        uint64_t manifestOffset;       // Absolute offset of the embedded chunk manifest table (see ChunkManifestRecord)
+        uint64_t sourceFileBytes;      // Byte size of the input file this package was built from (0 = unknown).
+                                       // Compression ratio = this / package size.
+        uint32_t occlusionMipCount;    // Occlusion volume mips stored back to back in the voxel array (mip 0 first); see OcclusionMipTable
+        uint32_t occlusionMipBlockCount[kMaxOcclusionMips]; // Blocks per mip; sums to occlusionVoxelCount
+        float    occlusionMipCellSize[kMaxOcclusionMips];   // Finest cube edge of each mip
+        uint32_t detailGridDims[3];    // Detail heatmap grid resolution (x, y, z); all 0 = no grid stored
+        float    detailGridCellSize;   // Cell edge in metres; the grid's origin is globalBoundsMin
+        uint64_t detailGridOffset;     // Absolute offset of the dims[0]*dims[1]*dims[2] uint8 score array (see DetailGrid)
+        uint32_t recordFormat;         // RecordFormat of every LOD payload: always RECORD_FORMAT_SPLAT20 (1)
+        uint32_t shDegree;             // Spherical-harmonics degree stored in the SH stream (0 = DC only, 1, 2 or 3)
+        uint32_t splatRecordBytes;     // Bytes per record in a LOD payload (sizeof(PackedSplatGPU))
+        uint32_t shRecordBytes;        // Bytes per point in the SH stream (9 for degree 1, 45 for degree 3, 0 for none)
+        float    splatScaleLog2Min;    // log2 scale mapped to byte 0 of the record's scale fields
+        float    splatScaleLog2Max;    // log2 scale mapped to byte 255
+        uint64_t shManifestOffset;     // Absolute offset of the SHLODRecord table (one per chunk LOD, manifest order); 0 = no SH stream
+        uint32_t payloadCodec;         // The entropy stage of every payload (PayloadCodecId)
+        uint32_t payloadTransforms;    // PayloadTransformBits (ColourTransform.h)
+        uint64_t shadowMeshOffset;     // Absolute offset of the shadow mesh section (ShadowMeshCodec.h); 0 = no mesh
+        uint64_t shadowMeshBytes;      // The section's size in bytes
+        uint64_t occluderMeshOffset;   // Absolute offset of the occluder mesh section (same encoding); 0 = none
+        uint64_t occluderMeshBytes;    // Its size in bytes
     };
     static_assert(offsetof(SFLWFileHeader, payloadTransforms) == 204, "payloadTransforms sits in what was the v9 header's trailing padding");
     static_assert(offsetof(SFLWFileHeader, shadowMeshOffset) == 208, "v12 appends the shadow mesh fields after the v11 header");
     static_assert(offsetof(SFLWFileHeader, occluderMeshOffset) == 224, "v13 appends the occluder mesh fields after the v12 header");
     static_assert(sizeof(SFLWFileHeader) == 240, "the v13 header is 240 bytes");
 
-    // On-disk form of one ChunkManifest entry in a v4+ .gstx's embedded manifest table. The table
+    // On-disk form of one ChunkManifest entry in a .gstx's embedded manifest table. The table
     // lives at SFLWFileHeader::manifestOffset and holds SFLWFileHeader::numChunks entries, each a
     // ChunkManifestRecord immediately followed by numLODs ChunkLODHeader records.
     struct ChunkManifestRecord
@@ -348,12 +314,12 @@ namespace Splat
         uint32_t numLODs;
     };
 
-    // Reads the v4+ embedded manifest table out of an already-open .gstx stream. Leaves the stream
+    // Reads the embedded manifest table out of an already-open .gstx stream. Leaves the stream
     // position wherever the table ended; callers seek by absolute offset for everything else anyway.
     inline bool ReadEmbeddedManifest(std::istream& in, const SFLWFileHeader& header, std::vector<ChunkManifest>& outChunks)
     {
         outChunks.clear();
-        if (header.version < 4 || header.manifestOffset == 0) return false;
+        if (header.manifestOffset == 0) return false;
 
         in.seekg((std::streamoff)header.manifestOffset, std::ios::beg);
         if (!in.good()) return false;
@@ -388,27 +354,7 @@ namespace Splat
     // for the standalone viewer) so a bad package is diagnosed the same way everywhere. Each check
     // fills outReason with a sentence a user can act on; the caller decides how to show it.
 
-    // Bytes a writer of the given format version put in its header: the struct grew by appending
-    // fields, so a v1..v6 header is shorter than sizeof(SFLWFileHeader). Anything below this is a
-    // truncated file, not an old one.
-    inline size_t SFLWHeaderBytesForVersion(uint32_t version)
-    {
-        if (version < 2) return offsetof(SFLWFileHeader, splatRadius);
-        if (version < 3) return offsetof(SFLWFileHeader, occlusionVoxelCount);
-        if (version < 4) return offsetof(SFLWFileHeader, manifestOffset);
-        if (version < 5) return offsetof(SFLWFileHeader, sourceFileBytes);
-        if (version < 6) return offsetof(SFLWFileHeader, occlusionMipCount);
-        if (version < 7) return offsetof(SFLWFileHeader, detailGridDims);
-        if (version < 8) return offsetof(SFLWFileHeader, recordFormat);
-        if (version < 9) return offsetof(SFLWFileHeader, payloadCodec);
-        if (version < 12) return offsetof(SFLWFileHeader, shadowMeshOffset);
-        if (version < 13) return offsetof(SFLWFileHeader, occluderMeshOffset);
-        return sizeof(SFLWFileHeader);
-    }
-
-    // Validates a header that was read with one sizeof(SFLWFileHeader)-byte read (headerBytesRead is
-    // that read's gcount()). Only fields that exist in the file's own version are inspected -- the
-    // version-gated fields are zeroed by the caller afterwards exactly as before.
+    // Validates a header read with one sizeof(SFLWFileHeader)-byte read (headerBytesRead is that read's gcount()).
     inline bool ValidateSFLWHeader(const SFLWFileHeader& h, size_t headerBytesRead, uint64_t fileSize, std::string& outReason)
     {
         char buf[256];
@@ -417,52 +363,42 @@ namespace Splat
             outReason = "The file is too small to be a .gstx package (it has no header).";
             return false;
         }
-        if (h.magic != GSTX_MAGIC && h.magic != SFLW_MAGIC)
+        if (h.magic != GSTX_MAGIC)
         {
-            snprintf(buf, sizeof(buf), "Not a .gstx package: the file signature is 0x%08X, expected 0x%08X (\"GSTX\") or, for an older .sflw package, 0x%08X (\"SFLW\").", h.magic, GSTX_MAGIC, SFLW_MAGIC);
+            snprintf(buf, sizeof(buf), "Not a .gstx package: the file signature is 0x%08X, expected 0x%08X (\"GSTX\").", h.magic, GSTX_MAGIC);
             outReason = buf;
             return false;
         }
-        if ((h.magic == GSTX_MAGIC) != (h.version >= 10))
+        if (h.version != SFLW_VERSION)
         {
-            snprintf(buf, sizeof(buf), "The package header is inconsistent: signature \"%s\" with format version %u (GSTX starts at version 10, SFLW ends at 9).", h.magic == GSTX_MAGIC ? "GSTX" : "SFLW", h.version);
+            if (h.version > SFLW_VERSION)
+                snprintf(buf, sizeof(buf), "The package uses .gstx format version %u, but this build reads version %u. It was written by a newer SplatLab.", h.version, SFLW_VERSION);
+            else
+                snprintf(buf, sizeof(buf), "The package uses .gstx format version %u, which this build no longer reads (it reads version %u). Bake it again from its source scan.", h.version, SFLW_VERSION);
             outReason = buf;
             return false;
         }
-        if (h.version == 0)
+        if (headerBytesRead < sizeof(SFLWFileHeader))
         {
-            outReason = "The package header carries format version 0, which no SplatLab build has ever written.";
-            return false;
-        }
-        if (h.version > SFLW_VERSION)
-        {
-            snprintf(buf, sizeof(buf), "The package uses .gstx format version %u, but this build only reads up to version %u. It was written by a newer SplatLab.", h.version, SFLW_VERSION);
+            snprintf(buf, sizeof(buf), "The file is truncated: the header needs %zu bytes but only %zu were present.", sizeof(SFLWFileHeader), headerBytesRead);
             outReason = buf;
             return false;
         }
-        if (headerBytesRead < SFLWHeaderBytesForVersion(h.version))
-        {
-            snprintf(buf, sizeof(buf), "The file is truncated: a version %u header needs %zu bytes but only %zu were present.", h.version, SFLWHeaderBytesForVersion(h.version), headerBytesRead);
-            outReason = buf;
-            return false;
-        }
-        if (h.version >= 12 && h.shadowMeshOffset != 0 &&
-            (h.shadowMeshOffset < SFLWHeaderBytesForVersion(h.version) || h.shadowMeshBytes == 0 || h.shadowMeshOffset + h.shadowMeshBytes > fileSize))
+        if (h.shadowMeshOffset != 0 && (h.shadowMeshOffset < sizeof(SFLWFileHeader) || h.shadowMeshBytes == 0 || h.shadowMeshOffset + h.shadowMeshBytes > fileSize))
         {
             snprintf(buf, sizeof(buf), "The shadow mesh section (%llu bytes at %llu) lies outside the file; the package is truncated or corrupt.",
                      (unsigned long long)h.shadowMeshBytes, (unsigned long long)h.shadowMeshOffset);
             outReason = buf;
             return false;
         }
-        if (h.version >= 13 && h.occluderMeshOffset != 0 &&
-            (h.occluderMeshOffset < SFLWHeaderBytesForVersion(h.version) || h.occluderMeshBytes == 0 || h.occluderMeshOffset + h.occluderMeshBytes > fileSize))
+        if (h.occluderMeshOffset != 0 && (h.occluderMeshOffset < sizeof(SFLWFileHeader) || h.occluderMeshBytes == 0 || h.occluderMeshOffset + h.occluderMeshBytes > fileSize))
         {
             snprintf(buf, sizeof(buf), "The occluder mesh section (%llu bytes at %llu) lies outside the file; the package is truncated or corrupt.",
                      (unsigned long long)h.occluderMeshBytes, (unsigned long long)h.occluderMeshOffset);
             outReason = buf;
             return false;
         }
-        if (h.version >= 11 && (h.payloadTransforms & ~(uint32_t)PAYLOAD_TRANSFORMS_KNOWN) != 0)
+        if ((h.payloadTransforms & ~(uint32_t)PAYLOAD_TRANSFORMS_KNOWN) != 0)
         {
             snprintf(buf, sizeof(buf), "The package declares payload transforms 0x%x, which this build cannot undo. It was written by a newer SplatLab.", h.payloadTransforms);
             outReason = buf;
@@ -479,16 +415,13 @@ namespace Splat
             outReason = buf;
             return false;
         }
-        if (h.version >= 4)
+        if (h.manifestOffset == 0 || h.manifestOffset >= fileSize)
         {
-            if (h.manifestOffset == 0 || h.manifestOffset >= fileSize)
-            {
-                snprintf(buf, sizeof(buf), "The chunk manifest offset (%llu) lies outside the file (%llu bytes). The package is corrupt or truncated.", (unsigned long long)h.manifestOffset, (unsigned long long)fileSize);
-                outReason = buf;
-                return false;
-            }
+            snprintf(buf, sizeof(buf), "The chunk manifest offset (%llu) lies outside the file (%llu bytes). The package is corrupt or truncated.", (unsigned long long)h.manifestOffset, (unsigned long long)fileSize);
+            outReason = buf;
+            return false;
         }
-        if (h.version >= 3 && h.occlusionVoxelCount > 0)
+        if (h.occlusionVoxelCount > 0)
         {
             const uint64_t end = h.occlusionVoxelOffset + (uint64_t)h.occlusionVoxelCount * sizeof(OcclusionVoxelGPU);
             if (h.occlusionVoxelOffset == 0 || end > fileSize)
@@ -497,45 +430,39 @@ namespace Splat
                 return false;
             }
         }
-        if (h.version >= 9 && h.payloadCodec != PAYLOAD_CODEC_LIBRARY && h.payloadCodec != PAYLOAD_CODEC_BROTLI)
+        if (h.payloadCodec != PAYLOAD_CODEC_LIBRARY && h.payloadCodec != PAYLOAD_CODEC_BROTLI)
         {
             snprintf(buf, sizeof(buf), "The package declares payload codec %u, which this build does not know.", h.payloadCodec);
             outReason = buf;
             return false;
         }
-        if (h.version >= 8)
+        if (h.recordFormat != RECORD_FORMAT_SPLAT20)
         {
-            if (h.recordFormat != RECORD_FORMAT_POINT8 && h.recordFormat != RECORD_FORMAT_SPLAT20)
-            {
-                snprintf(buf, sizeof(buf), "The package declares splat format %u, which this build does not know.", h.recordFormat);
-                outReason = buf;
-                return false;
-            }
-            if (h.splatRecordBytes != SplatRecordBytes(h.recordFormat))
-            {
-                snprintf(buf, sizeof(buf), "The package declares %u-byte records for splat format %u, but that format uses %u-byte records.", h.splatRecordBytes, h.recordFormat, SplatRecordBytes(h.recordFormat));
-                outReason = buf;
-                return false;
-            }
-            if (h.recordFormat == RECORD_FORMAT_SPLAT20)
-            {
-                if (h.shDegree > 3 || (h.shDegree != 0 && h.shRecordBytes != 3u * ((h.shDegree + 1) * (h.shDegree + 1) - 1)))
-                {
-                    snprintf(buf, sizeof(buf), "The package declares spherical-harmonics degree %u with %u-byte records, which do not agree.", h.shDegree, h.shRecordBytes);
-                    outReason = buf;
-                    return false;
-                }
-                if (h.shDegree != 0 && (h.shManifestOffset == 0 || h.shManifestOffset >= fileSize))
-                {
-                    outReason = "The spherical-harmonics table offset lies outside the file. The package is corrupt or truncated.";
-                    return false;
-                }
-                if (!(h.splatScaleLog2Max > h.splatScaleLog2Min))
-                {
-                    outReason = "The package's splat scale range is empty or inverted. The package is corrupt.";
-                    return false;
-                }
-            }
+            snprintf(buf, sizeof(buf), "The package declares record format %u; this build reads 3D Gaussian packages (format 1) only.", h.recordFormat);
+            outReason = buf;
+            return false;
+        }
+        if (h.splatRecordBytes != SplatRecordBytes(h.recordFormat))
+        {
+            snprintf(buf, sizeof(buf), "The package declares %u-byte records, but its record format uses %u-byte records.", h.splatRecordBytes, SplatRecordBytes(h.recordFormat));
+            outReason = buf;
+            return false;
+        }
+        if (h.shDegree > 3 || (h.shDegree != 0 && h.shRecordBytes != 3u * ((h.shDegree + 1) * (h.shDegree + 1) - 1)))
+        {
+            snprintf(buf, sizeof(buf), "The package declares spherical-harmonics degree %u with %u-byte records, which do not agree.", h.shDegree, h.shRecordBytes);
+            outReason = buf;
+            return false;
+        }
+        if (h.shDegree != 0 && (h.shManifestOffset == 0 || h.shManifestOffset >= fileSize))
+        {
+            outReason = "The spherical-harmonics table offset lies outside the file. The package is corrupt or truncated.";
+            return false;
+        }
+        if (!(h.splatScaleLog2Max > h.splatScaleLog2Min))
+        {
+            outReason = "The package's splat scale range is empty or inverted. The package is corrupt.";
+            return false;
         }
         return true;
     }
@@ -590,124 +517,13 @@ namespace Splat
                "package must be baked with the same codec build that will read it.";
     }
 
-    // Parses the companion .json manifest that v1-v3 packages shipped alongside their .gstx. Only
-    // needed to keep those older files loadable; v4+ packages embed the manifest (ReadEmbeddedManifest).
-    // Deliberately a minimal scanner for the exact schema StreamPackager used to write, not a general
-    // JSON parser.
-    inline bool ParseLegacyJsonManifest(const std::string& jsonPath, std::vector<ChunkManifest>& outChunks)
-    {
-        outChunks.clear();
-
-        std::ifstream in(jsonPath);
-        if (!in.is_open()) return false;
-        std::string content((std::istreambuf_iterator<char>(in)), std::istreambuf_iterator<char>());
-        in.close();
-
-        size_t pos = content.find("\"chunks\":");
-        if (pos == std::string::npos) return false;
-
-        auto readVec3 = [&](const char* key, size_t from, size_t limit, XMFLOAT3& out)
-        {
-            size_t at = content.find(key, from);
-            if (at == std::string::npos || at >= limit) return;
-            const char* p = strchr(content.c_str() + at, '[');
-            if (p) sscanf_s(p, "[%f, %f, %f]", &out.x, &out.y, &out.z);
-        };
-
-        while ((pos = content.find("\"id\":", pos)) != std::string::npos)
-        {
-            // Each chunk object is short; bound the field searches so a missing key can't pick up the
-            // next chunk's value.
-            size_t objLimit = pos + 400;
-
-            ChunkManifest cm = {};
-            sscanf_s(content.c_str() + pos, "\"id\": %u", &cm.chunkId);
-            readVec3("\"bounds_min\":", pos, objLimit, cm.aabbMin);
-            readVec3("\"bounds_max\":", pos, objLimit, cm.aabbMax);
-            readVec3("\"center\":",     pos, objLimit, cm.center);
-
-            size_t radPos = content.find("\"radius\":", pos);
-            if (radPos != std::string::npos && radPos < objLimit)
-                sscanf_s(content.c_str() + radPos, "\"radius\": %f", &cm.boundingRadius);
-
-            size_t lodsPos = content.find("\"lods\":", pos);
-            size_t lodsEnd = (lodsPos != std::string::npos) ? content.find("]", lodsPos) : std::string::npos;
-            if (lodsPos != std::string::npos && lodsPos < objLimit && lodsEnd != std::string::npos)
-            {
-                size_t curLod = lodsPos;
-                while (true)
-                {
-                    size_t lvlPos = content.find("\"level\":", curLod);
-                    if (lvlPos == std::string::npos || lvlPos >= lodsEnd) break;
-
-                    ChunkLODHeader lh = {};
-                    auto readU32 = [&](const char* key, uint32_t& out)
-                    {
-                        size_t at = content.find(key, lvlPos);
-                        if (at != std::string::npos && at < lodsEnd)
-                        {
-                            std::string fmt = std::string(key) + " %u";
-                            sscanf_s(content.c_str() + at, fmt.c_str(), &out);
-                        }
-                    };
-                    readU32("\"level\":",            lh.lodLevel);
-                    readU32("\"count\":",            lh.splatCount);
-                    readU32("\"raw_bytes\":",        lh.uncompressedByteSize);
-                    readU32("\"compressed_bytes\":", lh.compressedByteSize);
-
-                    size_t offPos = content.find("\"offset\":", lvlPos);
-                    if (offPos != std::string::npos && offPos < lodsEnd)
-                        sscanf_s(content.c_str() + offPos, "\"offset\": %llu", &lh.fileOffset);
-
-                    size_t errPos = content.find("\"error\":", lvlPos);
-                    if (errPos != std::string::npos && errPos < lodsEnd)
-                        sscanf_s(content.c_str() + errPos, "\"error\": %f", &lh.geometricError);
-
-                    cm.lods.push_back(lh);
-
-                    size_t nextObj = content.find("}", lvlPos);
-                    if (nextObj == std::string::npos || nextObj >= lodsEnd) break;
-                    curLod = nextObj + 1;
-                }
-                pos = lodsEnd + 1;
-            }
-            else
-            {
-                pos += 10;
-            }
-
-            cm.numLODs = (uint32_t)cm.lods.size();
-            outChunks.push_back(std::move(cm));
-        }
-
-        return !outChunks.empty();
-    }
-
-    // Given any of "<base>", "<base>.gstx", an older "<base>.sflw", or a legacy "<base>.json", returns the
-    // package path and the legacy companion .json path (only consulted for v1-v3 files). The extension
-    // given wins when that file exists; otherwise whichever of .gstx and .sflw exists (.gstx first), so a
-    // path saved before the bundled packages were rebaked as .gstx still opens.
-    inline void ResolvePackagePaths(const std::string& inputPath, std::string& outSflwPath, std::string& outJsonPath)
+    // The package path for "<base>" or "<base>.gstx"
+    inline std::string ResolvePackagePath(const std::string& inputPath)
     {
         std::string lowerPath = inputPath;
         std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::tolower);
-        std::string base = inputPath;
-        std::string ext;
-        if (lowerPath.size() >= 5 && (lowerPath.compare(lowerPath.size() - 5, 5, ".gstx") == 0 ||
-                                      lowerPath.compare(lowerPath.size() - 5, 5, ".sflw") == 0 ||
-                                      lowerPath.compare(lowerPath.size() - 5, 5, ".json") == 0))
-        {
-            base = inputPath.substr(0, inputPath.size() - 5);
-            ext = inputPath.substr(inputPath.size() - 5);
-        }
-        auto exists = [](const std::string& path) { return std::ifstream(path, std::ios::binary).good(); };
-        if (!ext.empty() && lowerPath.compare(lowerPath.size() - 5, 5, ".json") != 0 && exists(inputPath))
-            outSflwPath = inputPath;
-        else if (exists(base + ".gstx") || !exists(base + ".sflw"))
-            outSflwPath = base + ".gstx";
-        else
-            outSflwPath = base + ".sflw";
-        outJsonPath = base + ".json";
+        if (lowerPath.size() >= 5 && lowerPath.compare(lowerPath.size() - 5, 5, ".gstx") == 0) return inputPath;
+        return inputPath + ".gstx";
     }
 
     // =========================================================================

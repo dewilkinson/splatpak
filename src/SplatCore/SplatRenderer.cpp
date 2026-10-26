@@ -808,7 +808,7 @@ namespace Splat
             (*out)->Unmap(0, nullptr);
             return true;
         };
-        if (upload(vertices, (size_t)vertexCount * 16, &m.vertices) && upload(indices, (size_t)indexCount * 4, &m.indices)) m.indexCount = indexCount;
+        if (upload(vertices, (size_t)vertexCount * kShadowMeshVertexBytes, &m.vertices) && upload(indices, (size_t)indexCount * 4, &m.indices)) m.indexCount = indexCount;
     }
 
     // Uploads the shadow mesh when it changes. Upload-heap buffers read directly as SRVs, like the occlusion volume's.
@@ -834,7 +834,7 @@ namespace Splat
             (*out)->Unmap(0, nullptr);
             return true;
         };
-        if (upload(pState->pShadowMeshVertices, (size_t)pState->shadowMeshVertexCount * 16, &m_pShadowMeshVertexBuffer, "SplatRenderer::m_pShadowMeshVertexBuffer") &&
+        if (upload(pState->pShadowMeshVertices, (size_t)pState->shadowMeshVertexCount * kShadowMeshVertexBytes, &m_pShadowMeshVertexBuffer, "SplatRenderer::m_pShadowMeshVertexBuffer") &&
             upload(pState->pShadowMeshIndices, (size_t)pState->shadowMeshIndexCount * 4, &m_pShadowMeshIndexBuffer, "SplatRenderer::m_pShadowMeshIndexBuffer"))
             m_shadowMeshIndexCount = pState->shadowMeshIndexCount;
     }

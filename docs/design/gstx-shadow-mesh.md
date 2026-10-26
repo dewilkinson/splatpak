@@ -136,12 +136,24 @@ Changes from the agreed design, each requested or forced by measurement:
   writes its depth in place of the cubes', then fills the gaps with the shadow mesh as above. TestShadowMesh checks it
   is closed and hides at most 0.1% of the surface splats that the cubes, and what they enclose, did not hide (the
   bundled models: 0 to 0.07%).
+- **Drawn smoother than stored** (user, 2026-10-26): SplatLab draws the mesh after two Loop subdivision passes
+  (16 times the triangles) with smooth vertex normals (`src/SplatCore/ShadowMeshDisplay.h`), so its outline and
+  shading have no facets where it shows between splats. The occluder mesh gets smooth normals only: subdivision moves
+  concave parts outward, and the occluder must stay inside the cubes. The package is unchanged.
 - **Built after the bake, not on save:** the mesh builds on its own thread when a bake of a raw scan finishes, so the
   bake is no slower and the view is available before saving; a save waits for it. Criterion 5 therefore holds trivially
   (2–4 s on its own thread on the bundled models).
 - **Section layout:** a `GSMS` signature and the section's own quantisation bounds (the mesh may lie slightly outside
   the splats' bounds), and a colour block per level. See Clause 12 of the format specification.
-- **Fidelity measured on the splats that form the surface:** translucent haze and isolated, sparsely sampled splats
-  cast no hard shadow and are left out of criterion 3 (TestShadowMesh reports how many). On the bundled Cthulhu, Venus
-  and Dwarves every criterion holds at 10,000 / 5,000 / 2,500 triangles and about 120 KB per section. Strawberry, a poor
-  scan, misses criterion 3's 95th percentile (1.6% against 1%): the mesh closes narrow gaps in its leafy crown.
+- **Fidelity measured on the visible surface:** translucent haze, isolated sparsely sampled splats, and splats that
+  are frontmost from none of 64 directions around the model (inner walls, the far side of a shell) cast no shadow of
+  their own and are left out of criterion 3 (TestShadowMesh reports how many). On the bundled Cthulhu, Venus and
+  Dwarves every criterion holds at 10,000 / 5,000 / 2,500 triangles and about 130 KB per section. Strawberry, a poor
+  scan, misses criterion 3's 99.9th percentile (2.2% against 2%).
+- **Tunnels sealed** (user, 2026-10-26: "swiss cheese holes"): where a sparse scan's surface thins out, the inside
+  test leaked through it, leaving tunnels (genus 58-236 on the bundled models). A closing by eight cells fills them,
+  and every cell it added is carved away again from the outside in while removing it changes no topology (a simple
+  point), so concavities come back exactly and each tunnel keeps a thin membrane. Genus 0-7, the visible-surface
+  fidelity unchanged, about 3 s more on Cthulhu. Each hollow keeps one opening, which is not a tunnel: closing those
+  (a watershed of the outside space's distance field to find hollows behind necks, or the occlusion volume's solid as
+  an interior) filled visible concavities too, and was dropped.

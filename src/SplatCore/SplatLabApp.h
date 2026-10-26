@@ -33,6 +33,8 @@
 #include "../../libs/gstx/ShadowMeshBuilder.h"
 #include <commdlg.h>
 #include <string>
+#include <map>
+#include "ShadowMeshDisplay.h"
 #include <vector>
 
 namespace Splat
@@ -171,16 +173,10 @@ namespace Splat
         // Interior Occlusion Volume: solid depth-writing cubes baked at preprocessing time so far-side
         // splats can't show through gaps in the near side. Optional and disabled by default.
         bool  m_generateOcclusionVolume   = true;  // Preprocessor: bake a volume for this dataset on export (on by default)
-        float m_occlusionShave            = 0.0f;  // Preprocessor: baked erosion beyond poke-through removal, 0 = none .. 10 = a thin core (see BuildOcclusionVolume)
         float m_occlusionShaveBiasCells   = 0.0f;  // From config.json "occlusion_shave_bias": extra cells added to the unconditional poke-through cull band (see OcclusionVolume::BuildGrid)
         std::string m_lastDialogFolder;             // From config.json "last_dialog_folder": Open/Save dialogs start here instead of the project root once the user has browsed elsewhere
-        float m_occlusionHueShift         = 0.0f;  // Preprocessor: baked colour grade of the volume -- hue rotation in degrees (-180..180)
-        float m_occlusionSaturation       = 1.0f;  // Preprocessor: baked colour grade -- saturation multiplier (0 = greyscale, 1 = as sampled)
-        float m_occlusionBrightness       = 1.0f;  // Preprocessor: baked colour grade -- value/brightness multiplier (1 = as sampled)
-        XMFLOAT3 GradeOcclusionColor(const XMFLOAT3& rgb) const; // Applies the three sliders above
 
-        // Cached voxelization of the current raw points, shared by every shave value so dragging the
-        // shave/colour sliders only re-runs the (cheap) erosion + octree stage. Invalidated by
+        // Cached voxelization of the current raw points (the bake's erosion + octree stage runs on it). Invalidated by
         // RecomputeWaveletHierarchy; see OcclusionVolume.h.
         OcclusionVolume::Grid m_occlusionGrid;
         void  BuildOcclusionGrid();
@@ -205,7 +201,7 @@ namespace Splat
         };
         std::shared_ptr<const ShadowMesh> m_shadowMesh;  // Empty: no mesh (an older package, a point-format bake)
         std::shared_ptr<const ShadowMesh> m_occluderMesh; // Format 13: the occlusion volume as a mesh, used in place of the cubes
-        std::vector<uint32_t> m_occluderMeshGpu;
+        ShadowMeshDisplay m_occluderMeshGpu; // Smooth normals, not subdivided: it must stay inside the cubes
         uint32_t m_occluderMeshVersion = 0;
         bool HasOccluderMesh() const { return m_occluderMesh && !m_occluderMesh->Empty(); }
         void SetOccluderMesh(std::shared_ptr<const ShadowMesh> mesh);
@@ -213,9 +209,11 @@ namespace Splat
         bool     m_showShadowMesh = false;   // View Shadow Mesh (config show_shadow_mesh)
         int      m_shadowMeshLevel = 0;      // Level drawn by the view
         uint32_t m_shadowMeshVersion = 0;    // Bumped when the mesh or the drawn level changes (renderer re-upload)
-        std::vector<uint32_t> m_shadowMeshGpu; // The drawn level's vertices, 16 bytes each (float3 position, uint colour)
+        ShadowMeshDisplay m_shadowMeshGpu;   // The drawn level, subdivided and smooth-shaded (ShadowMeshDisplay.h)
         int      m_shadowMeshGpuLevel = -1;
-        const ShadowMesh* m_shadowMeshGpuSource = nullptr;
+        uint32_t m_shadowMeshSerial = 0;              // Bumped by every SetShadowMesh: a new mesh may reuse a freed one's address
+        uint32_t m_shadowMeshGpuSerial = UINT32_MAX;  // The serial m_shadowMeshGpu was built from; UINT32_MAX = none
+        void ReleaseModelMeshes();                    // Cancels the build and drops the shadow and occluder meshes of the model being replaced
         void StartShadowMeshBuild();
         void CancelShadowMeshBuild();
         void PollShadowMeshBuild();
@@ -284,11 +282,10 @@ namespace Splat
             int   shPrecision = 0; // Index into kSHPrecisionBits: 0 = 8 bits (lossless)
             float deadbandMM = 3.0f;
             bool  occlusion  = true;
-            float shave      = 0.0f;
             bool operator==(const BakeParams& o) const
             {
                 return chunkSize == o.chunkSize && maxLODs == o.maxLODs && shQuality == o.shQuality && shPrecision == o.shPrecision &&
-                       deadbandMM == o.deadbandMM && occlusion == o.occlusion && shave == o.shave;
+                       deadbandMM == o.deadbandMM && occlusion == o.occlusion;
             }
             bool operator!=(const BakeParams& o) const { return !(*this == o); }
         };
@@ -625,6 +622,9 @@ namespace Splat
         bool   m_rightPanelOpen[kRightSectionCount] = { true, true, true, true, true, true, true };
         bool   m_rightDragMoved = false;             // The title bar being dragged has moved its section: its click must not toggle it
         bool   RightPanelSectionHeader(int slot, int section, int& swapSlotA, int& swapSlotB); // Title bar of the section at this slot: open state, drag to reorder; true = draw the body
+        // Every other collapsing header's open state, by label, saved in config.json (menu_open) so menus reopen as left
+        std::map<std::string, bool> m_menuOpen;
+        bool   MenuHeader(const char* label, bool defaultOpen = true); // CollapsingHeader with a remembered open state
         void  StepLodQualityTest();     // Once per frame, before the UI: moves the test along
         void  FinishLodQualityTest();   // Compares the captures and writes the report
     };

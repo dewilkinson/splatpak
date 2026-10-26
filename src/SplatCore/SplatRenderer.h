@@ -104,8 +104,9 @@ namespace Splat
             int32_t                  occlusionMipOverride = -1;       // -1 = pick the mip automatically from projected cell size; 0..mipCount-1 = force that mip (debug/compare)
             float                    occlusionMipMinCellPixels = 2.5f; // Auto rule: finest mip whose cell still covers at least this many pixels at the model's nearest point
 
-            // View Shadow Mesh (debug view): the package's shadow mesh (ShadowMesh.h), solid and flat-shaded in its vertex
-            // colours, instead of the splats. Vertices are 16 bytes: float3 position, uint colour (0xAABBGGRR).
+            // View Shadow Mesh (debug view): the package's shadow mesh (ShadowMesh.h), solid and smooth-shaded in its vertex
+            // colours, instead of the splats. Vertices are 20 bytes: float3 position, uint colour (0xAABBGGRR), uint normal
+            // (octahedral snorm16 x2; ShadowMeshDisplay.h).
             const void*              pShadowMeshVertices = nullptr;
             uint32_t                 shadowMeshVertexCount = 0;
             const uint32_t*          pShadowMeshIndices = nullptr;
@@ -309,7 +310,8 @@ namespace Splat
         // View Shadow Mesh: a classic graphics pipeline on every render path (ShadowMesh.hlsl), and its two upload buffers
         void CreateShadowMeshPipelines(CAULDRON_DX12::SwapChain* pSwapChain);
         void UpdateShadowMeshBuffers(const State* pState);
-        // One uploaded mesh (vertices 16 bytes, 32-bit indices) in upload-heap buffers read as SRVs
+        static constexpr size_t kShadowMeshVertexBytes = 20; // ShadowMeshDisplay.h, ShadowMesh.hlsl
+        // One uploaded mesh (20-byte vertices, 32-bit indices) in upload-heap buffers read as SRVs
         struct MeshBuffers
         {
             ID3D12Resource* vertices = nullptr;
