@@ -126,7 +126,16 @@ Changes from the agreed design, each requested or forced by measurement:
 - **Coloured, solid view instead of a wireframe** (user, 2026-10-25): the section stores a colour per vertex, the base
   colour of the splats around it, and **View Shadow Mesh** (Package Bake and Renderer tabs, config `show_shadow_mesh`)
   draws the chosen level solid and flat-shaded in place of the splats, on all three render paths
-  (`Shaders/ShadowMesh.hlsl`). The voxel occlusion volume stays the runtime occluder and keeps its own view.
+  (`Shaders/ShadowMesh.hlsl`).
+- **The mesh fills the gaps** (user, 2026-10-26): with the volume shown, the renderer draws the shadow mesh after the
+  occluder, depth-tested but not depth-written, so the dark gaps between sparse splats take the model's colour.
+- **Occluder mesh, format 13** (user, 2026-10-26): the voxel cubes are replaced by a mesh of the same solid.
+  `ShadowMeshBuilder::BuildOccluder` rasterises the finest mip's cubes, fills what the outside cannot reach, runs
+  surface nets on the cells and simplifies to 6,000 triangles, never letting a vertex move outside the cells; vertices
+  take the cubes' colours. The package stores it as a second mesh section (Clause 12.1) and no voxel array. The renderer
+  writes its depth in place of the cubes', then fills the gaps with the shadow mesh as above. TestShadowMesh checks it
+  is closed and hides at most 0.1% of the surface splats that the cubes, and what they enclose, did not hide (the
+  bundled models: 0 to 0.07%).
 - **Built after the bake, not on save:** the mesh builds on its own thread when a bake of a raw scan finishes, so the
   bake is no slower and the view is available before saving; a save waits for it. Criterion 5 therefore holds trivially
   (2–4 s on its own thread on the bundled models).

@@ -119,6 +119,18 @@ int main(int argcIn, char** argvIn)
             std::cout << "No shadow mesh (this codec build has none)" << std::endl;
     }
 
+    // Occluder mesh (v13): the volume as a smooth mesh, which then replaces the voxel array in the package
+    Splat::ShadowMesh occluderMesh;
+    {
+        std::string trace;
+        if (Splat::ShadowMeshBuilder::BuildOccluder(occlusion, occlusionMips, occluderMesh, trace))
+        {
+            std::cout << trace;
+            occlusion.clear();
+            occlusionMips = Splat::OcclusionMipTable{};
+        }
+    }
+
     auto chunks = Splat::SpatialOctree::PartitionIntoChunks(splats, chunkSize);
     std::cout << "Partitioned into " << chunks.size() << " chunks. Packaging to " << outputBase << ".gstx..." << std::endl;
 
@@ -132,7 +144,7 @@ int main(int argcIn, char** argvIn)
     std::cout << "Splat mode: 20-byte Gaussian records, spherical-harmonics degree " << splatInput.shDegree << std::endl;
     Splat::TransformStats transformStats;
     if (!Splat::StreamPackager::PackageDataset(outputBase, chunks, maxLODs, deadbandMeters, splatRadius, occlusion, sourceFileBytes, &occlusionMips, &detailGrid, &splatInput,
-                                               Splat::PayloadCodec::kDefault, nullptr, transforms, &transformStats, &shadowMesh))
+                                               Splat::PayloadCodec::kDefault, nullptr, transforms, &transformStats, &shadowMesh, &occluderMesh))
     {
         std::cerr << "Failed to package dataset" << std::endl;
         return 1;

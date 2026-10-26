@@ -25,6 +25,7 @@
 #include "../libs/gstx/SplatCodec.h"
 #include "../libs/gstx/ShadowMeshBuilder.h"
 #include "../libs/gstx/ShadowMeshCodec.h"
+#include "../libs/gstx/OcclusionVolume.h"
 
 using namespace Splat;
 
@@ -108,6 +109,19 @@ namespace
     void Check(bool ok, const char* what, double got, double limit)
     {
         if (!ok) { printf("  FAIL: %s (%.4g, limit %.4g)\n", what, got, limit); g_failures++; }
+    }
+
+    // Generalised winding number of p against a closed mesh: about 1 inside, 0 outside (the summed solid angles over 4 pi)
+    double Winding(const ShadowMeshLevel& m, D3 p)
+    {
+        double w = 0;
+        for (size_t t = 0; t < m.TriangleCount(); t++)
+        {
+            const D3 a = Sub(P(m.positions[m.indices[t * 3]]), p), b = Sub(P(m.positions[m.indices[t * 3 + 1]]), p), c = Sub(P(m.positions[m.indices[t * 3 + 2]]), p);
+            const double la = Len(a), lb = Len(b), lc = Len(c);
+            w += 2 * std::atan2(Dot(a, Cross(b, c)), la * lb * lc + Dot(a, b) * lc + Dot(b, c) * la + Dot(c, a) * lb);
+        }
+        return w / (4 * 3.14159265358979323846);
     }
 }
 
@@ -285,6 +299,128 @@ int main(int argc, char** argv)
         Check(same, "codec round trip", 0, 0);
         Check(maxErr <= 2e-5 * diag + 1e-9, "round-trip position error within 16-bit quantisation", maxErr / diag, 2e-5);
         Check(section.size() <= (1u << 20), "section at most 1 MB", (double)section.size(), 1 << 20);
+
+        // The occluder mesh (format 13) and the voxel cubes it replaces: the package's own cubes, or cubes baked here (shave 0,
+        // the largest volume) when it carries none
+        std::vector<OcclusionVoxelGPU> voxels = pkg.occlusionVoxels;
+        OcclusionMipTable mips = pkg.occlusionMips;
+        if (voxels.empty())
+        {
+            std::string trace;
+            OcclusionVolume::Grid grid;
+            OcclusionVolume::BuildGrid(points, mn, mx, grid, trace);
+            if (grid.valid) OcclusionVolume::Bake(grid, 0.0f, OcclusionVolume::ColorGrade{}, voxels, mips, trace);
+        }
+        // Edges not shared by exactly two opposite triangles, and the enclosed volume
+        auto shape = [](const ShadowMeshLevel& l, size_t& open, double& vol)
+        {
+            std::map<std::pair<uint32_t, uint32_t>, int> le;
+            vol = 0;
+            for (size_t t = 0; t < l.TriangleCount(); t++)
+            {
+                const uint32_t i[3] = { l.indices[t * 3], l.indices[t * 3 + 1], l.indices[t * 3 + 2] };
+                for (int k = 0; k < 3; k++) le[{ i[k], i[(k + 1) % 3] }]++;
+                vol += Dot(P(l.positions[i[0]]), Cross(P(l.positions[i[1]]), P(l.positions[i[2]]))) / 6.0;
+            }
+            open = 0;
+            for (const auto& e : le)
+            {
+                auto it = le.find({ e.first.second, e.first.first });
+                if (e.second != 1 || it == le.end() || it->second != 1) open++;
+            }
+        };
+        // Cubes baked here differ from the bake's (they come from the decoded splats), so they are compared with an occluder
+        // built from them, and the package's own occluder is checked for shape only
+        const bool cubesBakedHere = pkg.occlusionVoxels.empty();
+        if (cubesBakedHere && !pkg.occluderMesh.Empty())
+        {
+            size_t pOpen = 0; double pVolume = 0;
+            shape(pkg.occluderMesh.levels[0], pOpen, pVolume);
+            printf("  occluder from the package: %zu triangles, %zu open edges, enclosed volume %.4g\n", pkg.occluderMesh.levels[0].TriangleCount(), pOpen, pVolume);
+            Check(pOpen == 0, "package occluder closed", (double)pOpen, 0);
+            Check(pVolume > 0, "package occluder faces point outward", pVolume, 0);
+        }
+        ShadowMesh occluder = cubesBakedHere ? ShadowMesh{} : pkg.occluderMesh;
+        const char* occluderSource = "from the package";
+        if (occluder.Empty())
+        {
+            std::string trace;
+            if (voxels.empty() || !ShadowMeshBuilder::BuildOccluder(voxels, mips, occluder, trace)) { printf("  occluder: none (no volume)\n"); continue; }
+            occluderSource = "built here from cubes baked here";
+        }
+        const ShadowMeshLevel& o = occluder.levels[0];
+        size_t oOpen = 0;
+        double oVolume = 0;
+        shape(o, oOpen, oVolume);
+        // Hides nothing the cubes did not: a surface splat buried inside the occluder by more than a builder cell (0.4% of
+        // the diagonal) must lie inside the cubes or a space they enclose. Sampled, as the winding number visits every triangle.
+        // The cubes and everything they enclose (the outside cannot reach it), on a grid of the finest cubes' cells
+        const uint32_t blocks = std::min<uint32_t>(mips.mipCount > 0 ? mips.blockCount[0] : (uint32_t)voxels.size(), (uint32_t)voxels.size());
+        const float cell = mips.mipCount > 0 && mips.cellSize[0] > 0.0f ? mips.cellSize[0] : (voxels.empty() ? 1.0f : voxels[0].halfSize * 2.0f);
+        D3 cmn{ 1e30, 1e30, 1e30 };
+        int cnx = 0, cny = 0, cnz = 0;
+        for (uint32_t i = 0; i < blocks; i++)
+        {
+            const auto& v = voxels[i];
+            cmn.x = std::min(cmn.x, (double)v.center.x - v.halfSize - cell); cmn.y = std::min(cmn.y, (double)v.center.y - v.halfSize - cell); cmn.z = std::min(cmn.z, (double)v.center.z - v.halfSize - cell);
+        }
+        for (uint32_t i = 0; i < blocks; i++)
+        {
+            const auto& v = voxels[i];
+            cnx = std::max(cnx, (int)std::lround((v.center.x + v.halfSize - cmn.x) / cell) + 1);
+            cny = std::max(cny, (int)std::lround((v.center.y + v.halfSize - cmn.y) / cell) + 1);
+            cnz = std::max(cnz, (int)std::lround((v.center.z + v.halfSize - cmn.z) / cell) + 1);
+        }
+        auto cellIndex = [&](int x, int y, int z) { return ((size_t)z * cny + y) * cnx + x; };
+        std::vector<uint8_t> region((size_t)cnx * cny * cnz, 1); // 1 = cube or enclosed, cleared where the outside reaches
+        {
+            std::vector<uint8_t> cube(region.size(), 0);
+            for (uint32_t i = 0; i < blocks; i++)
+            {
+                const auto& v = voxels[i];
+                const int x0 = (int)std::lround((v.center.x - v.halfSize - cmn.x) / cell), y0 = (int)std::lround((v.center.y - v.halfSize - cmn.y) / cell),
+                          z0 = (int)std::lround((v.center.z - v.halfSize - cmn.z) / cell), n = std::max(1, (int)std::lround(2.0f * v.halfSize / cell));
+                for (int z = z0; z < z0 + n && z < cnz; z++) for (int y = y0; y < y0 + n && y < cny; y++) for (int x = x0; x < x0 + n && x < cnx; x++) cube[cellIndex(x, y, z)] = 1;
+            }
+            std::vector<size_t> stack;
+            if (!region.empty()) { region[0] = 0; stack.push_back(0); }
+            while (!stack.empty())
+            {
+                const size_t i = stack.back(); stack.pop_back();
+                const int x = (int)(i % cnx), y = (int)((i / cnx) % cny), z = (int)(i / ((size_t)cnx * cny));
+                const int nb[6][3] = { { x - 1, y, z }, { x + 1, y, z }, { x, y - 1, z }, { x, y + 1, z }, { x, y, z - 1 }, { x, y, z + 1 } };
+                for (const auto& q : nb)
+                {
+                    if (q[0] < 0 || q[1] < 0 || q[2] < 0 || q[0] >= cnx || q[1] >= cny || q[2] >= cnz) continue;
+                    const size_t j = cellIndex(q[0], q[1], q[2]);
+                    if (region[j] && !cube[j]) { region[j] = 0; stack.push_back(j); }
+                }
+            }
+        }
+        auto inCube = [&](D3 p)
+        {
+            const int x = (int)std::floor((p.x - cmn.x) / cell), y = (int)std::floor((p.y - cmn.y) / cell), z = (int)std::floor((p.z - cmn.z) / cell);
+            return x >= 0 && y >= 0 && z >= 0 && x < cnx && y < cny && z < cnz && region[cellIndex(x, y, z)] != 0;
+        };
+        TriangleGrid otg(o, 0.01 * diag, 0.05 * diag);
+        const size_t oStride = std::max<size_t>(1, measured.size() / 20000);
+        size_t buried = 0, newlyHidden = 0, checked = 0;
+        for (size_t j = 0; j < measured.size(); j += oStride)
+        {
+            checked++;
+            const D3 sp = P(points[measured[j]].position);
+            if (Winding(o, sp) <= 0.5 || otg.Distance(sp) <= 0.004 * diag) continue;
+            buried++;
+            if (voxels.empty() || inCube(sp)) continue;
+            if (getenv("SHADOWMESH_DIAG") && newlyHidden < 8) printf("    hidden by the occluder, not by the cubes: splat at (%.3f %.3f %.3f), %.2f%% of the diagonal inside\n", sp.x, sp.y, sp.z, 100 * otg.Distance(sp) / diag);
+            newlyHidden++;
+        }
+        const double hiddenFraction = checked ? (double)newlyHidden / checked : 0;
+        printf("  occluder %s: %zu triangles, %zu open edges, enclosed volume %.4g; of %zu surface splats, %zu lie inside it, %zu of those outside the cubes and what they enclose\n",
+               occluderSource, o.TriangleCount(), oOpen, oVolume, checked, buried, newlyHidden);
+        Check(oOpen == 0, "occluder closed", (double)oOpen, 0);
+        Check(oVolume > 0, "occluder faces point outward", oVolume, 0);
+        Check(hiddenFraction <= 0.001, "at most 0.1% of surface splats hidden by the occluder but not by the cubes", hiddenFraction, 0.001);
     }
     printf("TestShadowMesh: %s\n", g_failures ? "FAIL" : "PASS");
     return g_failures ? 1 : 0;

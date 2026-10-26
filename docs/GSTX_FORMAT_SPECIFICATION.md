@@ -84,7 +84,8 @@ A conforming file consists of, in order of appearance:
 4. the detail grid (Clause 11), if present;
 5. the SH table (Clause 9.5), if present;
 6. the shadow mesh section (Clause 12), if present;
-7. the chunk manifest (Clause 6.3), at `manifestOffset`.
+7. the occluder mesh section (Clause 12.1), if present;
+8. the chunk manifest (Clause 6.3), at `manifestOffset`.
 
 A reader shall locate every structure through the offsets in the header and the manifest and shall not rely on the order above, which is informative.
 
@@ -97,7 +98,7 @@ The header is a single structure whose extent depends on the format version: eac
 | Offset | Type | Field | Since | Description |
 |---:|---|---|:-:|---|
 | 0 | `u32` | `magic` | 1 | Shall be `0x58545347` ("GSTX" as ASCII bytes `47 53 54 58`) from version 10, and `0x574C4653` ("SFLW", bytes `53 46 4C 57`) for versions 1 to 9. |
-| 4 | `u32` | `version` | 1 | Format version, 1 to 10. |
+| 4 | `u32` | `version` | 1 | Format version, 1 to 13. |
 | 8 | `u32` | `numChunks` | 1 | Number of chunks; shall be at least 1. |
 | 12 | `u32` | `maxLOD` | 1 | Number of coarser levels requested at bake time (levels per chunk are at most `maxLOD + 1`). |
 | 16 | `u64` | `totalSplatsLOD0` | 1 | Sum of the level-0 record counts over all chunks. |
@@ -129,7 +130,9 @@ The header is a single structure whose extent depends on the format version: eac
 | 204 | `u32` | `payloadTransforms` | 11 | Transforms applied to the payloads before the byte-plane transpose (Clause 8.1), as bits: bit 0 = record colour as YCoCg-R, bit 1 = SH triples as YCoCg-R. Other bits shall be 0. Before version 11 this word was padding that writers set to 0. |
 | 208 | `u64` | `shadowMeshOffset` | 12 | Absolute offset of the shadow mesh section (Clause 12); 0 = no mesh. |
 | 216 | `u64` | `shadowMeshBytes` | 12 | Size of the shadow mesh section in bytes; 0 when there is none. |
-| 224 | | *end* | | |
+| 224 | `u64` | `occluderMeshOffset` | 13 | Absolute offset of the occluder mesh section (Clause 12.1); 0 = no occluder mesh. |
+| 232 | `u64` | `occluderMeshBytes` | 13 | Size of the occluder mesh section in bytes; 0 when there is none. |
+| 240 | | *end* | | |
 
 ### 6.2 Header extent by version
 
@@ -147,6 +150,7 @@ The header is a single structure whose extent depends on the format version: eac
 | 10 | 208 | no new fields; the signature becomes "GSTX" |
 | 11 | 208 | `payloadTransforms` takes over the trailing padding |
 | 12 | 224 | adds the shadow mesh section's offset and size |
+| 13 | 240 | adds the occluder mesh section's offset and size |
 
 A file shorter than the extent of its declared version is truncated and shall be rejected.
 
@@ -329,13 +333,19 @@ Each level's payload decodes to exactly `uncompressedBytes = 9 × vertexCount + 
 
 A writer shall write a closed mesh (every edge shared by exactly two triangles) whose triangles all refer to existing vertices. A reader shall reject a section whose signature, level count or sizes do not agree, or whose indices exceed `vertexCount`; a reader that does not use the mesh shall still validate `shadowMeshOffset` and `shadowMeshBytes` against the file size.
 
+### 12.1 Occluder mesh
+
+Version 13 adds an optional occluder mesh: the interior occlusion volume (Clause 10) as a closed triangle mesh, in model space, encoded exactly as the shadow mesh section above, with one level. Where the shadow mesh follows the visible surface, the occluder mesh lies on or inside the volume's cubes, so a renderer may write its depth before the splats and reject the splats behind it, as it would with the cubes. Its vertex colours are those of the nearby cubes. At `occluderMeshOffset`, `occluderMeshBytes` bytes.
+
+A writer that writes an occluder mesh shall not also write the voxel array: `occlusionVoxelCount` and `occlusionMipCount` shall then be 0. The same reader requirements as for the shadow mesh apply.
+
 ## 13. Conformance
 
 ### 13.1 Writers
 
 A conforming writer:
 
-1. shall write `magic` "GSTX", `version` 12 and every field of Clause 6.1, to a file with the suffix `.gstx`;
+1. shall write `magic` "GSTX", `version` 13 and every field of Clause 6.1, to a file with the suffix `.gstx`;
 2. shall write `recordFormat`, `splatRecordBytes`, `shDegree` and `shRecordBytes` consistently with Clauses 6.1 and 7;
 3. shall write every payload with the record format declared in the header;
 4. shall, for `recordFormat` 1 with `shDegree` > 0, write the SH table with exactly one entry per LOD header;
@@ -347,7 +357,7 @@ A conforming writer:
 
 A conforming reader:
 
-1. shall reject a file whose `magic` is neither signature of Clause 6.1, whose signature does not match its `version` ("GSTX" with 10 or later, "SFLW" with 1 to 9), or whose `version` is 0 or greater than 12;
+1. shall reject a file whose `magic` is neither signature of Clause 6.1, whose signature does not match its `version` ("GSTX" with 10 or later, "SFLW" with 1 to 9), or whose `version` is 0 or greater than 13;
 2. shall read only the header extent of the file's version (Table 6.2) and shall supply the defaults of Annex B for absent fields;
 3. shall validate the manifest against the file size and the declared record size before decoding;
 4. shall reject a `recordFormat` it does not implement, and shall treat every pre-version-8 file as `recordFormat` 0;
@@ -376,6 +386,7 @@ Versions 1 to 3 kept the chunk manifest in a JSON file next to the package (`<na
 | `payloadCodec` | 0 (the codec library's stage) |
 | `payloadTransforms` | 0 (no transform) |
 | `shadowMeshOffset`, `shadowMeshBytes` | 0 (no shadow mesh) |
+| `occluderMeshOffset`, `occluderMeshBytes` | 0 (no occluder mesh) |
 
 ## Annex C (informative): rendering model of format 1
 
@@ -385,6 +396,7 @@ The reference renderer draws a splat package the way the PlayCanvas / SuperSplat
 
 | Version | Date | Change |
 |:-:|---|---|
+| 13 | 2026-10-26 | Occluder mesh section (Clause 12.1): the occlusion volume as a mesh, in place of the voxel array; offset and size appended to the header, which grows to 240 bytes. |
 | 12 | 2026-10-26 | Shadow mesh section (Clause 12): offset and size appended to the header, which grows to 224 bytes. Conformance moves to Clause 13. |
 | 11 | 2026-10-25 | `payloadTransforms` in the former padding at offset 204: colour stored as reversible YCoCg-R in records and SH (Clause 8.1). Header size unchanged. |
 | 10 | 2026-10-25 | The format is named GSTx: signature "GSTX", suffix `.gstx`. No layout change; "SFLW" packages still read. |

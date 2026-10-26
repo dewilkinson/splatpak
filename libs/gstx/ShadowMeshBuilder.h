@@ -23,5 +23,11 @@ namespace Splat
         static bool Build(const std::vector<SplatPoint>& points, const std::vector<SplatAttributes>* attributes,
                           const XMFLOAT3& aabbMin, const XMFLOAT3& aabbMax, ShadowMesh& out, std::string& trace,
                           const std::function<bool(float)>& progress = nullptr);
+
+        // Builds the occluder mesh (format 13): one closed level following the occlusion volume's finest mip (the
+        // solid already shrunk inside the splats by the cull band and the shave), simplified to a few thousand
+        // triangles without ever moving outward. The renderer depth-tests the splats against it in place of the
+        // volume's cubes. Returns false when there is no volume, and always in the open stand-in library.
+        static bool BuildOccluder(const std::vector<OcclusionVoxelGPU>& voxels, const OcclusionMipTable& mips, ShadowMesh& out, std::string& trace);
     };
 }

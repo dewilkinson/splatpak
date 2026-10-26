@@ -33,7 +33,7 @@ namespace Splat
     // Magic bytes of a package: "GSTX" in ASCII from format version 10 (.gstx), "SFLW" before it (.sflw, still read)
     static constexpr uint32_t GSTX_MAGIC = 0x58545347;
     static constexpr uint32_t SFLW_MAGIC = 0x574C4653;
-    static constexpr uint32_t SFLW_VERSION = 12; // v12 adds the shadow mesh section (shadowMeshOffset/Bytes; ShadowMeshCodec.h) and grows the header to 224 bytes. v11 adds payloadTransforms in the old trailing padding: colour stored as YCoCg-R (see ColourTransform.h). v10 renames the format GSTx: magic GSTX, suffix .gstx, no layout change. v9 adds payloadCodec: the entropy stage of every payload, Brotli (see PayloadCodec.h). v8 adds recordFormat, the splat record and the SH stream (see docs/GSTX_FORMAT_SPECIFICATION.md). v2 adds SFLWFileHeader::splatRadius (appended at the
+    static constexpr uint32_t SFLW_VERSION = 13; // v13 adds the occluder mesh section (occluderMeshOffset/Bytes, header 240 bytes); a package that carries one has no voxel volume. v12 adds the shadow mesh section (shadowMeshOffset/Bytes; ShadowMeshCodec.h) and grows the header to 224 bytes. v11 adds payloadTransforms in the old trailing padding: colour stored as YCoCg-R (see ColourTransform.h). v10 renames the format GSTx: magic GSTX, suffix .gstx, no layout change. v9 adds payloadCodec: the entropy stage of every payload, Brotli (see PayloadCodec.h). v8 adds recordFormat, the splat record and the SH stream (see docs/GSTX_FORMAT_SPECIFICATION.md). v2 adds SFLWFileHeader::splatRadius (appended at the
                                                  // struct's end so v1 files still read correctly -- see
                                                  // the version check in StreamPackager::LoadPackage).
                                                  // v3 adds an optional occlusion voxel array, appended
@@ -327,10 +327,13 @@ namespace Splat
         uint32_t payloadTransforms;    // v11+ only -- PayloadTransformBits (ColourTransform.h), in what was padding before; pre-v11 files are 0
         uint64_t shadowMeshOffset;     // v12+ only -- absolute offset of the shadow mesh section (ShadowMeshCodec.h); 0 = no mesh
         uint64_t shadowMeshBytes;      // v12+ only -- the section's size in bytes
+        uint64_t occluderMeshOffset;   // v13+ only -- absolute offset of the occluder mesh section (same encoding); 0 = none
+        uint64_t occluderMeshBytes;    // v13+ only -- its size in bytes
     };
     static_assert(offsetof(SFLWFileHeader, payloadTransforms) == 204, "payloadTransforms sits in what was the v9 header's trailing padding");
     static_assert(offsetof(SFLWFileHeader, shadowMeshOffset) == 208, "v12 appends the shadow mesh fields after the v11 header");
-    static_assert(sizeof(SFLWFileHeader) == 224, "the v12 header is 224 bytes");
+    static_assert(offsetof(SFLWFileHeader, occluderMeshOffset) == 224, "v13 appends the occluder mesh fields after the v12 header");
+    static_assert(sizeof(SFLWFileHeader) == 240, "the v13 header is 240 bytes");
 
     // On-disk form of one ChunkManifest entry in a v4+ .gstx's embedded manifest table. The table
     // lives at SFLWFileHeader::manifestOffset and holds SFLWFileHeader::numChunks entries, each a
@@ -399,6 +402,7 @@ namespace Splat
         if (version < 8) return offsetof(SFLWFileHeader, recordFormat);
         if (version < 9) return offsetof(SFLWFileHeader, payloadCodec);
         if (version < 12) return offsetof(SFLWFileHeader, shadowMeshOffset);
+        if (version < 13) return offsetof(SFLWFileHeader, occluderMeshOffset);
         return sizeof(SFLWFileHeader);
     }
 
@@ -447,6 +451,14 @@ namespace Splat
         {
             snprintf(buf, sizeof(buf), "The shadow mesh section (%llu bytes at %llu) lies outside the file; the package is truncated or corrupt.",
                      (unsigned long long)h.shadowMeshBytes, (unsigned long long)h.shadowMeshOffset);
+            outReason = buf;
+            return false;
+        }
+        if (h.version >= 13 && h.occluderMeshOffset != 0 &&
+            (h.occluderMeshOffset < SFLWHeaderBytesForVersion(h.version) || h.occluderMeshBytes == 0 || h.occluderMeshOffset + h.occluderMeshBytes > fileSize))
+        {
+            snprintf(buf, sizeof(buf), "The occluder mesh section (%llu bytes at %llu) lies outside the file; the package is truncated or corrupt.",
+                     (unsigned long long)h.occluderMeshBytes, (unsigned long long)h.occluderMeshOffset);
             outReason = buf;
             return false;
         }

@@ -964,6 +964,7 @@ namespace Splat
     {
         CancelShadowMeshBuild();
         SetShadowMesh(nullptr);
+        SetOccluderMesh(nullptr);
         m_rawSplats.clear();
         m_chunks.clear();
         m_waveletResult.lodLevels.clear();
@@ -1293,6 +1294,7 @@ namespace Splat
                 {
                     CancelShadowMeshBuild();
                     SetShadowMesh(pkg.shadowMesh.Empty() ? nullptr : std::make_shared<const ShadowMesh>(std::move(pkg.shadowMesh)));
+                    SetOccluderMesh(pkg.occluderMesh.Empty() ? nullptr : std::make_shared<const ShadowMesh>(std::move(pkg.occluderMesh)));
                     m_loadedPackage = std::move(pkg);
                     break;
                 }
@@ -1547,7 +1549,7 @@ namespace Splat
         // Saturation/Brightness after a load, it rebuilds from these reconstructed points -- a known,
         // accepted trade-off, since packages don't retain the original unquantized cloud.
         m_occlusionGrid.valid = false;
-        if (m_occlusionVoxels.empty())
+        if (m_occlusionVoxels.empty() && !HasOccluderMesh())
         {
             RefreshOcclusionVolume();
         }
@@ -2136,14 +2138,19 @@ namespace Splat
         auto job = std::make_shared<ShadowMeshJob>();
         const XMFLOAT3 mn = m_aabbMin, mx = m_aabbMax;
         const std::vector<SplatAttributes>* attributes = m_splatAttributes.empty() ? nullptr : &m_splatAttributes;
-        job->thread = std::thread([this, job, mn, mx, attributes]()
+        SetOccluderMesh(nullptr); // The bake's cubes cull until the new occluder mesh is ready
+        auto voxels = std::make_shared<std::vector<OcclusionVoxelGPU>>(m_occlusionVoxels);
+        const OcclusionMipTable mips = m_occlusionMips;
+        job->thread = std::thread([this, job, mn, mx, attributes, voxels, mips]()
         {
             const auto t0 = std::chrono::steady_clock::now();
             auto mesh = std::make_shared<ShadowMesh>();
             const bool ok = ShadowMeshBuilder::Build(m_rawSplats, attributes, mn, mx, *mesh, job->trace,
                                                      [job](float) { return !job->cancel.load(); });
-            job->seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
             if (ok) job->result = mesh;
+            auto occluder = std::make_shared<ShadowMesh>();
+            if (ok && !job->cancel.load() && ShadowMeshBuilder::BuildOccluder(*voxels, mips, *occluder, job->trace)) job->occluder = occluder;
+            job->seconds = std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count();
             job->done = true;
         });
         m_shadowMeshJob = job;
@@ -2167,6 +2174,7 @@ namespace Splat
         if (!job->trace.empty()) LogTransitionTrace("%s", job->trace.c_str());
         if (job->cancel.load()) return;
         SetShadowMesh(job->result);
+        SetOccluderMesh(job->occluder);
         LogTransitionTrace("Shadow mesh: %s in %.2f s (built after the bake)", ShadowMeshSummary().c_str(), job->seconds);
     }
 
@@ -2174,6 +2182,24 @@ namespace Splat
     {
         m_shadowMesh = std::move(mesh);
         m_shadowMeshLevel = 0;
+    }
+
+    void SplatLabApp::SetOccluderMesh(std::shared_ptr<const ShadowMesh> mesh)
+    {
+        m_occluderMesh = std::move(mesh);
+        m_occluderMeshGpu.clear();
+        if (HasOccluderMesh())
+        {
+            const ShadowMeshLevel& l = m_occluderMesh->levels[0];
+            m_occluderMeshGpu.resize(l.positions.size() * 4);
+            for (size_t i = 0; i < l.positions.size(); i++)
+            {
+                memcpy(&m_occluderMeshGpu[i * 4], &l.positions[i], 12);
+                m_occluderMeshGpu[i * 4 + 3] = i < l.colours.size() ? l.colours[i] : 0xFF808080u;
+            }
+            if (m_hasBakedParams ? m_bakedParams.occlusion : true) m_enableOcclusionCulling = m_showOcclusionSetting;
+        }
+        m_occluderMeshVersion++;
     }
 
     std::string SplatLabApp::ShadowMeshSummary() const
@@ -2517,7 +2543,8 @@ namespace Splat
         auto transformStats = std::make_shared<TransformStats>();
         auto meshJob = m_shadowMeshJob;
         auto meshHeld = std::make_shared<std::shared_ptr<const ShadowMesh>>(m_shadowMesh);
-        RunOperation("Saving " + name, [this, partial, splatInput, transformStats, meshJob, meshHeld](Progress& progress)
+        auto occluderHeld = std::make_shared<std::shared_ptr<const ShadowMesh>>(m_occluderMesh);
+        RunOperation("Saving " + name, [this, partial, splatInput, transformStats, meshJob, meshHeld, occluderHeld](Progress& progress)
         {
             // A shadow mesh still being built after the bake goes into this package too: wait for it
             if (meshJob)
@@ -2529,10 +2556,15 @@ namespace Splat
                     std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 }
                 *meshHeld = meshJob->result;
+                *occluderHeld = meshJob->occluder;
             }
+            // With an occluder mesh (format 13) the package carries no voxel volume
+            const bool occluderMesh = *occluderHeld && !(*occluderHeld)->Empty();
+            const std::vector<OcclusionVoxelGPU> noVoxels;
+            const OcclusionMipTable noMips;
             progress.Stage("Encoding the levels", 0.0f);
             return StreamPackager::PackageDataset(partial, m_chunks, m_maxLODLevels, m_deadbandThresholdMM / 1000.0f, m_state.splatRadius,
-                m_occlusionVoxels, m_sourceFileBytes, &m_occlusionMips, &m_detailGrid, m_splatMode ? splatInput.get() : nullptr, PayloadCodec::kDefault,
+                occluderMesh ? noVoxels : m_occlusionVoxels, m_sourceFileBytes, occluderMesh ? &noMips : &m_occlusionMips, &m_detailGrid, m_splatMode ? splatInput.get() : nullptr, PayloadCodec::kDefault,
                 [&progress, transformStats](float fraction)
                 {
                     // The packager's stages by their share of the bar (StreamPackager.h): encoding, Brotli, writing.
@@ -2547,7 +2579,7 @@ namespace Splat
                     if (progress.StageName() != stage) progress.Stage(stage, fraction);
                     progress.Fraction(fraction);
                     return !progress.Cancelled();
-                }, PAYLOAD_TRANSFORMS_KNOWN, transformStats.get(), meshHeld->get());
+                }, PAYLOAD_TRANSFORMS_KNOWN, transformStats.get(), meshHeld->get(), occluderHeld->get());
         },
         [this, outputPath, partial, transformStats, meshHeld](bool ok, bool cancelled)
         {
@@ -2681,6 +2713,7 @@ namespace Splat
         {
             CancelShadowMeshBuild();
             SetShadowMesh(nullptr);
+            SetOccluderMesh(nullptr);
             m_rawSplats.clear();
             m_chunks.clear();
             m_rendererSplats.clear();
@@ -3210,7 +3243,7 @@ namespace Splat
         ImGui::SetNextWindowPos(ImVec2(10.0f, 30.0f), ImGuiCond_Always);
         ImGui::SetNextWindowSize(ImVec2(leftPanelWidth, panelHeight), ImGuiCond_Always);
         SetNextSidePanelCollapse(m_leftPanelRect, m_leftPanelCollapsed);
-        ImGui::Begin("Model Renderer###LeftPanel", nullptr, 0);
+        ImGui::Begin("Model Menu###LeftPanel", nullptr, 0);
 
         // Tab Selector Buttons. Studio shows the three numbered tabs; the viewer has no generator, so
         // it shows Renderer and Streaming, unnumbered, across the same width.
@@ -3292,7 +3325,7 @@ namespace Splat
                 // true, and without the version check this re-voxelized the whole cloud and wrote two
                 // trace lines on EVERY frame. Any load or pipeline rebuild bumps the version and so
                 // re-arms it.
-                if ((m_hasBakedParams ? m_bakedParams.occlusion : m_generateOcclusionVolume) && !m_occlusionGrid.valid && m_occlusionVoxels.empty()
+                if ((m_hasBakedParams ? m_bakedParams.occlusion : m_generateOcclusionVolume) && !m_occlusionGrid.valid && m_occlusionVoxels.empty() && !HasOccluderMesh()
                     && m_occlusionSafetyNetVersion != m_occlusionVoxelsVersion)
                 {
                     RefreshOcclusionVolume(); // Bumps m_occlusionVoxelsVersion whether or not cubes came out
@@ -3392,7 +3425,12 @@ namespace Splat
                     if (pending) ImGui::TextColored(ImVec4(0.65f, 0.78f, 1.0f, 1.0f), "Changed, not yet baked: %s", PendingBakeChanges().c_str());
                 }
                 ImGui::Spacing();
-                if (!m_occlusionVoxels.empty())
+                if (HasOccluderMesh())
+                {
+                    ImGui::TextColored(ImVec4(0.6f, 0.6f, 0.6f, 1.0f), "Baked: occluder mesh, %zu triangles", m_occluderMesh->levels[0].TriangleCount());
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("The occlusion volume as a smooth mesh just inside the splats: far-side splats are depth-tested against it, and the shadow mesh fills the gaps between the splats with the model's colour.");
+                }
+                else if (!m_occlusionVoxels.empty())
                 {
                     std::string chain;
                     for (uint32_t k = 0; k < m_occlusionMips.mipCount; k++)
@@ -5396,14 +5434,31 @@ namespace Splat
             m_showOcclusionSetting = m_enableOcclusionCulling;
             SaveConfigFile(); // Remembered (show_occlusion_volume): the next load or bake follows it
         }
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Draws the baked interior occlusion volume (%zu cubes) and depth-tests the splats against it, so far-side splats don't show through gaps in the near side. On by default.", m_occlusionVoxels.size());
+        if (ImGui::IsItemHovered())
+        {
+            if (HasOccluderMesh())
+                ImGui::SetTooltip("Draws the baked interior occlusion volume (a mesh of %zu triangles) and depth-tests the splats against it, so far-side splats don't show through gaps in the near side; the shadow mesh fills the gaps with the model's colour. On by default.", m_occluderMesh->levels[0].TriangleCount());
+            else
+                ImGui::SetTooltip("Draws the baked interior occlusion volume (%zu cubes) and depth-tests the splats against it, so far-side splats don't show through gaps in the near side. On by default.", m_occlusionVoxels.size());
+        }
 
-        ImGui::Checkbox("View Occlusion Volume Only", &m_showOcclusionVolumeOnly);
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Debug view: hides the splat splats entirely and renders only the occluder geometry. Works regardless of 'Show Occlusion Volume' above.");
+        // The model view in place of the splats: the shadow mesh when the model has one (format 12), the voxel occlusion
+        // volume only for older packages without one
+        const bool modelHasMesh = m_shadowMesh && !m_shadowMesh->Empty();
+        if (modelHasMesh || m_shadowMeshJob)
+        {
+            m_showOcclusionVolumeOnly = false;
+        }
+        else
+        {
+            ImGui::Checkbox("View Occlusion Volume Only", &m_showOcclusionVolumeOnly);
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Debug view: hides the splats and renders only the occluder geometry. Works regardless of 'Show Occlusion Volume' above. Packages from format 12 show their shadow mesh here instead.");
+        }
 
         // View Shadow Mesh: the package's shadow mesh, solid and coloured from the splats, in place of the splats
+        if (modelHasMesh || m_shadowMeshJob)
         {
-            const bool hasMesh = m_shadowMesh && !m_shadowMesh->Empty();
+            const bool hasMesh = modelHasMesh;
             if (!hasMesh) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.45f);
             bool view = m_showShadowMesh && hasMesh;
             if (ImGui::Checkbox("View Shadow Mesh", &view) && hasMesh)
@@ -6345,6 +6400,12 @@ namespace Splat
                 m_state.pShadowMeshIndices = nullptr; m_state.shadowMeshIndexCount = 0;
             }
             m_state.shadowMeshVersion = m_shadowMeshVersion;
+            const bool hasOccluder = HasOccluderMesh() && !m_occluderMeshGpu.empty();
+            m_state.pOccluderMeshVertices = hasOccluder ? m_occluderMeshGpu.data() : nullptr;
+            m_state.occluderMeshVertexCount = hasOccluder ? (uint32_t)(m_occluderMeshGpu.size() / 4) : 0;
+            m_state.pOccluderMeshIndices = hasOccluder ? m_occluderMesh->levels[0].indices.data() : nullptr;
+            m_state.occluderMeshIndexCount = hasOccluder ? (uint32_t)m_occluderMesh->levels[0].indices.size() : 0;
+            m_state.occluderMeshVersion = m_occluderMeshVersion;
         }
         if (m_occlusionMipOverride >= (int)m_occlusionMips.mipCount) m_occlusionMipOverride = -1; // A rebake/reload with fewer mips drops back to Auto
         m_state.occlusionMips = m_occlusionMips;

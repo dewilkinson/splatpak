@@ -112,6 +112,12 @@ namespace Splat
             uint32_t                 shadowMeshIndexCount = 0;
             uint32_t                 shadowMeshVersion = 0; // Bumped whenever the mesh changes, so it re-uploads
             bool                     showShadowMesh = false;
+            // Occluder mesh (format 13): the occlusion volume as a mesh, drawn in its place (same vertex layout)
+            const void*              pOccluderMeshVertices = nullptr;
+            uint32_t                 occluderMeshVertexCount = 0;
+            const uint32_t*          pOccluderMeshIndices = nullptr;
+            uint32_t                 occluderMeshIndexCount = 0;
+            uint32_t                 occluderMeshVersion = 0;
         };
 
         struct FrameTimingMetrics
@@ -303,8 +309,23 @@ namespace Splat
         // View Shadow Mesh: a classic graphics pipeline on every render path (ShadowMesh.hlsl), and its two upload buffers
         void CreateShadowMeshPipelines(CAULDRON_DX12::SwapChain* pSwapChain);
         void UpdateShadowMeshBuffers(const State* pState);
+        // One uploaded mesh (vertices 16 bytes, 32-bit indices) in upload-heap buffers read as SRVs
+        struct MeshBuffers
+        {
+            ID3D12Resource* vertices = nullptr;
+            ID3D12Resource* indices = nullptr;
+            uint32_t version = UINT32_MAX;
+            uint32_t indexCount = 0;
+        };
+        void UploadMesh(MeshBuffers& m, const void* vertices, uint32_t vertexCount, const uint32_t* indices, uint32_t indexCount, uint32_t version);
+        void ReleaseMesh(MeshBuffers& m);
+        MeshBuffers m_occluderMesh;
         ID3D12PipelineState* m_pShadowMeshPSO = nullptr;
         ID3D12PipelineState* m_pShadowMeshPSOUnorm = nullptr; // On the UNORM target of display-space splat blending
+        // Gap fill: the mesh drawn after the occlusion volume, depth-tested but writing no depth, so it hides the cubes
+        // (they lie inside it) and the splats blend over the model's own colour where they leave gaps
+        ID3D12PipelineState* m_pShadowMeshFillPSO = nullptr;
+        ID3D12PipelineState* m_pShadowMeshFillPSOUnorm = nullptr;
         ID3D12Resource*      m_pShadowMeshVertexBuffer = nullptr;
         ID3D12Resource*      m_pShadowMeshIndexBuffer = nullptr;
         uint32_t             m_shadowMeshUploadedVersion = UINT32_MAX;

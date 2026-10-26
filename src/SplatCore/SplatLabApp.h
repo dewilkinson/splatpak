@@ -199,10 +199,16 @@ namespace Splat
             std::thread thread;
             std::atomic<bool> cancel{ false }, done{ false };
             std::shared_ptr<const ShadowMesh> result; // Set (or left empty on failure) before done
+            std::shared_ptr<const ShadowMesh> occluder; // The occluder mesh built from the bake's volume (format 13)
             std::string trace;
             double seconds = 0.0;
         };
         std::shared_ptr<const ShadowMesh> m_shadowMesh;  // Empty: no mesh (an older package, a point-format bake)
+        std::shared_ptr<const ShadowMesh> m_occluderMesh; // Format 13: the occlusion volume as a mesh, used in place of the cubes
+        std::vector<uint32_t> m_occluderMeshGpu;
+        uint32_t m_occluderMeshVersion = 0;
+        bool HasOccluderMesh() const { return m_occluderMesh && !m_occluderMesh->Empty(); }
+        void SetOccluderMesh(std::shared_ptr<const ShadowMesh> mesh);
         std::shared_ptr<ShadowMeshJob>    m_shadowMeshJob;
         bool     m_showShadowMesh = false;   // View Shadow Mesh (config show_shadow_mesh)
         int      m_shadowMeshLevel = 0;      // Level drawn by the view

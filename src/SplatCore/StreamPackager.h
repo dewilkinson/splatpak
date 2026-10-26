@@ -129,7 +129,8 @@ namespace Splat
             const std::function<bool(float)>& progress = nullptr, // Fraction done; returning false stops the write and deletes the file
             uint32_t payloadTransforms = PAYLOAD_TRANSFORMS_KNOWN, // Colour stored as YCoCg-R (v11+, ColourTransform.h); 0 = as before, for A/B measurement
             TransformStats* transformStats = nullptr,           // Filled once every level is encoded, before compression starts
-            const ShadowMesh* shadowMesh = nullptr)             // Shadow mesh section (v12+); nullptr or empty = none
+            const ShadowMesh* shadowMesh = nullptr,             // Shadow mesh section (v12+); nullptr or empty = none
+            const ShadowMesh* occluderMesh = nullptr)           // Occluder mesh section (v13+); with one, pass no occlusionVoxels
         {
             std::string sflwPath = outputBasepath + ".gstx";
 
@@ -442,6 +443,20 @@ namespace Splat
                 }
             }
 
+            // Occluder mesh section (v13+, optional; same encoding)
+            header.occluderMeshOffset = 0;
+            header.occluderMeshBytes = 0;
+            if (occluderMesh != nullptr && !occluderMesh->Empty())
+            {
+                std::vector<uint8_t> section;
+                if (ShadowMeshCodec::Encode(*occluderMesh, section))
+                {
+                    header.occluderMeshOffset = (uint64_t)sflwOut.tellp();
+                    header.occluderMeshBytes = section.size();
+                    sflwOut.write(reinterpret_cast<const char*>(section.data()), section.size());
+                }
+            }
+
             // Embedded manifest table (v4+) goes last: one ChunkManifestRecord per chunk, each followed
             // by its ChunkLODHeader array. Every LOD payload offset is already absolute, so the manifest
             // can sit anywhere; the end of the file keeps the payload region contiguous.
@@ -498,6 +513,7 @@ namespace Splat
             OcclusionMipTable occlusionMips;                // Mip layout of occlusionVoxels (v6+); a pre-v6 volume is presented as one mip
             DetailGrid detailGrid;                          // v7+ only; invalid (nx == 0) on older files -- the app rebuilds one from LOD 0
             ShadowMesh shadowMesh;                          // v12+ only; empty when the package has no mesh section
+            ShadowMesh occluderMesh;                        // v13+ only; when present the package has no voxel volume
             uint64_t totalSplats = 0;
             size_t totalCompressedBytes = 0;
         };
@@ -609,6 +625,11 @@ namespace Splat
             {
                 outPackage.header.shadowMeshOffset = 0;
                 outPackage.header.shadowMeshBytes = 0;
+            }
+            if (outPackage.header.version < 13)
+            {
+                outPackage.header.occluderMeshOffset = 0;
+                outPackage.header.occluderMeshBytes = 0;
             }
             const bool splatPackage = outPackage.IsSplatPackage();
             const uint32_t recordBytes = SplatRecordBytes(outPackage.header.recordFormat);
@@ -818,6 +839,21 @@ namespace Splat
                 if (!sflwIn.good() || !ShadowMeshCodec::Decode(section.data(), section.size(), outPackage.shadowMesh, meshError))
                 {
                     return fail("The shadow mesh section cannot be read: " + (sflwIn.good() ? meshError : std::string("the file is truncated.")));
+                }
+            }
+
+            // Occluder mesh section (v13+)
+            outPackage.occluderMesh = ShadowMesh{};
+            if (outPackage.header.occluderMeshOffset != 0)
+            {
+                std::vector<uint8_t> section((size_t)outPackage.header.occluderMeshBytes);
+                sflwIn.clear();
+                sflwIn.seekg((std::streamoff)outPackage.header.occluderMeshOffset, std::ios::beg);
+                sflwIn.read(reinterpret_cast<char*>(section.data()), (std::streamsize)section.size());
+                std::string meshError;
+                if (!sflwIn.good() || !ShadowMeshCodec::Decode(section.data(), section.size(), outPackage.occluderMesh, meshError))
+                {
+                    return fail("The occluder mesh section cannot be read: " + (sflwIn.good() ? meshError : std::string("the file is truncated.")));
                 }
             }
 
