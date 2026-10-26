@@ -4839,8 +4839,22 @@ namespace Splat
         ImGui::SliderFloat((std::string("Glow Intensity") + idSuffix).c_str(), &m_arrivalGlowIntensity, 0.0f, 2.0f, "%.2fx");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Strength of the tint and of the bright leading-edge bloom. 0.25 = default; 0 hides the effect without turning the visualizer off.");
         ImGui::SliderFloat((std::string("Glow Hue") + idSuffix).c_str(), &m_arrivalGlowHue, -180.0f, 180.0f, "%.0f deg");
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rotates the glow colour around the colour wheel. 0 = gold; about +75 = green, +160 = blue, -80 = magenta.");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rotates every level's glow colour together around the colour wheel. At 0, level 0 is gold and level 1 its complement, azure.");
         ImGui::PopItemWidth();
+        // Legend: each level's tint (Splat.hlsl kArrivalGlowLevelHue), coarsest first, as they stream in
+        {
+            static const float kArrivalGlowLevelHue[8] = { 0.0f, 180.0f, 90.0f, 270.0f, 315.0f, 135.0f, 45.0f, 225.0f };
+            const int levels = std::clamp((int)m_waveletResult.lodLevels.size(), 1, 8);
+            ImGui::TextDisabled("Level tint:");
+            for (int l = levels - 1; l >= 0; l--)
+            {
+                float hue = std::fmod(45.0f + m_arrivalGlowHue + kArrivalGlowLevelHue[l] + 720.0f, 360.0f) / 360.0f, r, g, bl;
+                ImGui::ColorConvertHSVtoRGB(hue, 0.85f, 1.0f, r, g, bl);
+                ImGui::SameLine();
+                ImGui::TextColored(ImVec4(r, g, bl, 1.0f), "L%d", l);
+            }
+            if (ImGui::IsItemHovered()) ImGui::SetTooltip("Each level of detail arrives in its own tint, consecutive levels across the colour wheel from one another, so you can see which level a chunk brings.");
+        }
         ImGui::Unindent(12.0f);
     }
 
