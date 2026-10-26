@@ -141,7 +141,9 @@ namespace Splat
         uint64_t m_sourceFileBytes = 0;     // Size of the original .ply/.splat on disk; travels inside the .gstx (v5 header) so the ratio survives a reload
         float    m_rawFileSizeMB = 0.0f;
         float    m_compressedSizeMB = 0.0f;
-        float    m_compressionRatio = 0.0f;  // 0 = nothing to compare (no model, or no source size)
+        float    m_transformedMB = 0.0f;     // Tier 4: every level's records and SH as the codec receives them (uncompressed)
+        float    m_transformedSHMB = 0.0f;   // Of which the spherical harmonics
+        float    m_compressionRatio = 0.0f;
         float    m_deadbandZeroPercent = 0.0f;
 
         // GUI Options & Parameters
@@ -317,6 +319,7 @@ namespace Splat
             WaveletDecompositionResult waveletResult;
             SplatEncodeParams splatParams;
             float compressedSizeMB = 0.0f;
+            float transformedMB = 0.0f, transformedSHMB = 0.0f; // Tier 4 (see m_transformedMB)
             ColourEstimate colourEstimate;
             std::vector<ResidentLOD> residentLODs;
             StreamRuntime stream;

@@ -1009,7 +1009,7 @@ namespace Splat
         m_center  = { 0, 0, 0 };
         m_extents = { 0, 0, 0 };
         m_rawFileSizeMB = 0.0f;
-        m_compressedSizeMB = 0.0f;
+        m_compressedSizeMB = 0.0f; m_transformedMB = m_transformedSHMB = 0.0f;
         m_compressionRatio = 0.0f;
         m_deadbandZeroPercent = 0.0f;
         m_state.pPoints = nullptr;
@@ -1530,6 +1530,15 @@ namespace Splat
             std::ifstream pkg(ResolvePackagePath(filepath), std::ios::ate | std::ios::binary);
             uint64_t packageBytes = pkg.is_open() ? (uint64_t)pkg.tellg() : (uint64_t)m_loadedPackage.totalCompressedBytes;
             m_compressedSizeMB = (float)packageBytes / (1024.0f * 1024.0f);
+            uint64_t recordBytes = 0, shBytes = 0;
+            for (size_t c = 0; c < m_loadedPackage.chunkManifests.size(); c++)
+            {
+                for (const auto& lod : m_loadedPackage.chunkManifests[c].lods) recordBytes += lod.uncompressedByteSize;
+                if (c < m_loadedPackage.chunkLODSH.size())
+                    for (const auto& sh : m_loadedPackage.chunkLODSH[c]) shBytes += sh.size();
+            }
+            m_transformedMB = (float)(recordBytes + shBytes) / (1024.0f * 1024.0f);
+            m_transformedSHMB = (float)shBytes / (1024.0f * 1024.0f);
         }
         m_compressionRatio = (m_rawFileSizeMB > 0 && m_compressedSizeMB > 0) ? (m_rawFileSizeMB / std::max(0.001f, m_compressedSizeMB)) : 0.0f;
 
@@ -1880,6 +1889,13 @@ namespace Splat
 
         progress.Stage("Wavelet levels", 0.02f);
         out.waveletResult = LiftingWavelet::DecomposeChunk(points, params.maxLODs, params.deadbandMM / 1000.0f);
+        // Splat mode: every coarse point takes the Gaussian merged from its two children (as the package will)
+        if (source.splatMode && source.attributes)
+        {
+            std::vector<float> visibility;
+            SplatCodec::SurfaceVisibility(points, *source.attributes, visibility);
+            SplatCodec::MergeLevels(out.waveletResult, *source.attributes, &visibility);
+        }
         if (progress.Cancelled()) return false;
 
         // Splat mode: the encode parameters every level shares (positions span the model bounds; the scale range
@@ -1920,7 +1936,7 @@ namespace Splat
             LevelRecords lr;
             if (source.splatMode)
             {
-                SplatCodec::Encode(splats, *source.attributes, level, out.splatParams, lr.splats, lr.sh);
+                SplatCodec::Encode(splats, *source.attributes, level, out.splatParams, lr.splats, lr.sh, &out.waveletResult.mergedAttributes);
                 const uint8_t bits[3] = { source.shBits, source.shBits, source.shBits };
                 RequantiseSH(lr.sh.data(), lr.splats.size(), SplatCodec::SHRecordBytes(out.splatParams.shDegree), bits);
             }
@@ -2019,6 +2035,8 @@ namespace Splat
             for (size_t i : pairedSample) compressedPaired += samples[i].size();
             const double ratio = sampled > 0 ? (double)compressed / (double)sampled : 1.0;
             packageBytes += (size_t)((double)total * ratio);
+            out.transformedMB += (float)((double)total / (1024.0 * 1024.0));
+            if (sh) out.transformedSHMB += (float)((double)total / (1024.0 * 1024.0));
             if (source.splatMode && classEntropyBytes > 0.0 && classEntropyPlain > 0.0 && compressedPlain > 0)
             {
                 ColourEstimate::Stream& s = sh ? out.colourEstimate.sh : out.colourEstimate.records;
@@ -2114,6 +2132,8 @@ namespace Splat
         // The level count may have shrunk: BuildUI and the LOD export index lodLevels[m_selectedPreviewLOD] directly
         m_selectedPreviewLOD = 0;
         m_compressedSizeMB = r.compressedSizeMB;
+        m_transformedMB = r.transformedMB;
+        m_transformedSHMB = r.transformedSHMB;
         m_colourEstimate = r.colourEstimate;
         m_compressionRatio = (m_rawFileSizeMB > 0.0f && m_compressedSizeMB > 0.0f) ? (m_rawFileSizeMB / std::max(0.001f, m_compressedSizeMB)) : 0.0f;
         m_deadbandZeroPercent = 64.5f; // Measured planar surface coefficient sparsification
@@ -2348,7 +2368,7 @@ namespace Splat
                 out[lodIdx].packedPoints = Quantizer::QuantizePoints(out[lodIdx].rawSplats, aabbMin, aabbMax);
                 if (source.splatMode)
                 {
-                    SplatCodec::Encode(out[lodIdx].rawSplats, *source.attributes, (uint32_t)lodIdx, splatParams, out[lodIdx].splats, out[lodIdx].splatSH);
+                    SplatCodec::Encode(out[lodIdx].rawSplats, *source.attributes, (uint32_t)lodIdx, splatParams, out[lodIdx].splats, out[lodIdx].splatSH, &wavelet.mergedAttributes);
                     RequantiseSH(out[lodIdx].splatSH.data(), out[lodIdx].splats.size(), SplatCodec::SHRecordBytes(splatParams.shDegree), shBits); // Draw what the package will hold
                     if (!m_splatDrawAsDiscs) for (auto& mc : out[lodIdx].meshletChunks) mc.dilationMorph = 1.0f; // Resident at load, sorted Gaussians: Gaussians at once (level 0 fade-in weight, see AppendChunkToRenderer); drawn as splats: the splat value (0)
                 }
@@ -2461,7 +2481,7 @@ namespace Splat
     // Splat mode: one level's records and SH stream from its points and the source Gaussians.
     void SplatPakApp::EncodeSplatLevel(const std::vector<SplatPoint>& splats, uint32_t level, std::vector<PackedSplatGPU>& outRecords, std::vector<uint8_t>& outSH) const
     {
-        SplatCodec::Encode(splats, m_splatAttributes, level, m_splatParams, outRecords, outSH);
+        SplatCodec::Encode(splats, m_splatAttributes, level, m_splatParams, outRecords, outSH, &m_waveletResult.mergedAttributes);
     }
 
     // Splat mode: the renderer state that does not depend on which level or stream is active.
@@ -2744,7 +2764,7 @@ namespace Splat
             m_rendererSourceDescription = "No model active";
             m_isLoadedFromSFLW = false;
             m_rawFileSizeMB = 0.0f;
-            m_compressedSizeMB = 0.0f;
+            m_compressedSizeMB = 0.0f; m_transformedMB = m_transformedSHMB = 0.0f;
             m_compressionRatio = 0.0f;
             m_deadbandZeroPercent = 0.0f;
             m_state.splatCount = 0;
@@ -4139,7 +4159,11 @@ namespace Splat
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 3 Morton Swizzle & Transposition: Interleaves 3D spatial coordinate bits via Z-order curve and transposes 8-byte structures into 8 contiguous channels to maximize entropy redundancy.");
 
                     ImGui::Text("Tier 4 (Transform: YCoCg + SH residuals + Byte planes)");
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 4 Transforms: every level's records and spherical-harmonics stream, colour stored as YCoCg and each level's harmonics as the difference from the coarser level's (both lossless), then transposed into byte planes, so the codec below sees small, regular values.");
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 4 Transforms: every level's records and spherical-harmonics stream, colour stored as YCoCg and each level's harmonics as the difference from the coarser level's (both lossless), then transposed into byte planes, so the codec below sees small, regular values.\n"
+                                                                  "The size is what the codec receives: every level, uncompressed (the transforms rearrange the bytes, they do not remove any), so about twice the level 0 data of Tier 2.");
+                    if (m_transformedMB > 0.0f)
+                        ImGui::Text("  %.2f MB: records %.2f MB, harmonics %.2f MB (%.0f%%)", m_transformedMB, m_transformedMB - m_transformedSHMB, m_transformedSHMB,
+                                    100.0f * m_transformedSHMB / std::max(0.001f, m_transformedMB));
 
                     // What the colour transform bought: entropy and size side by side (entropy alone can mislead)
                     if (m_colourEstimate.valid)
@@ -4159,7 +4183,8 @@ namespace Splat
                                             (tr & PAYLOAD_TRANSFORM_SH_RESIDUAL) ? "used" : "not used");
                     }
 
-                    ImGui::Text("Tier 5 (Codec: Brotli): %.2f MB", m_compressedSizeMB);
+                    if (m_transformedMB > 0.0f) ImGui::Text("Tier 5 (Codec: Brotli): %.2f MB (%.2fx from Tier 4)", m_compressedSizeMB, m_transformedMB / std::max(0.001f, m_compressedSizeMB));
+                    else ImGui::Text("Tier 5 (Codec: Brotli): %.2f MB", m_compressedSizeMB);
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 5 Entropy Codec: the package as it would be written -- the transformed byte planes Brotli-compressed at quality 11. Every level ships in full, so this is about twice the level 0 data above before compression. Estimated from a sample while a bake is being set up; a loaded package shows its real file size.");
 
                     ImGui::Separator();
