@@ -10,6 +10,8 @@
 
 #pragma once
 #include <fstream>
+#include <functional>
+#include <cstdio>
 #include <sstream>
 #include <iomanip>
 #include <iostream>
@@ -20,6 +22,7 @@
 #include "../../libs/gstx/LiftingWavelet.h"
 #include "../../libs/gstx/ByteShuffle.h"
 #include "../../libs/gstx/SplatCodec.h"
+#include "../../libs/gstx/ShadowMeshCodec.h"
 #include "PayloadCodec.h"
 
 namespace Splat
@@ -30,6 +33,82 @@ namespace Splat
     {
         const std::vector<SplatAttributes>* attributes = nullptr;
         uint32_t shDegree = 1;
+        // Bits per SH coefficient for bands 1, 2 and 3 (8 = as encoded, lossless). See RequantiseSH.
+        uint8_t shBits[3] = { 8, 8, 8 };
+    };
+
+    // Requantises one SH stream in place (count entries of shRecordBytes signed bytes) to shBits per band (1, 2, 3).
+    // Each coefficient's (R, G, B) is taken to YCoCg-R (ColourTransform.h), each of Y, Co and Cg is snapped to
+    // 2^(bits-1) - 1 levels per sign of the signed byte range, and the triple is taken back to RGB. The result is
+    // what a reader decodes; the writer's YCoCg transform then stores exactly the snapped values (the transform is
+    // a bijection), so the entropy stage sees a small alphabet and the format and readers are unchanged. Snapping
+    // Co or Cg can wrap a channel past the end of the signed range in 8-bit arithmetic; a triple whose decode moves
+    // a channel by more than a quarter of the range keeps its exact value. Measured on Cthulhu against the 8-bit
+    // stream (colour error over all view directions, per splat): 6 bits -23% package size at 46 dB, 5 bits -33%
+    // at 41 dB, 4 bits -44% at 35 dB; snapping in RGB instead gave -7%, -25% and -41% (docs/private/sh-compression-study.md).
+    inline void RequantiseSH(uint8_t* sh, size_t count, uint32_t shRecordBytes, const uint8_t bits[3])
+    {
+        int levels[3];
+        bool any = false;
+        for (int b = 0; b < 3; b++)
+        {
+            levels[b] = bits[b] >= 8 ? 127 : bits[b] <= 1 ? 0 : (1 << (bits[b] - 1)) - 1;
+            any |= bits[b] < 8;
+        }
+        if (!any || shRecordBytes < 3) return;
+        // One table per band: every byte value's snapped value
+        uint8_t snapTable[3][256];
+        for (int b = 0; b < 3; b++)
+            for (int byte = 0; byte < 256; byte++)
+            {
+                const int L = levels[b], v = (int8_t)byte;
+                int out = v;
+                if (L == 0) out = 0;
+                else if (L < 127)
+                {
+                    const float step = 127.0f / (float)L;
+                    const int q = (int)std::lround(std::fabs((float)v) / step);
+                    out = (v < 0 ? -1 : 1) * std::min(127, (int)std::lround(q * step));
+                }
+                snapTable[b][byte] = (uint8_t)(int8_t)out;
+            }
+        const uint32_t coeffs = shRecordBytes / 3;
+        for (size_t i = 0; i < count; i++)
+            for (uint32_t k = 0; k < coeffs; k++)
+            {
+                const int band = k < 3 ? 0 : k < 8 ? 1 : 2;
+                if (levels[band] >= 127) continue;
+                const uint8_t* snap = snapTable[band];
+                uint8_t* rgb = sh + i * shRecordBytes + 3 * k;
+                uint8_t y = rgb[0], co = rgb[1], cg = rgb[2];
+                ColourTransform::Forward(y, co, cg);
+                uint8_t r = snap[y], g = snap[co], bl = snap[cg];
+                ColourTransform::Inverse(r, g, bl);
+                if (std::abs((int)(int8_t)r - (int)(int8_t)rgb[0]) > 64 || std::abs((int)(int8_t)g - (int)(int8_t)rgb[1]) > 64 ||
+                    std::abs((int)(int8_t)bl - (int)(int8_t)rgb[2]) > 64)
+                    continue; // Would wrap: keep the exact triple
+                rgb[0] = r; rgb[1] = g; rgb[2] = bl;
+            }
+    }
+
+    // What the v11 colour transform did to the data a package write encoded: mean order-0 entropy of the byte
+    // planes (bits per byte) before and after, byte-weighted over every level. Shown by the save dialog and traced.
+    struct TransformStats
+    {
+        double recordEntropyBefore = 0.0, recordEntropyAfter = 0.0, recordBytes = 0.0;
+        double shEntropyBefore = 0.0, shEntropyAfter = 0.0, shBytes = 0.0;
+        void Finish()
+        {
+            if (recordBytes > 0.0) { recordEntropyBefore /= recordBytes; recordEntropyAfter /= recordBytes; }
+            if (shBytes > 0.0) { shEntropyBefore /= shBytes; shEntropyAfter /= shBytes; }
+        }
+        // Both streams together, as a percentage change (negative = lower entropy)
+        double TotalChangePercent() const
+        {
+            const double before = recordEntropyBefore * recordBytes + shEntropyBefore * shBytes;
+            const double after = recordEntropyAfter * recordBytes + shEntropyAfter * shBytes;
+            return before > 0.0 ? 100.0 * (after / before - 1.0) : 0.0;
+        }
     };
 
     class StreamPackager
@@ -46,7 +125,11 @@ namespace Splat
             const OcclusionMipTable* pOcclusionMips = nullptr, // Mip layout of occlusionVoxels; nullptr = one mip covering the array
             const DetailGrid* detailGrid = nullptr,             // Detail heatmap (v7+); nullptr = none stored
             const SplatBakeInput* splat = nullptr,              // Splat mode (v8+, splat format 1); nullptr = 8-byte splat records
-            uint32_t payloadCodec = PayloadCodec::kDefault)     // Entropy stage of every payload (v9+); see PayloadCodec.h
+            uint32_t payloadCodec = PayloadCodec::kDefault,     // Entropy stage of every payload (v9+); see PayloadCodec.h
+            const std::function<bool(float)>& progress = nullptr, // Fraction done; returning false stops the write and deletes the file
+            uint32_t payloadTransforms = PAYLOAD_TRANSFORMS_KNOWN, // Colour stored as YCoCg-R (v11+, ColourTransform.h); 0 = as before, for A/B measurement
+            TransformStats* transformStats = nullptr,           // Filled once every level is encoded, before compression starts
+            const ShadowMesh* shadowMesh = nullptr)             // Shadow mesh section (v12+); nullptr or empty = none
         {
             std::string sflwPath = outputBasepath + ".gstx";
 
@@ -56,6 +139,13 @@ namespace Splat
                 std::cerr << "Failed to open output file: " << sflwPath << std::endl;
                 return false;
             }
+            auto stopped = [&](float fraction)
+            {
+                if (!progress || progress(fraction)) return false;
+                sflwOut.close();
+                std::remove(sflwPath.c_str());
+                return true;
+            };
 
             // Global Bounding Box
             XMFLOAT3 gMin(1e9f, 1e9f, 1e9f);
@@ -114,6 +204,9 @@ namespace Splat
                 header.splatScaleLog2Max = splatParams.scaleLog2Max;
             }
             const uint32_t recordBytes = header.splatRecordBytes;
+            // The colour transform applies to the 20-byte splat record and its SH stream; point records are legacy
+            header.payloadTransforms = splatMode ? (payloadTransforms & PAYLOAD_TRANSFORMS_KNOWN) : 0u;
+            TransformStats stats;
 
             sflwOut.write(reinterpret_cast<const char*>(&header), sizeof(SFLWFileHeader));
 
@@ -142,6 +235,7 @@ namespace Splat
 
             for (size_t i = 0; i < chunks.size(); i++)
             {
+                if (stopped(0.03f * (float)i / (float)std::max<size_t>(1, chunks.size()))) return false;
                 auto& chunk = chunks[i];
 
                 // 1. Decompose via Lifting Wavelet
@@ -168,6 +262,7 @@ namespace Splat
                     if (splatMode)
                     {
                         SplatCodec::Encode(lod.splats, *splat->attributes, lod.level, splatParams, packedSplats, shStream);
+                        RequantiseSH(shStream.data(), recordCount, header.shRecordBytes, splat->shBits);
                         recordBytesPtr = reinterpret_cast<const uint8_t*>(packedSplats.data());
                     }
                     else
@@ -176,7 +271,25 @@ namespace Splat
                         recordBytesPtr = reinterpret_cast<const uint8_t*>(packedPoints.data());
                     }
 
-                    // 3. Byte-Shuffle (the SH stream too, at its own stride)
+                    // 3. Colour as YCoCg-R (v11), measured before and after, then the byte shuffle (the SH stream too,
+                    // at its own stride)
+                    if (splatMode && recordCount > 0)
+                    {
+                        uint8_t* rec = reinterpret_cast<uint8_t*>(packedSplats.data());
+                        const double w = (double)recordCount * recordBytes;
+                        stats.recordEntropyBefore += w * ColourTransform::MeanPlaneEntropy(rec, recordCount, recordBytes);
+                        if (header.payloadTransforms & PAYLOAD_TRANSFORM_RECORD_YCOCG) ColourTransform::ApplyRecords(rec, recordCount, recordBytes);
+                        stats.recordEntropyAfter += w * ColourTransform::MeanPlaneEntropy(rec, recordCount, recordBytes);
+                        stats.recordBytes += w;
+                        if (!shStream.empty())
+                        {
+                            const double ws = (double)shStream.size();
+                            stats.shEntropyBefore += ws * ColourTransform::MeanPlaneEntropy(shStream.data(), recordCount, header.shRecordBytes);
+                            if (header.payloadTransforms & PAYLOAD_TRANSFORM_SH_YCOCG) ColourTransform::ApplySH(shStream.data(), shStream.size());
+                            stats.shEntropyAfter += ws * ColourTransform::MeanPlaneEntropy(shStream.data(), recordCount, header.shRecordBytes);
+                            stats.shBytes += ws;
+                        }
+                    }
                     LevelPayloads lp;
                     lp.lodLevel = lod.level;
                     lp.recordCount = (uint32_t)recordCount;
@@ -192,6 +305,9 @@ namespace Splat
                 }
             }
 
+            stats.Finish();
+            if (transformStats) *transformStats = stats;
+
             // 4. Compress every payload (PayloadCodec: Brotli across the cores)
             {
                 std::vector<std::vector<uint8_t>*> payloads;
@@ -201,7 +317,14 @@ namespace Splat
                         payloads.push_back(&lp.records);
                         if (lp.shUncompressedBytes > 0) payloads.push_back(&lp.sh);
                     }
-                PayloadCodec::CompressInPlace(payloads, header.payloadCodec, PayloadCodec::kPackageQuality);
+                // Nearly all of a save is spent here (Brotli at package quality, ~95% of the time on Cthulhu): 3% to 97% of the progress
+                std::function<bool(float)> compressProgress;
+                if (progress) compressProgress = [&](float f) { return progress(0.03f + 0.94f * f); };
+                if (!PayloadCodec::CompressInPlace(payloads, header.payloadCodec, PayloadCodec::kPackageQuality, compressProgress))
+                {
+                    stopped(0.03f); // Cancelled: close and delete the file
+                    return false;
+                }
                 for (const auto& levels : chunkLevels)
                     for (const auto& lp : levels)
                         if ((lp.uncompressedBytes > 0 && lp.records.empty()) || (lp.shUncompressedBytes > 0 && lp.sh.empty()))
@@ -214,6 +337,7 @@ namespace Splat
             // 5. Write the payloads in order: each level's records, then (splat mode) its SH stream
             for (size_t i = 0; i < chunks.size(); i++)
             {
+                if (stopped(0.97f + 0.03f * (float)i / (float)std::max<size_t>(1, chunks.size()))) return false;
                 auto& cm = chunkManifests[i];
                 for (auto& lp : chunkLevels[i])
                 {
@@ -304,6 +428,20 @@ namespace Splat
                 sflwOut.write(reinterpret_cast<const char*>(shRecords.data()), sizeof(SHLODRecord) * shRecords.size());
             }
 
+            // Shadow mesh section (v12+, optional; ShadowMeshCodec.h)
+            header.shadowMeshOffset = 0;
+            header.shadowMeshBytes = 0;
+            if (shadowMesh != nullptr && !shadowMesh->Empty())
+            {
+                std::vector<uint8_t> section;
+                if (ShadowMeshCodec::Encode(*shadowMesh, section))
+                {
+                    header.shadowMeshOffset = (uint64_t)sflwOut.tellp();
+                    header.shadowMeshBytes = section.size();
+                    sflwOut.write(reinterpret_cast<const char*>(section.data()), section.size());
+                }
+            }
+
             // Embedded manifest table (v4+) goes last: one ChunkManifestRecord per chunk, each followed
             // by its ChunkLODHeader array. Every LOD payload offset is already absolute, so the manifest
             // can sit anywhere; the end of the file keeps the payload region contiguous.
@@ -359,6 +497,7 @@ namespace Splat
             std::vector<OcclusionVoxelGPU> occlusionVoxels; // v3+ only; empty on older files or files with no volume baked
             OcclusionMipTable occlusionMips;                // Mip layout of occlusionVoxels (v6+); a pre-v6 volume is presented as one mip
             DetailGrid detailGrid;                          // v7+ only; invalid (nx == 0) on older files -- the app rebuilds one from LOD 0
+            ShadowMesh shadowMesh;                          // v12+ only; empty when the package has no mesh section
             uint64_t totalSplats = 0;
             size_t totalCompressedBytes = 0;
         };
@@ -460,6 +599,17 @@ namespace Splat
             {
                 outPackage.header.payloadCodec = PAYLOAD_CODEC_LIBRARY;
             }
+            // The transform field took over the trailing padding in version 11; writers always zeroed it before
+            if (outPackage.header.version < 11)
+            {
+                outPackage.header.payloadTransforms = 0;
+            }
+            // The shadow mesh fields were appended in version 12 (an older header ends before them)
+            if (outPackage.header.version < 12)
+            {
+                outPackage.header.shadowMeshOffset = 0;
+                outPackage.header.shadowMeshBytes = 0;
+            }
             const bool splatPackage = outPackage.IsSplatPackage();
             const uint32_t recordBytes = SplatRecordBytes(outPackage.header.recordFormat);
             if (!ValidateSFLWManifest(outPackage.chunkManifests, fileSize, reason, recordBytes))
@@ -544,6 +694,8 @@ namespace Splat
                     {
                         outPackage.chunkLODSplats[c][l].resize(lodHeader.splatCount);
                         ByteShuffle::Unshuffle(shuffled.data(), reinterpret_cast<uint8_t*>(outPackage.chunkLODSplats[c][l].data()), lodHeader.splatCount, recordBytes);
+                        if (outPackage.header.payloadTransforms & PAYLOAD_TRANSFORM_RECORD_YCOCG)
+                            ColourTransform::UndoRecords(reinterpret_cast<uint8_t*>(outPackage.chunkLODSplats[c][l].data()), lodHeader.splatCount, recordBytes);
 
                         // The level's spherical-harmonics stream, when the package carries one.
                         const size_t r = shRecordCursor++;
@@ -567,6 +719,8 @@ namespace Splat
                             }
                             outPackage.chunkLODSH[c][l].resize(shRecords[r].uncompressedByteSize);
                             ByteShuffle::Unshuffle(shShuffled.data(), outPackage.chunkLODSH[c][l].data(), lodHeader.splatCount, outPackage.header.shRecordBytes);
+                            if (outPackage.header.payloadTransforms & PAYLOAD_TRANSFORM_SH_YCOCG)
+                                ColourTransform::UndoSH(outPackage.chunkLODSH[c][l].data(), outPackage.chunkLODSH[c][l].size());
                             outPackage.totalCompressedBytes += shRecords[r].compressedByteSize;
                         }
                     }
@@ -649,6 +803,21 @@ namespace Splat
                     sflwIn.read(reinterpret_cast<char*>(dg.score.data()), (std::streamsize)cells);
                     if (!sflwIn.good()) { dg = DetailGrid{}; sflwIn.clear(); }
                     else { for (uint8_t v : dg.score) if (v) dg.occupiedCells++; }
+                }
+            }
+
+            // Shadow mesh section (v12+)
+            outPackage.shadowMesh = ShadowMesh{};
+            if (outPackage.header.shadowMeshOffset != 0)
+            {
+                std::vector<uint8_t> section((size_t)outPackage.header.shadowMeshBytes);
+                sflwIn.clear();
+                sflwIn.seekg((std::streamoff)outPackage.header.shadowMeshOffset, std::ios::beg);
+                sflwIn.read(reinterpret_cast<char*>(section.data()), (std::streamsize)section.size());
+                std::string meshError;
+                if (!sflwIn.good() || !ShadowMeshCodec::Decode(section.data(), section.size(), outPackage.shadowMesh, meshError))
+                {
+                    return fail("The shadow mesh section cannot be read: " + (sflwIn.good() ? meshError : std::string("the file is truncated.")));
                 }
             }
 

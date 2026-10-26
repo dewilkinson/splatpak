@@ -21,6 +21,8 @@
 #include <vector>
 #include <cstdint>
 #include <thread>
+#include <chrono>
+#include <functional>
 #include <atomic>
 #include <algorithm>
 #include "WaveletTypes.h"
@@ -77,24 +79,41 @@ namespace Splat
 
         // Every payload replaced by its compressed form. Brotli runs across the cores (up to kMaxThreads);
         // the library stage runs one payload after another, as it is not known to be reentrant.
-        static void CompressInPlace(std::vector<std::vector<uint8_t>*>& payloads, uint32_t codec = kDefault, int quality = kPackageQuality)
+        // progress, when given, is polled on the calling thread with the fraction of payloads done; returning false
+        // stops handing out payloads and returns false once the ones in flight finish (the rest stay uncompressed)
+        static bool CompressInPlace(std::vector<std::vector<uint8_t>*>& payloads, uint32_t codec = kDefault, int quality = kPackageQuality,
+                                    const std::function<bool(float)>& progress = nullptr)
         {
-            if (codec != PAYLOAD_CODEC_BROTLI)
-            {
-                for (auto* p : payloads) *p = Compress(*p, codec, quality);
-                return;
-            }
-            std::atomic<size_t> next{ 0 };
+            // Progress counts input bytes: a full-resolution level takes far longer than a coarse one
+            size_t totalBytes = 0;
+            for (const auto* p : payloads) totalBytes += p->size();
+            std::atomic<size_t> next{ 0 }, finished{ 0 }, finishedBytes{ 0 };
             auto work = [&]()
             {
-                for (size_t i; (i = next.fetch_add(1)) < payloads.size();)
+                for (size_t i; (i = next.fetch_add(1)) < payloads.size(); finished++)
+                {
+                    const size_t bytes = payloads[i]->size();
                     *payloads[i] = Compress(*payloads[i], codec, quality);
+                    finishedBytes += bytes;
+                }
             };
-            const unsigned threads = std::max(1u, std::min({ std::thread::hardware_concurrency(), kMaxThreads, (unsigned)payloads.size() }));
+            const unsigned threads = codec != PAYLOAD_CODEC_BROTLI ? 1u : std::max(1u, std::min({ std::thread::hardware_concurrency(), kMaxThreads, (unsigned)payloads.size() }));
             std::vector<std::thread> pool;
-            for (unsigned t = 1; t < threads; t++) pool.emplace_back(work);
-            work();
+            for (unsigned t = progress ? 0 : 1; t < threads; t++) pool.emplace_back(work);
+            bool keepGoing = true;
+            if (!progress) work();
+            else
+                while (finished.load() < payloads.size() && next.load() < payloads.size() + pool.size())
+                {
+                    if (keepGoing && !progress((float)((double)finishedBytes.load() / (double)std::max<size_t>(1, totalBytes))))
+                    {
+                        keepGoing = false;
+                        next = payloads.size() + pool.size(); // Nothing more is handed out
+                    }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
             for (auto& t : pool) t.join();
+            return keepGoing;
         }
     };
 }

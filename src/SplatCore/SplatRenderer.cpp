@@ -487,6 +487,7 @@ namespace Splat
             m_renderPath = m_gpuCaps.shaderModel6 ? RenderPath::VertexShadersSM6 : RenderPath::VertexShadersSM5;
         }
         }
+        CreateShadowMeshPipelines(pSwapChain); // Classic graphics pipeline: the same on every render path
         if (m_renderPath != RenderPath::MeshShaders)
         {
             CreateVertexShaderPipelines(pSwapChain);
@@ -736,6 +737,74 @@ namespace Splat
     }
 
     // Releases every GPU resource/PSO/buffer created in OnCreate
+    // View Shadow Mesh: ShadowMesh.hlsl's vertex and pixel shaders, opaque and depth-writing, in two render-target formats
+    // like the occluder. A failure only loses the debug view.
+    void SplatRenderer::CreateShadowMeshPipelines(SwapChain* pSwapChain)
+    {
+        D3D12_SHADER_BYTECODE vs = {}, ps = {};
+        const bool ok = CompileShaderFromFile("ShadowMesh.hlsl", NULL, "shadowMeshVS", "-T vs_6_0", &vs) && vs.pShaderBytecode != nullptr &&
+                        CompileShaderFromFile("ShadowMesh.hlsl", NULL, "shadowMeshPS", "-T ps_6_0", &ps) && ps.pShaderBytecode != nullptr;
+        if (!ok)
+        {
+            LogTransitionTrace("SplatRenderer::CreateShadowMeshPipelines ERROR: ShadowMesh.hlsl failed to compile -- View Shadow Mesh will draw nothing.");
+            return;
+        }
+        CD3DX12_RASTERIZER_DESC rasterizer(D3D12_DEFAULT);
+        rasterizer.CullMode = D3D12_CULL_MODE_NONE;
+        CD3DX12_DEPTH_STENCIL_DESC depthWrite(D3D12_DEFAULT);
+        depthWrite.DepthEnable = TRUE;
+        depthWrite.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ALL;
+        depthWrite.DepthFunc = D3D12_COMPARISON_FUNC_LESS;
+        for (int k = 0; k < 2; k++)
+        {
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC d = {};
+            d.pRootSignature = m_pRootSignature;
+            d.VS = vs;
+            d.PS = ps;
+            d.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+            d.SampleMask = UINT_MAX;
+            d.RasterizerState = rasterizer;
+            d.DepthStencilState = depthWrite;
+            d.InputLayout = { nullptr, 0 };
+            d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            d.NumRenderTargets = 1;
+            d.RTVFormats[0] = k == 0 ? pSwapChain->GetFormat() : m_unormFormat;
+            d.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+            d.SampleDesc = DXGI_SAMPLE_DESC{ 1, 0 };
+            ID3D12PipelineState** out = k == 0 ? &m_pShadowMeshPSO : &m_pShadowMeshPSOUnorm;
+            const HRESULT hr = m_pDevice->GetDevice()->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(out));
+            if (FAILED(hr)) LogTransitionTrace("SplatRenderer::CreateShadowMeshPipelines ERROR: PSO %d failed hr=0x%08X", k, (unsigned int)hr);
+        }
+    }
+
+    // Uploads the shadow mesh when it changes. Upload-heap buffers read directly as SRVs, like the occlusion volume's.
+    void SplatRenderer::UpdateShadowMeshBuffers(const State* pState)
+    {
+        if (pState->shadowMeshVersion == m_shadowMeshUploadedVersion) return;
+        m_shadowMeshUploadedVersion = pState->shadowMeshVersion;
+        m_pDevice->GPUFlush();
+        if (m_pShadowMeshVertexBuffer) { m_pShadowMeshVertexBuffer->Release(); m_pShadowMeshVertexBuffer = nullptr; }
+        if (m_pShadowMeshIndexBuffer) { m_pShadowMeshIndexBuffer->Release(); m_pShadowMeshIndexBuffer = nullptr; }
+        m_shadowMeshIndexCount = 0;
+        if (pState->pShadowMeshVertices == nullptr || pState->pShadowMeshIndices == nullptr || pState->shadowMeshIndexCount == 0) return;
+        auto upload = [&](const void* data, size_t bytes, ID3D12Resource** out, const char* name)
+        {
+            CD3DX12_HEAP_PROPERTIES heapProps(D3D12_HEAP_TYPE_UPLOAD);
+            CD3DX12_RESOURCE_DESC desc = CD3DX12_RESOURCE_DESC::Buffer(bytes);
+            if (FAILED(m_pDevice->GetDevice()->CreateCommittedResource(&heapProps, D3D12_HEAP_FLAG_NONE, &desc, D3D12_RESOURCE_STATE_GENERIC_READ, nullptr, IID_PPV_ARGS(out))))
+                return false;
+            SetName(*out, name);
+            void* mapped = nullptr;
+            (*out)->Map(0, nullptr, &mapped);
+            memcpy(mapped, data, bytes);
+            (*out)->Unmap(0, nullptr);
+            return true;
+        };
+        if (upload(pState->pShadowMeshVertices, (size_t)pState->shadowMeshVertexCount * 16, &m_pShadowMeshVertexBuffer, "SplatRenderer::m_pShadowMeshVertexBuffer") &&
+            upload(pState->pShadowMeshIndices, (size_t)pState->shadowMeshIndexCount * 4, &m_pShadowMeshIndexBuffer, "SplatRenderer::m_pShadowMeshIndexBuffer"))
+            m_shadowMeshIndexCount = pState->shadowMeshIndexCount;
+    }
+
     // The fallback's pipelines: the same stages as the mesh path as instanced vertex shaders (see
     // Splat.hlsl, mainVS/itemVS/occluderVS), built as classic graphics pipeline states with no input
     // layout (the shaders read the splat buffers by SV_InstanceID). Targets are vs_6_0/ps_6_0; in
@@ -958,6 +1027,12 @@ namespace Splat
         if (m_pOcclusionVoxelBuffer) { m_pOcclusionVoxelBuffer->Unmap(0, nullptr); m_pOcclusionVoxelBuffer->Release(); m_pOcclusionVoxelBuffer = nullptr; }
         m_pOcclusionVoxelBufferMapped = nullptr;
         m_occlusionVoxelBufferCapacityBytes = 0;
+        if (m_pShadowMeshPSO) { m_pShadowMeshPSO->Release(); m_pShadowMeshPSO = nullptr; }
+        if (m_pShadowMeshPSOUnorm) { m_pShadowMeshPSOUnorm->Release(); m_pShadowMeshPSOUnorm = nullptr; }
+        if (m_pShadowMeshVertexBuffer) { m_pShadowMeshVertexBuffer->Release(); m_pShadowMeshVertexBuffer = nullptr; }
+        if (m_pShadowMeshIndexBuffer) { m_pShadowMeshIndexBuffer->Release(); m_pShadowMeshIndexBuffer = nullptr; }
+        m_shadowMeshUploadedVersion = UINT32_MAX;
+        m_shadowMeshIndexCount = 0;
         m_lastOcclusionVoxelsPtr = nullptr;
         m_lastOcclusionVoxelCount = 0;
         m_clearBitmaskCS.OnDestroy();
@@ -2197,6 +2272,7 @@ namespace Splat
         // Depth sorting is ALWAYS executed from the active viewer's perspective
         UpdateSplatBuffers(pState, eyePos, forwardNorm);
         UpdateOcclusionVoxelBuffer(pState);
+        UpdateShadowMeshBuffers(pState);
         uint32_t splatCount = pState->splatCount;
 
         // Compute Geometry Optimization & Culling Statistics
@@ -2430,6 +2506,20 @@ namespace Splat
             // Drawn whenever culling is enabled OR the user just wants to look at the volume on its
             // own -- "view only" must not require "enable culling" too, or the two together would draw
             // neither the occluder (culling off) nor the splats (view-only skips them): a blank screen.
+            // View Shadow Mesh draws the mesh in place of the occlusion volume (and of the splats)
+            if (pState->showShadowMesh)
+            {
+                ID3D12PipelineState* pMeshPSO = splatDisplayBlend ? m_pShadowMeshPSOUnorm : m_pShadowMeshPSO;
+                if (pMeshPSO == nullptr || m_shadowMeshIndexCount == 0) return;
+                pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
+                pCmdLst->SetPipelineState(pMeshPSO);
+                pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
+                pCmdLst->SetGraphicsRootShaderResourceView(1, m_pShadowMeshIndexBuffer->GetGPUVirtualAddress());  // t0
+                pCmdLst->SetGraphicsRootShaderResourceView(2, m_pShadowMeshVertexBuffer->GetGPUVirtualAddress()); // t1
+                pCmdLst->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                pCmdLst->DrawInstanced(m_shadowMeshIndexCount, 1, 0, 0);
+                return;
+            }
             // Splat mode with display-space blending draws into the UNORM view: use the occluder PSO built for it
             ID3D12PipelineState* pOccluderPSO = splatDisplayBlend ? m_pOccluderPSOUnorm : m_pOccluderPSO;
             if (pOccluderPSO == nullptr) return;
@@ -2875,7 +2965,7 @@ namespace Splat
                 DrawOccluderPass();
                 chunkedPassDrawn = true;
 
-                if (!pState->showOcclusionVolumeOnly)
+                if (!pState->showOcclusionVolumeOnly && !pState->showShadowMesh)
                 {
                     auto mainDispatchStart = std::chrono::high_resolution_clock::now();
 
@@ -3260,7 +3350,7 @@ namespace Splat
                 DrawOccluderPass();
 
             // Draw Main Mesh Shader Pass
-            if (flatPipeline && !pState->showOcclusionVolumeOnly)
+            if (flatPipeline && !pState->showOcclusionVolumeOnly && !pState->showShadowMesh)
             {
                 auto mainDispatchStart2 = std::chrono::high_resolution_clock::now();
 
@@ -3418,7 +3508,7 @@ namespace Splat
                 cbAddress = loupeCbAddress;
                 cbCulledAddress = 0;
                 DrawOccluderPass();
-                if (!pState->showOcclusionVolumeOnly)
+                if (!pState->showOcclusionVolumeOnly && !pState->showShadowMesh)
                 {
                     const D3D12_GPU_VIRTUAL_ADDRESS splatAddr = pGpuRes->GetGPUVirtualAddress();
                     pCmdLst->SetGraphicsRootSignature(m_pRootSignature);

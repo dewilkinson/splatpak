@@ -103,6 +103,15 @@ namespace Splat
             OcclusionMipTable        occlusionMips;                   // Mip layout of pOcclusionVoxels (see OcclusionMipTable); mipCount 0 = the array is one mip
             int32_t                  occlusionMipOverride = -1;       // -1 = pick the mip automatically from projected cell size; 0..mipCount-1 = force that mip (debug/compare)
             float                    occlusionMipMinCellPixels = 2.5f; // Auto rule: finest mip whose cell still covers at least this many pixels at the model's nearest point
+
+            // View Shadow Mesh (debug view): the package's shadow mesh (ShadowMesh.h), solid and flat-shaded in its vertex
+            // colours, instead of the splats. Vertices are 16 bytes: float3 position, uint colour (0xAABBGGRR).
+            const void*              pShadowMeshVertices = nullptr;
+            uint32_t                 shadowMeshVertexCount = 0;
+            const uint32_t*          pShadowMeshIndices = nullptr;
+            uint32_t                 shadowMeshIndexCount = 0;
+            uint32_t                 shadowMeshVersion = 0; // Bumped whenever the mesh changes, so it re-uploads
+            bool                     showShadowMesh = false;
         };
 
         struct FrameTimingMetrics
@@ -291,6 +300,15 @@ namespace Splat
         void CreateVertexShaderPipelines(CAULDRON_DX12::SwapChain* pSwapChain); // The fallback's graphics PSOs (main, occlusion-test, item prepass, occluder)
 
         void UpdateOcclusionVoxelBuffer(const State* pState);
+        // View Shadow Mesh: a classic graphics pipeline on every render path (ShadowMesh.hlsl), and its two upload buffers
+        void CreateShadowMeshPipelines(CAULDRON_DX12::SwapChain* pSwapChain);
+        void UpdateShadowMeshBuffers(const State* pState);
+        ID3D12PipelineState* m_pShadowMeshPSO = nullptr;
+        ID3D12PipelineState* m_pShadowMeshPSOUnorm = nullptr; // On the UNORM target of display-space splat blending
+        ID3D12Resource*      m_pShadowMeshVertexBuffer = nullptr;
+        ID3D12Resource*      m_pShadowMeshIndexBuffer = nullptr;
+        uint32_t             m_shadowMeshUploadedVersion = UINT32_MAX;
+        uint32_t             m_shadowMeshIndexCount = 0;
         uint32_t SelectOcclusionMip(const State* pState, const OcclusionMipTable& mips, const XMFLOAT3& eyePos);
         uint32_t m_activeOcclusionMip = 0;             // Mip chosen last frame; the hysteresis in SelectOcclusionMip works from it
         float    m_activeOcclusionMipCellPixels = 0.0f;

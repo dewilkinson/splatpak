@@ -1,6 +1,6 @@
 # Shadow mesh baked into GSTx packages
 
-Status: agreed
+Status: implemented (see "As built" in the design)
 Date: 2026-10-25
 Owner: Dave Wilkinson
 
@@ -10,14 +10,14 @@ collision, all from one smooth, low-polygon mesh that SplatLab bakes into the pa
 UE5Splats' planned shadow proxy built from the interior occlusion volume (UE5Splats D20).
 
 ## User-visible behaviour
-- **SplatLab, GSTx Bake tab.** Saving a package also bakes a shadow mesh. There are no new controls: the
+- **SplatLab, Package Bake tab.** Saving a package also bakes a shadow mesh. There are no new controls: the
   mesh lies on the visible surface of the level 0 splats (not inside it) and has three levels of detail.
   The finest level aims at about 10,000 triangles and spends more where the model is thin, so thin parts
   such as tentacle tips and fingers keep their shadow. The save's status line reports the triangle count
   of each level.
-- **Package format.** A new format version (11) adds an optional mesh section: the three levels, each an
+- **Package format.** A new format version (12) adds an optional mesh section: the three levels, each an
   indexed triangle list in model space. Its layout is documented in `docs/GSTX_FORMAT_SPECIFICATION.md`.
-  Packages without the section (version 10 and older, `.sflw` included) still load everywhere.
+  Packages without the section (version 11 and older, `.sflw` included) still load everywhere.
 - **SplatLab, Renderer tab.** Packages with a mesh show its level count and triangle counts in Input
   Model Metrics. A **Show Shadow Mesh** checkbox (off by default, remembered like the other debug views)
   draws the finest level as a wireframe over the splats, with a banner row naming it, as the other debug
@@ -41,7 +41,7 @@ UE5Splats' planned shadow proxy built from the interior occlusion volume (UE5Spl
 ## Constraints
 - Render paths: splat drawing on the mesh, VS SM6 and VS SM5 paths is unchanged.
 - Modes: Studio bakes the mesh; Viewer and the console tools read it.
-- Package compatibility: version 11 readers read versions 1 to 10 unchanged. Versions 10 and older are
+- Package compatibility: version 12 readers read versions 1 to 11 unchanged. Versions 11 and older are
   never rewritten on load.
 - Size: the mesh section is at most 1 MB for any bundled package.
 - Bake time: at most 20% longer than today for the bundled Cthulhu package.
@@ -59,7 +59,7 @@ UE5Splats' planned shadow proxy built from the interior occlusion volume (UE5Spl
   have one.
 
 ## Acceptance criteria
-1. Baking each bundled package writes format version 11 with a mesh section of three levels. The finest
+1. Baking each bundled package writes format version 12 with a mesh section of three levels. The finest
    level has 8,000 to 20,000 triangles and each coarser level at most half the triangles of the previous
    one. `TestLoadPackage` prints each level's triangle count.
 2. The finest level is closed (every edge shared by exactly two triangles) and has no degenerate
@@ -73,7 +73,7 @@ UE5Splats' planned shadow proxy built from the interior occlusion volume (UE5Spl
    Metrics report the triangle counts.
 5. Cthulhu's bake takes at most 20% longer than at the start of this work (same machine, Release).
 6. Version 10 `.gstx` and version 9 `.sflw` packages still load in SplatLab, the Viewer, `TestLoadPackage`
-   and UE5Splats, and SplatLab's splat rendering of a version 11 package is pixel-identical to the same
+   and UE5Splats, and SplatLab's splat rendering of a version 12 package is pixel-identical to the same
    package without its mesh.
 7. UE5Splats' automation tests read the mesh section of every bundled package and check its level and
    triangle counts against the package.
@@ -89,7 +89,7 @@ UE5Splats' planned shadow proxy built from the interior occlusion volume (UE5Spl
     or simplified.
 13. In SplatLab, Show Shadow Mesh draws the finest level over the Cthulhu package on every render path (mesh,
     VS SM6, VS SM5) with its banner row; a screenshot shows the wireframe hugging the model, tentacle tips
-    included. The checkbox is disabled for a version 10 package.
+    included. The checkbox is disabled for a version 11 or older package.
 
 ## Decisions (user, 2026-10-25)
 - Built at bake time and stored in the package, not at import.

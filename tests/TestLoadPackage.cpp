@@ -18,6 +18,12 @@ int main(int argc, char** argv)
     if (!ok) std::cout << reason << std::endl;
     std::cout << "LoadPackage ok=" << ok << " version=" << pkg.header.version << " codec=" << Splat::PayloadCodec::Name(pkg.header.payloadCodec)
               << " chunks=" << pkg.chunkManifests.size() << " splats=" << pkg.totalSplats << " bytes=" << pkg.totalCompressedBytes << std::endl;
+    std::cout << "Shadow mesh: ";
+    if (pkg.shadowMesh.Empty()) std::cout << "none";
+    for (size_t l = 0; l < pkg.shadowMesh.levels.size(); l++)
+        std::cout << (l ? ", " : "") << "level " << l << " " << pkg.shadowMesh.levels[l].TriangleCount() << " triangles";
+    if (!pkg.shadowMesh.Empty()) std::cout << " (section " << pkg.header.shadowMeshBytes << " bytes)";
+    std::cout << std::endl;
     for (size_t i = 0; i < pkg.chunkManifests.size(); i++)
     {
         std::cout << "Chunk " << i << ": id=" << pkg.chunkManifests[i].chunkId << " LODs=" << pkg.chunkManifests[i].lods.size() << " splats=" << pkg.chunkLOD0Splats[i].size() << std::endl;

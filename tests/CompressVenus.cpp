@@ -8,19 +8,39 @@
 // 20-byte Gaussian records, the baked interior occlusion volume, and the source file size in the header.
 // Used to regenerate the bundled assets without the GUI, and as an end-to-end pipeline smoke test.
 //   CompressVenus <input.ply> <output base path> [shave 0..10] [spherical-harmonics degree 0..3, default 3]
+//                 [--no-colour-transform]   (writes colour as RGB, as before v11: for measuring what YCoCg saves)
+//                 [--sh-bits b1,b2,b3]   (requantise SH bands 1-3 to fewer bits, as SplatLab's SH Precision does: lossy)
 
 #include <iostream>
 #include <fstream>
 #include <string>
 #include <vector>
+#include <cstdio>
+#include <chrono>
 #include "../src/SplatCore/PLYLoader.h"
 #include "../src/SplatCore/SpatialOctree.h"
 #include "../src/SplatCore/StreamPackager.h"
 #include "../src/SplatCore/PointCloudGaussians.h"
 #include "../libs/gstx/OcclusionVolume.h"
+#include "../libs/gstx/ShadowMeshBuilder.h"
 
-int main(int argc, char** argv)
+int main(int argcIn, char** argvIn)
 {
+    // Flags may appear anywhere; the rest are positional
+    bool colourTransform = true;
+    int shBits[3] = { 8, 8, 8 };
+    uint32_t transforms = Splat::PAYLOAD_TRANSFORMS_KNOWN; // --transforms N: the payloadTransforms bits, for measurement
+    std::vector<char*> args;
+    for (int i = 0; i < argcIn; i++)
+    {
+        const std::string a = argvIn[i];
+        if (a == "--no-colour-transform") colourTransform = false;
+        else if (a == "--sh-bits" && i + 1 < argcIn) sscanf(argvIn[++i], "%d,%d,%d", &shBits[0], &shBits[1], &shBits[2]);
+        else if (a == "--transforms" && i + 1 < argcIn) transforms = (uint32_t)atoi(argvIn[++i]);
+        else args.push_back(argvIn[i]);
+    }
+    const int argc = (int)args.size();
+    char** argv = args.data();
     std::string inputPLY = (argc > 1) ? argv[1] : "models/venus.ply";
     std::string outputBase = (argc > 2) ? argv[2] : "models/venus";
     float shave = (argc > 3) ? (float)atof(argv[3]) : 0.0f;
@@ -55,7 +75,7 @@ int main(int argc, char** argv)
     }
     float maxDim = std::max(maxP.x - minP.x, std::max(maxP.y - minP.y, maxP.z - minP.z));
 
-    // Same automatic defaults SplatLab applies when a .ply is opened (SplatLabApp::RecomputeWaveletHierarchy)
+    // Same automatic defaults SplatLab applies when a .ply is opened (SplatLabApp::DefaultBakeParams)
     float chunkSize = std::max(0.10f, maxDim / 4.0f);              // ~4x4x4 chunks per model
     uint32_t maxLODs = splats.size() > 2000000 ? 5 : splats.size() > 500000 ? 4 : splats.size() > 100000 ? 3 : 2;
     float deadbandMeters = std::max(0.5f, maxDim * 1.5f) / 1000.0f; // Deadband scales with model size
@@ -88,19 +108,39 @@ int main(int argc, char** argv)
         std::cout << "Point cloud: a Gaussian of sigma " << sigma << " at each point (half the median spacing)" << std::endl;
     }
 
+    // Shadow mesh (v12): the smooth mesh following the visible surface, from the level 0 Gaussians (ShadowMesh.h)
+    Splat::ShadowMesh shadowMesh;
+    {
+        std::string trace;
+        const auto t0 = std::chrono::steady_clock::now();
+        if (Splat::ShadowMeshBuilder::Build(splats, splatAttrs.empty() ? nullptr : &splatAttrs, minP, maxP, shadowMesh, trace))
+            std::cout << trace << "Shadow mesh built in " << std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count() << " s" << std::endl;
+        else
+            std::cout << "No shadow mesh (this codec build has none)" << std::endl;
+    }
+
     auto chunks = Splat::SpatialOctree::PartitionIntoChunks(splats, chunkSize);
     std::cout << "Partitioned into " << chunks.size() << " chunks. Packaging to " << outputBase << ".gstx..." << std::endl;
 
     Splat::SplatBakeInput splatInput;
     splatInput.attributes = &splatAttrs;
     splatInput.shDegree = pointCloud ? 0u : (uint32_t)splatDegree;
+    for (int b = 0; b < 3; b++) splatInput.shBits[b] = (uint8_t)std::max(1, std::min(8, shBits[b]));
+    if (!colourTransform) transforms = 0;
+    if (shBits[0] < 8 || shBits[1] < 8 || shBits[2] < 8)
+        printf("SH requantised to %d / %d / %d bits (bands 1 / 2 / 3)\n", shBits[0], shBits[1], shBits[2]);
     std::cout << "Splat mode: 20-byte Gaussian records, spherical-harmonics degree " << splatInput.shDegree << std::endl;
-    if (!Splat::StreamPackager::PackageDataset(outputBase, chunks, maxLODs, deadbandMeters, splatRadius, occlusion, sourceFileBytes, &occlusionMips, &detailGrid, &splatInput))
+    Splat::TransformStats transformStats;
+    if (!Splat::StreamPackager::PackageDataset(outputBase, chunks, maxLODs, deadbandMeters, splatRadius, occlusion, sourceFileBytes, &occlusionMips, &detailGrid, &splatInput,
+                                               Splat::PayloadCodec::kDefault, nullptr, transforms, &transformStats, &shadowMesh))
     {
         std::cerr << "Failed to package dataset" << std::endl;
         return 1;
     }
 
+    printf("Colour transform %s: entropy records %.3f -> %.3f, SH %.3f -> %.3f bits/byte (%+.1f%% overall)\n", colourTransform ? "YCoCg" : "off",
+           transformStats.recordEntropyBefore, transformStats.recordEntropyAfter, transformStats.shEntropyBefore, transformStats.shEntropyAfter,
+           transformStats.TotalChangePercent());
     std::ifstream out(outputBase + ".gstx", std::ios::ate | std::ios::binary);
     uint64_t packageBytes = out.is_open() ? (uint64_t)out.tellg() : 0;
     std::cout << "Successfully generated " << outputBase << ".gstx: " << packageBytes / (1024.0 * 1024.0) << " MB, "

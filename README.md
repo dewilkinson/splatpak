@@ -6,11 +6,11 @@ SplatLab is a DirectX 12 renderer and toolchain for streaming very large 3D Gaus
 
 ## Screenshots
 
-| GSTx Bake | Renderer | Streaming |
+| Package Bake | Renderer | Streaming |
 |---|---|---|
-| ![GSTx Bake tab: preprocessing parameters and the baked occlusion volume](docs/images/sl-01.png) | ![Renderer tab: runtime LOD, refinement visualizer and occlusion volume controls](docs/images/sl-02.png) | ![Streaming tab: the bounding octahedron glyph, network profiles and the LOD residency graph](docs/images/sl-03.png) |
+| ![Package Bake tab: preprocessing parameters and the baked occlusion volume](docs/images/sl-01.png) | ![Renderer tab: runtime LOD, refinement visualizer and occlusion volume controls](docs/images/sl-02.png) | ![Streaming tab: the bounding octahedron glyph, network profiles and the LOD residency graph](docs/images/sl-03.png) |
 
-The Cthulhu Statue scan (3.3 M points, 748 MB raw) streamed from a 44 MB `.gstx` package. The GSTx Bake tab bakes the package, the Renderer tab drives LOD and the visualisers, and the Streaming tab shows the bounding octahedron and per-level residency.
+The Cthulhu Statue scan (3.3 M points, 748 MB raw) streamed from a 44 MB `.gstx` package. The Package Bake tab bakes the package, the Renderer tab drives LOD and the visualisers, and the Streaming tab shows the bounding octahedron and per-level residency.
 
 ## How it works
 
@@ -26,7 +26,7 @@ The apps sit on AMD's [Cauldron](https://github.com/GPUOpen-LibrariesAndSDKs/Cau
 
 ## Solution structure
 
-1. **`SplatLab` (Tools)**. `tools/SplatLab/main.cpp`, a few lines that start the shared app in Studio mode: the GSTx Bake, Renderer and Streaming tabs in one window. The default startup project and what the User Guide describes.
+1. **`SplatLab` (Tools)**. `tools/SplatLab/main.cpp`, a few lines that start the shared app in Studio mode: the Package Bake, Renderer and Streaming tabs in one window. The default startup project and what the User Guide describes.
 
 2. **`SplatLabViewer` (Apps)**. `src/DX12/main.cpp`, the same few lines starting the shared app in Viewer mode: the Renderer and Streaming tabs with the generator hidden. Same renderer, fallback, TAA, silhouette prepass, occlusion volume and streaming simulator by construction.
 

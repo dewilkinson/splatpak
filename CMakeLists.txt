@@ -59,7 +59,7 @@ add_custom_target(clean_stale_binaries
     COMMENT "Removing stale executables from bin/"
 )
 set_target_properties(clean_stale_binaries PROPERTIES FOLDER "Core")
-foreach(_exe SplatLab SplatLabViewer CompressVenus TestGPUSort TestBitonicCPU TestLoadPackage TestSplatCodec TestGeometryCull TestOcclusionVolume)
+foreach(_exe SplatLab SplatLabViewer CompressVenus TestGPUSort TestBitonicCPU TestLoadPackage TestSplatCodec TestColourTransform TestShadowMesh TestGeometryCull TestOcclusionVolume)
     if(TARGET ${_exe})
         add_dependencies(${_exe} clean_stale_binaries)
     endif()

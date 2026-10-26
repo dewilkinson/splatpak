@@ -1,8 +1,8 @@
 # GSTx Package Format Specification
 
-**GSTx Gaussian Stream Package (`.gstx`), Format Version 10**
+**GSTx Gaussian Stream Package (`.gstx`), Format Version 12**
 
-Packages written before version 10 carry the signature "SFLW" and the suffix `.sflw`; the layout is the same, and readers accept both (Clause 12.2).
+Packages written before version 10 carry the signature "SFLW" and the suffix `.sflw`; the layout is the same, and readers accept both (Clause 13.2).
 
 Document status: Approved. Supersedes the description of format versions 1 through 7 that lived in code comments. This document is maintained with the format: every change to a structure, a field or a version number is reflected here in the same change set.
 
@@ -34,6 +34,7 @@ With payload codec 0 (Clause 8) the entropy stage's bit-level encoding is not sp
 
 - IEEE Std 754-2019, *IEEE Standard for Floating-Point Arithmetic* (binary32 and binary16 encodings).
 - IETF RFC 7932, *Brotli Compressed Data Format*, 2016 (payload codec 1, Clause 8).
+- Malvar, Sullivan, *YCoCg-R: A Color Space with RGB Reversibility and Low Dynamic Range*, JVT-I014, 2003 (the colour transform, Clause 8.1).
 - Kerbl, Kopanas, Leimkühler, Drettakis, *3D Gaussian Splatting for Real-Time Radiance Field Rendering*, ACM TOG 42(4), 2023 (the spherical-harmonics basis and coefficient order, Clause 9.3).
 - DirectXMath `XMFLOAT3`/`XMFLOAT4` component order (x, y, z, w) as used by the reference implementation.
 
@@ -82,7 +83,8 @@ A conforming file consists of, in order of appearance:
 3. the occlusion voxel array (Clause 10), if present;
 4. the detail grid (Clause 11), if present;
 5. the SH table (Clause 9.5), if present;
-6. the chunk manifest (Clause 6.3), at `manifestOffset`.
+6. the shadow mesh section (Clause 12), if present;
+7. the chunk manifest (Clause 6.3), at `manifestOffset`.
 
 A reader shall locate every structure through the offsets in the header and the manifest and shall not rely on the order above, which is informative.
 
@@ -124,8 +126,10 @@ The header is a single structure whose extent depends on the format version: eac
 | 188 | `f32` | `splatScaleLog2Max` | 8 | log₂ of the scale that a scale byte of 255 decodes to. |
 | 192 | `u64` | `shManifestOffset` | 8 | Absolute offset of the SH table (Clause 9.5); 0 = no SH stream. |
 | 200 | `u32` | `payloadCodec` | 9 | Entropy stage of every payload (Clause 8): 0 = the codec library's own stage, 1 = Brotli. |
-| 204 | `u32` | *padding* | 9 | Trailing alignment of the structure; a writer shall write 0 and a reader shall ignore it. |
-| 208 | | *end* | | |
+| 204 | `u32` | `payloadTransforms` | 11 | Transforms applied to the payloads before the byte-plane transpose (Clause 8.1), as bits: bit 0 = record colour as YCoCg-R, bit 1 = SH triples as YCoCg-R. Other bits shall be 0. Before version 11 this word was padding that writers set to 0. |
+| 208 | `u64` | `shadowMeshOffset` | 12 | Absolute offset of the shadow mesh section (Clause 12); 0 = no mesh. |
+| 216 | `u64` | `shadowMeshBytes` | 12 | Size of the shadow mesh section in bytes; 0 when there is none. |
+| 224 | | *end* | | |
 
 ### 6.2 Header extent by version
 
@@ -141,6 +145,8 @@ The header is a single structure whose extent depends on the format version: eac
 | 8 | 200 | adds the record format, the splat quantisation parameters and the SH table |
 | 9 | 208 | adds the payload codec |
 | 10 | 208 | no new fields; the signature becomes "GSTX" |
+| 11 | 208 | `payloadTransforms` takes over the trailing padding |
+| 12 | 224 | adds the shadow mesh section's offset and size |
 
 A file shorter than the extent of its declared version is truncated and shall be rejected.
 
@@ -231,6 +237,17 @@ A level's records are laid out contiguously (`splatCount × splatRecordBytes` by
 
 A payload that does not decode, or that decodes to a different size, shall be reported as such and shall not be silently skipped. A reader that does not know the declared codec shall reject the package.
 
+### 8.1 Colour transform (version 11)
+
+The transform is reversible YCoCg-R in 8-bit modular arithmetic. With every operation modulo 256 and `h(v)` the value `v` read as a signed byte (two's complement), shifted right by one with sign extension (the floor of `v / 2`), and returned as a byte:
+
+```
+writer:  Co = R − B    t = B + h(Co)    Cg = G − t    Y = t + h(Cg)       stores (Y, Co, Cg)
+reader:  t = Y − h(Cg)    G = Cg + t    B = t − h(Co)    R = B + Co        restores (R, G, B)
+```
+
+Each step adds a function of values both sides hold, so the reader restores every byte exactly. A reader that meets a bit it does not know shall reject the package.
+
 ## 9. Spherical harmonics (splat mode)
 
 ### 9.1 SH stream
@@ -291,29 +308,52 @@ Version 6 and later describe the array as `occlusionMipCount` consecutive mips, 
 
 At `detailGridOffset`, `detailGridDims[0] × detailGridDims[1] × detailGridDims[2]` bytes, one `u8` score per cell, x fastest. Cell (i, j, k) covers the box from `globalBoundsMin + (i, j, k) × detailGridCellSize` of edge `detailGridCellSize`. The score's meaning is codec-defined; a reader shall accept any value and a value of 0 denotes an empty cell.
 
-## 12. Conformance
+## 12. Shadow mesh
 
-### 12.1 Writers
+Version 12 adds an optional shadow mesh: a closed, low-polygon triangle mesh following the visible surface of the level 0 splats, in model space (the frame of the splats), in up to eight levels of detail, finest first, coloured per vertex from the splats' base colour. Hosts use it to cast shadows, for distance-field lighting and for collision. How it is built is out of scope (Clause 1.3). At `shadowMeshOffset`, `shadowMeshBytes` bytes:
+
+| Offset | Type | Field | Description |
+|---:|---|---|---|
+| 0 | `u32` | `magic` | `0x534D5347` ("GSMS" as ASCII bytes `47 53 4D 53`). |
+| 4 | `u32` | `levelCount` | 1 to 8. |
+| 8 | `f32[3]` | `boundsMin` | Minimum corner of the box the positions are quantised over. |
+| 20 | `f32[3]` | `boundsMax` | Maximum corner. |
+| 32 | | *level table* | `levelCount` entries of 16 bytes: `u32 vertexCount`, `u32 triangleCount`, `u32 compressedBytes`, `u32 uncompressedBytes`. |
+| | | *payloads* | `levelCount` Brotli streams, in level order, each of `compressedBytes` bytes. |
+
+Each level's payload decodes to exactly `uncompressedBytes = 9 × vertexCount + 3 × triangleCount × indexBytes` bytes, where `indexBytes` is 2 when `vertexCount` ≤ 65536 and 4 otherwise, holding three blocks, each transposed into byte planes like a payload (Clause 8):
+
+1. positions: `vertexCount` elements of three `u16` (x, y, z), each `boundsMin + q / 65535 × (boundsMax − boundsMin)` on its axis (stride 6);
+2. colours: `vertexCount` elements of three `u8` (R, G, B), display-space (stride 3);
+3. indices: `3 × triangleCount` unsigned integers of `indexBytes` each, three per triangle, counter-clockwise seen from outside the mesh (stride `indexBytes`).
+
+A writer shall write a closed mesh (every edge shared by exactly two triangles) whose triangles all refer to existing vertices. A reader shall reject a section whose signature, level count or sizes do not agree, or whose indices exceed `vertexCount`; a reader that does not use the mesh shall still validate `shadowMeshOffset` and `shadowMeshBytes` against the file size.
+
+## 13. Conformance
+
+### 13.1 Writers
 
 A conforming writer:
 
-1. shall write `magic` "GSTX", `version` 10 and every field of Clause 6.1, to a file with the suffix `.gstx`;
+1. shall write `magic` "GSTX", `version` 12 and every field of Clause 6.1, to a file with the suffix `.gstx`;
 2. shall write `recordFormat`, `splatRecordBytes`, `shDegree` and `shRecordBytes` consistently with Clauses 6.1 and 7;
 3. shall write every payload with the record format declared in the header;
 4. shall, for `recordFormat` 1 with `shDegree` > 0, write the SH table with exactly one entry per LOD header;
 5. shall write `splatScaleLog2Max` greater than `splatScaleLog2Min` when `recordFormat` is 1;
-6. should choose the scale range so that no source scale is clamped and the growth of the coarser levels remains representable.
+6. should choose the scale range so that no source scale is clamped and the growth of the coarser levels remains representable;
+7. should set both bits of `payloadTransforms` for `recordFormat` 1, and shall set none for `recordFormat` 0.
 
-### 12.2 Readers
+### 13.2 Readers
 
 A conforming reader:
 
-1. shall reject a file whose `magic` is neither signature of Clause 6.1, whose signature does not match its `version` ("GSTX" with 10 or later, "SFLW" with 1 to 9), or whose `version` is 0 or greater than 10;
+1. shall reject a file whose `magic` is neither signature of Clause 6.1, whose signature does not match its `version` ("GSTX" with 10 or later, "SFLW" with 1 to 9), or whose `version` is 0 or greater than 12;
 2. shall read only the header extent of the file's version (Table 6.2) and shall supply the defaults of Annex B for absent fields;
 3. shall validate the manifest against the file size and the declared record size before decoding;
 4. shall reject a `recordFormat` it does not implement, and shall treat every pre-version-8 file as `recordFormat` 0;
 5. may ignore the SH stream (drawing the DC colour only) but shall then still validate the SH table;
-6. shall report a payload the linked codec cannot decode as an error.
+6. shall report a payload the linked codec cannot decode as an error;
+7. shall undo the transforms declared in `payloadTransforms` (Clause 8.1), and shall reject a package that declares one it does not know.
 
 ## Annex A (informative): pre-version-4 companion manifest
 
@@ -334,6 +374,8 @@ Versions 1 to 3 kept the chunk manifest in a JSON file next to the package (`<na
 | `splatRecordBytes` | 8 |
 | `splatScaleLog2Min`, `splatScaleLog2Max` | 0 (unused for format 0) |
 | `payloadCodec` | 0 (the codec library's stage) |
+| `payloadTransforms` | 0 (no transform) |
+| `shadowMeshOffset`, `shadowMeshBytes` | 0 (no shadow mesh) |
 
 ## Annex C (informative): rendering model of format 1
 
@@ -343,6 +385,8 @@ The reference renderer draws a splat package the way the PlayCanvas / SuperSplat
 
 | Version | Date | Change |
 |:-:|---|---|
+| 12 | 2026-10-26 | Shadow mesh section (Clause 12): offset and size appended to the header, which grows to 224 bytes. Conformance moves to Clause 13. |
+| 11 | 2026-10-25 | `payloadTransforms` in the former padding at offset 204: colour stored as reversible YCoCg-R in records and SH (Clause 8.1). Header size unchanged. |
 | 10 | 2026-10-25 | The format is named GSTx: signature "GSTX", suffix `.gstx`. No layout change; "SFLW" packages still read. |
 | 9 | 2026-10-25 | Payload codec field; Brotli as the entropy stage. |
 | 8 | 2026-09-07 | Record format field, the 20-byte splat record, the SH stream and table, splat scale range. This document created. |

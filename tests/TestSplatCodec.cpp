@@ -17,6 +17,8 @@
 #include <cmath>
 #include <cstdlib>
 #include <algorithm>
+#include <cstring>
+#include <cstdio>
 #include "../src/SplatCore/PLYLoader.h"
 #include "../src/SplatCore/SpatialOctree.h"
 #include "../src/SplatCore/StreamPackager.h"
@@ -148,6 +150,79 @@ int main(int argc, char** argv)
     Check(pkg.header.version == SFLW_VERSION, "version", pkg.header.version, SFLW_VERSION);
     Check(pkg.header.shDegree == shDegree, "sh degree", pkg.header.shDegree, shDegree);
     Check(pkg.header.splatRecordBytes == sizeof(PackedSplatGPU), "record bytes", pkg.header.splatRecordBytes, sizeof(PackedSplatGPU));
+    Check(pkg.header.payloadTransforms == PAYLOAD_TRANSFORMS_KNOWN, "colour transform declared", pkg.header.payloadTransforms, PAYLOAD_TRANSFORMS_KNOWN);
+
+    // 3. The colour transform is lossless: the same bake written as plain RGB loads to identical bytes, level by level
+    {
+        auto chunksRGB = SpatialOctree::PartitionIntoChunks(splats, chunkSize);
+        TransformStats stats;
+        if (!StreamPackager::PackageDataset(outputBase + "_rgb", chunksRGB, maxLODs, 0.001f, 1.0f, {}, 0, nullptr, nullptr, &bake,
+                                            PayloadCodec::kDefault, nullptr, 0u, &stats))
+        {
+            std::cerr << "PackageDataset (plain RGB) failed" << std::endl;
+            return 1;
+        }
+        StreamPackager::SFLWPackageData rgb;
+        if (!StreamPackager::LoadPackage(outputBase + "_rgb.gstx", rgb, &reason))
+        {
+            std::cerr << "LoadPackage (plain RGB) failed: " << reason << std::endl;
+            return 1;
+        }
+        Check(rgb.header.payloadTransforms == 0, "plain package declares no transform", rgb.header.payloadTransforms, 0);
+        size_t mismatched = 0, compared = 0;
+        for (size_t c = 0; c < std::min(pkg.chunkLODSplats.size(), rgb.chunkLODSplats.size()); c++)
+            for (size_t l = 0; l < std::min(pkg.chunkLODSplats[c].size(), rgb.chunkLODSplats[c].size()); l++)
+            {
+                const auto& a = pkg.chunkLODSplats[c][l];
+                const auto& b = rgb.chunkLODSplats[c][l];
+                compared++;
+                if (a.size() != b.size() || memcmp(a.data(), b.data(), a.size() * sizeof(PackedSplatGPU)) != 0) mismatched++;
+                if (pkg.chunkLODSH[c][l] != rgb.chunkLODSH[c][l]) mismatched++;
+            }
+        Check(compared > 0 && mismatched == 0, "YCoCg and plain RGB packages load to identical levels", (double)mismatched, 0);
+        std::ifstream fy(outputBase + ".gstx", std::ios::ate | std::ios::binary), fr(outputBase + "_rgb.gstx", std::ios::ate | std::ios::binary);
+        const double ycocgBytes = (double)fy.tellg(), rgbBytes = (double)fr.tellg();
+        fr.close();
+        std::cout << "Colour transform: " << compared << " levels identical after load; package " << rgbBytes / 1048576.0 << " MB as RGB -> "
+                  << ycocgBytes / 1048576.0 << " MB as YCoCg (" << 100.0 * (ycocgBytes / rgbBytes - 1.0) << "%), plane entropy "
+                  << stats.recordEntropyBefore << " (records) and " << stats.shEntropyBefore << " (SH) bits/byte as RGB" << std::endl;
+        std::remove((outputBase + "_rgb.gstx").c_str());
+    }
+
+    // 4. SH Precision: a requantised package decodes to exactly what SplatLab draws before saving (encode, then
+    // RequantiseSH), so the viewport shows the package; and the error stays within one snapping step
+    {
+        SplatBakeInput bake5 = bake;
+        for (uint8_t& b : bake5.shBits) b = 5;
+        auto chunks5 = SpatialOctree::PartitionIntoChunks(splats, chunkSize);
+        if (!StreamPackager::PackageDataset(outputBase + "_sh5", chunks5, maxLODs, 0.001f, 1.0f, {}, 0, nullptr, nullptr, &bake5))
+        {
+            std::cerr << "PackageDataset (5-bit SH) failed" << std::endl;
+            return 1;
+        }
+        StreamPackager::SFLWPackageData p5;
+        if (!StreamPackager::LoadPackage(outputBase + "_sh5.gstx", p5, &reason))
+        {
+            std::cerr << "LoadPackage (5-bit SH) failed: " << reason << std::endl;
+            return 1;
+        }
+        size_t mismatched = 0, compared = 0;
+        for (size_t c = 0; c < p5.chunkLODSplats.size() && c < chunks.size(); c++)
+        {
+            if (p5.chunkLODSplats[c].empty() || p5.chunkLODSH[c][0].empty()) continue;
+            std::vector<PackedSplatGPU> records;
+            std::vector<uint8_t> sh;
+            SplatCodec::Encode(chunks[c].splats, attrs, 0, p5.splatParams, records, sh);
+            RequantiseSH(sh.data(), records.size(), p5.header.shRecordBytes, bake5.shBits);
+            compared++;
+            if (sh != p5.chunkLODSH[c][0]) mismatched++;
+        }
+        Check(compared > 0 && mismatched == 0, "5-bit SH package decodes to the drawn (requantised) SH", (double)mismatched, 0);
+        std::ifstream f5(outputBase + "_sh5.gstx", std::ios::ate | std::ios::binary);
+        std::cout << "SH Precision 5 bits: " << compared << " level-0 streams identical to the preview; package " << (double)f5.tellg() / 1048576.0 << " MB" << std::endl;
+        f5.close();
+        std::remove((outputBase + "_sh5.gstx").c_str());
+    }
 
     size_t total0 = 0, totalSH = 0, levels = 0;
     double maxPosErr = 0, maxPkgShErr = 0;

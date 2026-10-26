@@ -51,6 +51,25 @@ set_target_properties(TestSplatCodec PROPERTIES
     DEBUG_POSTFIX "d"
 )
 
+add_executable(TestShadowMesh ${CMAKE_CURRENT_SOURCE_DIR}/TestShadowMesh.cpp)
+target_link_libraries(TestShadowMesh PRIVATE gstx)
+set_target_properties(TestShadowMesh PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    FOLDER "Tests"
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_HOME_DIRECTORY}"
+    DEBUG_POSTFIX "d"
+)
+
+add_executable(TestColourTransform ${CMAKE_CURRENT_SOURCE_DIR}/TestColourTransform.cpp)
+set_target_properties(TestColourTransform PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    FOLDER "Tests"
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_HOME_DIRECTORY}"
+    DEBUG_POSTFIX "d"
+)
+
 add_executable(TestGeometryCull ${CMAKE_CURRENT_SOURCE_DIR}/TestGeometryCull.cpp)
 set_target_properties(TestGeometryCull PROPERTIES
     CXX_STANDARD 17

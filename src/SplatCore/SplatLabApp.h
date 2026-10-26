@@ -5,7 +5,7 @@
 // The shared app shell behind both executables. In Studio mode it is SplatLab: the whole
 // offline preprocessing pipeline (load -> octree chunk -> wavelet decompose -> quantize ->
 // export) plus the runtime streaming simulation and every ImGui panel. In Viewer mode it is
-// the standalone Splat viewer: the same class with the GSTx Bake tab, its menu items
+// the standalone Splat viewer: the same class with the Package Bake tab, its menu items
 // and its shortcuts hidden, so the viewer is SplatLab's Renderer and Streaming tabs by
 // construction rather than a second copy of them. SplatRenderer handles the actual GPU work;
 // this class is everything else -- UI, file I/O, and the streaming/decay/silhouette simulation.
@@ -29,6 +29,8 @@
 #include "PointCloudGaussians.h"
 #include "../../libs/gstx/StreamRuntime.h"
 #include "ImageCompare.h"
+#include "BackgroundOp.h"
+#include "../../libs/gstx/ShadowMeshBuilder.h"
 #include <commdlg.h>
 #include <string>
 #include <vector>
@@ -97,7 +99,6 @@ namespace Splat
         void BuildUI();
         void ExecutePendingAction();
         void UpdateCamera(const ImGuiIO& io);
-        void RecomputeWaveletHierarchy();
         void UpdatePreviewSplats();
         void ReportDeviceLostAndExit(const std::string& message);
 
@@ -184,13 +185,36 @@ namespace Splat
         OcclusionVolume::Grid m_occlusionGrid;
         void  BuildOcclusionGrid();
         uint32_t m_occlusionVoxelsVersion = 0;   // Incremented whenever m_occlusionVoxels is rebuilt or cleared (renderer re-upload trigger)
-        uint32_t m_occlusionSafetyNetVersion = UINT32_MAX; // m_occlusionVoxelsVersion right after the GSTx Bake tab's fallback bake last fired (see BuildUI): equal = already tried for this volume state
+        uint32_t m_occlusionSafetyNetVersion = UINT32_MAX; // m_occlusionVoxelsVersion right after the Package Bake tab's fallback bake last fired (see BuildUI): equal = already tried for this volume state
         std::vector<OcclusionVoxelGPU> m_occlusionVoxels; // Baked result -- from BuildOcclusionVolume() or loaded from an .gstx's package
         OcclusionMipTable m_occlusionMips;       // Mip layout of m_occlusionVoxels (see OcclusionMipTable): from Bake, or the loaded package's header
         int   m_occlusionMipOverride = -1;       // Viewer: -1 = renderer picks the mip from projected cell size; 0.. = force that mip (debug / side-by-side compare)
         bool  m_enableOcclusionCulling    = true;  // Viewer: "Show Occlusion Volume" -- draw the volume and depth-test splats against it (on by default)
         bool  m_showOcclusionSetting      = true;  // The user's choice for the toggle above (the checkbox, config show_occlusion_volume): a load or a bake shows the volume only if this is on
         bool  m_showOcclusionVolumeOnly   = false; // Viewer: debug view -- render only the occluder geometry
+        // Shadow mesh (ShadowMesh.h): from the package, or built in the background after a bake of a raw scan. Shared and
+        // immutable once published, so a save on the worker can hold it while the UI replaces it.
+        struct ShadowMeshJob
+        {
+            std::thread thread;
+            std::atomic<bool> cancel{ false }, done{ false };
+            std::shared_ptr<const ShadowMesh> result; // Set (or left empty on failure) before done
+            std::string trace;
+            double seconds = 0.0;
+        };
+        std::shared_ptr<const ShadowMesh> m_shadowMesh;  // Empty: no mesh (an older package, a point-format bake)
+        std::shared_ptr<ShadowMeshJob>    m_shadowMeshJob;
+        bool     m_showShadowMesh = false;   // View Shadow Mesh (config show_shadow_mesh)
+        int      m_shadowMeshLevel = 0;      // Level drawn by the view
+        uint32_t m_shadowMeshVersion = 0;    // Bumped when the mesh or the drawn level changes (renderer re-upload)
+        std::vector<uint32_t> m_shadowMeshGpu; // The drawn level's vertices, 16 bytes each (float3 position, uint colour)
+        int      m_shadowMeshGpuLevel = -1;
+        const ShadowMesh* m_shadowMeshGpuSource = nullptr;
+        void StartShadowMeshBuild();
+        void CancelShadowMeshBuild();
+        void PollShadowMeshBuild();
+        void SetShadowMesh(std::shared_ptr<const ShadowMesh> mesh);
+        std::string ShadowMeshSummary() const; // "10000 / 5000 / 2500 triangles", "building", or "none"
         void  BuildOcclusionVolume();
         void  RefreshOcclusionVolume(); // Rebuild (or clear) from the current checkbox/sliders and make it visible
 
@@ -242,6 +266,83 @@ namespace Splat
         };
 
         std::vector<HeatmapClusterCube> m_heatmapClusterCubes;
+
+        // ---- Bake (Package Bake tab) and long operations (BackgroundOp.h) -------------------------------------
+        // The tab's bake parameters. The displayed model was baked with m_bakedParams; while the tab's values
+        // differ the changes are pending: Bake is enabled, Save is not, and the model stays as it was.
+        struct BakeParams
+        {
+            float chunkSize  = 16.0f;
+            int   maxLODs    = 4;
+            int   shQuality  = 2;
+            int   shPrecision = 0; // Index into kSHPrecisionBits: 0 = 8 bits (lossless)
+            float deadbandMM = 3.0f;
+            bool  occlusion  = true;
+            float shave      = 0.0f;
+            bool operator==(const BakeParams& o) const
+            {
+                return chunkSize == o.chunkSize && maxLODs == o.maxLODs && shQuality == o.shQuality && shPrecision == o.shPrecision &&
+                       deadbandMM == o.deadbandMM && occlusion == o.occlusion && shave == o.shave;
+            }
+            bool operator!=(const BakeParams& o) const { return !(*this == o); }
+        };
+        // The scan a bake reads: the loaded one, or one just read from disk (an open bakes before it replaces anything)
+        struct BakeSource
+        {
+            const std::vector<SplatPoint>*      points = nullptr;
+            const std::vector<SplatAttributes>* attributes = nullptr;
+            bool     splatMode = false;
+            uint32_t shDegree = 0; // The degree the bake keeps (BakeSHDegree for this source)
+            uint8_t  shBits = 8;   // Bits per SH coefficient (StreamPackager.h RequantiseSH); 8 = as encoded
+        };
+        // What the v11 colour transform (YCoCg-R) does to a bake's data, from the size estimate's sample: entropy
+        // (mean order-0 over the byte planes) and Brotli size, as percentage changes against plain RGB
+        struct ColourEstimate
+        {
+            struct Stream { double entropyChangePercent = 0.0, sizeChangePercent = 0.0; };
+            Stream records, sh;
+            double entropyChangePercent = 0.0, sizeChangePercent = 0.0; // Both streams together
+            bool valid = false;                                          // Splat-mode bakes only
+        };
+        ColourEstimate m_colourEstimate;
+        // Everything a bake produces: built on the worker, swapped in by ApplyBake on the UI thread
+        struct BakeResult
+        {
+            XMFLOAT3 aabbMin = {}, aabbMax = {}, center = {}, extents = {};
+            DetailGrid detailGrid;
+            std::vector<ChunkData> chunks;
+            WaveletDecompositionResult waveletResult;
+            SplatEncodeParams splatParams;
+            float compressedSizeMB = 0.0f;
+            ColourEstimate colourEstimate;
+            std::vector<ResidentLOD> residentLODs;
+            StreamRuntime stream;
+            OcclusionVolume::Grid occlusionGrid;
+            std::vector<OcclusionVoxelGPU> occlusionVoxels;
+            OcclusionMipTable occlusionMips;
+            std::vector<HeatmapClusterCube> heatmapCubes;
+        };
+        BakeParams  CurrentBakeParams() const;
+        bool        BakePending() const { return m_hasBakedParams && CurrentBakeParams() != m_bakedParams; }
+        std::string PendingBakeChanges() const;                    // The changed parameters by name, for the tab
+        static BakeParams DefaultBakeParams(const std::vector<SplatPoint>& points, BakeParams keep); // Chunk size, levels and deadband from the scan's size
+        BakeSource  LoadedBakeSource() const;
+        void        StartBake(bool fitCamera);                     // Bakes the loaded scan with the tab's parameters
+        bool        RunBake(const BakeParams& params, const BakeSource& source, const StreamSettings& streamSettings,
+                            const StreamCamera& streamCamera, BakeResult& out, Progress& progress) const;
+        void        ApplyBake(BakeResult& result, const BakeParams& params, bool fitCamera);
+        bool        StartOpenScan(const std::string& filepath, bool splatFile); // .ply / .splat: read and bake, then replace the model
+        void        BuildResidentLODs(const BakeSource& source, const WaveletDecompositionResult& wavelet, const XMFLOAT3& aabbMin,
+                                      const XMFLOAT3& aabbMax, const SplatEncodeParams& splatParams, std::vector<ResidentLOD>& out) const;
+        void        BuildHeatmapClusterCubes(const std::vector<SplatPoint>& points, const XMFLOAT3& aabbMin, const XMFLOAT3& aabbMax,
+                                             const DetailGrid& detail, std::vector<HeatmapClusterCube>& out) const;
+        bool        UseBackgroundOps() const;                      // False for scripted runs and before the first frames: those run inline
+        bool        RunOperation(const std::string& title, BackgroundOp::Work work, BackgroundOp::Done done);
+        void        DrawOperationDialog();
+        BackgroundOp m_op;
+        BakeParams   m_bakedParams;
+        bool         m_hasBakedParams = false;
+        uint64_t     m_framesRendered = 0;
         bool  m_devMode              = false;  // Loaded from config file (config.json)
         bool  m_showClusterHeatmap   = false;  // Unchecked by default
         int   m_targetClusterCubes   = 4096;   // Target cluster cubes (e.g. 512, 1024, 4096, 16384)
@@ -284,10 +385,16 @@ namespace Splat
         uint32_t SplatRenderMode() const { return m_splatDrawAsDiscs ? 4u : 3u; }
         SplatEncodeParams m_splatParams;
         uint32_t SplatSHDegree() const { return (uint32_t)std::clamp(m_splatSHQuality, 0, 2) + 1u; }
+        // SH precision (bake parameter): bits per spherical-harmonics coefficient. Fewer bits snap the coefficients
+        // to coarser steps inside their 8-bit slots (lossy, no format change), so Brotli packs them tighter.
+        static constexpr uint8_t kSHPrecisionBits[4] = { 8, 6, 5, 4 };
+        int      m_shPrecision = 0;
+        static uint8_t SHBitsFor(int precision) { return kSHPrecisionBits[std::clamp(precision, 0, 3)]; }
         // The bake keeps the SH Quality degree, but never more bands than the source carries: extra bands would
         // only store zeros (a source without harmonics, or a package baked at a lower degree).
         uint32_t m_sourceSHDegree = 3;               // Highest band the source's Gaussians carry (a package: its own degree)
         uint32_t BakeSHDegree() const { return std::min(SplatSHDegree(), m_sourceSHDegree); }
+        static uint32_t SourceSHDegreeOf(const std::vector<SplatAttributes>& attributes); // Highest band with a non-zero coefficient
         void     DetectSourceSHDegree();            // Sets m_sourceSHDegree from m_splatAttributes (highest band with a non-zero coefficient)
         size_t   BytesPerRenderPoint() const { return m_splatMode ? (sizeof(PackedSplatGPU) + SplatCodec::SHRecordBytes(m_splatParams.shDegree)) : (m_enableQuantization ? sizeof(PackedPointGPU) : sizeof(SplatPoint)); }
         void     EncodeSplatLevel(const std::vector<SplatPoint>& splats, uint32_t level, std::vector<PackedSplatGPU>& outRecords, std::vector<uint8_t>& outSH) const;

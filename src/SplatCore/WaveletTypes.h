@@ -19,6 +19,7 @@
 #include <cstdio>
 #include <cstring>
 #include <DirectXMath.h>
+#include "../../libs/gstx/ColourTransform.h" // PayloadTransformBits (v11 header field)
 
 namespace Splat
 {
@@ -32,7 +33,7 @@ namespace Splat
     // Magic bytes of a package: "GSTX" in ASCII from format version 10 (.gstx), "SFLW" before it (.sflw, still read)
     static constexpr uint32_t GSTX_MAGIC = 0x58545347;
     static constexpr uint32_t SFLW_MAGIC = 0x574C4653;
-    static constexpr uint32_t SFLW_VERSION = 10; // v10 renames the format GSTx: magic GSTX, suffix .gstx, no layout change. v9 adds payloadCodec: the entropy stage of every payload, Brotli (see PayloadCodec.h). v8 adds recordFormat, the splat record and the SH stream (see docs/GSTX_FORMAT_SPECIFICATION.md). v2 adds SFLWFileHeader::splatRadius (appended at the
+    static constexpr uint32_t SFLW_VERSION = 12; // v12 adds the shadow mesh section (shadowMeshOffset/Bytes; ShadowMeshCodec.h) and grows the header to 224 bytes. v11 adds payloadTransforms in the old trailing padding: colour stored as YCoCg-R (see ColourTransform.h). v10 renames the format GSTx: magic GSTX, suffix .gstx, no layout change. v9 adds payloadCodec: the entropy stage of every payload, Brotli (see PayloadCodec.h). v8 adds recordFormat, the splat record and the SH stream (see docs/GSTX_FORMAT_SPECIFICATION.md). v2 adds SFLWFileHeader::splatRadius (appended at the
                                                  // struct's end so v1 files still read correctly -- see
                                                  // the version check in StreamPackager::LoadPackage).
                                                  // v3 adds an optional occlusion voxel array, appended
@@ -323,7 +324,13 @@ namespace Splat
         float    splatScaleLog2Max;    // v8+ only -- splat mode: log2 scale mapped to byte 255
         uint64_t shManifestOffset;     // v8+ only -- absolute offset of the SHLODRecord table (one per chunk LOD, manifest order); 0 = no SH stream
         uint32_t payloadCodec;         // v9+ only -- the entropy stage of every payload (PayloadCodecId); pre-v9 files are PAYLOAD_CODEC_LIBRARY
+        uint32_t payloadTransforms;    // v11+ only -- PayloadTransformBits (ColourTransform.h), in what was padding before; pre-v11 files are 0
+        uint64_t shadowMeshOffset;     // v12+ only -- absolute offset of the shadow mesh section (ShadowMeshCodec.h); 0 = no mesh
+        uint64_t shadowMeshBytes;      // v12+ only -- the section's size in bytes
     };
+    static_assert(offsetof(SFLWFileHeader, payloadTransforms) == 204, "payloadTransforms sits in what was the v9 header's trailing padding");
+    static_assert(offsetof(SFLWFileHeader, shadowMeshOffset) == 208, "v12 appends the shadow mesh fields after the v11 header");
+    static_assert(sizeof(SFLWFileHeader) == 224, "the v12 header is 224 bytes");
 
     // On-disk form of one ChunkManifest entry in a v4+ .gstx's embedded manifest table. The table
     // lives at SFLWFileHeader::manifestOffset and holds SFLWFileHeader::numChunks entries, each a
@@ -391,6 +398,7 @@ namespace Splat
         if (version < 7) return offsetof(SFLWFileHeader, detailGridDims);
         if (version < 8) return offsetof(SFLWFileHeader, recordFormat);
         if (version < 9) return offsetof(SFLWFileHeader, payloadCodec);
+        if (version < 12) return offsetof(SFLWFileHeader, shadowMeshOffset);
         return sizeof(SFLWFileHeader);
     }
 
@@ -431,6 +439,20 @@ namespace Splat
         if (headerBytesRead < SFLWHeaderBytesForVersion(h.version))
         {
             snprintf(buf, sizeof(buf), "The file is truncated: a version %u header needs %zu bytes but only %zu were present.", h.version, SFLWHeaderBytesForVersion(h.version), headerBytesRead);
+            outReason = buf;
+            return false;
+        }
+        if (h.version >= 12 && h.shadowMeshOffset != 0 &&
+            (h.shadowMeshOffset < SFLWHeaderBytesForVersion(h.version) || h.shadowMeshBytes == 0 || h.shadowMeshOffset + h.shadowMeshBytes > fileSize))
+        {
+            snprintf(buf, sizeof(buf), "The shadow mesh section (%llu bytes at %llu) lies outside the file; the package is truncated or corrupt.",
+                     (unsigned long long)h.shadowMeshBytes, (unsigned long long)h.shadowMeshOffset);
+            outReason = buf;
+            return false;
+        }
+        if (h.version >= 11 && (h.payloadTransforms & ~(uint32_t)PAYLOAD_TRANSFORMS_KNOWN) != 0)
+        {
+            snprintf(buf, sizeof(buf), "The package declares payload transforms 0x%x, which this build cannot undo. It was written by a newer SplatLab.", h.payloadTransforms);
             outReason = buf;
             return false;
         }
@@ -551,7 +573,7 @@ namespace Splat
     inline const char* SFLWRebakeAdvice()
     {
         return "If the file was copied or downloaded, retry with a fresh copy. Otherwise re-bake it: open the original "
-               ".ply or .splat in SplatLab's GSTx Bake tab and use Save Compressed Package (.gstx). Packages "
+               ".ply or .splat in SplatLab's Package Bake tab and use Save Compressed Package (.gstx). Packages "
                "written by the proprietary codec and by the open stand-in codec are not interchangeable, so a "
                "package must be baked with the same codec build that will read it.";
     }

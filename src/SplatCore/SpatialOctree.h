@@ -62,7 +62,7 @@ namespace Splat
 
         // Partitions points into spatial chunks of maximum size chunkSizeMeters
         // Dynamic Spatial Partitioning targeting optimal 30,000 to 60,000 splats per chunk for GPU/CPU culling efficiency
-        static std::vector<ChunkData> PartitionIntoChunks(std::vector<SplatPoint>& points, float chunkSizeMeters = 16.0f)
+        static std::vector<ChunkData> PartitionIntoChunks(const std::vector<SplatPoint>& points, float chunkSizeMeters = 16.0f)
         {
             if (points.empty()) return {};
 
