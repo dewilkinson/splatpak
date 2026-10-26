@@ -7,6 +7,7 @@
 #include "PayloadDecode.h"
 #include "../../src/SplatCore/WaveletTypes.h"
 #include "ByteShuffle.h"
+#include "ColourTransform.h"
 #include <brotli/decode.h>
 
 namespace Splat
@@ -20,13 +21,16 @@ namespace Splat
         return BrotliDecoderDecompress(srcSize, src, &decoded, dst) == BROTLI_DECODER_RESULT_SUCCESS && decoded == dstSize;
     }
 
-    bool PayloadDecode::DecodeRecords(const uint8_t* src, size_t srcSize, size_t count, size_t recordBytes, uint32_t codec, std::vector<uint8_t>& outRecords)
+    bool PayloadDecode::DecodeRecords(const uint8_t* src, size_t srcSize, size_t count, size_t recordBytes, uint32_t codec, std::vector<uint8_t>& outRecords,
+                                      uint32_t colourTransform)
     {
         const size_t bytes = count * recordBytes;
         std::vector<uint8_t> shuffled(bytes);
         if (!Decompress(src, srcSize, shuffled.data(), bytes, codec)) return false;
         outRecords.resize(bytes);
         ByteShuffle::Unshuffle(shuffled.data(), outRecords.data(), count, recordBytes);
+        if (colourTransform == PAYLOAD_TRANSFORM_RECORD_YCOCG) ColourTransform::UndoRecords(outRecords.data(), count, recordBytes);
+        else if (colourTransform == PAYLOAD_TRANSFORM_SH_YCOCG) ColourTransform::UndoSH(outRecords.data(), outRecords.size());
         return true;
     }
 }

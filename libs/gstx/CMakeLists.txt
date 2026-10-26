@@ -33,6 +33,12 @@ add_library(gstx STATIC
     CodecBuild.cpp
     SplatCodec.h
     SplatCodec.cpp
+    ColourTransform.h
+    ShadowMesh.h
+    ShadowMeshBuilder.h
+    ShadowMesh.cpp
+    ShadowMeshCodec.h
+    ShadowMeshCodec.cpp
 )
 
 target_include_directories(gstx PUBLIC ${CMAKE_CURRENT_SOURCE_DIR} ${BROTLI_DIR}/c/include)

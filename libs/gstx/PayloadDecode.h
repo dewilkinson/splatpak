@@ -21,8 +21,11 @@ namespace Splat
         // not decode to exactly dstSize bytes. codec is the header's payloadCodec: 0 = run-length stage, 1 = Brotli.
         static bool Decompress(const uint8_t* src, size_t srcSize, uint8_t* dst, size_t dstSize, uint32_t codec);
 
-        // One payload all the way back to interleaved records: entropy stage, then the byte-plane transpose
-        // undone. recordBytes is the record (or SH) stride. outRecords gets count * recordBytes bytes.
-        static bool DecodeRecords(const uint8_t* src, size_t srcSize, size_t count, size_t recordBytes, uint32_t codec, std::vector<uint8_t>& outRecords);
+        // One payload all the way back to interleaved records: entropy stage, the byte-plane transpose and (v11)
+        // the colour transform undone. recordBytes is the record (or SH) stride. colourTransform is the one header
+        // bit that applies to this stream (PAYLOAD_TRANSFORM_RECORD_YCOCG for records, PAYLOAD_TRANSFORM_SH_YCOCG for
+        // an SH stream) when the header sets it, else 0. outRecords gets count * recordBytes bytes.
+        static bool DecodeRecords(const uint8_t* src, size_t srcSize, size_t count, size_t recordBytes, uint32_t codec, std::vector<uint8_t>& outRecords,
+                                  uint32_t colourTransform = 0);
     };
 }
