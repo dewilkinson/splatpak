@@ -53,22 +53,12 @@ namespace Splat
 
         // The coarse levels' Gaussians: every coarse point of the pyramid stands for its two children (see
         // WaveletDecompositionResult), so it takes one Gaussian merged from theirs -- position, colour and harmonics as
-        // means weighted by opacity times area, the covariance of the pair (both children's covariances plus their
+        // means weighted by opacity, the covariance of the pair (both children's covariances plus their
         // spread about the mean), and the opacity that keeps the pair's coverage -- instead of one child's Gaussian
         // grown and made more opaque. Fills result.mergedAttributes and points every coarse point at its entry
         // (sourceIndex = sourceAttributes.size() + entry), with the merged position and colour. Level 0 points take
         // their Gaussian from sourceAttributes. The open stand-in library leaves the pyramid as it is.
-        // visibility (SurfaceVisibility), when given, weighs each source Gaussian by how much of it shows: what a merge
-        // keeps is a level's contribution to the image, and Gaussians buried under the surface (often large and dark)
-        // contribute nothing there.
-        static void MergeLevels(WaveletDecompositionResult& result, const std::vector<SplatAttributes>& sourceAttributes,
-                                const std::vector<float>* visibility = nullptr);
-
-        // How visible each source Gaussian is, 0 to 1: the fraction of 64 directions around the model from which its centre
-        // lies within a small depth of the frontmost opaque splat in its pixel. Indexed like sourceAttributes; points are
-        // the level 0 points that refer to them. The open stand-in library returns an empty vector.
-        static void SurfaceVisibility(const std::vector<SplatPoint>& points, const std::vector<SplatAttributes>& sourceAttributes,
-                                      std::vector<float>& outVisibility);
+        static void MergeLevels(WaveletDecompositionResult& result, const std::vector<SplatAttributes>& sourceAttributes);
 
         // Encodes one level. splats[i].sourceIndex selects the entry of sourceAttributes the point's
         // Gaussian comes from (kNoSplatSource -> DefaultAttributes), grown to the level; an index past

@@ -182,16 +182,6 @@ namespace Splat
             };
             std::vector<std::vector<LevelPayloads>> chunkLevels(chunks.size());
 
-            // Splat mode: how visible each source Gaussian is, over the whole model (occlusion crosses chunks), so the
-            // coarse levels keep what shows (SplatCodec::MergeLevels)
-            std::vector<float> visibility;
-            if (splatMode)
-            {
-                std::vector<SplatPoint> all;
-                for (const auto& chunk : chunks) all.insert(all.end(), chunk.splats.begin(), chunk.splats.end());
-                SplatCodec::SurfaceVisibility(all, *splat->attributes, visibility);
-            }
-
             for (size_t i = 0; i < chunks.size(); i++)
             {
                 if (stopped(0.03f * (float)i / (float)std::max<size_t>(1, chunks.size()))) return false;
@@ -200,7 +190,7 @@ namespace Splat
                 // 1. Decompose via Lifting Wavelet
                 auto waveletResult = LiftingWavelet::DecomposeChunk(chunk.splats, maxLODs, deadbandThreshold);
                 // Splat mode: every coarse point takes the Gaussian merged from its two children
-                if (splatMode) SplatCodec::MergeLevels(waveletResult, *splat->attributes, &visibility);
+                if (splatMode) SplatCodec::MergeLevels(waveletResult, *splat->attributes);
 
                 ChunkManifest cm = {};
                 cm.chunkId = chunk.chunkId;

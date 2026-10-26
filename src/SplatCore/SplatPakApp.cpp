@@ -1890,12 +1890,7 @@ namespace Splat
         progress.Stage("Wavelet levels", 0.02f);
         out.waveletResult = LiftingWavelet::DecomposeChunk(points, params.maxLODs, params.deadbandMM / 1000.0f);
         // Splat mode: every coarse point takes the Gaussian merged from its two children (as the package will)
-        if (source.splatMode && source.attributes)
-        {
-            std::vector<float> visibility;
-            SplatCodec::SurfaceVisibility(points, *source.attributes, visibility);
-            SplatCodec::MergeLevels(out.waveletResult, *source.attributes, &visibility);
-        }
+        if (source.splatMode && source.attributes) SplatCodec::MergeLevels(out.waveletResult, *source.attributes);
         if (progress.Cancelled()) return false;
 
         // Splat mode: the encode parameters every level shares (positions span the model bounds; the scale range
