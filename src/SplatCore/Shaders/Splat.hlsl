@@ -188,20 +188,26 @@ float3 HsvToRgb(float h, float s, float v)
     return rgb + (v - c);
 }
 
+// Hue offset of the arrival glow per level of detail: consecutive levels sit across the colour wheel from one another
+// (gold, then its complement azure, then green and its complement violet, ...), so the level a chunk brings is
+// readable as it arrives. Mirrored by SplatPakApp's legend (kArrivalGlowLevelHue).
+static const float kArrivalGlowLevelHue[8] = { 0.0, 180.0, 90.0, 270.0, 315.0, 135.0, 45.0, 225.0 };
+
 // Streaming arrival glow (Refinement Visualizer): w is the chunk's wave, 0.95 (just delivered) -> 0
-// (faded). Newly added chunks -- the leading edge of the growing model -- glow a bright white-gold,
-// cooling to a deeper gold as they age and fading out smoothly over their whole life. Shared by the
-// disc modes (BuildSplat, with the splat's directional lighting) and the splat mode's colour
-// (SplatColor, lighting 1), so the Gaussians and the coarse-level discs take the same tint.
-void ArrivalGlow(inout float3 color, float w, float lighting)
+// (faded); lod is the chunk's level. Newly added chunks -- the leading edge of the growing model -- glow
+// bright and near white in their level's hue, cooling to the full hue as they age and fading out smoothly
+// over their whole life. Shared by the disc modes (BuildSplat, with the splat's directional lighting) and
+// the splat mode's colour (SplatColor, lighting 1), so the Gaussians and the coarse-level discs take the same tint.
+void ArrivalGlow(inout float3 color, float w, float lighting, uint lod)
 {
     float life = saturate(w / 0.95);                 // 1 = just arrived, 0 = expired
     float fade = life * life * (3.0 - 2.0 * life);   // Smooth fall-off over the whole life, no plateau
     float heat = life * life * life;                 // The hot core: strong on arrival, gone by mid-life
-    // Gold by default (hue ~45 degrees); the Hue slider rotates both the fill and the hot core together,
+    // The level's hue from gold (~45 degrees) at level 0; the Hue slider rotates every level's tint together,
     // Intensity scales the fill opacity and the bloom.
-    float3 goldTint = HsvToRgb(45.0 + g_ArrivalGlowHue, 0.85, 1.0);
-    float3 hotTint  = HsvToRgb(45.0 + g_ArrivalGlowHue, 0.35, 1.0); // Near white-gold
+    float hue = 45.0 + g_ArrivalGlowHue + kArrivalGlowLevelHue[min(lod, 7u)];
+    float3 goldTint = HsvToRgb(hue, 0.85, 1.0);
+    float3 hotTint  = HsvToRgb(hue, 0.35, 1.0); // Near white in the level's hue
     float3 tint = lerp(goldTint, hotTint, heat);
     float opacity = saturate(0.70 * g_ArrivalGlowIntensity) * fade;
     color = lerp(color, tint * (lighting + 0.5 * heat), opacity);
@@ -410,7 +416,7 @@ void SolidDot(float distToCam, inout float3 tangentX, inout float3 tangentY, out
 
 // Splat mode helpers defined below with the Gaussian path; declared here for the mode-4 disc branches.
 float3x3 QuatToMat3(float4 q);
-float3 SplatColor(uint splatIndex, float3 pos, float3 dc, float shScale, float wave, bool toLinear);
+float3 SplatColor(uint splatIndex, float3 pos, float3 dc, float shScale, float wave, bool toLinear, uint lod);
 
 // The 20-byte record of splat splatIndex (PackedSplat, see WaveletTypes.h): world position, the three
 // scales, opacity, DC colour, the SH scale (0 when the record carries no harmonics) and the unit rotation
@@ -545,7 +551,7 @@ bool BuildSplat(uint splatIndex, uint lod, float chunkBlendWeight, float chunkDi
         SplatTangents(normal, splatRadius, tangentX, tangentY);
         SolidDot(distToCam, tangentX, tangentY, solid);
         // Colour after the tangents so the rotation matrix is dead before the harmonics are read
-        color = SplatColor(splatIndex, pos, dc, shScale, 0.0, false);
+        color = SplatColor(splatIndex, pos, dc, shScale, 0.0, false, lod);
         // No lighting (the lighting block below takes a zero normal as lighting 1) and no Detach Camera
         // back-side grey: the colour is baked radiance and the normal's sign is arbitrary.
         normal = float3(0.0, 0.0, 0.0);
@@ -658,7 +664,7 @@ bool BuildSplat(uint splatIndex, uint lod, float chunkBlendWeight, float chunkDi
         else if (g_ShowChunkStream == 1)
         {
             // Streaming arrival glow (Refinement Visualizer): w runs 0.95 (just delivered) -> 0 (faded)
-            ArrivalGlow(litColor, w, lighting);
+            ArrivalGlow(litColor, w, lighting, lod);
         }
     }
 
@@ -812,7 +818,7 @@ float3 EvalSH(uint splatIndex, float shScale, float3 dir)
 // with Show Streaming Arrivals on, a chunk that has just been delivered (0 < wave < 0.99) takes the
 // disc modes' arrival glow in display space, before the linear conversion; exactly 1 is the edge
 // highlight, which splat mode does not draw. Otherwise the colour is the reference viewer's, untouched.
-float3 SplatColor(uint splatIndex, float3 pos, float3 dc, float shScale, float wave, bool toLinear)
+float3 SplatColor(uint splatIndex, float3 pos, float3 dc, float shScale, float wave, bool toLinear, uint lod)
 {
     float3 color = dc;
     if (g_SHDegree > 0 && shScale > 0.0 && g_SHRecordBytes > 0)
@@ -821,7 +827,7 @@ float3 SplatColor(uint splatIndex, float3 pos, float3 dc, float shScale, float w
         color += EvalSH(splatIndex, shScale, dir);
     }
     color = max(color, 0.0);
-    if (g_ShowChunkStream == 1 && wave > 0.0 && wave < 0.99) ArrivalGlow(color, wave, 1.0);
+    if (g_ShowChunkStream == 1 && wave > 0.0 && wave < 0.99) ArrivalGlow(color, wave, 1.0, lod);
     if (toLinear) color = SRGBToLinear(color);
     return color;
 }
@@ -883,7 +889,7 @@ bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, out G
         gs.axis1 = axis1;
         gs.axis2 = axis2;
         gs.uvScale = 1.0;
-        gs.color = SplatColor(splatIndex, pos, dc, shScale, wave, g_SplatBlendSpace == 1);
+        gs.color = SplatColor(splatIndex, pos, dc, shScale, wave, g_SplatBlendSpace == 1, lod);
         // Match Level 0 Softness: the discs (level 1 and up) take the opacity floor so a low-opacity record
         // does not read as a hole. A level 1 parent handing over to level 0 fades out by the chunk weight
         // (a sub-pixel disc drops its opaque-dot rule while fading so it can fade at all).
@@ -943,7 +949,7 @@ bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, out G
     float2 v2 = l2 * float2(diagonalVector.y, -diagonalVector.x);
 
     // Colour: DC plus the harmonics for this view direction, clamped at black
-    float3 color = SplatColor(splatIndex, pos, dc, shScale, wave, g_SplatBlendSpace == 1);
+    float3 color = SplatColor(splatIndex, pos, dc, shScale, wave, g_SplatBlendSpace == 1, lod);
 
     // Shrink the quad to where the Gaussian times opacity falls below 1/255
     float clipS = min(1.0, sqrt(max(0.0, log(opacity * 255.0))) * 0.5);
