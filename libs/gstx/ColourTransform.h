@@ -16,12 +16,16 @@
 
 namespace Splat
 {
-    // SFLWFileHeader::payloadTransforms (v11+): which streams carry the transform
+    // SFLWFileHeader::payloadTransforms: which streams carry which transform
     enum PayloadTransformBits : uint32_t
     {
         PAYLOAD_TRANSFORM_RECORD_YCOCG = 1u << 0, // Splat records: the colour bytes (offset 10, 11, 12)
         PAYLOAD_TRANSFORM_SH_YCOCG     = 1u << 1, // SH stream: every coefficient's R, G, B triple
-        PAYLOAD_TRANSFORMS_KNOWN       = PAYLOAD_TRANSFORM_RECORD_YCOCG | PAYLOAD_TRANSFORM_SH_YCOCG,
+        PAYLOAD_TRANSFORM_SH_RESIDUAL  = 1u << 2, // SH stream of every level but a chunk's coarsest: residuals from the next coarser level (SHCoding.h)
+        PAYLOAD_SH_BITS_SHIFT          = 8,       // Bits 8-11, 12-15, 16-19: SH Precision of bands 1, 2, 3 (1 to 7; 0 = 8), which a reader
+        PAYLOAD_SH_BITS_MASK           = 0xFFFu << 8, // of residuals needs to predict as the writer did
+        PAYLOAD_TRANSFORMS_DEFAULT     = PAYLOAD_TRANSFORM_RECORD_YCOCG | PAYLOAD_TRANSFORM_SH_YCOCG | PAYLOAD_TRANSFORM_SH_RESIDUAL, // What a writer sets
+        PAYLOAD_TRANSFORMS_KNOWN       = PAYLOAD_TRANSFORMS_DEFAULT | PAYLOAD_SH_BITS_MASK, // Every bit a reader understands
     };
 
     struct ColourTransform

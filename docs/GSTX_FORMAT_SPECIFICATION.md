@@ -1,8 +1,8 @@
 # GSTx Package Format Specification
 
-**GSTx Gaussian Stream Package (`.gstx`), Format Version 13**
+**GSTx Gaussian Stream Package (`.gstx`), Format Version 14**
 
-This document specifies format version 13, the only version readers accept. A package of an earlier version (including those signed "SFLW", suffix `.sflw`) is baked again from its source.
+This document specifies format version 14, the only version readers accept. A package of an earlier version (including those signed "SFLW", suffix `.sflw`) is baked again from its source.
 
 Document status: Approved. Supersedes the description of format versions 1 through 7 that lived in code comments. This document is maintained with the format: every change to a structure, a field or a version number is reflected here in the same change set.
 
@@ -98,7 +98,7 @@ The header is a single structure of 240 bytes. The Since column records the form
 | Offset | Type | Field | Since | Description |
 |---:|---|---|:-:|---|
 | 0 | `u32` | `magic` | 1 | Shall be `0x58545347` ("GSTX" as ASCII bytes `47 53 54 58`). |
-| 4 | `u32` | `version` | 1 | Format version: shall be 13. |
+| 4 | `u32` | `version` | 1 | Format version: shall be 14. |
 | 8 | `u32` | `numChunks` | 1 | Number of chunks; shall be at least 1. |
 | 12 | `u32` | `maxLOD` | 1 | Number of coarser levels requested at bake time (levels per chunk are at most `maxLOD + 1`). |
 | 16 | `u64` | `totalSplatsLOD0` | 1 | Sum of the level-0 record counts over all chunks. |
@@ -127,7 +127,7 @@ The header is a single structure of 240 bytes. The Since column records the form
 | 188 | `f32` | `splatScaleLog2Max` | 8 | log₂ of the scale that a scale byte of 255 decodes to. |
 | 192 | `u64` | `shManifestOffset` | 8 | Absolute offset of the SH table (Clause 9.5); 0 = no SH stream. |
 | 200 | `u32` | `payloadCodec` | 9 | Entropy stage of every payload (Clause 8): 0 = the codec library's own stage, 1 = Brotli. |
-| 204 | `u32` | `payloadTransforms` | 11 | Transforms applied to the payloads before the byte-plane transpose (Clause 8.1), as bits: bit 0 = record colour as YCoCg-R, bit 1 = SH triples as YCoCg-R. Other bits shall be 0. Before version 11 this word was padding that writers set to 0. |
+| 204 | `u32` | `payloadTransforms` | 11 | Transforms applied to the payloads before the byte-plane transpose, as bits: bit 0 = record colour as YCoCg-R, bit 1 = SH triples as YCoCg-R (Clause 8.1), bit 2 = SH residuals (Clause 8.2); bits 8–11, 12–15 and 16–19 = the SH precision of bands 1, 2 and 3 (Clause 8.2). Other bits shall be 0. |
 | 208 | `u64` | `shadowMeshOffset` | 12 | Absolute offset of the shadow mesh section (Clause 12); 0 = no mesh. |
 | 216 | `u64` | `shadowMeshBytes` | 12 | Size of the shadow mesh section in bytes; 0 when there is none. |
 | 224 | `u64` | `occluderMeshOffset` | 13 | Absolute offset of the occluder mesh section (Clause 12.1); 0 = no occluder mesh. |
@@ -236,6 +236,20 @@ reader:  t = Y − h(Cg)    G = Cg + t    B = t − h(Co)    R = B + Co        r
 
 Each step adds a function of values both sides hold, so the reader restores every byte exactly. A reader that meets a bit it does not know shall reject the package.
 
+### 8.2 SH residuals
+
+When `payloadTransforms` sets bit 2 and `shRecordBytes` is non-zero, the SH stream of every level of a chunk except its last (coarsest) LOD holds residuals instead of coefficients. The coarsest level holds its coefficients as Clause 9.1 describes, with the colour transform of bit 1 when that is set; a residual level never takes the bit 1 transform separately. Records are unaffected.
+
+For level *L* of a chunk and the next level *L*+1:
+
+1. **Parent.** Every record *i* of level *L* has as parent the record *j* of level *L*+1 that minimises (Δx² + Δy² + Δz²) over the records' 16-bit positions (Clause 7.2, words 0 and 1), the lowest *j* on a tie. When level *L*+1 is empty the prediction below is all zeros.
+2. **Prediction.** With *sp* and *sc* the SH scales (`f16`, word 3 bits 16–31; 0 when the flag is clear) of the parent and the point, each written as m × 2^e with integers m (the 11-bit significand, or the 10-bit fraction for a subnormal; 0 for zero) and e, the factor *F* is mp / mc × 2^(ep − ec + 24) rounded half up, or 0 when either significand is 0, held to at most 2³¹, and 0 when ep − ec + 24 < −40. Each of the parent's signed SH bytes *s* (after level *L*+1 is restored) predicts `sign(s) × min(127, (|s| × F + 2²³) >> 24)`. When the SH precision of any band is below 8, each coefficient's (R, G, B) prediction is then snapped as the writer's SH precision snaps the stream: taken to YCoCg-R (Clause 8.1), each byte replaced by its value at the band's precision (below), and taken back to RGB, unless that would move a channel by more than 64 as a signed byte, when the triple stays as predicted.
+3. **Residual.** For each coefficient's triple, the writer stores YCoCg(point) − YCoCg(prediction), byte by byte modulo 256, where YCoCg is the forward transform of Clause 8.1. A reader adds YCoCg(prediction) back and applies the inverse transform.
+
+A reader restores a chunk from its coarsest level down, so every parent is restored before its children.
+
+SH precision. The 4-bit fields at bits 8, 12 and 16 give *b*, the bits per coefficient of bands 1, 2 and 3 (coefficients 0–2, 3–7 and 8–14); 0 means 8. With *n* = 2^(b−1) − 1 levels per sign (*n* = 0 for *b* ≤ 1; *b* ≥ 8 leaves the byte unchanged), a signed byte *v* becomes `sign(v) × min(127, round(q × 127 / n))` with `q = round(|v| × n / 127)`, both rounded half up in integer arithmetic: `q = (2|v|n + 127) / 254` and `(254q + n) / (2n)`. A writer that reduces the precision of the stream snaps its coefficients the same way, which a reader of a package without residuals never needs.
+
 ## 9. Spherical harmonics (splat mode)
 
 ### 9.1 SH stream
@@ -335,7 +349,7 @@ A conforming writer:
 4. shall, for `recordFormat` 1 with `shDegree` > 0, write the SH table with exactly one entry per LOD header;
 5. shall write `splatScaleLog2Max` greater than `splatScaleLog2Min` when `recordFormat` is 1;
 6. should choose the scale range so that no source scale is clamped and the growth of the coarser levels remains representable;
-7. should set both bits of `payloadTransforms` for `recordFormat` 1, and shall set none for `recordFormat` 0.
+7. should set bits 0, 1 and 2 of `payloadTransforms`, and with bit 2 shall set the SH precision fields to the precision the stream was snapped to.
 
 ### 13.2 Readers
 
@@ -347,7 +361,7 @@ A conforming reader:
 4. shall reject a `recordFormat` it does not implement;
 5. may ignore the SH stream (drawing the DC colour only) but shall then still validate the SH table;
 6. shall report a payload the linked codec cannot decode as an error;
-7. shall undo the transforms declared in `payloadTransforms` (Clause 8.1), and shall reject a package that declares one it does not know.
+7. shall undo the transforms declared in `payloadTransforms` (Clauses 8.1 and 8.2) exactly, and shall reject a package that declares one it does not know.
 
 ## Annex A (informative): rendering model of format 1
 
@@ -357,6 +371,7 @@ The reference renderer draws a splat package the way the PlayCanvas / SuperSplat
 
 | Version | Date | Change |
 |:-:|---|---|
+| 14 | 2026-10-26 | SH residuals (Clause 8.2): every level's SH but a chunk's coarsest stored as the difference from a prediction off the next coarser level; the SH precision of each band in `payloadTransforms`. Lossless; Cthulhu's package 22% smaller. Header size unchanged. |
 | 13 | 2026-10-26 | Occluder mesh section (Clause 12.1): the occlusion volume as a mesh, in place of the voxel array; offset and size appended to the header, which grows to 240 bytes. Readers read version 13 only: the header extents of earlier versions, the companion JSON manifest and the defaults for absent fields are removed, and the rendering annex becomes Annex A. |
 | 12 | 2026-10-26 | Shadow mesh section (Clause 12): offset and size appended to the header, which grows to 224 bytes. Conformance moves to Clause 13. |
 | 11 | 2026-10-25 | `payloadTransforms` in the former padding at offset 204: colour stored as reversible YCoCg-R in records and SH (Clause 8.1). Header size unchanged. |

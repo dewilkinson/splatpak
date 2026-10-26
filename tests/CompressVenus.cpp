@@ -29,7 +29,7 @@ int main(int argcIn, char** argvIn)
     // Flags may appear anywhere; the rest are positional
     bool colourTransform = true;
     int shBits[3] = { 8, 8, 8 };
-    uint32_t transforms = Splat::PAYLOAD_TRANSFORMS_KNOWN; // --transforms N: the payloadTransforms bits, for measurement
+    uint32_t transforms = Splat::PAYLOAD_TRANSFORMS_DEFAULT; // --transforms N: the payloadTransforms bits, for measurement
     std::vector<char*> args;
     for (int i = 0; i < argcIn; i++)
     {

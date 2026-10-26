@@ -1904,9 +1904,10 @@ namespace Splat
         // byte plane in its true proportion, which a slice of a shuffled stream does not (the planes
         // compress very differently, so slices put the estimate 10% out). It lands within a few percent
         // of the written package. The ratio shown is the original file against that.
-        // In splat mode each window is also measured as the package stores it, colour as YCoCg-R (v11,
-        // ColourTransform.h): entropy of the interleaved window and Brotli size of the shuffled one, both
-        // without and with the transform, for the Statistics row. The estimate is the transformed size. The plain
+        // In splat mode each window is also measured as the package stores it, colour as YCoCg-R (ColourTransform.h) and
+        // every level's SH but the coarsest as residuals from the next coarser level (SHCoding.h; here over the whole
+        // model rather than per chunk, close enough for an estimate): entropy of the interleaved window and Brotli size
+        // of the shuffled one, both without and with the transforms, for the Statistics row. The estimate is the transformed size. The plain
         // comparison compresses every other window only (against the same windows transformed), so the figure
         // costs about half a sample's compression.
         const auto tEstimateStart = std::chrono::high_resolution_clock::now();
@@ -1932,6 +1933,24 @@ namespace Splat
         const float encodeSeconds = std::chrono::duration<float>(std::chrono::high_resolution_clock::now() - tEstimateStart).count();
 
         const uint32_t shStride = source.splatMode ? SplatCodec::SHRecordBytes(out.splatParams.shDegree) : 0u;
+        // SH residuals as the package stores them; the absolute SH is kept for the plain comparison
+        std::vector<std::vector<uint8_t>> shAbsolute;
+        const bool shResidual = source.splatMode && shStride > 0 && levels.size() >= 2;
+        if (shResidual)
+        {
+            std::vector<const uint8_t*> recs(levels.size());
+            std::vector<size_t> counts(levels.size());
+            std::vector<std::vector<uint8_t>*> shs(levels.size());
+            for (size_t l = 0; l < levels.size(); l++)
+            {
+                shAbsolute.push_back(levels[l].sh);
+                recs[l] = reinterpret_cast<const uint8_t*>(levels[l].splats.data());
+                counts[l] = levels[l].splats.size();
+                shs[l] = &levels[l].sh;
+            }
+            const uint8_t bits[3] = { source.shBits, source.shBits, source.shBits };
+            SHCoding::EncodeResiduals(recs, counts, sizeof(PackedSplatGPU), shs, shStride, bits);
+        }
         const uint32_t recordStride = source.splatMode ? (uint32_t)sizeof(PackedSplatGPU) : (uint32_t)sizeof(PackedPointGPU);
         size_t packageBytes = sizeof(SFLWFileHeader);
         double plainEstimate = (double)sizeof(SFLWFileHeader), entropyPlain = 0.0, entropyYCoCg = 0.0;
@@ -1953,10 +1972,12 @@ namespace Splat
             std::vector<std::vector<uint8_t>> samples, plainSamples;
             std::vector<size_t> pairedSample; // Index in samples of each plain window's transformed twin
             double classEntropyPlain = 0.0, classEntropyYCoCg = 0.0, classEntropyBytes = 0.0;
-            for (const auto& lr : levels)
+            for (size_t li = 0; li < levels.size(); li++)
             {
+                const LevelRecords& lr = levels[li];
                 const size_t count = levelCount(lr);
                 if (count == 0) continue;
+                const bool residualLevel = sh && shResidual && li + 1 < levels.size(); // Stored as residuals, in YCoCg already
                 const int n = std::max(1, (int)std::lround((double)kWindowsPerClass * (double)(count * stride) / (double)total));
                 const size_t w = std::min(window, count);
                 for (int j = 0; j < n; j++)
@@ -1968,7 +1989,9 @@ namespace Splat
                         samples.push_back(ByteShuffle::Shuffle(levelBytes(lr) + start * stride, w, stride));
                         continue;
                     }
-                    std::vector<uint8_t> win(levelBytes(lr) + start * stride, levelBytes(lr) + (start + w) * stride);
+                    // The plain window: the absolute RGB bytes
+                    const uint8_t* plainBytes = residualLevel ? shAbsolute[li].data() : levelBytes(lr);
+                    std::vector<uint8_t> win(plainBytes + start * stride, plainBytes + (start + w) * stride);
                     const double wb = (double)win.size();
                     classEntropyPlain += wb * ColourTransform::MeanPlaneEntropy(win.data(), w, stride);
                     if (samples.size() % 2 == 0)
@@ -1976,7 +1999,9 @@ namespace Splat
                         pairedSample.push_back(samples.size());
                         plainSamples.push_back(ByteShuffle::Shuffle(win.data(), w, stride));
                     }
-                    if (sh) ColourTransform::ApplySH(win.data(), win.size()); else ColourTransform::ApplyRecords(win.data(), w, stride);
+                    if (residualLevel) win.assign(levelBytes(lr) + start * stride, levelBytes(lr) + (start + w) * stride);
+                    else if (sh) ColourTransform::ApplySH(win.data(), win.size());
+                    else ColourTransform::ApplyRecords(win.data(), w, stride);
                     classEntropyYCoCg += wb * ColourTransform::MeanPlaneEntropy(win.data(), w, stride);
                     classEntropyBytes += wb;
                     samples.push_back(ByteShuffle::Shuffle(win.data(), w, stride));
@@ -2014,7 +2039,7 @@ namespace Splat
         {
             out.colourEstimate.entropyChangePercent = 100.0 * (entropyYCoCg / entropyPlain - 1.0);
             out.colourEstimate.sizeChangePercent = 100.0 * ((double)packageBytes / plainEstimate - 1.0);
-            LogTransitionTrace("Colour transform (YCoCg, sampled): entropy %+.1f%%, size %+.1f%% (records: entropy %+.1f%%, size %+.1f%%; SH: entropy %+.1f%%, size %+.1f%%)",
+            LogTransitionTrace("Colour transform (YCoCg and SH residuals, sampled): entropy %+.1f%%, size %+.1f%% (records: entropy %+.1f%%, size %+.1f%%; SH: entropy %+.1f%%, size %+.1f%%)",
                 out.colourEstimate.entropyChangePercent, out.colourEstimate.sizeChangePercent,
                 out.colourEstimate.records.entropyChangePercent, out.colourEstimate.records.sizeChangePercent,
                 out.colourEstimate.sh.entropyChangePercent, out.colourEstimate.sh.sizeChangePercent);
@@ -2573,7 +2598,7 @@ namespace Splat
                     if (progress.StageName() != stage) progress.Stage(stage, fraction);
                     progress.Fraction(fraction);
                     return !progress.Cancelled();
-                }, PAYLOAD_TRANSFORMS_KNOWN, transformStats.get(), meshHeld->get(), occluderHeld->get());
+                }, PAYLOAD_TRANSFORMS_DEFAULT, transformStats.get(), meshHeld->get(), occluderHeld->get());
         },
         [this, outputPath, partial, transformStats, meshHeld](bool ok, bool cancelled)
         {
@@ -3348,12 +3373,12 @@ namespace Splat
                     static const char* s_shNames[] = { "Low (degree 1, 9 bytes per splat)", "Medium (degree 2, 24 bytes per splat)", "High (degree 3, 45 bytes per splat)" };
                     ImGui::Combo("SH Quality", &m_splatSHQuality, s_shNames, IM_ARRAYSIZE(s_shNames));
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("How much of the view-dependent colour (spherical harmonics) the package keeps. Low keeps the first band, which carries most of the tint shift with viewing angle; Medium adds the second band (sharper highlights) at about 2.7 times the harmonics bytes; High keeps all three bands the source has, at five times the harmonics bytes.");
-                    static const char* s_precisionNames[] = { "8 bits (lossless)", "6 bits (-23% on Cthulhu)", "5 bits (-33% on Cthulhu)", "4 bits (-44% on Cthulhu)" };
+                    static const char* s_precisionNames[] = { "8 bits (lossless)", "6 bits (-14% on Cthulhu)", "5 bits (-22% on Cthulhu)", "4 bits (-33% on Cthulhu)" };
                     ImGui::Combo("SH Precision", &m_shPrecision, s_precisionNames, IM_ARRAYSIZE(s_precisionNames));
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Bits per spherical-harmonics coefficient. Fewer bits round the view-dependent colour to coarser steps, which compresses much better; the viewport shows the result after Bake, before you save.\n"
                                                                   "Measured on Cthulhu (colour error over all view directions, per splat, against 8 bits):\n"
-                                                                  "6 bits: package -23%%, 46 dB.  5 bits: -33%%, 41 dB.  4 bits: -44%%, 35 dB.\n"
-                                                                  "Applied by Bake. No format change: every reader opens the package as before.");
+                                                                  "6 bits: package -14%%, 46 dB.  5 bits: -22%%, 41 dB.  4 bits: -33%%, 35 dB.\n"
+                                                                  "Applied by Bake; the package records it, as its readers need it to decode the harmonics.");
                     if (m_sourceSHDegree == 0)
                         ImGui::TextDisabled("The source has no spherical harmonics (a point cloud): colour only");
                     else if (BakeSHDegree() < SplatSHDegree())
@@ -4113,15 +4138,15 @@ namespace Splat
                     ImGui::Text("Tier 3 (Morton Swizzle):  Contiguous 8-channel planes");
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 3 Morton Swizzle & Transposition: Interleaves 3D spatial coordinate bits via Z-order curve and transposes 8-byte structures into 8 contiguous channels to maximize entropy redundancy.");
 
-                    ImGui::Text("Tier 4 (Codec: YCoCg + Byte planes + Brotli): %.2f MB", m_compressedSizeMB);
-                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 4 Entropy Codec: the package as it would be written -- every level's records and spherical-harmonics stream, colour stored as YCoCg (lossless), transposed into byte planes and Brotli-compressed at quality 11. Every level ships in full, so this is about twice the level 0 data above before compression. Estimated from a sample while a bake is being set up; a loaded package shows its real file size.");
+                    ImGui::Text("Tier 4 (Codec: YCoCg + SH residuals + Byte planes + Brotli): %.2f MB", m_compressedSizeMB);
+                    if (ImGui::IsItemHovered()) ImGui::SetTooltip("Tier 4 Entropy Codec: the package as it would be written -- every level's records and spherical-harmonics stream, colour stored as YCoCg and each level's harmonics as the difference from the coarser level's (both lossless), transposed into byte planes and Brotli-compressed at quality 11. Every level ships in full, so this is about twice the level 0 data above before compression. Estimated from a sample while a bake is being set up; a loaded package shows its real file size.");
 
                     // What the colour transform bought: entropy and size side by side (entropy alone can mislead)
                     if (m_colourEstimate.valid)
                     {
-                        ImGui::Text("  YCoCg colour: entropy %+.1f%%, size %+.1f%% (sampled)", m_colourEstimate.entropyChangePercent, m_colourEstimate.sizeChangePercent);
+                        ImGui::Text("  YCoCg + SH residuals: entropy %+.1f%%, size %+.1f%% (sampled)", m_colourEstimate.entropyChangePercent, m_colourEstimate.sizeChangePercent);
                         if (ImGui::IsItemHovered())
-                            ImGui::SetTooltip("Colour decorrelation before compression: every record's RGB and every spherical-harmonics coefficient's RGB stored as reversible YCoCg, measured on the bake's size sample against plain RGB.\n"
+                            ImGui::SetTooltip("Lossless transforms before compression: every record's RGB and every spherical-harmonics coefficient's RGB stored as reversible YCoCg, and every level's harmonics but the coarsest as the difference from the next coarser level's, measured on the bake's size sample against plain, absolute RGB.\n"
                                               "Records: entropy %+.1f%%, size %+.1f%%\nSpherical harmonics: entropy %+.1f%%, size %+.1f%%\n"
                                               "Entropy is the mean order-0 entropy of the byte planes; size is after Brotli, which is what the file pays.",
                                               m_colourEstimate.records.entropyChangePercent, m_colourEstimate.records.sizeChangePercent,
@@ -4129,8 +4154,9 @@ namespace Splat
                     }
                     else if (m_isLoadedFromSFLW)
                     {
-                        const bool ycocg = m_loadedPackage.header.version >= 11 && m_loadedPackage.header.payloadTransforms != 0;
-                        ImGui::TextDisabled("  YCoCg colour: %s", ycocg ? "used by this package" : "not used (package older than format 11)");
+                        const uint32_t tr = m_loadedPackage.header.payloadTransforms;
+                        ImGui::TextDisabled("  YCoCg colour: %s; SH residuals: %s", (tr & (PAYLOAD_TRANSFORM_RECORD_YCOCG | PAYLOAD_TRANSFORM_SH_YCOCG)) ? "used" : "not used",
+                                            (tr & PAYLOAD_TRANSFORM_SH_RESIDUAL) ? "used" : "not used");
                     }
 
                     ImGui::Separator();

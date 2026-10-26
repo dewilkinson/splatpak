@@ -34,6 +34,7 @@ add_library(gstx STATIC
     SplatCodec.h
     SplatCodec.cpp
     ColourTransform.h
+    SHCoding.h
     ShadowMesh.h
     ShadowMeshBuilder.h
     ShadowMesh.cpp

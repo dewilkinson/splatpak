@@ -34,7 +34,7 @@ namespace Splat
     static constexpr uint32_t GSTX_MAGIC = 0x58545347;
     // The format version written, and the only one read: packages of earlier versions are baked again from their
     // source. The history of the layout is in docs/GSTX_FORMAT_SPECIFICATION.md.
-    static constexpr uint32_t SFLW_VERSION = 13;
+    static constexpr uint32_t SFLW_VERSION = 14;
 
     // Upper bound on the occlusion volume mip chain: mip 0 plus up to three coarser levels. Blocks fall
     // by roughly 4x per level (the skin is a surface), so the whole chain costs about a third more than
@@ -299,7 +299,7 @@ namespace Splat
     static_assert(offsetof(SFLWFileHeader, payloadTransforms) == 204, "payloadTransforms sits in what was the v9 header's trailing padding");
     static_assert(offsetof(SFLWFileHeader, shadowMeshOffset) == 208, "v12 appends the shadow mesh fields after the v11 header");
     static_assert(offsetof(SFLWFileHeader, occluderMeshOffset) == 224, "v13 appends the occluder mesh fields after the v12 header");
-    static_assert(sizeof(SFLWFileHeader) == 240, "the v13 header is 240 bytes");
+    static_assert(sizeof(SFLWFileHeader) == 240, "the header is 240 bytes");
 
     // On-disk form of one ChunkManifest entry in a .gstx's embedded manifest table. The table
     // lives at SFLWFileHeader::manifestOffset and holds SFLWFileHeader::numChunks entries, each a

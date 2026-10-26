@@ -150,7 +150,7 @@ int main(int argc, char** argv)
     Check(pkg.header.version == SFLW_VERSION, "version", pkg.header.version, SFLW_VERSION);
     Check(pkg.header.shDegree == shDegree, "sh degree", pkg.header.shDegree, shDegree);
     Check(pkg.header.splatRecordBytes == sizeof(PackedSplatGPU), "record bytes", pkg.header.splatRecordBytes, sizeof(PackedSplatGPU));
-    Check(pkg.header.payloadTransforms == PAYLOAD_TRANSFORMS_KNOWN, "colour transform declared", pkg.header.payloadTransforms, PAYLOAD_TRANSFORMS_KNOWN);
+    Check(pkg.header.payloadTransforms == (PAYLOAD_TRANSFORMS_DEFAULT | SHCoding::PackBits(bake.shBits)), "transforms declared", pkg.header.payloadTransforms, PAYLOAD_TRANSFORMS_DEFAULT);
 
     // 3. The colour transform is lossless: the same bake written as plain RGB loads to identical bytes, level by level
     {
