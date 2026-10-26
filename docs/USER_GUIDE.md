@@ -1,26 +1,26 @@
-# SplatLab User Guide
+# SplatPak User Guide
 
-This guide explains how to use SplatLab. For the architecture and build instructions, see [README.md](../README.md).
+This guide explains how to use SplatPak. For the architecture and build instructions, see [README.md](../README.md).
 
 ## Overview
 
-SplatLab turns large point clouds and Gaussian splat scans into compact, multi-resolution packages, then streams and renders them on the GPU. A scan of a few million points becomes a single `.gstx` file that opens in seconds, loads coarse-to-fine as you look at it, and stays sharp where it matters.
+SplatPak turns large point clouds and Gaussian splat scans into compact, multi-resolution packages, then streams and renders them on the GPU. A scan of a few million points becomes a single `.gstx` file that opens in seconds, loads coarse-to-fine as you look at it, and stays sharp where it matters.
 
 A few concepts carry through the whole application:
 
-- **Gaussian (splat).** A small, soft, coloured 3D ellipsoid with a position, three scales, a rotation, an opacity and optionally view-dependent colour (spherical harmonics). Everything SplatLab renders is made of them: a 3D Gaussian Splatting scene supplies its own, and a plain point cloud gets one at each point.
+- **Gaussian (splat).** A small, soft, coloured 3D ellipsoid with a position, three scales, a rotation, an opacity and optionally view-dependent colour (spherical harmonics). Everything SplatPak renders is made of them: a 3D Gaussian Splatting scene supplies its own, and a plain point cloud gets one at each point.
 - **Chunk.** A spatial cube of Gaussians, a few thousand at most. Chunks are the unit of streaming: they arrive, refine and leave memory independently.
 - **LOD pyramid.** Every chunk exists at several levels of detail, from a coarse envelope of a few points to the full-resolution scan. The Package Bake tab builds the pyramid once, using a wavelet decomposition that keeps shape while it halves the point count (see the appendix).
 - **Package (`.gstx`).** One self-contained file holding every level of every chunk, compressed, plus the metadata the viewer needs: the chunk manifest, an optional interior occlusion volume and a detail grid that guides streaming. Only packages of the current format (13) open; bake an older one again from its source scan.
-- **Streaming.** The viewer never needs the whole file at once. Chunks are requested at the level the view calls for, arrive in a priority order, cross-fade in, and can be evicted again when memory is tight. SplatLab simulates the network so you can watch this happen.
+- **Streaming.** The viewer never needs the whole file at once. Chunks are requested at the level the view calls for, arrive in a priority order, cross-fade in, and can be evicted again when memory is tight. SplatPak simulates the network so you can watch this happen.
 - **Interior occlusion volume.** A solid, coloured voxel body baked inside the model. It stops the far side of a sparse scan from showing through the near side.
 
 ### One application, two modes
 
-SplatLab ships as two executables built from the same code:
+SplatPak ships as two executables built from the same code:
 
-- **`SplatLab.exe`** runs in Studio mode: three tabs that take a dataset from raw scan to streamed render. **Package Bake** loads a `.ply` or `.splat`, exposes the packaging parameters and saves a `.gstx`. **Renderer** shows the current dataset or any package with level-of-detail, visualiser and occlusion controls. **Streaming** simulates delivery over a constrained connection and shows what is resident.
-- **`SplatLabViewer.exe`** runs in Viewer mode: the Renderer and Streaming tabs only, with the generator hidden. Use it where people only need to open packages.
+- **`SplatPak.exe`** runs in Studio mode: three tabs that take a dataset from raw scan to streamed render. **Package Bake** loads a `.ply` or `.splat`, exposes the packaging parameters and saves a `.gstx`. **Renderer** shows the current dataset or any package with level-of-detail, visualiser and occlusion controls. **Streaming** simulates delivery over a constrained connection and shows what is resident.
+- **`SplatPakViewer.exe`** runs in Viewer mode: the Renderer and Streaming tabs only, with the generator hidden. Use it where people only need to open packages.
 
 Either executable can start in either mode with a switch, and both accept a file on the command line, so dropping a package or a scan onto the executable opens it directly.
 
@@ -36,25 +36,25 @@ flowchart LR
 ### Command line
 
 ```bat
-SplatLab.exe [options] [file]
-SplatLabViewer.exe [options] [file]
+SplatPak.exe [options] [file]
+SplatPakViewer.exe [options] [file]
 ```
 
 | Option | Effect |
 |---|---|
 | `file` | A `.gstx` package to open, or in Studio mode a `.ply` / `.splat` to preprocess. Without it, the `startup_dataset` from `config.json` opens. |
-| `--viewer` | Viewer mode: Renderer and Streaming tabs only. The default for `SplatLabViewer.exe`. |
-| `--studio` | Studio mode: all three tabs. The default for `SplatLab.exe`. |
+| `--viewer` | Viewer mode: Renderer and Streaming tabs only. The default for `SplatPakViewer.exe`. |
+| `--studio` | Studio mode: all three tabs. The default for `SplatPak.exe`. |
 | `--render-path <p>` | GPU path for this run: `auto`, `mesh`, `vs6` or `vs5`. Overrides `render_path` in `config.json` without changing it. |
 | `--help`, `-h`, `/?` | Show the usage, on the console when started from a prompt and in a dialog. |
 
 ## Getting started
 
-**Release build.** Download the latest zip from the [Releases page](../../../releases), extract it anywhere and run `Run SplatLab.cmd`. No installation is needed. The bundled Dancing Couple of Dwarves scan loads on first launch, so the window is never empty.
+**Release build.** Download the latest zip from the [Releases page](../../../releases), extract it anywhere and run `Run SplatPak.cmd`. No installation is needed. The bundled Dancing Couple of Dwarves scan loads on first launch, so the window is never empty.
 
 **Hardware.** Any Direct3D 12 GPU works. GPUs with mesh shaders (GeForce RTX 20-series or newer, Radeon RX 6000 or newer, Intel Arc) run the fast path. Other hardware falls back to instanced vertex shaders automatically, drawing the same picture at lower frame rates. When the fallback is active a dialog says so at launch, the top-left banner lists the stages it stands in for, and Help > About names the path in use.
 
-**Building from source.** The Building section of [README.md](../README.md) has the full procedure. In short: run `cmake .. -G "Visual Studio 18 2026" -A x64` from a `build/` directory and open the generated solution. SplatLab is the startup project.
+**Building from source.** The Building section of [README.md](../README.md) has the full procedure. In short: run `cmake .. -G "Visual Studio 18 2026" -A x64` from a `build/` directory and open the generated solution. SplatPak is the startup project.
 
 **Camera.** Left-drag or the Left/Right arrows rotate. The mouse wheel, right-drag, W/S or Up/Down zoom. Shift with any drag or with the arrow keys pans. A faint reminder sits in the bottom-right corner of the viewport, and **Show Camera Control Hints** on the Renderer tab hides it. **Reset View** in the bottom-left corner returns to the launch view.
 

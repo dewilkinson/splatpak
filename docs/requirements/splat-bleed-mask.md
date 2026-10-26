@@ -63,7 +63,7 @@ consumes the occlusion volume as packaged data through the existing renderer int
 `libs/bluesec-codec` changes, and the bake of the occlusion volume is not involved.
 
 ## Acceptance criteria
-1. `SplatLabViewer`, `SplatLab` and the test executables build in Release for all three render paths.
+1. `SplatPakViewer`, `SplatPak` and the test executables build in Release for all three render paths.
 2. Open the bundled Cthulhu splat package in Viewer mode with the temporal filter off, force the
    preview level to 2 or higher, and take a screenshot with Bleed Mask on and off. With the mask on,
    background pixels farther from the model rim than the dilation plus margin plus feather are the

@@ -2,7 +2,7 @@
 // SplatPak -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// How SplatLab draws a shadow or occluder mesh (ShadowMesh.h): smoother than it is stored. Loop subdivision rounds the
+// How SplatPak draws a shadow or occluder mesh (ShadowMesh.h): smoother than it is stored. Loop subdivision rounds the
 // silhouettes of the low-polygon mesh (each pass quarters the triangles and pulls convex parts slightly inward, so the
 // mesh pokes through the splats less, never more), and a smooth per-vertex normal replaces the flat facets. Display
 // only: the package keeps the mesh as built.

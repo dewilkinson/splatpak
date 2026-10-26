@@ -1,12 +1,12 @@
-// SplatLabApp.h
+// SplatPakApp.h
 // SplatPak -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// The shared app shell behind both executables. In Studio mode it is SplatLab: the whole
+// The shared app shell behind both executables. In Studio mode it is SplatPak: the whole
 // offline preprocessing pipeline (load -> octree chunk -> wavelet decompose -> quantize ->
 // export) plus the runtime streaming simulation and every ImGui panel. In Viewer mode it is
 // the standalone Splat viewer: the same class with the Package Bake tab, its menu items
-// and its shortcuts hidden, so the viewer is SplatLab's Renderer and Streaming tabs by
+// and its shortcuts hidden, so the viewer is SplatPak's Renderer and Streaming tabs by
 // construction rather than a second copy of them. SplatRenderer handles the actual GPU work;
 // this class is everything else -- UI, file I/O, and the streaming/decay/silhouette simulation.
 
@@ -42,7 +42,7 @@ namespace Splat
     void LogTransitionTrace(const char* fmt, ...);
     void LogD3D12Messages();
 
-    class SplatLabApp : public CAULDRON_DX12::FrameworkWindows
+    class SplatPakApp : public CAULDRON_DX12::FrameworkWindows
     {
     public:
         // Which product this instance is (see the file header). Viewer hides everything that only
@@ -50,11 +50,11 @@ namespace Splat
         // Save Package, and Ctrl+O opens a .gstx instead of a .ply.
         enum class Mode { Studio, Viewer };
 
-        explicit SplatLabApp(LPCSTR name, Mode mode = Mode::Studio);
+        explicit SplatPakApp(LPCSTR name, Mode mode = Mode::Studio);
 
         Mode        GetMode() const      { return m_mode; }
         bool        IsViewerOnly() const { return m_mode == Mode::Viewer; }
-        const char* AppTitle() const     { return m_mode == Mode::Viewer ? "Splat Viewer" : "SplatLab"; } // Dialog titles
+        const char* AppTitle() const     { return m_mode == Mode::Viewer ? "Splat Viewer" : "SplatPak"; } // Dialog titles
 
         // Splits a Win32 command line into arguments: whitespace-separated, double quotes group.
         static std::vector<std::string> SplitCommandLine(const char* cmdLine);

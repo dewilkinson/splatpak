@@ -19,7 +19,7 @@ and, during a save, from the full payloads (entropy only, which is cheap).
 | Format | `src/SplatCore/WaveletTypes.h`, `docs/GSTX_FORMAT_SPECIFICATION.md` | Version 11; `payloadTransforms` at offset 204 (bit 0 records, bit 1 SH); spec clause 8.1 |
 | Writer | `src/SplatCore/StreamPackager.h` | Apply before the shuffle when writing; set the header bits; entropy before/after for the save line |
 | Readers | `src/SplatCore/StreamPackager.h` (load), `libs/gstx/PayloadDecode.*`, streaming runtime decode path | Undo after the unshuffle when the header bit is set |
-| Estimate and UI | `src/SplatCore/SplatLabApp.cpp/.h` | The size estimate runs both variants on its sample; `BakeResult` carries the figures; Statistics row; save stage text |
+| Estimate and UI | `src/SplatCore/SplatPakApp.cpp/.h` | The size estimate runs both variants on its sample; `BakeResult` carries the figures; Statistics row; save stage text |
 | Tools | `tools/CompressVenus`, `tests/TestSplatCodec.cpp`, `tests/TestLoadPackage.cpp` | `--no-colour-transform` flag; byte-identical round trip check |
 | UE5Splats | `Plugins/SplatPak/Source/SplatPakRendering/Private/SplatPackageCore.cpp`, its tests; ThirdParty GSTx headers via `BuildCodec.ps1` | Read version 11 and undo the transform |
 
@@ -54,7 +54,7 @@ every triple is transformed in place; the record's colour is bytes 10, 11, 12.
 
 ## Order of work
 1. `ColourTransform.h` with a unit test of the inverse over all 2²⁴ triples. Done when: exhaustive round trip.
-2. Format and writer and reader in StreamPackager; CompressVenus flag. Done when: criteria 1, 2, 3 (SplatLab side).
+2. Format and writer and reader in StreamPackager; CompressVenus flag. Done when: criteria 1, 2, 3 (SplatPak side).
 3. PayloadDecode and the streaming runtime path. Done when: stream test and calibration runs match.
 4. Estimate figures, Statistics row, save stage, trace. Done when: criteria 4, 5.
 5. Spec clause 8.1 and the header table. Done when: criterion 8.

@@ -4,7 +4,7 @@
 //
 // The View Shadow Mesh debug view: the package's shadow mesh (ShadowMesh.h) as a solid, smooth-shaded surface in its
 // vertex colours (the splats' base colour), lit like the occlusion volume's cubes; also the occluder mesh and the gap
-// fill. SplatLab subdivides the mesh and gives each vertex a smooth normal (ShadowMeshDisplay.h). A classic vertex/pixel pipeline with
+// fill. SplatPak subdivides the mesh and gives each vertex a smooth normal (ShadowMeshDisplay.h). A classic vertex/pixel pipeline with
 // no input layout, so it runs on every render path (mesh shaders, VS SM6, and VS SM5 under FXC): the vertex shader
 // fetches the index list and the vertices from structured buffers bound at t0 and t1 of the shared root signature.
 

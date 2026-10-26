@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.24)
 # Vulkan SDK is never required just to build this sample.
 set(GFX_API "DX12")
 
-project(SplatLab_${GFX_API})
+project(SplatPak_${GFX_API})
 
 if(MSVC_TOOLSET_VERSION VERSION_LESS 142)
     message(FATAL_ERROR "Cannot find MSVC toolset version 142 or greater. Please make sure Visual Studio 2019 or newer is installed")
@@ -46,7 +46,7 @@ add_subdirectory(libs/cauldron)
 add_subdirectory(libs/gstx)
 add_subdirectory(src/SplatCore)   # splat_core: everything both executables share (must precede them)
 add_subdirectory(src/DX12)
-add_subdirectory(tools/SplatLab)
+add_subdirectory(tools/SplatPak)
 add_subdirectory(tests)
 
 # Never run a stale binary: before any executable links, every .exe/.pdb in bin/ is deleted (both
@@ -59,7 +59,7 @@ add_custom_target(clean_stale_binaries
     COMMENT "Removing stale executables from bin/"
 )
 set_target_properties(clean_stale_binaries PROPERTIES FOLDER "Core")
-foreach(_exe SplatLab SplatLabViewer CompressVenus TestGPUSort TestBitonicCPU TestLoadPackage TestSplatCodec TestColourTransform TestShadowMesh TestGeometryCull TestOcclusionVolume)
+foreach(_exe SplatPak SplatPakViewer CompressVenus TestGPUSort TestBitonicCPU TestLoadPackage TestSplatCodec TestColourTransform TestShadowMesh TestGeometryCull TestOcclusionVolume)
     if(TARGET ${_exe})
         add_dependencies(${_exe} clean_stale_binaries)
     endif()
@@ -70,7 +70,7 @@ endforeach()
 # fails with "Unable to start program ... access denied". Pin it to the
 # client-facing app instead. Right-click another project > Set as Startup
 # Project to override for a session.
-set_property(DIRECTORY ${CMAKE_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT SplatLab)
+set_property(DIRECTORY ${CMAKE_SOURCE_DIR} PROPERTY VS_STARTUP_PROJECT SplatPak)
 
 # Docs project: a build-nothing target whose only purpose is to list the
 # Markdown docs in Solution Explorer so they can be opened and edited from

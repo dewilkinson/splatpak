@@ -2,7 +2,7 @@
 
 > Want to use the app? Start with the [User Guide](docs/USER_GUIDE.md). This README covers the architecture and the build.
 
-SplatLab is a DirectX 12 renderer and toolchain for streaming very large 3D Gaussian Splatting scenes. A scan of millions of Gaussians (or a plain point cloud, which gets a Gaussian at each point) is packaged once into a compact, multi-resolution `.gstx` file, then streamed and drawn on the GPU as sorted, alpha-blended 3D Gaussians. Every splat is culled, sorted and cross-faded on the GPU each frame, straight from a buffer of packed 20-byte records. There is no vertex or index buffer in the pipeline.
+SplatPak is a DirectX 12 renderer and toolchain for streaming very large 3D Gaussian Splatting scenes. A scan of millions of Gaussians (or a plain point cloud, which gets a Gaussian at each point) is packaged once into a compact, multi-resolution `.gstx` file, then streamed and drawn on the GPU as sorted, alpha-blended 3D Gaussians. Every splat is culled, sorted and cross-faded on the GPU each frame, straight from a buffer of packed 20-byte records. There is no vertex or index buffer in the pipeline.
 
 ## Screenshots
 
@@ -26,13 +26,13 @@ The apps sit on AMD's [Cauldron](https://github.com/GPUOpen-LibrariesAndSDKs/Cau
 
 ## Solution structure
 
-1. **`SplatLab` (Tools)**. `tools/SplatLab/main.cpp`, a few lines that start the shared app in Studio mode: the Package Bake, Renderer and Streaming tabs in one window. The default startup project and what the User Guide describes.
+1. **`SplatPak` (Tools)**. `tools/SplatPak/main.cpp`, a few lines that start the shared app in Studio mode: the Package Bake, Renderer and Streaming tabs in one window. The default startup project and what the User Guide describes.
 
-2. **`SplatLabViewer` (Apps)**. `src/DX12/main.cpp`, the same few lines starting the shared app in Viewer mode: the Renderer and Streaming tabs with the generator hidden. Same renderer, fallback, TAA, silhouette prepass, occlusion volume and streaming simulator by construction.
+2. **`SplatPakViewer` (Apps)**. `src/DX12/main.cpp`, the same few lines starting the shared app in Viewer mode: the Renderer and Streaming tabs with the generator hidden. Same renderer, fallback, TAA, silhouette prepass, occlusion volume and streaming simulator by construction.
 
-3. **`splat_core` (Core)**. `src/SplatCore/`, the static library both executables are built from: the app shell (`SplatLabApp`, with its Studio / Viewer mode and command-line parsing), the renderer (`SplatRenderer`), the `.ply` / `.splat` / `.sog` loaders, the octree, quantizer and packager, the `.gstx` types and format validators (`WaveletTypes.h`), the HLSL shaders (copied to `bin/ShaderLibDX` at build time) and the shared `WinMain` body with its crash-dump handlers (`AppEntry.cpp`). Anything both apps need lives here. The console tools include its headers directly and need neither a GPU nor Cauldron.
+3. **`splat_core` (Core)**. `src/SplatCore/`, the static library both executables are built from: the app shell (`SplatPakApp`, with its Studio / Viewer mode and command-line parsing), the renderer (`SplatRenderer`), the `.ply` / `.splat` / `.sog` loaders, the octree, quantizer and packager, the `.gstx` types and format validators (`WaveletTypes.h`), the HLSL shaders (copied to `bin/ShaderLibDX` at build time) and the shared `WinMain` body with its crash-dump handlers (`AppEntry.cpp`). Anything both apps need lives here. The console tools include its headers directly and need neither a GPU nor Cauldron.
 
-4. **`gstx` (Core)**. `libs/gstx/`, the algorithm core: the lifting-wavelet decomposition, the byte-plane shuffle (and the run-length stage packages before format v9 were coded with), the interior occlusion volume generator, the streaming scheduler with the detail grid it reads, and the streaming runtime that SplatLab drives (`StreamRuntime.h`: residency, delivery, refinement and the render list). The entropy stage of every package written now is Brotli (`libs/brotli/`, MIT, compiled into the library), encoded by open code in `src/SplatCore/PayloadCodec.h` and decoded by the library's open `PayloadDecode`: on the Cthulhu scan it takes the shuffled splat records 20% smaller than the run-length stage did and the spherical-harmonics stream 15% smaller, which that stage could not compress at all. In this repository the codec modules are proprietary source: each module is a public header (data structures and declarations) plus a `.cpp` implementation, built as a static library that `SplatLab`, `SplatLabViewer` and the console tools link against. **This subtree is not covered by the repository's Apache-2.0 `LICENSE`**; see `libs/gstx/README.md` for the boundary and its limits. A static library keeps source out of ordinary distribution but does not prevent disassembly of a shipped binary, and the shader source under `src/SplatCore/Shaders/` ships as plain text in `bin/ShaderLibDX/` regardless.
+4. **`gstx` (Core)**. `libs/gstx/`, the algorithm core: the lifting-wavelet decomposition, the byte-plane shuffle (and the run-length stage packages before format v9 were coded with), the interior occlusion volume generator, the streaming scheduler with the detail grid it reads, and the streaming runtime that SplatPak drives (`StreamRuntime.h`: residency, delivery, refinement and the render list). The entropy stage of every package written now is Brotli (`libs/brotli/`, MIT, compiled into the library), encoded by open code in `src/SplatCore/PayloadCodec.h` and decoded by the library's open `PayloadDecode`: on the Cthulhu scan it takes the shuffled splat records 20% smaller than the run-length stage did and the spherical-harmonics stream 15% smaller, which that stage could not compress at all. In this repository the codec modules are proprietary source: each module is a public header (data structures and declarations) plus a `.cpp` implementation, built as a static library that `SplatPak`, `SplatPakViewer` and the console tools link against. **This subtree is not covered by the repository's Apache-2.0 `LICENSE`**; see `libs/gstx/README.md` for the boundary and its limits. A static library keeps source out of ordinary distribution but does not prevent disassembly of a shipped binary, and the shader source under `src/SplatCore/Shaders/` ships as plain text in `bin/ShaderLibDX/` regardless.
 
 5. **Tests**. `tests/`, small console executables: `TestBitonicCPU` (CPU reference for the sort network), `TestGPUSort` (runs the radix sort on a raw D3D12 device against a CPU sort), `TestGeometryCull` (culling statistics), `TestLoadPackage` (loads a package and prints its counts), `TestOcclusionVolume` (runs the occlusion generator on a package) and `CompressVenus` (command-line packager, used to regenerate the bundled assets).
 
@@ -40,7 +40,7 @@ The apps sit on AMD's [Cauldron](https://github.com/GPUOpen-LibrariesAndSDKs/Cau
 
 ### Public repository
 
-`https://github.com/dewilkinson/splatlab` is a generated public mirror of this repository. The proprietary source of `gstx` is replaced by prebuilt `.lib` binaries of the same code, with open stand-in sources as a fallback, so the public build has the full feature set while the algorithm source never appears in its history. `python scripts/sync-public-repo.py`, run from a clean working tree, rebuilds the mirror: it strips the proprietary paths from every commit, rewrites the contents of past revisions through `scripts/public-history-scrub.py` (the streaming scheduler and detail-grid scoring lived inside the app source before 2026-09-07, so those passages, the paragraphs describing them and the commit messages naming them are removed from every public commit), drops in the stand-ins, compiles this repository's codec into the prebuilt `.lib` files, swaps a few README passages, builds the result, regenerates the bundled packages, runs the stress test and pushes every branch and tag. `--no-push` inspects the result first; `--no-prebuilt-codec` publishes a stand-in-only build. `scripts/build-release.py` assembles the release zip from the built public tree.
+`https://github.com/dewilkinson/splatpak` is a generated public mirror of this repository. The proprietary source of `gstx` is replaced by prebuilt `.lib` binaries of the same code, with open stand-in sources as a fallback, so the public build has the full feature set while the algorithm source never appears in its history. `python scripts/sync-public-repo.py`, run from a clean working tree, rebuilds the mirror: it strips the proprietary paths from every commit, rewrites the contents of past revisions through `scripts/public-history-scrub.py` (the streaming scheduler and detail-grid scoring lived inside the app source before 2026-09-07, so those passages, the paragraphs describing them and the commit messages naming them are removed from every public commit), drops in the stand-ins, compiles this repository's codec into the prebuilt `.lib` files, swaps a few README passages, builds the result, regenerates the bundled packages, runs the stress test and pushes every branch and tag. `--no-push` inspects the result first; `--no-prebuilt-codec` publishes a stand-in-only build. `scripts/build-release.py` assembles the release zip from the built public tree.
 
 ### Package format (`.gstx`)
 
@@ -62,15 +62,15 @@ Every offset is absolute, so the manifest is written last and the header patched
 Both executables take the same options and differ only in their default mode:
 
 ```bat
-SplatLab.exe [options] [file]
-SplatLabViewer.exe [options] [file]
+SplatPak.exe [options] [file]
+SplatPakViewer.exe [options] [file]
 ```
 
 | Option | Effect |
 |---|---|
 | `file` | A `.gstx` package to open, or in Studio mode a `.ply` / `.splat` to preprocess. Dropping a file on the executable does the same. Without it, the `startup_dataset` from `config.json` opens. |
-| `--viewer` | Viewer mode: the Renderer and Streaming tabs only. The default for `SplatLabViewer.exe`. |
-| `--studio` | Studio mode: all three tabs. The default for `SplatLab.exe`. |
+| `--viewer` | Viewer mode: the Renderer and Streaming tabs only. The default for `SplatPakViewer.exe`. |
+| `--studio` | Studio mode: all three tabs. The default for `SplatPak.exe`. |
 | `--render-path <p>` | GPU path for this run: `auto`, `mesh`, `vs6` or `vs5`. Overrides `render_path` in `config.json` without changing it. |
 | `--help`, `-h`, `/?` | Show the usage, on the console when started from a prompt and in a dialog. |
 
@@ -89,7 +89,7 @@ Use whichever Visual Studio generator matches your install. The prebuilt codec i
 
 **Cauldron is prebuilt.** `libs/cauldron-prebuilt/lib/{Debug,Release}/` ships `Cauldron_Common`, `Cauldron_DX12` and `ImGUI` as static libraries through [Git LFS](https://git-lfs.com/), so run `git lfs install` once per machine before cloning, or `git lfs pull` afterwards. The `CAULDRON_USE_PREBUILT` option (on by default) links them instead of compiling Cauldron's sources, and falls back to a from-source build when the `.lib` files are missing. Pass `-DCAULDRON_USE_PREBUILT=OFF` to force the from-source build, for instance when patching Cauldron. The `.ply` scans under `assets/` are LFS objects too.
 
-Open the generated solution in `build/` (`SplatLabViewer.slnx` with the VS 2026 generator, `.sln` with older ones) or run `cmake --build . --config Release`. Executables and shaders land in `bin/`: every `.hlsl` under `src/SplatCore/Shaders/` is copied to `bin/ShaderLibDX/` for `CompileShaderFromFile` to find at runtime. Debug binaries get a `d` suffix. Release builds keep full optimisation and also emit PDBs.
+Open the generated solution in `build/` (`SplatPakViewer.slnx` with the VS 2026 generator, `.sln` with older ones) or run `cmake --build . --config Release`. Executables and shaders land in `bin/`: every `.hlsl` under `src/SplatCore/Shaders/` is copied to `bin/ShaderLibDX/` for `CompileShaderFromFile` to find at runtime. Debug binaries get a `d` suffix. Release builds keep full optimisation and also emit PDBs.
 
 **Use a Visual Studio generator, not Ninja.** Cauldron's `src/Common` and `src/DX12` both copy overlapping FidelityFX headers into `bin/ShaderLibDX`. MSBuild tolerates that; Ninja rejects it. If you open the folder directly in Visual Studio, `CMakeSettings.json` must name a Visual Studio generator (it ships set to `"Visual Studio 18 2026 Win64"`).
 
@@ -112,7 +112,7 @@ Splats are drawn the way a reference 3DGS viewer draws them: per-splat colour fr
 
 ## Contributing
 
-The public repository at `github.com/dewilkinson/splatlab` is a generated mirror whose history is rewritten on every sync, so a pull request opened against it cannot be merged and will be closed. Bug reports and feature requests are welcome as GitHub issues there. Code contributions are accepted by prior arrangement with the author, so they can be applied to the source of truth and re-published; contact details are in the About dialog.
+The public repository at `github.com/dewilkinson/splatpak` is a generated mirror whose history is rewritten on every sync, so a pull request opened against it cannot be merged and will be closed. Bug reports and feature requests are welcome as GitHub issues there. Code contributions are accepted by prior arrangement with the author, so they can be applied to the source of truth and re-published; contact details are in the About dialog.
 
 ## License
 

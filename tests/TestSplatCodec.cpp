@@ -189,7 +189,7 @@ int main(int argc, char** argv)
         std::remove((outputBase + "_rgb.gstx").c_str());
     }
 
-    // 4. SH Precision: a requantised package decodes to exactly what SplatLab draws before saving (encode, then
+    // 4. SH Precision: a requantised package decodes to exactly what SplatPak draws before saving (encode, then
     // RequantiseSH), so the viewport shows the package; and the error stays within one snapping step
     {
         SplatBakeInput bake5 = bake;

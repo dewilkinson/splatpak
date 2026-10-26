@@ -7,7 +7,7 @@ Date: 2026-10-25
 ## Summary
 Saving a package bakes a smooth, closed shadow mesh from the level 0 splats in the codec library, in three levels
 of detail, and writes it as an optional section of a new format version (12; version 11 is colour decorrelation). Every reader loads the section
-through the library's open decoder. SplatLab reports the triangle counts and can draw the finest level as a
+through the library's open decoder. SplatPak reports the triangle counts and can draw the finest level as a
 wireframe debug view. UE5Splats' importer turns the section into a hidden static mesh asset (three classic LODs,
 no Nanite) that the splat component uses for shadows, Lumen's distance fields and collision. Packages without the
 section load exactly as before.
@@ -22,7 +22,7 @@ section load exactly as before.
 | Library build | `libs/gstx/CMakeLists.txt`, stub `CMakeLists.txt` | Add the new sources |
 | Format | `src/SplatCore/WaveletTypes.h`, `docs/GSTX_FORMAT_SPECIFICATION.md` | Version 12; header gains `shadowMeshOffset` (u64) and `shadowMeshBytes` (u64); spec gains a clause for the section |
 | Packager | `src/SplatCore/StreamPackager.h` | `PackageDataset` takes an optional `const ShadowMesh*`; `LoadPackage` decodes the section into `SFLWPackageData::shadowMesh` |
-| Bake | `src/SplatCore/SplatLabApp.cpp/.h` | Build the mesh on save; status line and Input Model Metrics counts; `Show Shadow Mesh` checkbox (config key `show_shadow_mesh`) with a banner row |
+| Bake | `src/SplatCore/SplatPakApp.cpp/.h` | Build the mesh on save; status line and Input Model Metrics counts; `Show Shadow Mesh` checkbox (config key `show_shadow_mesh`) with a banner row |
 | Renderer | `src/SplatCore/SplatRenderer.cpp/.h`, `src/SplatCore/Shaders/ShadowMeshWire.hlsl` (new) | A line-list pass that draws the finest level over the splats, depth-tested |
 | Tools | `tests/CompressVenus.cpp`, `tests/TestLoadPackage.cpp`, `tests/TestShadowMesh.cpp` (new), `tests/CMakeLists.txt` | Bake the mesh; print level counts; check closedness and fidelity |
 | UE5Splats format core | `Plugins/SplatPak/Source/SplatPakRendering/Public/SplatPackageCore.h`, `Private/SplatPackageCore.cpp` | Read version 12 and the mesh section |
@@ -36,7 +36,7 @@ flowchart LR
   L0["Level 0 splats (bake)"] --> B["ShadowMeshBuilder::Build (private)"]
   B --> E["ShadowMeshCodec::Encode (open)"] --> P[".gstx v12 mesh section"]
   P --> D["ShadowMeshCodec::Decode (open)"]
-  D --> S["SplatLab: counts, wireframe view"]
+  D --> S["SplatPak: counts, wireframe view"]
   D --> U["UE import: UStaticMesh, 3 LODs"] --> C["Hidden mesh component: shadows, distance field, collision"]
 ```
 The bake builds the mesh once, after the level hierarchy and the occlusion volume. Readers never rebuild it.
@@ -70,7 +70,7 @@ The bake builds the mesh once, after the level hierarchy and the occlusion volum
   systems and are built once at import. Rejected: rebuilding from the package at every load.
 - **Three classic LODs, no Nanite** (user): hidden shadow-only casting is fully supported for classic meshes and
   the meshes are small. Rejected: Nanite, whose support for hidden shadow-only meshes is less certain.
-- **Section codec in the library, as open code**: one decoder for SplatLab, the tools and Unreal, like
+- **Section codec in the library, as open code**: one decoder for SplatPak, the tools and Unreal, like
   `PayloadDecode`. The method that builds the mesh is the only private part.
 - **Header fields rather than a section directory**: matches how every earlier optional section was added.
 
@@ -107,7 +107,7 @@ The bake builds the mesh once, after the level hierarchy and the occlusion volum
 3. `src/SplatCore/WaveletTypes.h`, `StreamPackager.h`, `docs/GSTX_FORMAT_SPECIFICATION.md`: version 12, the
    header fields, writing and reading the section. Done when: TestLoadPackage prints the counts and older
    packages still load (criteria 1, 4, 6).
-4. `src/SplatCore/SplatLabApp.cpp/.h`, `tests/CompressVenus.cpp`: bake on save, status line, Input Model Metrics.
+4. `src/SplatCore/SplatPakApp.cpp/.h`, `tests/CompressVenus.cpp`: bake on save, status line, Input Model Metrics.
    Done when: saving Cthulhu reports three levels; bake time within criterion 5.
 5. `src/SplatCore/SplatRenderer.cpp/.h`, `Shaders/ShadowMeshWire.hlsl`, the checkbox and banner. Done when:
    criterion 13 on all three render paths.
@@ -136,7 +136,7 @@ Changes from the agreed design, each requested or forced by measurement:
   writes its depth in place of the cubes', then fills the gaps with the shadow mesh as above. TestShadowMesh checks it
   is closed and hides at most 0.1% of the surface splats that the cubes, and what they enclose, did not hide (the
   bundled models: 0 to 0.07%).
-- **Drawn smoother than stored** (user, 2026-10-26): SplatLab draws the mesh after two Loop subdivision passes
+- **Drawn smoother than stored** (user, 2026-10-26): SplatPak draws the mesh after two Loop subdivision passes
   (16 times the triangles) with smooth vertex normals (`src/SplatCore/ShadowMeshDisplay.h`), so its outline and
   shading have no facets where it shows between splats. The occluder mesh gets smooth normals only: subdivision moves
   concave parts outward, and the occluder must stay inside the cubes. The package is unchanged.

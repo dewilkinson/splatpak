@@ -173,7 +173,7 @@ float AutoSplatRadius(uint lod, float classRadius, float classScale)
 // Splat mode: chunks at this level and above draw as camera-facing discs of the level's point spacing
 // (g_SplatDiscRadius) instead of projected Gaussians (see BuildGaussianSplat). Fixed by design: no control.
 // 1 (the default): levels 1 and up draw as discs and level 0 as true Gaussians, with the level 1 -> 0
-// opacity hand-over (see kSplatGaussianLevel0 in SplatLabApp.cpp, which must agree). 0 draws every level,
+// opacity hand-over (see kSplatGaussianLevel0 in SplatPakApp.cpp, which must agree). 0 draws every level,
 // level 0 included, as discs.
 static const uint kSplatDiscMinLevel = 1;
 

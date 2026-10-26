@@ -64,7 +64,7 @@ between those.
 8. Cancel during a Cthulhu bake returns within about a second with the previous model displayed and the changes
    still pending; Cancel during an open keeps the previous model; Cancel during a save leaves no file.
 9. `--lod-calibration`, `--stream-test`, a command-line file and the console tools run unattended exactly as before.
-10. SplatLabViewer shows the dialog when opening a large package and has no Bake button.
+10. SplatPakViewer shows the dialog when opening a large package and has no Bake button.
 11. A bake takes no more than 10% longer than today's rebuild for Cthulhu.
 
 ## Open questions

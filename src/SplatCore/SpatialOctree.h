@@ -170,7 +170,7 @@ namespace Splat
 
         // Morton code of a position inside a box (frameMin + frameExtent). Every LOD level sorted in the same
         // box puts the same region at the same place on the curve, which is what lets the streaming hierarchy
-        // match a coarse block to the fine blocks over the same surface (SplatLabApp::InitStreamingSimulation).
+        // match a coarse block to the fine blocks over the same surface (SplatPakApp::InitStreamingSimulation).
         static inline uint32_t MortonCodeInFrame(const XMFLOAT3& p, const XMFLOAT3& frameMin, const XMFLOAT3& frameExtent)
         {
             return ComputeMorton30((p.x - frameMin.x) / frameExtent.x, (p.y - frameMin.y) / frameExtent.y, (p.z - frameMin.z) / frameExtent.z);

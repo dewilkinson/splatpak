@@ -141,7 +141,7 @@ namespace Splat
         uint32_t splatCount = 0;
         float    blendWeight = 1.0f; // 1.0f = 100% solid opacity
         uint32_t lodLevel = 0;
-        float    dilationMorph = 0.0f; // Morph dilation factor for silhouette reconstruction; splat mode: the level 0 Gaussian fade-in weight instead (0 = discs, 1 = Gaussians; see SplatLabApp::UpdateStreamingSimulation)
+        float    dilationMorph = 0.0f; // Morph dilation factor for silhouette reconstruction; splat mode: the level 0 Gaussian fade-in weight instead (0 = discs, 1 = Gaussians; see SplatPakApp::UpdateStreamingSimulation)
         float    isSilhouette = 0.0f;  // 1.0f if silhouette chunk, 0.0f otherwise
         XMFLOAT3 coneAxis = { 0.0f, 1.0f, 0.0f }; // Average unit normal vector of cluster
         float    coneCutoff = -1.0f;              // cos(theta_max) of cluster normal cone (-1.0 = cone culling disabled)
@@ -350,7 +350,7 @@ namespace Splat
     }
 
     // ---- .gstx format validation --------------------------------------------------------------
-    // Shared by every loader (StreamPackager::LoadPackage for SplatLab and the tests, StreamingManager
+    // Shared by every loader (StreamPackager::LoadPackage for SplatPak and the tests, StreamingManager
     // for the standalone viewer) so a bad package is diagnosed the same way everywhere. Each check
     // fills outReason with a sentence a user can act on; the caller decides how to show it.
 
@@ -372,7 +372,7 @@ namespace Splat
         if (h.version != SFLW_VERSION)
         {
             if (h.version > SFLW_VERSION)
-                snprintf(buf, sizeof(buf), "The package uses .gstx format version %u, but this build reads version %u. It was written by a newer SplatLab.", h.version, SFLW_VERSION);
+                snprintf(buf, sizeof(buf), "The package uses .gstx format version %u, but this build reads version %u. It was written by a newer SplatPak.", h.version, SFLW_VERSION);
             else
                 snprintf(buf, sizeof(buf), "The package uses .gstx format version %u, which this build no longer reads (it reads version %u). Bake it again from its source scan.", h.version, SFLW_VERSION);
             outReason = buf;
@@ -400,7 +400,7 @@ namespace Splat
         }
         if ((h.payloadTransforms & ~(uint32_t)PAYLOAD_TRANSFORMS_KNOWN) != 0)
         {
-            snprintf(buf, sizeof(buf), "The package declares payload transforms 0x%x, which this build cannot undo. It was written by a newer SplatLab.", h.payloadTransforms);
+            snprintf(buf, sizeof(buf), "The package declares payload transforms 0x%x, which this build cannot undo. It was written by a newer SplatPak.", h.payloadTransforms);
             outReason = buf;
             return false;
         }
@@ -508,11 +508,11 @@ namespace Splat
     }
 
     // The advice appended to every "invalid package" report. Both loaders share it so the wording
-    // stays identical in the SplatLab dialog, the standalone viewer's dialog, and the console tools.
+    // stays identical in the SplatPak dialog, the standalone viewer's dialog, and the console tools.
     inline const char* SFLWRebakeAdvice()
     {
         return "If the file was copied or downloaded, retry with a fresh copy. Otherwise re-bake it: open the original "
-               ".ply or .splat in SplatLab's Package Bake tab and use Save Compressed Package (.gstx). Packages "
+               ".ply or .splat in SplatPak's Package Bake tab and use Save Compressed Package (.gstx). Packages "
                "written by the proprietary codec and by the open stand-in codec are not interchangeable, so a "
                "package must be baked with the same codec build that will read it.";
     }

@@ -3,13 +3,13 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Command-line packager: loads a .ply (a 3DGS scene, or a plain point cloud shown as Gaussians at its
-// points, see PointCloudGaussians.h) and writes the same .gstx that SplatLab's "Save Compressed
+// points, see PointCloudGaussians.h) and writes the same .gstx that SplatPak's "Save Compressed
 // Package" would produce for it with default settings -- octree chunking, the wavelet LOD pyramid,
 // 20-byte Gaussian records, the baked interior occlusion volume, and the source file size in the header.
 // Used to regenerate the bundled assets without the GUI, and as an end-to-end pipeline smoke test.
 //   CompressVenus <input.ply> <output base path> [shave 0..10] [spherical-harmonics degree 0..3, default 3]
 //                 [--no-colour-transform]   (writes colour as RGB, as before v11: for measuring what YCoCg saves)
-//                 [--sh-bits b1,b2,b3]   (requantise SH bands 1-3 to fewer bits, as SplatLab's SH Precision does: lossy)
+//                 [--sh-bits b1,b2,b3]   (requantise SH bands 1-3 to fewer bits, as SplatPak's SH Precision does: lossy)
 
 #include <iostream>
 #include <fstream>
@@ -75,7 +75,7 @@ int main(int argcIn, char** argvIn)
     }
     float maxDim = std::max(maxP.x - minP.x, std::max(maxP.y - minP.y, maxP.z - minP.z));
 
-    // Same automatic defaults SplatLab applies when a .ply is opened (SplatLabApp::DefaultBakeParams)
+    // Same automatic defaults SplatPak applies when a .ply is opened (SplatPakApp::DefaultBakeParams)
     float chunkSize = std::max(0.10f, maxDim / 4.0f);              // ~4x4x4 chunks per model
     uint32_t maxLODs = splats.size() > 2000000 ? 5 : splats.size() > 500000 ? 4 : splats.size() > 100000 ? 3 : 2;
     float deadbandMeters = std::max(0.5f, maxDim * 1.5f) / 1000.0f; // Deadband scales with model size

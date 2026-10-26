@@ -1,12 +1,12 @@
-// SplatLabApp.cpp
+// SplatPakApp.cpp
 // SplatPak -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// Implements the SplatLab app shell: file I/O, the wavelet preprocessing
+// Implements the SplatPak app shell: file I/O, the wavelet preprocessing
 // pipeline, the streaming/decay/silhouette simulation, and every ImGui panel. See
-// SplatLabApp.h for the class overview and SplatRenderer.cpp for the GPU side.
+// SplatPakApp.h for the class overview and SplatRenderer.cpp for the GPU side.
 
-#include "SplatLabApp.h"
+#include "SplatPakApp.h"
 #include <chrono>
 #include <cfloat>
 #include "../../libs/gstx/OcclusionVolume.h"
@@ -81,7 +81,7 @@ namespace Splat
         g_pInfoQueue->ClearStoredMessages();
     }
 
-    SplatLabApp::SplatLabApp(LPCSTR name, Mode mode) : CAULDRON_DX12::FrameworkWindows(name), m_mode(mode)
+    SplatPakApp::SplatPakApp(LPCSTR name, Mode mode) : CAULDRON_DX12::FrameworkWindows(name), m_mode(mode)
     {
         if (m_mode == Mode::Viewer) m_activeTab = 1; // No generator tab in the viewer: open on the Renderer tab
 
@@ -103,7 +103,7 @@ namespace Splat
     }
 
     // Sets the initial window size and disables vsync/validation layers before device creation
-    std::vector<std::string> SplatLabApp::SplitCommandLine(const char* cmdLine)
+    std::vector<std::string> SplatPakApp::SplitCommandLine(const char* cmdLine)
     {
         std::vector<std::string> args;
         if (!cmdLine) return args;
@@ -123,23 +123,23 @@ namespace Splat
         return args;
     }
 
-    const char* SplatLabApp::CommandLineUsage()
+    const char* SplatPakApp::CommandLineUsage()
     {
         // One option per line with its description indented below it: reads the same on a console
         // and in the proportional-font message box (aligned columns do not survive the latter).
         return
             "Usage:\n"
-            "  SplatLab.exe [options] [file]\n"
-            "  SplatLabViewer.exe [options] [file]\n"
+            "  SplatPak.exe [options] [file]\n"
+            "  SplatPakViewer.exe [options] [file]\n"
             "\n"
             "file\n"
             "  A .gstx package to open, or (Studio mode) a .ply or .splat point cloud to preprocess. Dropping a file on the executable does the same. Without it the startup_dataset from config.json is opened.\n"
             "\n"
             "--viewer\n"
-            "  Viewer mode: the Renderer and Streaming tabs only (the default for SplatLabViewer.exe).\n"
+            "  Viewer mode: the Renderer and Streaming tabs only (the default for SplatPakViewer.exe).\n"
             "\n"
             "--studio\n"
-            "  Studio mode: the Package Bake, Renderer and Streaming tabs (the default for SplatLab.exe).\n"
+            "  Studio mode: the Package Bake, Renderer and Streaming tabs (the default for SplatPak.exe).\n"
             "\n"
             "--render-path <p>\n"
             "  GPU path for this run: auto, mesh, vs6 or vs5. Overrides render_path in config.json without changing it.\n"
@@ -157,9 +157,9 @@ namespace Splat
             "  Show this text.\n";
     }
 
-    // The mode switches and --help are handled before the app exists (RunSplatLabApp in AppEntry.cpp);
+    // The mode switches and --help are handled before the app exists (RunSplatPakApp in AppEntry.cpp);
     // what arrives here is the rest: an optional file path and --render-path.
-    void SplatLabApp::OnParseCommandLine(LPSTR lpCmdLine, uint32_t* pWidth, uint32_t* pHeight)
+    void SplatPakApp::OnParseCommandLine(LPSTR lpCmdLine, uint32_t* pWidth, uint32_t* pHeight)
     {
         *pWidth = 1440;
         *pHeight = 900;
@@ -206,7 +206,7 @@ namespace Splat
     // was launched -- bin/ from the launch scripts, the repo root or a build sub-folder from Visual
     // Studio, anywhere at all from a shortcut -- so the executable's own location is the one anchor
     // that is always right. Absolute paths are returned as-is.
-    std::vector<std::string> SplatLabApp::ResolveRelativeCandidates(const std::string& relativePath) const
+    std::vector<std::string> SplatPakApp::ResolveRelativeCandidates(const std::string& relativePath) const
     {
         std::vector<std::string> out;
         if (relativePath.empty()) return out;
@@ -231,7 +231,7 @@ namespace Splat
     // launch configuration this project ships -- the launch scripts, Visual Studio's
     // VS_DEBUGGER_WORKING_DIRECTORY, and a normal Explorer double-click all agree on that). Falls back
     // to the current working directory if the executable's own path can't be read for some reason.
-    std::string SplatLabApp::GetProjectRootFolder() const
+    std::string SplatPakApp::GetProjectRootFolder() const
     {
         char exePath[MAX_PATH] = {};
         if (GetModuleFileNameA(nullptr, exePath, MAX_PATH) > 0)
@@ -255,7 +255,7 @@ namespace Splat
 
     // Open/Save dialogs start in whichever folder the user last browsed to (if it's still there),
     // so re-opening the dialog picks up where they left off; otherwise the project root.
-    std::string SplatLabApp::GetDialogDefaultFolder() const
+    std::string SplatPakApp::GetDialogDefaultFolder() const
     {
         if (!m_lastDialogFolder.empty() && GetFileAttributesA(m_lastDialogFolder.c_str()) != INVALID_FILE_ATTRIBUTES)
         {
@@ -267,7 +267,7 @@ namespace Splat
     // Called after a successful (non-cancelled) Open/Save dialog. If the user browsed to a different
     // folder than the one currently remembered, updates it and writes config.json immediately (not
     // deferred to app shutdown) so the choice survives even if the app is closed abnormally.
-    void SplatLabApp::RememberDialogFolder(const std::string& filePath)
+    void SplatPakApp::RememberDialogFolder(const std::string& filePath)
     {
         if (filePath.empty()) return;
         size_t slash = filePath.find_last_of("\\/");
@@ -279,7 +279,7 @@ namespace Splat
     }
 
     // Reads config.json or config.ini for dev mode, the startup dataset path, and other app settings
-    void SplatLabApp::LoadConfigFile()
+    void SplatPakApp::LoadConfigFile()
     {
         std::vector<std::string> configPaths;
         for (const char* name : { "config.json", "config.ini" })
@@ -660,7 +660,7 @@ namespace Splat
 
 
     // Persists the current config-file-backed settings back to disk
-    void SplatLabApp::SaveConfigFile()
+    void SplatPakApp::SaveConfigFile()
     {
         std::ofstream out("config.json");
         if (out.is_open())
@@ -711,7 +711,7 @@ namespace Splat
     }
 
     // Boots the renderer, loads config, and auto-loads the startup dataset (or waits for the user to pick one)
-    void SplatLabApp::OnCreate()
+    void SplatPakApp::OnCreate()
     {
         StreamRuntime::SetTrace([](const char* line) { LogTransitionTrace("%s", line); });
         {
@@ -722,7 +722,7 @@ namespace Splat
                 fclose(fp);
             }
         }
-        LogTransitionTrace("SplatLabApp::OnCreate initialized (%s mode).", m_mode == Mode::Viewer ? "Viewer" : "Studio");
+        LogTransitionTrace("SplatPakApp::OnCreate initialized (%s mode).", m_mode == Mode::Viewer ? "Viewer" : "Studio");
         SplatRenderer::SetAppTitle(AppTitle()); // The renderer's own dialogs name the product too
         LogTransitionTrace("Codec build: %s%s%s", CodecBuild::Name(), CodecBuild::IsProprietary() ? "" : " -- ", CodecBuild::MissingFeatures());
 
@@ -831,7 +831,7 @@ namespace Splat
     }
 
     // Saves the config file and tears down the renderer
-    void SplatLabApp::OnDestroy()
+    void SplatPakApp::OnDestroy()
     {
         m_op.Abandon(); // Cancel and wait for a background operation before anything it reads goes away
         CancelShadowMeshBuild();
@@ -849,7 +849,7 @@ namespace Splat
         }
         catch (...)
         {
-            Trace("SplatLabApp::OnDestroy: GPUFlush failed (device suspended/removed?); skipping flush and tearing down anyway\n");
+            Trace("SplatPakApp::OnDestroy: GPUFlush failed (device suspended/removed?); skipping flush and tearing down anyway\n");
         }
 
         m_pRenderer->OnDestroyWindowSizeDependentResources();
@@ -861,7 +861,7 @@ namespace Splat
     }
 
     // Forwards raw window messages to ImGui
-    bool SplatLabApp::OnEvent(MSG msg)
+    bool SplatPakApp::OnEvent(MSG msg)
     {
         if (ImGUI_WndProcHandler(msg.hwnd, msg.message, msg.wParam, msg.lParam))
             return true;
@@ -911,7 +911,7 @@ namespace Splat
 
     // Detach Camera on: the culling camera freezes where the view is, and the view steps to the side,
     // farther out, so the frozen frustum can be inspected. Off: the view returns to the frozen camera.
-    void SplatLabApp::SetDetachCamera(bool on)
+    void SplatPakApp::SetDetachCamera(bool on)
     {
         if (on == m_detachCamera) return;
         m_detachCamera = on;
@@ -951,7 +951,7 @@ namespace Splat
     }
 
     // Recreates window-size-dependent renderer resources
-    void SplatLabApp::OnResize(bool resizeRender)
+    void SplatPakApp::OnResize(bool resizeRender)
     {
         if (m_pRenderer)
             m_pRenderer->OnCreateWindowSizeDependentResources(&m_swapChain, m_Width, m_Height);
@@ -974,21 +974,21 @@ namespace Splat
         }
     }
 
-    void SplatLabApp::ApplyFitDistance()
+    void SplatPakApp::ApplyFitDistance()
     {
         m_distance = FitDistanceForViewport();
         m_lastFitDistance = m_distance;
     }
 
     // Rebuilds display-dependent renderer resources (e.g. after a format change)
-    void SplatLabApp::OnUpdateDisplay()
+    void SplatPakApp::OnUpdateDisplay()
     {
         if (m_pRenderer)
             m_pRenderer->OnUpdateDisplayDependentResources(&m_swapChain);
     }
 
     // Clears every in-memory dataset/streaming structure back to the empty state
-    void SplatLabApp::CloseDataset()
+    void SplatPakApp::CloseDataset()
     {
         CancelShadowMeshBuild();
         SetShadowMesh(nullptr);
@@ -1023,7 +1023,7 @@ namespace Splat
     }
 
     // Shows a standard Win32 "Open File" dialog; returns the chosen path, or empty if cancelled
-    std::string SplatLabApp::OpenFileDialog(const char* filter, const char* title, const char* defaultExt)
+    std::string SplatPakApp::OpenFileDialog(const char* filter, const char* title, const char* defaultExt)
     {
         char currentDir[MAX_PATH] = "";
         GetCurrentDirectoryA(MAX_PATH, currentDir);
@@ -1155,7 +1155,7 @@ namespace Splat
     }
 
     // Shows a standard Win32 "Save File" dialog; returns the chosen path, or empty if cancelled
-    std::string SplatLabApp::SaveFileDialog(const char* filter, const char* defaultExt, const char* title)
+    std::string SplatPakApp::SaveFileDialog(const char* filter, const char* defaultExt, const char* title)
     {
         char currentDir[MAX_PATH] = "";
         GetCurrentDirectoryA(MAX_PATH, currentDir);
@@ -1284,7 +1284,7 @@ namespace Splat
     }
 
     // Dispatches to the right loader (PLY/SPLAT/SFLW) based on the file's extension
-    bool SplatLabApp::LoadFile(const std::string& filepath)
+    bool SplatPakApp::LoadFile(const std::string& filepath)
     {
         std::string lowerPath = filepath;
         std::transform(lowerPath.begin(), lowerPath.end(), lowerPath.begin(), ::tolower);
@@ -1306,7 +1306,7 @@ namespace Splat
     // An invalid package (bad signature, newer format version, truncated file, payload the linked codec
     // cannot decode) raises a Retry / Cancel dialog that explains the fault and how to re-bake; Retry
     // re-reads the file, which is what a user wants after re-copying or re-saving it.
-    bool SplatLabApp::LoadSFLWFile(const std::string& filepath)
+    bool SplatPakApp::LoadSFLWFile(const std::string& filepath)
     {
         for (;;)
         {
@@ -1583,13 +1583,13 @@ namespace Splat
     }
 
     // Opens a raw .splat or .ply scan (StartOpenScan)
-    bool SplatLabApp::LoadSPLATFile(const std::string& filepath) { return StartOpenScan(filepath, true); }
+    bool SplatPakApp::LoadSPLATFile(const std::string& filepath) { return StartOpenScan(filepath, true); }
 
-    bool SplatLabApp::LoadPLYFile(const std::string& filepath) { return StartOpenScan(filepath, false); }
+    bool SplatPakApp::LoadPLYFile(const std::string& filepath) { return StartOpenScan(filepath, false); }
 
     // Opens a raw .ply or .splat: reads it and bakes it on the worker with defaults chosen for its size. Only a
     // finished bake replaces the displayed model, so Cancel keeps the previous one.
-    bool SplatLabApp::StartOpenScan(const std::string& filepath, bool splatFile)
+    bool SplatPakApp::StartOpenScan(const std::string& filepath, bool splatFile)
     {
         struct Opened
         {
@@ -1671,7 +1671,7 @@ namespace Splat
     }
 
     // Loads the built-in benchmark dataset, generating it from scratch if not found on disk
-    void SplatLabApp::GenerateSyntheticScene(uint32_t count)
+    void SplatPakApp::GenerateSyntheticScene(uint32_t count)
     {
         ReleaseModelMeshes(); // The build reads the scan about to be replaced; the old model's meshes go with it
         m_statusMessage = "Loading synthetic benchmark...";
@@ -1757,7 +1757,7 @@ namespace Splat
     // Re-chunks and re-decomposes the loaded raw point cloud after a preprocessing parameter changes
     // ---- Bake ---------------------------------------------------------------------------------------------
 
-    SplatLabApp::BakeParams SplatLabApp::CurrentBakeParams() const
+    SplatPakApp::BakeParams SplatPakApp::CurrentBakeParams() const
     {
         BakeParams p;
         p.chunkSize = m_chunkSize;
@@ -1769,7 +1769,7 @@ namespace Splat
         return p;
     }
 
-    std::string SplatLabApp::PendingBakeChanges() const
+    std::string SplatPakApp::PendingBakeChanges() const
     {
         if (!m_hasBakedParams) return std::string();
         const BakeParams c = CurrentBakeParams(), b = m_bakedParams;
@@ -1786,7 +1786,7 @@ namespace Splat
 
     // Per scan, when it is loaded: about 4 x 4 x 4 octree chunks, a level count from the point count and a
     // deadband in proportion to the model's size. A bake then uses whatever the tab holds.
-    SplatLabApp::BakeParams SplatLabApp::DefaultBakeParams(const std::vector<SplatPoint>& points, BakeParams keep)
+    SplatPakApp::BakeParams SplatPakApp::DefaultBakeParams(const std::vector<SplatPoint>& points, BakeParams keep)
     {
         XMFLOAT3 mn(1e9f, 1e9f, 1e9f), mx(-1e9f, -1e9f, -1e9f);
         for (const auto& s : points)
@@ -1802,7 +1802,7 @@ namespace Splat
         return keep;
     }
 
-    SplatLabApp::BakeSource SplatLabApp::LoadedBakeSource() const
+    SplatPakApp::BakeSource SplatPakApp::LoadedBakeSource() const
     {
         BakeSource s;
         s.points = &m_rawSplats;
@@ -1815,7 +1815,7 @@ namespace Splat
 
     // Bakes the loaded scan with the tab's parameters: in the background with the progress dialog, or inline for
     // scripted runs. fitCamera frames the model, for a scan just loaded.
-    void SplatLabApp::StartBake(bool fitCamera)
+    void SplatPakApp::StartBake(bool fitCamera)
     {
         if (m_rawSplats.empty()) return;
         const BakeParams params = CurrentBakeParams();
@@ -1848,7 +1848,7 @@ namespace Splat
 
     // The whole bake, on the worker thread: reads only the source, the parameters and settings that cannot change
     // while the modal dialog is up, and writes only out. ApplyBake swaps the result in on the UI thread.
-    bool SplatLabApp::RunBake(const BakeParams& params, const BakeSource& source, const StreamSettings& streamSettings,
+    bool SplatPakApp::RunBake(const BakeParams& params, const BakeSource& source, const StreamSettings& streamSettings,
                               const StreamCamera& streamCamera, BakeResult& out, Progress& progress) const
     {
         const auto& points = *source.points;
@@ -2096,7 +2096,7 @@ namespace Splat
     }
 
     // Swaps a finished bake into the app and the renderer (UI thread).
-    void SplatLabApp::ApplyBake(BakeResult& r, const BakeParams& params, bool fitCamera)
+    void SplatPakApp::ApplyBake(BakeResult& r, const BakeParams& params, bool fitCamera)
     {
         m_aabbMin = r.aabbMin; m_aabbMax = r.aabbMax; m_center = r.center; m_extents = r.extents;
         if (fitCamera)
@@ -2144,7 +2144,7 @@ namespace Splat
     // Builds the shadow mesh of the scan just baked on its own thread, so the bake is no slower. It reads m_rawSplats and
     // m_splatAttributes, which only an open, a package load, closing or the synthetic benchmark replace: each cancels it
     // first (CancelShadowMeshBuild). A save waits for it.
-    void SplatLabApp::StartShadowMeshBuild()
+    void SplatPakApp::StartShadowMeshBuild()
     {
         CancelShadowMeshBuild();
         if (m_rawSplats.empty() || !m_splatMode)
@@ -2173,7 +2173,7 @@ namespace Splat
         m_shadowMeshJob = job;
     }
 
-    void SplatLabApp::CancelShadowMeshBuild()
+    void SplatPakApp::CancelShadowMeshBuild()
     {
         if (!m_shadowMeshJob) return;
         m_shadowMeshJob->cancel = true;
@@ -2182,7 +2182,7 @@ namespace Splat
     }
 
     // Once per frame: publishes a finished build
-    void SplatLabApp::PollShadowMeshBuild()
+    void SplatPakApp::PollShadowMeshBuild()
     {
         if (!m_shadowMeshJob || !m_shadowMeshJob->done.load()) return;
         auto job = m_shadowMeshJob;
@@ -2195,21 +2195,21 @@ namespace Splat
         LogTransitionTrace("Shadow mesh: %s in %.2f s (built after the bake)", ShadowMeshSummary().c_str(), job->seconds);
     }
 
-    void SplatLabApp::SetShadowMesh(std::shared_ptr<const ShadowMesh> mesh)
+    void SplatPakApp::SetShadowMesh(std::shared_ptr<const ShadowMesh> mesh)
     {
         m_shadowMesh = std::move(mesh);
         m_shadowMeshLevel = 0;
         m_shadowMeshSerial++;
     }
 
-    void SplatLabApp::ReleaseModelMeshes()
+    void SplatPakApp::ReleaseModelMeshes()
     {
         CancelShadowMeshBuild();
         SetShadowMesh(nullptr);
         SetOccluderMesh(nullptr);
     }
 
-    void SplatLabApp::SetOccluderMesh(std::shared_ptr<const ShadowMesh> mesh)
+    void SplatPakApp::SetOccluderMesh(std::shared_ptr<const ShadowMesh> mesh)
     {
         m_occluderMesh = std::move(mesh);
         m_occluderMeshGpu = ShadowMeshDisplay{};
@@ -2221,7 +2221,7 @@ namespace Splat
         m_occluderMeshVersion++;
     }
 
-    std::string SplatLabApp::ShadowMeshSummary() const
+    std::string SplatPakApp::ShadowMeshSummary() const
     {
         if (m_shadowMeshJob) return "building";
         if (!m_shadowMesh || m_shadowMesh->Empty()) return "none";
@@ -2232,12 +2232,12 @@ namespace Splat
 
     // ---- Long operations: the worker, the dialog ---------------------------------------------------------
 
-    bool SplatLabApp::UseBackgroundOps() const
+    bool SplatPakApp::UseBackgroundOps() const
     {
         return m_framesRendered > 1 && m_lodCalFolder.empty() && m_lodTestFolder.empty() && !m_streamTest;
     }
 
-    bool SplatLabApp::RunOperation(const std::string& title, BackgroundOp::Work work, BackgroundOp::Done done)
+    bool SplatPakApp::RunOperation(const std::string& title, BackgroundOp::Work work, BackgroundOp::Done done)
     {
         if (!UseBackgroundOps()) return BackgroundOp::RunNow(std::move(work), std::move(done));
         m_op.Start(title, std::move(work), std::move(done));
@@ -2246,7 +2246,7 @@ namespace Splat
 
     // The modal progress dialog. It opens as soon as an operation starts so it blocks the UI at once, but stays
     // invisible (off screen, no dimming) until the operation has run for a second, so quick ones never flash it.
-    void SplatLabApp::DrawOperationDialog()
+    void SplatPakApp::DrawOperationDialog()
     {
         static const char* kPopup = "##Operation";
         if (!m_op.Busy() && !ImGui::IsPopupOpen(kPopup)) return;
@@ -2287,7 +2287,7 @@ namespace Splat
     }
 
     // Pre-quantizes and pre-chunks every LOD level up front, for instant hitch-free LOD switching later
-    void SplatLabApp::PrecacheResidentLODs()
+    void SplatPakApp::PrecacheResidentLODs()
     {
         m_residentLODs.clear();
         if (m_rawSplats.empty() && m_rendererRawSplats.empty()) return;
@@ -2301,7 +2301,7 @@ namespace Splat
     }
 
     // Every level of a source as resident, pre-quantized and pre-chunked render data (also used on the worker by a bake)
-    void SplatLabApp::BuildResidentLODs(const BakeSource& source, const WaveletDecompositionResult& wavelet, const XMFLOAT3& aabbMin,
+    void SplatPakApp::BuildResidentLODs(const BakeSource& source, const WaveletDecompositionResult& wavelet, const XMFLOAT3& aabbMin,
                                         const XMFLOAT3& aabbMax, const SplatEncodeParams& splatParams, std::vector<ResidentLOD>& out) const
     {
         out.clear();
@@ -2371,7 +2371,7 @@ namespace Splat
 
     // ---- Streaming runtime host (libs/gstx/StreamRuntime.h) -------------------------------------
 
-    void SplatLabApp::SyncStreamInputs()
+    void SplatPakApp::SyncStreamInputs()
     {
         StreamSettings& s = m_stream.settings;
         s.autoLOD = m_autoLOD; s.selectedPreviewLOD = m_selectedPreviewLOD;
@@ -2391,7 +2391,7 @@ namespace Splat
         c.width = m_Width; c.height = m_Height;
     }
 
-    void SplatLabApp::ApplyStreamFrame()
+    void SplatPakApp::ApplyStreamFrame()
     {
         if (!m_stream.m_frameProduced) return;
         m_frameTraversalMs = m_stream.m_frameTraversalMs;
@@ -2405,7 +2405,7 @@ namespace Splat
         m_state.useChunkedPipeline = (m_state.chunkCount > 0);
     }
 
-    void SplatLabApp::InitStreamingSimulation()
+    void SplatPakApp::InitStreamingSimulation()
     {
         if (m_residentLODs.empty()) PrecacheResidentLODs();
         m_stream.m_levels = &m_residentLODs;
@@ -2423,16 +2423,16 @@ namespace Splat
         m_ringBufferCapacityMB = m_stream.settings.ringBufferCapacityMB; // The runtime defaults the ring buffer to its slider ceiling
     }
 
-    void SplatLabApp::ResetStreamingSimulation() { SyncStreamInputs(); m_stream.ResetStreamingSimulation(); ApplyStreamFrame(); }
-    void SplatLabApp::ClearResidentStream() { SyncStreamInputs(); m_stream.ClearResidentStream(); ApplyStreamFrame(); }
-    void SplatLabApp::UpdateStreamingSimulation(double dtSeconds) { SyncStreamInputs(); m_stream.UpdateStreamingSimulation(dtSeconds); ApplyStreamFrame(); }
-    void SplatLabApp::TriggerSilhouetteEdgeMorphTest() { SyncStreamInputs(); m_stream.TriggerSilhouetteEdgeMorphTest(); }
-    void SplatLabApp::CalibrateDecay() { SyncStreamInputs(); m_stream.CalibrateDecay(); }
+    void SplatPakApp::ResetStreamingSimulation() { SyncStreamInputs(); m_stream.ResetStreamingSimulation(); ApplyStreamFrame(); }
+    void SplatPakApp::ClearResidentStream() { SyncStreamInputs(); m_stream.ClearResidentStream(); ApplyStreamFrame(); }
+    void SplatPakApp::UpdateStreamingSimulation(double dtSeconds) { SyncStreamInputs(); m_stream.UpdateStreamingSimulation(dtSeconds); ApplyStreamFrame(); }
+    void SplatPakApp::TriggerSilhouetteEdgeMorphTest() { SyncStreamInputs(); m_stream.TriggerSilhouetteEdgeMorphTest(); }
+    void SplatPakApp::CalibrateDecay() { SyncStreamInputs(); m_stream.CalibrateDecay(); }
 
     // Highest spherical-harmonics band with a non-zero coefficient in any source Gaussian (bands 1, 2, 3 are
     // coefficients 0-2, 3-7 and 8-14, three channels each), over a sample of up to 200k of them: a 3DGS file
     // without f_rest carries none, a degree-1 export only band 1.
-    uint32_t SplatLabApp::SourceSHDegreeOf(const std::vector<SplatAttributes>& attributes)
+    uint32_t SplatPakApp::SourceSHDegreeOf(const std::vector<SplatAttributes>& attributes)
     {
         uint32_t degree = 0;
         const size_t n = attributes.size();
@@ -2452,20 +2452,20 @@ namespace Splat
         return degree;
     }
 
-    void SplatLabApp::DetectSourceSHDegree()
+    void SplatPakApp::DetectSourceSHDegree()
     {
         m_sourceSHDegree = SourceSHDegreeOf(m_splatAttributes);
         LogTransitionTrace("Source spherical harmonics: degree %u (SH Quality keeps degree %u)", m_sourceSHDegree, BakeSHDegree());
     }
 
     // Splat mode: one level's records and SH stream from its points and the source Gaussians.
-    void SplatLabApp::EncodeSplatLevel(const std::vector<SplatPoint>& splats, uint32_t level, std::vector<PackedSplatGPU>& outRecords, std::vector<uint8_t>& outSH) const
+    void SplatPakApp::EncodeSplatLevel(const std::vector<SplatPoint>& splats, uint32_t level, std::vector<PackedSplatGPU>& outRecords, std::vector<uint8_t>& outSH) const
     {
         SplatCodec::Encode(splats, m_splatAttributes, level, m_splatParams, outRecords, outSH);
     }
 
     // Splat mode: the renderer state that does not depend on which level or stream is active.
-    void SplatLabApp::ApplySplatRenderState()
+    void SplatPakApp::ApplySplatRenderState()
     {
         m_state.shDegree = m_splatParams.shDegree;
         m_state.shRecordBytes = SplatCodec::SHRecordBytes(m_splatParams.shDegree);
@@ -2475,7 +2475,7 @@ namespace Splat
     }
 
     // Refreshes the CPU-side preview buffer for the currently selected LOD level
-    void SplatLabApp::UpdatePreviewSplats()
+    void SplatPakApp::UpdatePreviewSplats()
     {
         LogTransitionTrace("UpdatePreviewSplats: m_selectedPreviewLOD=%d, m_autoLOD=%d, isStreaming=%d",
             m_selectedPreviewLOD, m_autoLOD ? 1 : 0, m_enableStreamingSimulation ? 1 : 0);
@@ -2543,7 +2543,7 @@ namespace Splat
     // Runs the full wavelet pipeline over m_chunks and writes the resulting single-file .gstx package
     // Writes the displayed model as a single-file .gstx package, on the worker: into <name>.partial.gstx, renamed
     // when complete, so a cancelled or failed save never leaves a broken package behind.
-    void SplatLabApp::ProcessAndExport(const std::string& outputPath)
+    void SplatPakApp::ProcessAndExport(const std::string& outputPath)
     {
         if (m_rawSplats.empty()) return;
         if (BakePending())
@@ -2642,7 +2642,7 @@ namespace Splat
     }
 
     // Executes whatever file-dialog/action was queued this frame (kept off the ImGui callback stack)
-    void SplatLabApp::ExecutePendingAction()
+    void SplatPakApp::ExecutePendingAction()
     {
         if (m_pendingAction == PendingAction::None)
             return;
@@ -2774,7 +2774,7 @@ namespace Splat
 
 
 
-    void SplatLabApp::UpdateCamera(const ImGuiIO& io)
+    void SplatPakApp::UpdateCamera(const ImGuiIO& io)
     {
         SyncStreamInputs(); // The auto LOD below asks the runtime's LOD rule, which reads the settings and the viewport
         const float cy = cosf(m_pitch), sy = sinf(m_pitch);
@@ -3168,7 +3168,7 @@ namespace Splat
     }
 
     // The entire ImGui frame: the left tool tabs (Generator/Renderer/Streaming) and the right statistics panel
-    void SplatLabApp::BuildUI()
+    void SplatPakApp::BuildUI()
     {
         // Draw 3D Octree Bounding Cubes with Dotted Mid-Gray Lines onto the 3D viewport
         DrawOctreeVisualizer();
@@ -4445,7 +4445,7 @@ namespace Splat
                 ImGui::Spacing();
 
                 ImGui::TextWrapped(IsViewerOnly()
-                    ? "The standalone viewer for .gstx Gaussian splat packages: progressive wavelet streaming with DirectX 12 Gaussian rendering. The same renderer and streaming tabs as SplatLab, without the generator."
+                    ? "The standalone viewer for .gstx Gaussian splat packages: progressive wavelet streaming with DirectX 12 Gaussian rendering. The same renderer and streaming tabs as SplatPak, without the generator."
                     : "A multi-resolution point cloud preprocessor and progressive wavelet streaming pipeline built for high-performance DirectX 12 Mesh Shader splat rendering.");
                 ImGui::Spacing();
                 ImGui::TextDisabled("(c) 2026 Blueshell LLC. All rights reserved.");
@@ -4464,7 +4464,7 @@ namespace Splat
 
 
     // Draws the per-LOD-level residency bar graph plus the Evict/Decay Rate/Policy controls beside it
-    void SplatLabApp::DrawLODResidencyEqualizer()
+    void SplatPakApp::DrawLODResidencyEqualizer()
     {
         if (m_residentLODs.empty())
         {
@@ -4823,7 +4823,7 @@ namespace Splat
     // Refinement visualizer controls on the Renderer tab (idSuffix keeps the widget IDs distinct should the
     // block ever be drawn in a second place): the arrival-glow checkbox, and when it is on, the fade
     // duration, glow intensity and hue sliders.
-    void SplatLabApp::DrawRefinementVisualizerControls(const char* idSuffix)
+    void SplatPakApp::DrawRefinementVisualizerControls(const char* idSuffix)
     {
         std::string label = std::string("Refinement Visualizer") + idSuffix;
         if (ImGui::Checkbox(label.c_str(), &m_showChunkStream))
@@ -4855,7 +4855,7 @@ namespace Splat
     // 1.5 the discs would be narrower than the fixed rule, above 4 the fill cost (radius squared) is too
     // high on dense views. Runs right after ComputeLodSpacing; the values are reset first, so a package
     // without level 0 Gaussians leaves the fixed 1.5.
-    void SplatLabApp::ComputeSplatSoftness()
+    void SplatPakApp::ComputeSplatSoftness()
     {
         m_splatLevel0Footprint = 0.0f;
         m_splatSoftnessRatio = 0.0f;
@@ -4892,7 +4892,7 @@ namespace Splat
     // (green) shows those, the right one (pastel blue) the four lower faces, both with +X right and +Z
     // down. Visible faces are lit, brighter the more directly they face the camera, hidden faces dim; a
     // yellow dot marks the camera's direction on whichever half it lies in (a dim dot on the other).
-    void SplatLabApp::DrawOctahedronGlyph()
+    void SplatPakApp::DrawOctahedronGlyph()
     {
         uint32_t visible = 0;
         for (int f = 0; f < kOctahedronFaces; f++) if (m_stream.m_streamOrder.VisibleFaceMask() & (1u << f)) visible++;
@@ -4978,7 +4978,7 @@ namespace Splat
     // wrong, the reason is written on the screen. Draws nothing when no such mode is active. Ordinary
     // quality/performance settings (TAA, dithering, cone culling, the occlusion volume itself) are not
     // listed -- they are the normal picture, not a departure from it.
-    void SplatLabApp::DrawRenderModeBanner(float leftPanelWidth, float rightPanelWidth)
+    void SplatPakApp::DrawRenderModeBanner(float leftPanelWidth, float rightPanelWidth)
     {
         struct ModeLine { char text[128]; ImVec4 color; };
         ModeLine lines[16];
@@ -5073,7 +5073,7 @@ namespace Splat
     // top/bottom of the canvas (below the menu bar, above the status bar) -- and never past it. The
     // margin is one centimetre on the actual display (from its DPI). Found by bisection on the distance
     // against the projected box corners, so the result is exact for the view that will be shown.
-    float SplatLabApp::FitDistanceForViewport() const
+    float SplatPakApp::FitDistanceForViewport() const
     {
         if (!(m_extents.x > 1e-6f || m_extents.y > 1e-6f || m_extents.z > 1e-6f)) return 25.0f;
         // The startup dataset loads before the window has been sized (OnCreate runs ahead of the first
@@ -5145,7 +5145,7 @@ namespace Splat
     // "Reset View" button in the bottom-left corner of the viewport (just right of the left panel, just
     // above the status bar): puts the camera back to the launch view -- the default orbit angle, centred
     // on the model, at the distance that fits it between the control panels.
-    void SplatLabApp::DrawResetViewButton(float leftPanelWidth)
+    void SplatPakApp::DrawResetViewButton(float leftPanelWidth)
     {
         const float x = 10.0f + leftPanelWidth + 10.0f;
         const float y = (float)m_Height - 32.0f - 6.0f;
@@ -5179,7 +5179,7 @@ namespace Splat
     // which moved the section leaves its open state as it was.
     // A collapsing header that reopens as the user left it: its open state is kept by label in m_menuOpen and saved to
     // config.json (menu_open) whenever it changes
-    bool SplatLabApp::MenuHeader(const char* label, bool defaultOpen)
+    bool SplatPakApp::MenuHeader(const char* label, bool defaultOpen)
     {
         auto it = m_menuOpen.find(label);
         const bool stored = it != m_menuOpen.end() ? it->second : defaultOpen;
@@ -5194,7 +5194,7 @@ namespace Splat
         return open;
     }
 
-    bool SplatLabApp::RightPanelSectionHeader(int slot, int section, int& swapSlotA, int& swapSlotB)
+    bool SplatPakApp::RightPanelSectionHeader(int slot, int section, int& swapSlotA, int& swapSlotB)
     {
         static const char* s_titles[kRightSectionCount] = {
             "Real-Time Performance & Stage Timings", "5-Tier Compression Results", "LOD Residency",
@@ -5258,7 +5258,7 @@ namespace Splat
         viewProj = XMMatrixMultiply(XMMatrixLookAtRH(e, at, XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f)), XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect, 0.1f, 500.0f));
     }
 
-    bool SplatLabApp::ProjectLiveCamera(const XMFLOAT3& world, ImVec2& screen, float& viewDepth) const
+    bool SplatPakApp::ProjectLiveCamera(const XMFLOAT3& world, ImVec2& screen, float& viewDepth) const
     {
         if (m_Width == 0 || m_Height == 0) return false;
         XMFLOAT3 eye, fwd; XMMATRIX viewProj;
@@ -5275,7 +5275,7 @@ namespace Splat
     // level 0 points that project into it, a sample of up to a million), the point on the box's centre ray at
     // that depth, and the box's half-height in world units there. With no points under the box the anchor
     // sits on the plane through the orbit target.
-    void SplatLabApp::SetLoupePinned(bool pinned)
+    void SplatPakApp::SetLoupePinned(bool pinned)
     {
         m_loupePinned = pinned;
         m_loupeAnchorValid = false;
@@ -5316,7 +5316,7 @@ namespace Splat
         m_loupeAnchorValid = true;
     }
 
-    void SplatLabApp::DrawLoupeOverlay()
+    void SplatPakApp::DrawLoupeOverlay()
     {
         m_state.loupeEnabled = false;
         if (!m_loupeEnabled || m_Width == 0 || m_Height == 0) return;
@@ -5418,7 +5418,7 @@ namespace Splat
     // control. The bindings listed must match UpdateCamera: left-drag or Left/Right arrows orbit; the
     // wheel, right-drag, W/S, Up/Down, PageUp/PageDown and +/- zoom; Shift with any drag or with the
     // arrow keys pans.
-    void SplatLabApp::DrawControlHints(float leftPanelWidth, float rightPanelWidth)
+    void SplatPakApp::DrawControlHints(float leftPanelWidth, float rightPanelWidth)
     {
         if (!m_showControlHints) return; // "Show Camera Control Hints" unchecked on the Renderer tab's viewport section
 
@@ -5470,7 +5470,7 @@ namespace Splat
     // and offers nothing that would change it. "View
     // Occlusion Volume Only" is intentionally independent of "Show Occlusion Volume" -- wanting to
     // just look at the volume shouldn't require also turning on splat culling against it.
-    void SplatLabApp::DrawOcclusionVolumeControls()
+    void SplatPakApp::DrawOcclusionVolumeControls()
     {
         if (ImGui::Checkbox("Show Occlusion Volume", &m_enableOcclusionCulling))
         {
@@ -5566,7 +5566,7 @@ namespace Splat
     // Rebuilds the occlusion volume, or clears it when generation is off. Called on every full pipeline
     // recompute. A freshly baked volume is shown straight
     // away unless Show Occlusion Volume was switched off (m_showOcclusionSetting), which a bake respects.
-    void SplatLabApp::RefreshOcclusionVolume()
+    void SplatPakApp::RefreshOcclusionVolume()
     {
         if (m_generateOcclusionVolume)
         {
@@ -5585,7 +5585,7 @@ namespace Splat
         m_occlusionVoxelsVersion++;
     }
 
-    void SplatLabApp::BuildOcclusionGrid()
+    void SplatPakApp::BuildOcclusionGrid()
     {
         const auto& sourcePoints = !m_rawSplats.empty() ? m_rawSplats : m_rendererRawSplats;
         std::string trace;
@@ -5593,7 +5593,7 @@ namespace Splat
         if (!trace.empty()) LogTransitionTrace("%s", trace.c_str());
     }
 
-    void SplatLabApp::BuildOcclusionVolume()
+    void SplatPakApp::BuildOcclusionVolume()
     {
         if (!m_occlusionGrid.valid) BuildOcclusionGrid();
         std::string trace;
@@ -5602,12 +5602,12 @@ namespace Splat
     }
 
     // Voxelizes the loaded point cloud into a density heatmap for the cluster-cube visualizer
-    void SplatLabApp::RebuildHeatmapClusterCubes()
+    void SplatPakApp::RebuildHeatmapClusterCubes()
     {
         BuildHeatmapClusterCubes(!m_rawSplats.empty() ? m_rawSplats : m_rendererRawSplats, m_aabbMin, m_aabbMax, m_detailGrid, m_heatmapClusterCubes);
     }
 
-    void SplatLabApp::BuildHeatmapClusterCubes(const std::vector<SplatPoint>& points, const XMFLOAT3& aabbMin, const XMFLOAT3& aabbMax,
+    void SplatPakApp::BuildHeatmapClusterCubes(const std::vector<SplatPoint>& points, const XMFLOAT3& aabbMin, const XMFLOAT3& aabbMax,
                                                const DetailGrid& detail, std::vector<HeatmapClusterCube>& out) const
     {
         out.clear();
@@ -5757,7 +5757,7 @@ namespace Splat
     }
 
     // Draws the ImGui-drawlist wireframe/heatmap overlay for the octree and cluster-cube visualizers
-    void SplatLabApp::DrawOctreeVisualizer()
+    void SplatPakApp::DrawOctreeVisualizer()
     {
         if (!m_showClusterHeatmap && !m_showOctreeVisualizer && !m_showGlobalBounds && !m_detachCamera && !m_highlightSilhouetteChunks)
             return;
@@ -6328,7 +6328,7 @@ namespace Splat
     }
 
     // Per-frame entry point: builds the UI, advances the streaming simulation and camera, then hands off to SplatRenderer
-    void SplatLabApp::OnRender()
+    void SplatPakApp::OnRender()
     {
         // A finished background operation swaps its result in before anything reads the model this frame
         m_op.Tick();
@@ -6481,7 +6481,7 @@ namespace Splat
             ImGui::EndFrame();
             LogD3D12Messages();
             HRESULT removeReason = m_device.GetDevice() ? m_device.GetDevice()->GetDeviceRemovedReason() : E_FAIL;
-            LogTransitionTrace("!!! SplatLabApp::OnRender std::exception: '%s', deviceRemovedReason=0x%08X !!!", e.what(), (uint32_t)removeReason);
+            LogTransitionTrace("!!! SplatPakApp::OnRender std::exception: '%s', deviceRemovedReason=0x%08X !!!", e.what(), (uint32_t)removeReason);
             if (removeReason != S_OK)
             {
                 std::stringstream ss;
@@ -6494,7 +6494,7 @@ namespace Splat
             ImGui::EndFrame();
             LogD3D12Messages();
             HRESULT removeReason = m_device.GetDevice() ? m_device.GetDevice()->GetDeviceRemovedReason() : E_FAIL;
-            LogTransitionTrace("!!! SplatLabApp::OnRender UNKNOWN EXCEPTION CAUGHT, deviceRemovedReason=0x%08X !!!", (uint32_t)removeReason);
+            LogTransitionTrace("!!! SplatPakApp::OnRender UNKNOWN EXCEPTION CAUGHT, deviceRemovedReason=0x%08X !!!", (uint32_t)removeReason);
             if (removeReason != S_OK)
             {
                 std::stringstream ss;
@@ -6503,12 +6503,12 @@ namespace Splat
             }
             else
             {
-                Trace("SplatLabApp::OnRender: transient render/present glitch; continuing on next frame.\n");
+                Trace("SplatPakApp::OnRender: transient render/present glitch; continuing on next frame.\n");
             }
         }
     }
 
-    void SplatLabApp::SetSplatDrawAsDiscs(bool asSplats)
+    void SplatPakApp::SetSplatDrawAsDiscs(bool asSplats)
     {
         m_splatDrawAsDiscs = asSplats;
         // The render mode follows SplatRenderMode() at the next state selection; re-stamp the chunks'
@@ -6519,11 +6519,11 @@ namespace Splat
         m_stream.m_streamStateDirty = true;
     }
 
-    // LOD quality test (see SplatLabApp.h). Runs on the static per-level sets (streaming off), so each capture
+    // LOD quality test (see SplatPakApp.h). Runs on the static per-level sets (streaming off), so each capture
     // is exactly one level everywhere -- the streamed view keeps refined detail when the target coarsens,
     // which would hide the level being measured. Before that it waits for the stream to land completely,
     // which doubles as the check that Greedy streaming carries on to level 0.
-    void SplatLabApp::StepLodQualityTest()
+    void SplatPakApp::StepLodQualityTest()
     {
         const int maxLevel = (int)m_waveletResult.lodLevels.size() - 1;
         if (!m_lodTestRunning)
@@ -6634,7 +6634,7 @@ namespace Splat
     // Before a side panel's Begin: a click on the fold arrow at the left end of its title bar (last frame's rectangle)
     // folds or unfolds it. ImGui 1.53 draws the arrow but only folds on a double-click of the title bar, which still
     // works too; the saved state applies on the first frame.
-    void SplatLabApp::SetNextSidePanelCollapse(const ImVec4& rect, bool collapsed)
+    void SplatPakApp::SetNextSidePanelCollapse(const ImVec4& rect, bool collapsed)
     {
         const ImGuiIO& io = ImGui::GetIO();
         const float bar = ImGui::GetFrameHeight();
@@ -6646,7 +6646,7 @@ namespace Splat
 
     // Called inside a side panel's Begin/End: records the rectangle it occupies on screen (only the title bar while
     // folded) and remembers a fold or unfold in config.json
-    void SplatLabApp::RecordSidePanel(ImVec4& rect, bool& collapsed)
+    void SplatPakApp::RecordSidePanel(ImVec4& rect, bool& collapsed)
     {
         const ImVec2 pos = ImGui::GetWindowPos(), size = ImGui::GetWindowSize();
         const bool nowCollapsed = ImGui::IsWindowCollapsed();
@@ -6660,7 +6660,7 @@ namespace Splat
     }
 
     // --stream-test: once fully resident, the launch view, 5G and Greedy, Evict, 60 s of refill, then quit
-    void SplatLabApp::StepStreamTest()
+    void SplatPakApp::StepStreamTest()
     {
         if (m_stream.m_lodStreamChunks.empty()) return;
         if (m_streamTestPhase == 0)
@@ -6692,8 +6692,8 @@ namespace Splat
         }
     }
 
-    // --lod-calibration: see LodCalShot in SplatLabApp.h
-    void SplatLabApp::StepLodCalibration()
+    // --lod-calibration: see LodCalShot in SplatPakApp.h
+    void SplatPakApp::StepLodCalibration()
     {
         const int maxLevel = (int)m_waveletResult.lodLevels.size() - 1;
         if (!m_lodCalRunning)
@@ -6786,7 +6786,7 @@ namespace Splat
         }
     }
 
-    void SplatLabApp::FinishLodCalibration()
+    void SplatPakApp::FinishLodCalibration()
     {
         const int maxLevel = (int)m_waveletResult.lodLevels.size() - 1;
         CreateDirectoryA(m_lodCalFolder.c_str(), nullptr);
@@ -6853,7 +6853,7 @@ namespace Splat
         LogTransitionTrace("LOD calibration: report written to %s", m_lodCalFolder.c_str());
     }
 
-    void SplatLabApp::FinishLodQualityTest()
+    void SplatPakApp::FinishLodQualityTest()
     {
         CreateDirectoryA(m_lodTestFolder.c_str(), nullptr);
         std::ofstream md(m_lodTestFolder + "\\report.md");
@@ -6965,7 +6965,7 @@ namespace Splat
     // pipeline to draw, the in-app status message text is never actually presented once we're in this
     // state, so surface the failure via a plain Win32 message box instead (needs no GPU), then exit
     // cleanly rather than leave the user staring at an unresponsive window.
-    void SplatLabApp::ReportDeviceLostAndExit(const std::string& message)
+    void SplatPakApp::ReportDeviceLostAndExit(const std::string& message)
     {
         if (m_deviceLost) return; // Already reported/exiting -- avoid stacking duplicate dialogs
         m_deviceLost = true;

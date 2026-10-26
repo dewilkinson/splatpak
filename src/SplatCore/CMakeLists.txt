@@ -1,5 +1,5 @@
-# splat_core -- everything SplatLab and the standalone SplatLabViewer viewer share: the app
-# shell (SplatLabApp, with its Studio / Viewer mode), the renderer, the loaders, the octree /
+# splat_core -- everything SplatPak and the standalone SplatPakViewer viewer share: the app
+# shell (SplatPakApp, with its Studio / Viewer mode), the renderer, the loaders, the octree /
 # quantizer / packager, the .gstx types and validators, the shaders, and the WinMain body
 # (AppEntry). Each executable is a few-line main.cpp that links this library, so a change made
 # here reaches both apps at once instead of having to be made twice.
@@ -18,8 +18,8 @@ set(sources
     stdafx.cpp
     AppEntry.h
     AppEntry.cpp
-    SplatLabApp.h
-    SplatLabApp.cpp
+    SplatPakApp.h
+    SplatPakApp.cpp
     SplatRenderer.h
     SplatRenderer.cpp
     WaveletTypes.h

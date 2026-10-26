@@ -4,12 +4,12 @@
 //
 // The shared WinMain body behind both executables (see AppEntry.h): installs crash-dump
 // handlers (so a hard crash still leaves a trace-log entry and a minidump for post-mortem
-// debugging) before handing off to Cauldron's RunFramework with a SplatLabApp instance in
-// the requested mode. Each exe's main.cpp is a few lines that call RunSplatLabApp().
+// debugging) before handing off to Cauldron's RunFramework with a SplatPakApp instance in
+// the requested mode. Each exe's main.cpp is a few lines that call RunSplatPakApp().
 
 #include "stdafx.h"
 #include "AppEntry.h"
-#include "SplatLabApp.h"
+#include "SplatPakApp.h"
 
 #include <DbgHelp.h>
 #pragma comment(lib, "DbgHelp.lib")
@@ -91,7 +91,7 @@ LONG WINAPI VectoredCrashHandler(EXCEPTION_POINTERS* pEx)
 static void ShowUsage(const char* windowName, const std::string& problem)
 {
     std::string text = problem.empty() ? std::string() : (problem + "\n\n");
-    text += Splat::SplatLabApp::CommandLineUsage();
+    text += Splat::SplatPakApp::CommandLineUsage();
     if (AttachConsole(ATTACH_PARENT_PROCESS))
     {
         HANDLE out = GetStdHandle(STD_OUTPUT_HANDLE);
@@ -104,19 +104,19 @@ static void ShowUsage(const char* windowName, const std::string& problem)
     MessageBoxA(nullptr, text.c_str(), title.c_str(), MB_OK | (problem.empty() ? MB_ICONINFORMATION : MB_ICONWARNING));
 }
 
-int Splat::RunSplatLabApp(HINSTANCE hInstance, LPSTR lpCmdLine, int nCmdShow, const char* windowName, SplatLabApp::Mode mode)
+int Splat::RunSplatPakApp(HINSTANCE hInstance, LPSTR lpCmdLine, int nCmdShow, const char* windowName, SplatPakApp::Mode mode)
 {
     // Mode switches and --help are decided here, before the app object exists; everything else
-    // (file path, --render-path) is handed on to SplatLabApp::OnParseCommandLine as a rebuilt
+    // (file path, --render-path) is handed on to SplatPakApp::OnParseCommandLine as a rebuilt
     // command line. An unknown option shows the usage and exits with code 2.
     std::string forwarded;
     {
-        const std::vector<std::string> args = SplatLabApp::SplitCommandLine(lpCmdLine);
+        const std::vector<std::string> args = SplatPakApp::SplitCommandLine(lpCmdLine);
         for (size_t i = 0; i < args.size(); i++)
         {
             const std::string& a = args[i];
-            if (a == "--viewer")      { mode = SplatLabApp::Mode::Viewer; windowName = "Splat Viewer"; continue; }
-            if (a == "--studio")      { mode = SplatLabApp::Mode::Studio; windowName = "SplatLab"; continue; }
+            if (a == "--viewer")      { mode = SplatPakApp::Mode::Viewer; windowName = "Splat Viewer"; continue; }
+            if (a == "--studio")      { mode = SplatPakApp::Mode::Studio; windowName = "SplatPak"; continue; }
             if (a == "--help" || a == "-h" || a == "/?" || a == "-?") { ShowUsage(windowName, ""); return 0; }
             if (a == "--render-path")
             {
@@ -169,7 +169,7 @@ int Splat::RunSplatLabApp(HINSTANCE hInstance, LPSTR lpCmdLine, int nCmdShow, co
 #endif
 
     HRESULT hrCom = CoInitializeEx(NULL, COINIT_APARTMENTTHREADED | COINIT_DISABLE_OLE1DDE);
-    int result = RunFramework(hInstance, cmdBuf.data(), nCmdShow, new Splat::SplatLabApp(windowName, mode));
+    int result = RunFramework(hInstance, cmdBuf.data(), nCmdShow, new Splat::SplatPakApp(windowName, mode));
     if (SUCCEEDED(hrCom))
     {
         CoUninitialize();

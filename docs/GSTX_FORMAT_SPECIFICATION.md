@@ -12,7 +12,7 @@ Document status: Approved. Supersedes the description of format versions 1 throu
 
 ### 1.1 Scope
 
-This specification defines the binary layout and the semantics of the `.gstx` container: the file that SplatLab writes when a point cloud or a 3D Gaussian Splatting scene is baked, and that SplatLab, the Points viewer and the console tools read. It covers:
+This specification defines the binary layout and the semantics of the `.gstx` container: the file that SplatPak writes when a point cloud or a 3D Gaussian Splatting scene is baked, and that SplatPak, the Points viewer and the console tools read. It covers:
 
 - the file header;
 - the chunk manifest and the per-chunk level-of-detail (LOD) table;

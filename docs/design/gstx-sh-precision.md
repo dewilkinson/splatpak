@@ -8,7 +8,7 @@ Requirements: [gstx-sh-precision](../requirements/gstx-sh-precision.md)
 `RequantiseSH` (`src/SplatCore/StreamPackager.h`) snaps each SH coefficient's colour triple to 2^(bits−1) − 1
 levels per sign, in YCoCg-R space, and returns the RGB bytes a reader will decode. The packager calls it right after
 `SplatCodec::Encode`; the v11 colour transform then stores exactly the snapped Y, Co and Cg values, because the
-transform is a bijection. SplatLab calls it at the same point when it builds the resident levels and the size
+transform is a bijection. SplatPak calls it at the same point when it builds the resident levels and the size
 estimate, so the viewport and the estimate see the package's SH. No format change.
 
 ## Why snap in YCoCg space
@@ -36,5 +36,5 @@ wherever a channel would move by more than 64 (a quarter of the range); the wors
 | Area | Files |
 |---|---|
 | Requantiser | `src/SplatCore/StreamPackager.h` (`RequantiseSH`, `SplatBakeInput::shBits`) |
-| Bake and UI | `src/SplatCore/SplatLabApp.cpp/.h` (`BakeParams::shPrecision`, `BakeSource::shBits`, the combo) |
+| Bake and UI | `src/SplatCore/SplatPakApp.cpp/.h` (`BakeParams::shPrecision`, `BakeSource::shBits`, the combo) |
 | Tools and tests | `tests/CompressVenus.cpp` (`--sh-bits`), `tests/TestSplatCodec.cpp` (criterion 2) |

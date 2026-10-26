@@ -2,7 +2,7 @@
 // SplatPak Core -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 //
 // The streaming runtime: which blocks of a model are resident, at which level, in what order they
-// arrive, and how they hand over to one another. A host (SplatLab, the UE5 plugin) hands it the levels
+// arrive, and how they hand over to one another. A host (SplatPak, the UE5 plugin) hands it the levels
 // of a model, sets the settings and the camera, calls UpdateStreamingSimulation every frame, and draws
 // the render list (the first FrameChunkCount() entries of m_rendererMeshletChunks) over the unified
 // buffers. The implementation is part of the codec library; this header is its public API.

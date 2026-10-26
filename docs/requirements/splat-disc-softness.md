@@ -73,7 +73,7 @@ values, the disc alpha rule, the splat-mode glow, one checkbox and config key). 
 `libs/bluesec-codec`.
 
 ## Acceptance criteria
-1. `SplatLabViewer`, `SplatLab` and the test executables build in Release for all three render paths.
+1. `SplatPakViewer`, `SplatPak` and the test executables build in Release for all three render paths.
 2. The Renderer tab shows the checkbox in splat mode only, with the derived ratio and radius
    factor displayed; toggling it persists across a restart via `config.json`.
 3. Speckle: bundled Cthulhu, Viewer, temporal filter off, preview level forced to 1, background

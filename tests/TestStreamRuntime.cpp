@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // GPU-free driver for the streaming runtime (libs/gstx/StreamRuntime.h): loads a splat package
-// (the path given, or assets/cthulu/cthulu.gstx), hands its levels to the runtime the way SplatLab does,
+// (the path given, or assets/cthulu/cthulu.gstx), hands its levels to the runtime the way SplatPak does,
 // evicts, then streams at a fixed 1/60 s step and 50 MB/s while the camera closes in and orbits. Prints
 // per-level residency and the render list size once a simulated second. The step is fixed, so two runs
 // print the same lines; the exit code is 0 when level 0 ends fully resident.
@@ -29,7 +29,7 @@ int main(int argc, char** argv)
     }
 
     // Each level: every chunk's records, decoded for positions, then sorted in one spatial order over the
-    // package bounds with the records and harmonics carried along (as SplatLabApp::PrecacheResidentLODs)
+    // package bounds with the records and harmonics carried along (as SplatPakApp::PrecacheResidentLODs)
     const XMFLOAT3 bmin = pkg.header.globalBoundsMin, bmax = pkg.header.globalBoundsMax;
     const uint32_t shBytes = SplatCodec::SHRecordBytes(pkg.splatParams.shDegree);
     size_t numLevels = 0;

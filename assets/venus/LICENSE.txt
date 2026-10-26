@@ -9,7 +9,7 @@ Requirements: the author must be credited. NO COMMERCIAL USE.
 
 Files in this directory:
   venus.ply   the source point cloud as downloaded (Git LFS)
-  venus.gstx  a derivative work: the same scan repackaged by SplatLab's pipeline (chunked,
+  venus.gstx  a derivative work: the same scan repackaged by SplatPak's pipeline (chunked,
               wavelet LOD pyramid, entropy-coded, with a baked interior occlusion volume)
 
 Both files are redistributed here under the CC BY-NC 4.0 license above, which also governs any

@@ -17,12 +17,12 @@ synchronously, with no dialog.
 | Area | Files | Change |
 |------|-------|--------|
 | Framework (new) | `src/SplatCore/BackgroundOp.h` | `Progress` (atomic stage name, fraction, cancel flag), `BackgroundOp` (worker thread, elapsed time, result), `RunModal` (starts it; the dialog appears after 1 s) and `RunNow` (synchronous, for scripted runs) |
-| Bake | `src/SplatCore/SplatLabApp.cpp/.h` | `BakeParams` struct (chunk size, LODs, SH quality, deadband, occlusion on/off, shave) with `operator==`; `m_bakedParams`; `RecomputeWaveletHierarchy` split into `SnapshotBake`, `RunBake(BakeInput, Progress&) -> BakeResult` and `ApplyBake(BakeResult)`; Bake button and pending line; Save disabled while pending |
-| Occlusion | `src/SplatCore/SplatLabApp.cpp` | The structural rebuild (grid, shave) moves into `RunBake`; the colour grade keeps its synchronous recolour from the cached grid |
-| Open | `src/SplatCore/SplatLabApp.cpp` | `LoadPLYFile`/`LoadSPLATFile` parse on the worker and apply on the UI thread; `LoadSFLWFile` decodes (`StreamPackager::LoadPackage`) on the worker and applies (renderer, metrics) on the UI thread |
-| Save | `src/SplatCore/SplatLabApp.cpp`, `src/SplatCore/StreamPackager.h` | Save runs `PackageDataset` on the worker into `<name>.gstx.partial`, renamed on success and deleted on cancel or failure; `PackageDataset` and `LoadPackage` take an optional progress callback, called once per chunk |
-| Dialog | `src/SplatCore/SplatLabApp.cpp` | One modal popup drawn every frame while an operation runs: title, stage, progress bar, Cancel |
-| Scripted runs | `src/SplatCore/SplatLabApp.cpp`, `AppEntry.cpp` | `--lod-calibration`, `--stream-test` and a command-line file use `RunNow` |
+| Bake | `src/SplatCore/SplatPakApp.cpp/.h` | `BakeParams` struct (chunk size, LODs, SH quality, deadband, occlusion on/off, shave) with `operator==`; `m_bakedParams`; `RecomputeWaveletHierarchy` split into `SnapshotBake`, `RunBake(BakeInput, Progress&) -> BakeResult` and `ApplyBake(BakeResult)`; Bake button and pending line; Save disabled while pending |
+| Occlusion | `src/SplatCore/SplatPakApp.cpp` | The structural rebuild (grid, shave) moves into `RunBake`; the colour grade keeps its synchronous recolour from the cached grid |
+| Open | `src/SplatCore/SplatPakApp.cpp` | `LoadPLYFile`/`LoadSPLATFile` parse on the worker and apply on the UI thread; `LoadSFLWFile` decodes (`StreamPackager::LoadPackage`) on the worker and applies (renderer, metrics) on the UI thread |
+| Save | `src/SplatCore/SplatPakApp.cpp`, `src/SplatCore/StreamPackager.h` | Save runs `PackageDataset` on the worker into `<name>.gstx.partial`, renamed on success and deleted on cancel or failure; `PackageDataset` and `LoadPackage` take an optional progress callback, called once per chunk |
+| Dialog | `src/SplatCore/SplatPakApp.cpp` | One modal popup drawn every frame while an operation runs: title, stage, progress bar, Cancel |
+| Scripted runs | `src/SplatCore/SplatPakApp.cpp`, `AppEntry.cpp` | `--lod-calibration`, `--stream-test` and a command-line file use `RunNow` |
 
 ## Data flow
 ```mermaid
@@ -70,7 +70,7 @@ of them touches app or renderer state, so they are safe there.
   (criterion 8).
 - Scripted runs: `--lod-calibration` and `--stream-test` complete unattended; their results match the last
   baselines (criterion 9).
-- Viewer: open a large package in SplatLabViewer (criterion 10).
+- Viewer: open a large package in SplatPakViewer (criterion 10).
 - Timing: Cthulhu bake time against today's rebuild (criterion 11).
 - Existing tests (TestLoadPackage, TestSplatCodec, TestOcclusionVolume, TestStreamRuntime, CompressVenus) and
   `tests/stress_test.py` must pass; the console tools use StreamPackager directly and are unaffected.
@@ -86,7 +86,7 @@ of them touches app or renderer state, so they are safe there.
 ## Implementation brief (for the coder agent)
 1. `src/SplatCore/BackgroundOp.h`: `Progress`, `BackgroundOp`, `RunModal`, `RunNow`. Done when: a test op with
    sleeps shows the dialog after 1 s, updates the bar and cancels.
-2. `SplatLabApp`: `BakeParams`, `m_bakedParams`, and the split of `RecomputeWaveletHierarchy` and the occlusion
+2. `SplatPakApp`: `BakeParams`, `m_bakedParams`, and the split of `RecomputeWaveletHierarchy` and the occlusion
    rebuild into snapshot / run / apply. Done when: criterion 3 holds.
 3. Bake tab: parameters stop rebuilding; Bake button, pending line, Save disabled; colour grade stays live. Done
    when: criteria 1, 2, 4, 5.

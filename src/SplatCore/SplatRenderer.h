@@ -2,9 +2,9 @@
 // SplatPak -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// GPU-side renderer shared by SplatLab and the standalone viewer: owns every root
+// GPU-side renderer shared by SplatPak and the standalone viewer: owns every root
 // signature, PSO, and GPU buffer, and exposes a single State snapshot + OnRender()
-// entry point that SplatLabApp drives once per frame. See SplatRenderer.cpp for the
+// entry point that SplatPakApp drives once per frame. See SplatRenderer.cpp for the
 // implementation.
 
 #pragma once
@@ -162,7 +162,7 @@ namespace Splat
         const char* GetRenderPathDescription() const;
 
         // Product name used in the renderer's own dialogs (mesh-shader fallback notice, pipeline
-        // failures). Set by SplatLabApp before OnCreate; defaults to "SplatLab".
+        // failures). Set by SplatPakApp before OnCreate; defaults to "SplatPak".
         static void SetAppTitle(const char* title);
         void OnDestroy();
 

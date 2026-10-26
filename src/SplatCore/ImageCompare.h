@@ -2,7 +2,7 @@
 // SplatPak -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// Screen-image comparison for the LOD quality test (SplatLabApp::StepLodQualityTest): RGBA8 images,
+// Screen-image comparison for the LOD quality test (SplatPakApp::StepLodQualityTest): RGBA8 images,
 // PSNR and SSIM over a crop, an error heatmap, and a dependency-free PNG writer (stored deflate
 // blocks, so the files are large but need no zlib).
 

@@ -7,11 +7,11 @@ Owner: Dave Wilkinson
 ## Goal
 Make `.gstx` packages smaller, losslessly, by decorrelating colour before the entropy stage: each record's RGB
 colour and each spherical-harmonics coefficient's RGB triple are stored as reversible YCoCg. On Cthulhu this cut the
-SH stream by 22.6% and the records by 2.6% under Brotli (a six-chunk sample, all levels). SplatLab shows how much
+SH stream by 22.6% and the records by 2.6% under Brotli (a six-chunk sample, all levels). SplatPak shows how much
 the transform lowered the data's entropy and what it actually saved.
 
 ## User-visible behaviour
-- **Smaller packages, same picture.** Every package saved by SplatLab or CompressVenus applies the transform. The
+- **Smaller packages, same picture.** Every package saved by SplatPak or CompressVenus applies the transform. The
   decoded model is bit-identical to today's: same records, same SH bytes, same render.
 - **Entropy reduction shown.** The Package Bake tab's Statistics (4-Tier Compression Results) gains a row for the
   colour transform with two numbers side by side: the entropy reduction (mean order-0 entropy of the byte planes,
@@ -34,7 +34,7 @@ the transform lowered the data's entropy and what it actually saved.
 - Lossless and exact: the inverse restores every byte; a round trip through save and load matches byte for byte.
 - Format: version 11. The transform is declared in the header's existing padding at offset 204, so the header stays
   208 bytes. The shadow mesh moves to version 12.
-- Readers: SplatLab and SplatLabViewer (StreamPackager), the streaming runtime, the codec library's PayloadDecode,
+- Readers: SplatPak and SplatPakViewer (StreamPackager), the streaming runtime, the codec library's PayloadDecode,
   CompressVenus and the tests, and the UE5 plugin's format core all read version 11.
 - Decode cost: undoing the transform adds no more than 5% to a package's load time.
 - Bake time: computing the figures adds no more than 10% to a bake.
@@ -50,7 +50,7 @@ involved.
 2. Loading that package gives records and SH bytes identical to the untransformed package (TestSplatCodec round trip
    and a byte comparison of every level).
 3. The header of a new package says version 11 and declares the record and SH transforms; version 10 packages (the
-   bundled ones before regeneration) still open in SplatLab, the viewer and the UE plugin.
+   bundled ones before regeneration) still open in SplatPak, the viewer and the UE plugin.
 4. The Statistics panel shows the transform row with both an entropy and a size figure after a bake.
 5. The save dialog's compression stage shows the entropy reduction; the trace has one line per bake and per save
    with record and SH figures.

@@ -2,7 +2,7 @@
 // SplatPak -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// The GPU heart of SplatLab: root signatures, PSOs, and per-frame command
+// The GPU heart of SplatPak: root signatures, PSOs, and per-frame command
 // recording for the main mesh-shader splat pass, the GPU silhouette item-prepass, the
 // interior occlusion volume pass, the GPU bitonic depth sort, and TAA resolve.
 
@@ -44,8 +44,8 @@ namespace Splat
 
     // One-time setup: every root signature, PSO (splat/item-prepass/occluder/GPU-sort compute/TAA),
     // and the dedicated copy queue used for async splat/chunk uploads.
-    static const char* g_appTitle = "SplatLab";
-    void SplatRenderer::SetAppTitle(const char* title) { g_appTitle = (title && *title) ? title : "SplatLab"; }
+    static const char* g_appTitle = "SplatPak";
+    void SplatRenderer::SetAppTitle(const char* title) { g_appTitle = (title && *title) ? title : "SplatPak"; }
 
     void SplatRenderer::OnCreate(Device* pDevice, SwapChain* pSwapChain)
     {

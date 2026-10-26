@@ -3,7 +3,7 @@
 // SPDX-License-Identifier: Apache-2.0
 //
 // Encodes and decodes the shadow mesh section of a .gstx package (format version 12, Clause 12 of
-// docs/GSTX_FORMAT_SPECIFICATION.md). Open code, inside the codec library so every writer and reader (SplatLab, the
+// docs/GSTX_FORMAT_SPECIFICATION.md). Open code, inside the codec library so every writer and reader (SplatPak, the
 // console tools, the UE5 plugin) shares one implementation, like PayloadDecode.
 //
 // Section layout (little-endian):
