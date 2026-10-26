@@ -141,7 +141,7 @@ namespace Splat
         uint64_t m_sourceFileBytes = 0;     // Size of the original .ply/.splat on disk; travels inside the .gstx (v5 header) so the ratio survives a reload
         float    m_rawFileSizeMB = 0.0f;
         float    m_compressedSizeMB = 0.0f;
-        float    m_compressionRatio = 1.0f;
+        float    m_compressionRatio = 0.0f;  // 0 = nothing to compare (no model, or no source size)
         float    m_deadbandZeroPercent = 0.0f;
 
         // GUI Options & Parameters

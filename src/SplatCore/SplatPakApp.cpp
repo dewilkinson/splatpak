@@ -1010,7 +1010,7 @@ namespace Splat
         m_extents = { 0, 0, 0 };
         m_rawFileSizeMB = 0.0f;
         m_compressedSizeMB = 0.0f;
-        m_compressionRatio = 1.0f;
+        m_compressionRatio = 0.0f;
         m_deadbandZeroPercent = 0.0f;
         m_state.pPoints = nullptr;
         m_state.pRawSplats = nullptr;
@@ -1531,7 +1531,7 @@ namespace Splat
             uint64_t packageBytes = pkg.is_open() ? (uint64_t)pkg.tellg() : (uint64_t)m_loadedPackage.totalCompressedBytes;
             m_compressedSizeMB = (float)packageBytes / (1024.0f * 1024.0f);
         }
-        m_compressionRatio = m_rawFileSizeMB > 0 ? (m_rawFileSizeMB / std::max(0.001f, m_compressedSizeMB)) : 1.0f;
+        m_compressionRatio = (m_rawFileSizeMB > 0 && m_compressedSizeMB > 0) ? (m_rawFileSizeMB / std::max(0.001f, m_compressedSizeMB)) : 0.0f;
 
         m_rawSplats = m_rendererRawSplats;
 
@@ -2115,7 +2115,7 @@ namespace Splat
         m_selectedPreviewLOD = 0;
         m_compressedSizeMB = r.compressedSizeMB;
         m_colourEstimate = r.colourEstimate;
-        m_compressionRatio = m_rawFileSizeMB > 0.0f ? (m_rawFileSizeMB / std::max(0.001f, m_compressedSizeMB)) : 1.0f;
+        m_compressionRatio = (m_rawFileSizeMB > 0.0f && m_compressedSizeMB > 0.0f) ? (m_rawFileSizeMB / std::max(0.001f, m_compressedSizeMB)) : 0.0f;
         m_deadbandZeroPercent = 64.5f; // Measured planar surface coefficient sparsification
         m_residentLODs = std::move(r.residentLODs);
         m_lodSortFrameMin = m_aabbMin;
@@ -2626,7 +2626,7 @@ namespace Splat
             if (pkg.is_open())
             {
                 m_compressedSizeMB = (float)(uint64_t)pkg.tellg() / (1024.0f * 1024.0f);
-                m_compressionRatio = m_rawFileSizeMB > 0.0f ? (m_rawFileSizeMB / std::max(0.001f, m_compressedSizeMB)) : 1.0f;
+                m_compressionRatio = (m_rawFileSizeMB > 0.0f && m_compressedSizeMB > 0.0f) ? (m_rawFileSizeMB / std::max(0.001f, m_compressedSizeMB)) : 0.0f;
             }
             m_statusMessage = "Success! Created " + finalPath + " (" + std::to_string(m_compressedSizeMB) + " MB, " + std::to_string(m_compressionRatio) + "x vs source";
             if (*meshHeld && !(*meshHeld)->Empty())
@@ -2745,7 +2745,7 @@ namespace Splat
             m_isLoadedFromSFLW = false;
             m_rawFileSizeMB = 0.0f;
             m_compressedSizeMB = 0.0f;
-            m_compressionRatio = 1.0f;
+            m_compressionRatio = 0.0f;
             m_deadbandZeroPercent = 0.0f;
             m_state.splatCount = 0;
             m_state.chunkCount = 0;
@@ -4125,7 +4125,7 @@ namespace Splat
                     uint32_t pointCount = (uint32_t)(!m_rendererSplats.empty() ? m_rendererSplats.size() : m_rawSplats.size());
                     const float bytesPerPoint = (float)BytesPerRenderPoint();
                     float tier2MB = (pointCount * bytesPerPoint) / (1024.0f * 1024.0f);
-                    float tier2Reduction = (tier2MB > 0.001f && m_rawFileSizeMB > 0.0f) ? (m_rawFileSizeMB / tier2MB) : 31.0f;
+                    float tier2Reduction = (tier2MB > 0.001f && m_rawFileSizeMB > 0.0f) ? (m_rawFileSizeMB / tier2MB) : 0.0f; // 0x: nothing to compare
 
                     ImGui::Text("Raw Point Cloud:      %.2f MB (100%%)", m_rawFileSizeMB);
                     if (ImGui::IsItemHovered()) ImGui::SetTooltip("Uncompressed input point cloud dataset (248 bytes/splat uncompressed 3D Gaussian baseline).");
