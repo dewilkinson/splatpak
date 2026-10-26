@@ -4837,7 +4837,7 @@ namespace Splat
         ImGui::SliderFloat((std::string("Fade Duration") + idSuffix).c_str(), &m_chunkStreamDuration, 0.5f, 10.0f, "%.1f s");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("How long a delivered chunk glows. It arrives a bright white-gold, cools to gold and fades out smoothly over this time.");
         ImGui::SliderFloat((std::string("Glow Intensity") + idSuffix).c_str(), &m_arrivalGlowIntensity, 0.0f, 2.0f, "%.2fx");
-        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Strength of the tint and of the bright leading-edge bloom. 1 = default; 0 hides the effect without turning the visualizer off.");
+        if (ImGui::IsItemHovered()) ImGui::SetTooltip("Strength of the tint and of the bright leading-edge bloom. 0.25 = default; 0 hides the effect without turning the visualizer off.");
         ImGui::SliderFloat((std::string("Glow Hue") + idSuffix).c_str(), &m_arrivalGlowHue, -180.0f, 180.0f, "%.0f deg");
         if (ImGui::IsItemHovered()) ImGui::SetTooltip("Rotates the glow colour around the colour wheel. 0 = gold; about +75 = green, +160 = blue, -80 = magenta.");
         ImGui::PopItemWidth();

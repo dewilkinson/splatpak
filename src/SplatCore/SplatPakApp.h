@@ -457,7 +457,7 @@ namespace Splat
         // Show Chunk Stream: Creeping Wavefront & Dissolving Alpha Wake
         bool   m_showChunkStream            = true;   // Streaming arrival visualizer: newly delivered chunks glow white-gold, cool to gold and fade out (Renderer tab: "Show Streaming Arrivals")
         float  m_chunkStreamDuration        = 2.5f;   // Seconds a delivered chunk glows, fading out over that time; 2.5 s by default
-        float  m_arrivalGlowIntensity       = 1.0f;   // Refinement visualizer strength (0..2); 1 by default
+        float  m_arrivalGlowIntensity       = 0.25f;  // Refinement visualizer strength (0..2); 0.25 by default
         float  m_arrivalGlowHue             = 0.0f;   // Refinement visualizer hue rotation in degrees (-180..180, 0 = gold)
         void   DrawRefinementVisualizerControls(const char* idSuffix); // Checkbox + duration/intensity/hue sliders (Renderer tab)
 
