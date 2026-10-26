@@ -12,11 +12,11 @@ Document status: Approved. Supersedes the description of format versions 1 throu
 
 ### 1.1 Scope
 
-This specification defines the binary layout and the semantics of the `.gstx` container: the file that SplatLab writes when a point cloud or a 3D Gaussian Splatting scene is baked, and that SplatLab, the Surfels viewer and the console tools read. It covers:
+This specification defines the binary layout and the semantics of the `.gstx` container: the file that SplatLab writes when a point cloud or a 3D Gaussian Splatting scene is baked, and that SplatLab, the Points viewer and the console tools read. It covers:
 
 - the file header and its version-dependent extent;
 - the chunk manifest and the per-chunk level-of-detail (LOD) table;
-- the two per-point record formats (the 8-byte oriented-disc surfel and the 20-byte 3D Gaussian);
+- the two per-point record formats (the 8-byte oriented-disc point and the 20-byte 3D Gaussian);
 - the spherical-harmonics stream of splat-mode packages;
 - the optional interior occlusion volume and its mip table;
 - the optional detail grid;
@@ -43,7 +43,7 @@ With payload codec 0 (Clause 8) the entropy stage's bit-level encoding is not sp
 - **chunk**: a spatial partition of the point set with its own LOD pyramid.
 - **level, LOD**: one resolution of a chunk; level 0 is the finest.
 - **record**: the fixed-size encoding of one point at one level (Clause 7).
-- **surfel**: a point rendered as an oriented disc (record format 0).
+- **point**: a point rendered as an oriented disc (record format 0).
 - **splat**: a point rendered as a 3D Gaussian (record format 1).
 - **SH**: spherical harmonics, the view-dependent colour terms of a splat.
 - **payload**: the compressed byte string holding one level's records, or one level's SH stream.
@@ -98,13 +98,13 @@ The header is a single structure whose extent depends on the format version: eac
 | 4 | `u32` | `version` | 1 | Format version, 1 to 10. |
 | 8 | `u32` | `numChunks` | 1 | Number of chunks; shall be at least 1. |
 | 12 | `u32` | `maxLOD` | 1 | Number of coarser levels requested at bake time (levels per chunk are at most `maxLOD + 1`). |
-| 16 | `u64` | `totalSurfelsLOD0` | 1 | Sum of the level-0 record counts over all chunks. |
+| 16 | `u64` | `totalSplatsLOD0` | 1 | Sum of the level-0 record counts over all chunks. |
 | 24 | `f64` | `globalOriginX` | 1 | Origin subtracted from the source coordinates (0 when none). |
 | 32 | `f64` | `globalOriginY` | 1 | |
 | 40 | `f64` | `globalOriginZ` | 1 | |
 | 48 | `float3` | `globalBoundsMin` | 1 | Global AABB minimum corner. Position quantisation of every record spans this box. |
 | 60 | `float3` | `globalBoundsMax` | 1 | Global AABB maximum corner. |
-| 72 | `f32` | `splatRadius` | 2 | Disc radius scale the model was authored with (surfel rendering). |
+| 72 | `f32` | `splatRadius` | 2 | Disc radius scale the model was authored with (point rendering). |
 | 76 | `u32` | `occlusionVoxelCount` | 3 | Number of occlusion voxels; 0 = no volume. |
 | 80 | `u64` | `occlusionVoxelOffset` | 3 | Absolute offset of the voxel array (Clause 10); 0 when the count is 0. |
 | 88 | `u64` | `manifestOffset` | 4 | Absolute offset of the embedded chunk manifest (Clause 6.3). |
@@ -116,8 +116,8 @@ The header is a single structure whose extent depends on the format version: eac
 | 152 | `f32` | `detailGridCellSize` | 7 | Cell edge in model units; the grid's origin is `globalBoundsMin`. |
 | 156 | `u32` | *padding* | 7 | Alignment of the following `u64`; a writer shall write 0 and a reader shall ignore it. |
 | 160 | `u64` | `detailGridOffset` | 7 | Absolute offset of the detail grid (Clause 11). |
-| 168 | `u32` | `surfelFormat` | 8 | Record format of every level payload: 0 = surfel (Clause 7.1), 1 = splat (Clause 7.2). |
-| 172 | `u32` | `shDegree` | 8 | Spherical-harmonics degree kept in the SH stream: 0, 1, 2 or 3. Shall be 0 when `surfelFormat` is 0. |
+| 168 | `u32` | `recordFormat` | 8 | Record format of every level payload: 0 = point (Clause 7.1), 1 = splat (Clause 7.2). |
+| 172 | `u32` | `shDegree` | 8 | Spherical-harmonics degree kept in the SH stream: 0, 1, 2 or 3. Shall be 0 when `recordFormat` is 0. |
 | 176 | `u32` | `splatRecordBytes` | 8 | Bytes per record of the declared format: 8 for format 0, 20 for format 1. |
 | 180 | `u32` | `shRecordBytes` | 8 | Bytes per point in the SH stream: `3 × ((shDegree + 1)² − 1)`; 0 when `shDegree` is 0. |
 | 184 | `f32` | `splatScaleLog2Min` | 8 | log₂ of the scale that a scale byte of 0 decodes to (Clause 7.2). |
@@ -164,8 +164,8 @@ LOD header (32 bytes), `numLODs` of them, finest level first:
 | Offset | Type | Field | Description |
 |---:|---|---|---|
 | 0 | `u32` | `lodLevel` | Level number; 0 is the finest. |
-| 4 | `u32` | `surfelCount` | Records in the payload. |
-| 8 | `u32` | `uncompressedByteSize` | Shall equal `surfelCount × splatRecordBytes` (8 for format 0). |
+| 4 | `u32` | `splatCount` | Records in the payload. |
+| 8 | `u32` | `uncompressedByteSize` | Shall equal `splatCount × splatRecordBytes` (8 for format 0). |
 | 12 | `u32` | `compressedByteSize` | Bytes of the payload in the file. |
 | 16 | `u64` | `fileOffset` | Absolute offset of the payload. |
 | 24 | `f32` | `geometricError` | Positional error bound of this level relative to level 0, in model units. |
@@ -174,13 +174,13 @@ A reader shall verify that every payload lies within the file and that `uncompre
 
 ## 7. Record formats
 
-All records of one file share one format, given by `surfelFormat`. Every record's position is quantised against the global AABB of the header, so records of different chunks and levels decode in one frame:
+All records of one file share one format, given by `recordFormat`. Every record's position is quantised against the global AABB of the header, so records of different chunks and levels decode in one frame:
 
     x = globalBoundsMin.x + unorm(code_x) × (globalBoundsMax.x − globalBoundsMin.x)
 
 with a small epsilon (1 × 10⁻⁵) added to each extent by the reference writer to keep the maximum corner representable.
 
-### 7.1 Format 0: surfel (8 bytes)
+### 7.1 Format 0: point (8 bytes)
 
 | Bits | Field | Encoding |
 |---|---|---|
@@ -222,7 +222,7 @@ The Gaussian's covariance is `R · diag(scale²) · Rᵀ`, where `R` is the rota
 
 ## 8. Payloads
 
-A level's records are laid out contiguously (`surfelCount × splatRecordBytes` bytes), transposed into byte planes (byte *k* of every record forms plane *k*, planes in order) and passed through the entropy stage named by the header's `payloadCodec` to produce the payload of `compressedByteSize` bytes. A reader reverses both steps. The SH stream of a level (Clause 9.5) is treated identically with a stride of `shRecordBytes`.
+A level's records are laid out contiguously (`splatCount × splatRecordBytes` bytes), transposed into byte planes (byte *k* of every record forms plane *k*, planes in order) and passed through the entropy stage named by the header's `payloadCodec` to produce the payload of `compressedByteSize` bytes. A reader reverses both steps. The SH stream of a level (Clause 9.5) is treated identically with a stride of `shRecordBytes`.
 
 | `payloadCodec` | Entropy stage |
 |:-:|---|
@@ -269,7 +269,7 @@ At `shManifestOffset` the file holds one entry per LOD header of the manifest, i
 |---:|---|---|---|
 | 0 | `u64` | `fileOffset` | Absolute offset of the level's SH payload. |
 | 8 | `u32` | `compressedByteSize` | Payload bytes; 0 = no SH stream for this level. |
-| 12 | `u32` | `uncompressedByteSize` | Shall equal `surfelCount × shRecordBytes` when non-zero. |
+| 12 | `u32` | `uncompressedByteSize` | Shall equal `splatCount × shRecordBytes` when non-zero. |
 
 ## 10. Interior occlusion volume
 
@@ -298,10 +298,10 @@ At `detailGridOffset`, `detailGridDims[0] × detailGridDims[1] × detailGridDims
 A conforming writer:
 
 1. shall write `magic` "GSTX", `version` 10 and every field of Clause 6.1, to a file with the suffix `.gstx`;
-2. shall write `surfelFormat`, `splatRecordBytes`, `shDegree` and `shRecordBytes` consistently with Clauses 6.1 and 7;
+2. shall write `recordFormat`, `splatRecordBytes`, `shDegree` and `shRecordBytes` consistently with Clauses 6.1 and 7;
 3. shall write every payload with the record format declared in the header;
-4. shall, for `surfelFormat` 1 with `shDegree` > 0, write the SH table with exactly one entry per LOD header;
-5. shall write `splatScaleLog2Max` greater than `splatScaleLog2Min` when `surfelFormat` is 1;
+4. shall, for `recordFormat` 1 with `shDegree` > 0, write the SH table with exactly one entry per LOD header;
+5. shall write `splatScaleLog2Max` greater than `splatScaleLog2Min` when `recordFormat` is 1;
 6. should choose the scale range so that no source scale is clamped and the growth of the coarser levels remains representable.
 
 ### 12.2 Readers
@@ -311,7 +311,7 @@ A conforming reader:
 1. shall reject a file whose `magic` is neither signature of Clause 6.1, whose signature does not match its `version` ("GSTX" with 10 or later, "SFLW" with 1 to 9), or whose `version` is 0 or greater than 10;
 2. shall read only the header extent of the file's version (Table 6.2) and shall supply the defaults of Annex B for absent fields;
 3. shall validate the manifest against the file size and the declared record size before decoding;
-4. shall reject a `surfelFormat` it does not implement, and shall treat every pre-version-8 file as `surfelFormat` 0;
+4. shall reject a `recordFormat` it does not implement, and shall treat every pre-version-8 file as `recordFormat` 0;
 5. may ignore the SH stream (drawing the DC colour only) but shall then still validate the SH table;
 6. shall report a payload the linked codec cannot decode as an error.
 
@@ -329,7 +329,7 @@ Versions 1 to 3 kept the chunk manifest in a JSON file next to the package (`<na
 | `sourceFileBytes` | 0 |
 | `occlusionMipCount` | 0 (one mip covering the array) |
 | `detailGridDims`, `detailGridCellSize`, `detailGridOffset` | 0 (no grid) |
-| `surfelFormat` | 0 |
+| `recordFormat` | 0 |
 | `shDegree`, `shRecordBytes`, `shManifestOffset` | 0 |
 | `splatRecordBytes` | 8 |
 | `splatScaleLog2Min`, `splatScaleLog2Max` | 0 (unused for format 0) |

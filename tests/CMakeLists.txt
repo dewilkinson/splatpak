@@ -1,6 +1,6 @@
 cmake_minimum_required(VERSION 3.24)
 
-project(SurfelsTests)
+project(SplatsTests)
 
 add_executable(TestGPUSort ${CMAKE_CURRENT_SOURCE_DIR}/TestGPUSort.cpp)
 target_link_libraries(TestGPUSort LINK_PUBLIC d3d12 dxgi d3dcompiler)

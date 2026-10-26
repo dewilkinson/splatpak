@@ -1,13 +1,13 @@
-# Surfels_DX12 -- the standalone viewer. A thin main.cpp over surfels_core (src/SurfelsCore)
+# SplatLabViewer -- the standalone viewer. A thin main.cpp over splat_core (src/SplatCore)
 # started in Viewer mode; see that directory for everything it does.
 cmake_minimum_required(VERSION 3.24)
 
-project(Surfels_DX12)
+project(SplatLabViewer)
 
-add_executable(Surfels_DX12 WIN32 main.cpp)
-target_link_libraries(Surfels_DX12 PRIVATE surfels_core)
+add_executable(SplatLabViewer WIN32 main.cpp)
+target_link_libraries(SplatLabViewer PRIVATE splat_core)
 
-set_target_properties(Surfels_DX12 PROPERTIES
+set_target_properties(SplatLabViewer PROPERTIES
     CXX_STANDARD 17
     CXX_STANDARD_REQUIRED ON
     FOLDER "Apps"
@@ -15,4 +15,4 @@ set_target_properties(Surfels_DX12 PROPERTIES
     DEBUG_POSTFIX "d"
 )
 
-surfels_add_dpi_manifest(Surfels_DX12)
+splat_add_dpi_manifest(SplatLabViewer)

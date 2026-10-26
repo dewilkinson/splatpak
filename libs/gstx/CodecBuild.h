@@ -1,5 +1,5 @@
 // CodecBuild.h
-// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SplatPak -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
 // Which build of the gstx library is linked: the proprietary algorithm core, or the open
@@ -10,7 +10,7 @@
 
 #pragma once
 
-namespace Surfels
+namespace Splat
 {
     struct CodecBuild
     {

@@ -1,18 +1,18 @@
 // SplatCodec.h
-// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SplatPak -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
 // Splat mode: the 20-byte 3D Gaussian record (PackedSplatGPU) and its spherical-harmonics
-// side stream, as written into .gstx packages of surfel format 1 (see
+// side stream, as written into .gstx packages of splat format 1 (see
 // docs/GSTX_FORMAT_SPECIFICATION.md). This header is the data contract; the encoder, the
 // decoder and the level derivation live in SplatCodec.cpp inside the gstx library.
 
 #pragma once
 #include <vector>
 #include <cstdint>
-#include "../../src/SurfelsCore/WaveletTypes.h"
+#include "../../src/SplatCore/WaveletTypes.h"
 
-namespace Surfels
+namespace Splat
 {
     // Everything a splat encode or decode needs besides the points themselves. The same values
     // travel in the package header so a decoder reproduces the encoder's quantisation exactly.
@@ -47,22 +47,22 @@ namespace Surfels
         static SplatAttributes AttributesForLevel(const SplatAttributes& source, uint32_t level);
 
         // Attributes for a point that has no source entry (a plain point cloud, a synthetic cloud):
-        // an isotropic Gaussian sized from the surfel's disc radius, fully opaque, DC colour only.
-        static SplatAttributes DefaultAttributes(const SurfelVertex& surfel);
+        // an isotropic Gaussian sized from the splat's disc radius, fully opaque, DC colour only.
+        static SplatAttributes DefaultAttributes(const SplatPoint& splat);
 
-        // Encodes one level. surfels[i].sourceIndex selects the entry of sourceAttributes the point's
+        // Encodes one level. splats[i].sourceIndex selects the entry of sourceAttributes the point's
         // Gaussian comes from (kNoSplatSource -> DefaultAttributes). outRecords gets one PackedSplatGPU
-        // per surfel; outSH gets surfels.size() * SHRecordBytes(params.shDegree) bytes (empty for degree 0).
-        static void Encode(const std::vector<SurfelVertex>& surfels, const std::vector<SplatAttributes>& sourceAttributes,
+        // per splat; outSH gets splats.size() * SHRecordBytes(params.shDegree) bytes (empty for degree 0).
+        static void Encode(const std::vector<SplatPoint>& splats, const std::vector<SplatAttributes>& sourceAttributes,
                            uint32_t level, const SplatEncodeParams& params,
                            std::vector<PackedSplatGPU>& outRecords, std::vector<uint8_t>& outSH);
 
-        // Decodes one level back to surfels plus attributes. sh may be null (no SH stream). Every decoded
-        // surfel gets sourceIndex = sourceIndexBase + i, so a caller appending outAttributes to its
+        // Decodes one level back to splats plus attributes. sh may be null (no SH stream). Every decoded
+        // splat gets sourceIndex = sourceIndexBase + i, so a caller appending outAttributes to its
         // attribute array keeps the links valid; bakedLevel is written into every attribute.
         static void Decode(const std::vector<PackedSplatGPU>& records, const uint8_t* sh, size_t shBytes,
                            const SplatEncodeParams& params, uint32_t bakedLevel, uint32_t sourceIndexBase,
-                           std::vector<SurfelVertex>& outSurfels, std::vector<SplatAttributes>& outAttributes);
+                           std::vector<SplatPoint>& outSplats, std::vector<SplatAttributes>& outAttributes);
 
         // The import's axis change (3DGS +Y down / +Z forward to +Y up) is a half turn about X. These
         // apply that turn to the pieces of a Gaussian that are not plain positions: the rotation

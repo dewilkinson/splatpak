@@ -1,5 +1,5 @@
 ﻿// CompressVenus.cpp
-// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SplatPak -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
 // Command-line packager: loads a .ply (a 3DGS scene, or a plain point cloud shown as Gaussians at its
@@ -13,10 +13,10 @@
 #include <fstream>
 #include <string>
 #include <vector>
-#include "../src/SurfelsCore/PLYLoader.h"
-#include "../src/SurfelsCore/SpatialOctree.h"
-#include "../src/SurfelsCore/StreamPackager.h"
-#include "../src/SurfelsCore/PointCloudGaussians.h"
+#include "../src/SplatCore/PLYLoader.h"
+#include "../src/SplatCore/SpatialOctree.h"
+#include "../src/SplatCore/StreamPackager.h"
+#include "../src/SplatCore/PointCloudGaussians.h"
 #include "../libs/gstx/OcclusionVolume.h"
 
 int main(int argc, char** argv)
@@ -28,10 +28,10 @@ int main(int argc, char** argv)
     const int splatDegree = std::max(0, std::min(3, (argc > 4) ? atoi(argv[4]) : 3));
 
     std::cout << "Loading " << inputPLY << "..." << std::endl;
-    std::vector<Surfels::SurfelVertex> surfels;
-    std::vector<Surfels::SplatAttributes> splatAttrs;
+    std::vector<Splat::SplatPoint> splats;
+    std::vector<Splat::SplatAttributes> splatAttrs;
     double origin[3] = {0,0,0};
-    if (!Surfels::PLYLoader::LoadPLY(inputPLY, surfels, origin, &splatAttrs))
+    if (!Splat::PLYLoader::LoadPLY(inputPLY, splats, origin, &splatAttrs))
     {
         std::cerr << "Failed to load " << inputPLY << std::endl;
         return 1;
@@ -44,7 +44,7 @@ int main(int argc, char** argv)
     }
 
     DirectX::XMFLOAT3 minP(1e9f, 1e9f, 1e9f), maxP(-1e9f, -1e9f, -1e9f);
-    for (const auto& s : surfels)
+    for (const auto& s : splats)
     {
         minP.x = std::min(minP.x, s.position.x);
         minP.y = std::min(minP.y, s.position.y);
@@ -55,28 +55,28 @@ int main(int argc, char** argv)
     }
     float maxDim = std::max(maxP.x - minP.x, std::max(maxP.y - minP.y, maxP.z - minP.z));
 
-    // Same automatic defaults SplatLab applies when a .ply is opened (SurfelsApp::RecomputeWaveletHierarchy)
+    // Same automatic defaults SplatLab applies when a .ply is opened (SplatLabApp::RecomputeWaveletHierarchy)
     float chunkSize = std::max(0.10f, maxDim / 4.0f);              // ~4x4x4 chunks per model
-    uint32_t maxLODs = surfels.size() > 2000000 ? 5 : surfels.size() > 500000 ? 4 : surfels.size() > 100000 ? 3 : 2;
+    uint32_t maxLODs = splats.size() > 2000000 ? 5 : splats.size() > 500000 ? 4 : splats.size() > 100000 ? 3 : 2;
     float deadbandMeters = std::max(0.5f, maxDim * 1.5f) / 1000.0f; // Deadband scales with model size
     const float splatRadius = 1.0f;
 
-    std::cout << "Loaded " << surfels.size() << " points, extent " << maxDim << ". chunk=" << chunkSize
+    std::cout << "Loaded " << splats.size() << " points, extent " << maxDim << ". chunk=" << chunkSize
               << " lods=" << maxLODs << " deadband=" << deadbandMeters * 1000.0f << "mm" << std::endl;
 
     // Detail grid (v7+): an input to the streaming order, baked from the original cloud (libs/gstx/DetailHeatmap.h)
-    Surfels::DetailGrid detailGrid = Surfels::DetailGrid::Build(surfels, minP, maxP);
+    Splat::DetailGrid detailGrid = Splat::DetailGrid::Build(splats, minP, maxP);
     std::cout << "Detail heatmap: detail grid " << detailGrid.nx << "x" << detailGrid.ny << "x" << detailGrid.nz
               << " cells (" << detailGrid.cellSize << " m), " << detailGrid.occupiedCells << " occupied" << std::endl;
 
     std::cout << "Baking occlusion volume (shave " << shave << ")..." << std::endl;
-    Surfels::OcclusionVolume::Grid grid;
-    std::vector<Surfels::OcclusionVoxelGPU> occlusion;
-    Surfels::OcclusionMipTable occlusionMips;
+    Splat::OcclusionVolume::Grid grid;
+    std::vector<Splat::OcclusionVoxelGPU> occlusion;
+    Splat::OcclusionMipTable occlusionMips;
     {
         std::string trace;
-        Surfels::OcclusionVolume::BuildGrid(surfels, minP, maxP, grid, trace);
-        Surfels::OcclusionVolume::Bake(grid, shave, Surfels::OcclusionVolume::ColorGrade{}, occlusion, occlusionMips, trace);
+        Splat::OcclusionVolume::BuildGrid(splats, minP, maxP, grid, trace);
+        Splat::OcclusionVolume::Bake(grid, shave, Splat::OcclusionVolume::ColorGrade{}, occlusion, occlusionMips, trace);
         std::cout << trace;
     }
 
@@ -84,18 +84,18 @@ int main(int argc, char** argv)
     const bool pointCloud = splatAttrs.empty();
     if (pointCloud)
     {
-        const float sigma = Surfels::PointCloudGaussians::Build(surfels, splatAttrs);
+        const float sigma = Splat::PointCloudGaussians::Build(splats, splatAttrs);
         std::cout << "Point cloud: a Gaussian of sigma " << sigma << " at each point (half the median spacing)" << std::endl;
     }
 
-    auto chunks = Surfels::SpatialOctree::PartitionIntoChunks(surfels, chunkSize);
+    auto chunks = Splat::SpatialOctree::PartitionIntoChunks(splats, chunkSize);
     std::cout << "Partitioned into " << chunks.size() << " chunks. Packaging to " << outputBase << ".gstx..." << std::endl;
 
-    Surfels::SplatBakeInput splatInput;
+    Splat::SplatBakeInput splatInput;
     splatInput.attributes = &splatAttrs;
     splatInput.shDegree = pointCloud ? 0u : (uint32_t)splatDegree;
     std::cout << "Splat mode: 20-byte Gaussian records, spherical-harmonics degree " << splatInput.shDegree << std::endl;
-    if (!Surfels::StreamPackager::PackageDataset(outputBase, chunks, maxLODs, deadbandMeters, splatRadius, occlusion, sourceFileBytes, &occlusionMips, &detailGrid, &splatInput))
+    if (!Splat::StreamPackager::PackageDataset(outputBase, chunks, maxLODs, deadbandMeters, splatRadius, occlusion, sourceFileBytes, &occlusionMips, &detailGrid, &splatInput))
     {
         std::cerr << "Failed to package dataset" << std::endl;
         return 1;

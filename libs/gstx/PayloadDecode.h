@@ -1,5 +1,5 @@
 // PayloadDecode.h
-// Surfels Core -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SplatPak Core -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
 // Decoding of .gstx payloads (Clause 8 of docs/GSTX_FORMAT_SPECIFICATION.md), inside the codec library
@@ -12,7 +12,7 @@
 #include <cstddef>
 #include <cstdint>
 
-namespace Surfels
+namespace Splat
 {
     class PayloadDecode
     {

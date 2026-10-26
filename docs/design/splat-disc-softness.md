@@ -34,10 +34,10 @@ level 0 rendering is untouched. This lands after splat-transition-shimmer in the
 ## Components touched
 | Area | Files | Change |
 |------|-------|--------|
-| Softness statistic | `src/SurfelsCore/SurfelsApp.h`, `src/SurfelsCore/SurfelsApp.cpp` | `ComputeSplatSoftness()` after `ComputeLodSpacing()`; members for the ratio and factor; trace line; per-frame radius fill uses the factor when the checkbox is on. |
-| Toggle, UI, config | `src/SurfelsCore/SurfelsApp.h`, `src/SurfelsCore/SurfelsApp.cpp` | `m_splatDiscMatchLevel0` (default true); checkbox with read-only ratio and factor text in the splat block of "2. 3D Viewport & Splat Sizing"; `splat_disc_match_level0` load and save; `State::splatDiscOpacityFloor`. |
-| Renderer | `src/SurfelsCore/SurfelsRenderer.h`, `src/SurfelsCore/SurfelsRenderer.cpp` | `State::splatDiscOpacityFloor`; `SurfelsCB::splatDiscOpacityFloor` appended with padding; copied in `OnRender`. |
-| Shaders | `src/SurfelsCore/Shaders/Surfels.hlsl` | `g_SplatDiscOpacityFloor`; disc alpha rule; `ArrivalGlow()` helper shared by `BuildSplat` and the splat colour path; `SplatFromSlot` passes the chunk wave; `BuildGaussianSplat` gains a `wave` parameter. |
+| Softness statistic | `src/SplatCore/SplatLabApp.h`, `src/SplatCore/SplatLabApp.cpp` | `ComputeSplatSoftness()` after `ComputeLodSpacing()`; members for the ratio and factor; trace line; per-frame radius fill uses the factor when the checkbox is on. |
+| Toggle, UI, config | `src/SplatCore/SplatLabApp.h`, `src/SplatCore/SplatLabApp.cpp` | `m_splatDiscMatchLevel0` (default true); checkbox with read-only ratio and factor text in the splat block of "2. 3D Viewport & Splat Sizing"; `splat_disc_match_level0` load and save; `State::splatDiscOpacityFloor`. |
+| Renderer | `src/SplatCore/SplatRenderer.h`, `src/SplatCore/SplatRenderer.cpp` | `State::splatDiscOpacityFloor`; `SplatCB::splatDiscOpacityFloor` appended with padding; copied in `OnRender`. |
+| Shaders | `src/SplatCore/Shaders/Splats.hlsl` | `g_SplatDiscOpacityFloor`; disc alpha rule; `ArrivalGlow()` helper shared by `BuildSplat` and the splat colour path; `SplatFromSlot` passes the chunk wave; `BuildGaussianSplat` gains a `wave` parameter. |
 | Docs | `docs/USER_GUIDE.md` | The checkbox, what the ratio means, and that the arrival glow now shows in splat mode. |
 
 ## Data flow
@@ -69,7 +69,7 @@ flowchart LR
    m_splatDiscMatchFactor : kSplatDiscCoverage`. Before the statistic exists (no package, or a
    disc package) the factor is `kSplatDiscCoverage`.
 3. **Opacity floor.** `State::splatDiscOpacityFloor = m_splatDiscMatchLevel0 ? 0.5f : 0.0f`, copied
-   into a new `SurfelsCB` float. In the shader's disc branch: `gs.alpha = (lod >= 1) ?
+   into a new `SplatCB` float. In the shader's disc branch: `gs.alpha = (lod >= 1) ?
    max(opacity, g_SplatDiscOpacityFloor) : opacity`. The dual quad's disc alpha (level 0) is raw.
    Why 0.5: coarse records already carry the bake's opacity boost, so the floor only catches the
    sparse low tail that reads as holes; 0.5 is high enough that a lone low record no longer punches
@@ -95,7 +95,7 @@ flowchart LR
   glow code in `BuildSplat`.
 
 ## Public / private placement
-All public app code in `src/SurfelsCore` and `docs/`. The statistic reads records already decoded
+All public app code in `src/SplatCore` and `docs/`. The statistic reads records already decoded
 for rendering; the codec library is not involved.
 
 ## Decisions
@@ -140,11 +140,11 @@ for rendering; the codec library is not involved.
   than on discs. The Intensity slider already scales it.
 
 ## Implementation brief (for the coder agent)
-1. `src/SurfelsCore/SurfelsApp.h`: add `bool m_splatDiscMatchLevel0 = true; float m_splatLevel0Footprint = 0.0f; float m_splatSoftnessRatio = 0.0f; float m_splatDiscMatchFactor = 1.5f;` and `void ComputeSplatSoftness();`. Done when: compiles.
-2. `src/SurfelsCore/SurfelsApp.cpp`: implement `ComputeSplatSoftness()` per Data flow step 1, call it right after `ComputeLodSpacing()`; reset the three values to 0 / 0 / 1.5 wherever `m_lodSpacing` is cleared. Done when: the trace line appears on loading Cthulhu with a ratio between 0.1 and 3 (criterion 8).
-3. `src/SurfelsCore/SurfelsApp.cpp` per-frame fill: use the factor per Data flow step 2 and set `m_state.splatDiscOpacityFloor` per step 3. Done when: toggling the checkbox visibly changes disc size at a forced level 1.
-4. `src/SurfelsCore/SurfelsApp.cpp` UI and config per Data flow step 5. Done when: criterion 2.
-5. `src/SurfelsCore/SurfelsRenderer.h` / `.cpp`: `State::splatDiscOpacityFloor = 0.0f`; `SurfelsCB::splatDiscOpacityFloor` appended after the last field with padding so the struct stays a multiple of 16 (keep the existing `static_assert`s passing); copy in `OnRender`. Done when: both asserts pass and the constant-buffer layout in `Surfels.hlsl` mirrors it.
-6. `src/SurfelsCore/Shaders/Surfels.hlsl`: mirror the CB field; disc alpha rule per step 3; `ArrivalGlow` helper per step 4 with `BuildSplat` calling it (its output must be unchanged: same expressions, same order); `SplatColor` gains a `wave` parameter and applies the glow before the linear conversion; `SplatFromSlot` reads `chunk.isSilhouette` into `wave`; `BuildGaussianSplat` gains `float wave` after `fade` and passes it to `SplatColor`. Done when: all three paths compile and criterion 9's glow shows on the splat model.
+1. `src/SplatCore/SplatLabApp.h`: add `bool m_splatDiscMatchLevel0 = true; float m_splatLevel0Footprint = 0.0f; float m_splatSoftnessRatio = 0.0f; float m_splatDiscMatchFactor = 1.5f;` and `void ComputeSplatSoftness();`. Done when: compiles.
+2. `src/SplatCore/SplatLabApp.cpp`: implement `ComputeSplatSoftness()` per Data flow step 1, call it right after `ComputeLodSpacing()`; reset the three values to 0 / 0 / 1.5 wherever `m_lodSpacing` is cleared. Done when: the trace line appears on loading Cthulhu with a ratio between 0.1 and 3 (criterion 8).
+3. `src/SplatCore/SplatLabApp.cpp` per-frame fill: use the factor per Data flow step 2 and set `m_state.splatDiscOpacityFloor` per step 3. Done when: toggling the checkbox visibly changes disc size at a forced level 1.
+4. `src/SplatCore/SplatLabApp.cpp` UI and config per Data flow step 5. Done when: criterion 2.
+5. `src/SplatCore/SplatRenderer.h` / `.cpp`: `State::splatDiscOpacityFloor = 0.0f`; `SplatCB::splatDiscOpacityFloor` appended after the last field with padding so the struct stays a multiple of 16 (keep the existing `static_assert`s passing); copy in `OnRender`. Done when: both asserts pass and the constant-buffer layout in `Splats.hlsl` mirrors it.
+6. `src/SplatCore/Shaders/Splats.hlsl`: mirror the CB field; disc alpha rule per step 3; `ArrivalGlow` helper per step 4 with `BuildSplat` calling it (its output must be unchanged: same expressions, same order); `SplatColor` gains a `wave` parameter and applies the glow before the linear conversion; `SplatFromSlot` reads `chunk.isSilhouette` into `wave`; `BuildGaussianSplat` gains `float wave` after `fade` and passes it to `SplatColor`. Done when: all three paths compile and criterion 9's glow shows on the splat model.
 7. `docs/USER_GUIDE.md`: describe the checkbox and its read-out in the Renderer tab section, and add "also in Gaussian splat mode" to the Show Streaming Arrivals description. Done when: present.
-8. Build `Surfels_DX12`, `SplatLab` and the test targets in Release; smoke the three render paths; run the test exes. Do NOT commit; report `git status --short` and `git diff --stat`.
+8. Build `SplatLabViewer`, `SplatLab` and the test targets in Release; smoke the three render paths; run the test exes. Do NOT commit; report `git status --short` and `git diff --stat`.

@@ -20,7 +20,7 @@ A few concepts carry through the whole application:
 SplatLab ships as two executables built from the same code:
 
 - **`SplatLab.exe`** runs in Studio mode: three tabs that take a dataset from raw scan to streamed render. **GSTx Bake** loads a `.ply` or `.splat`, exposes the packaging parameters and saves a `.gstx`. **Renderer** shows the current dataset or any package with level-of-detail, visualiser and occlusion controls. **Streaming** simulates delivery over a constrained connection and shows what is resident.
-- **`Surfels_DX12.exe`** runs in Viewer mode: the Renderer and Streaming tabs only, with the generator hidden. Use it where people only need to open packages.
+- **`SplatLabViewer.exe`** runs in Viewer mode: the Renderer and Streaming tabs only, with the generator hidden. Use it where people only need to open packages.
 
 Either executable can start in either mode with a switch, and both accept a file on the command line, so dropping a package or a scan onto the executable opens it directly.
 
@@ -37,13 +37,13 @@ flowchart LR
 
 ```bat
 SplatLab.exe [options] [file]
-Surfels_DX12.exe [options] [file]
+SplatLabViewer.exe [options] [file]
 ```
 
 | Option | Effect |
 |---|---|
 | `file` | A `.gstx` package to open, or in Studio mode a `.ply` / `.splat` to preprocess. Without it, the `startup_dataset` from `config.json` opens. |
-| `--viewer` | Viewer mode: Renderer and Streaming tabs only. The default for `Surfels_DX12.exe`. |
+| `--viewer` | Viewer mode: Renderer and Streaming tabs only. The default for `SplatLabViewer.exe`. |
 | `--studio` | Studio mode: all three tabs. The default for `SplatLab.exe`. |
 | `--render-path <p>` | GPU path for this run: `auto`, `mesh`, `vs6` or `vs5`. Overrides `render_path` in `config.json` without changing it. |
 | `--help`, `-h`, `/?` | Show the usage, on the console when started from a prompt and in a dialog. |

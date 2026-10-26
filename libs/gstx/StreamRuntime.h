@@ -1,5 +1,5 @@
 // StreamRuntime.h
-// Surfels Core -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SplatPak Core -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 //
 // The streaming runtime: which blocks of a model are resident, at which level, in what order they
 // arrive, and how they hand over to one another. A host (SplatLab, the UE5 plugin) hands it the levels
@@ -17,9 +17,9 @@
 #include "StreamOrder.h"
 #include "DetailHeatmap.h"
 #include "SplatCodec.h"
-#include "../../src/SurfelsCore/WaveletTypes.h"
+#include "../../src/SplatCore/WaveletTypes.h"
 
-namespace Surfels
+namespace Splat
 {
     struct StreamChunk
     {
@@ -31,8 +31,8 @@ namespace Surfels
         float    normalSpread = 0.0f;          // Normal angular variation
         float    detailScore = 0.0f;           // 0..1 from the package's detail grid over this block's bounds (DetailGrid::SampleBox); an input to the streaming order
         uint8_t  octahedronFace = 0;           // Face (0..7) of the bounding octahedron this block was assigned by StreamOrder::Build
-        std::vector<SurfelVertex>   rawSurfels;
-        std::vector<PackedSurfelGPU> packedSurfels;
+        std::vector<SplatPoint>   rawSplats;
+        std::vector<PackedPointGPU> packedPoints;
         size_t   byteSize = 0;
         float    currentPriority = 0.0f;
         bool     isRequested = false;
@@ -52,7 +52,7 @@ namespace Surfels
         uint32_t deliverySeq = 0;             // Order of delivery by the stream (1 = first delivered this session; 0 = resident at load)
         float    silhouetteHysteresisTimer = 0.0f; // Hysteresis hold time (seconds) to eliminate refinement/demotion thrashing
         bool     renderedLastFrame = false;    // Visited by the previous frame's traversal: rendered, or refined in place of by its children. Only such "active" chunks may keep an edge flag; anything the traversal never reached (a level outside the active range) is cleared before the next traversal. Clearing on "not rendered" alone made a refined edge parent lose its flag, re-render, get re-detected and refine again every other frame -- a whole-model flicker
-        uint32_t globalSurfelOffset = 0;      // Zero-copy offset into m_unifiedPackedSurfels / m_unifiedRawSurfels
+        uint32_t globalSplatOffset = 0;      // Zero-copy offset into m_unifiedPackedSplats / m_unifiedRawSplats
         XMFLOAT3 aabbMin = { 0, 0, 0 };
         XMFLOAT3 aabbMax = { 0, 0, 0 };
         size_t   childBegin = 0;              // The block's children at the next finer level: m_lodStreamChunks[lodLevel - 1][childBegin, childEnd),
@@ -80,8 +80,8 @@ namespace Surfels
 
     struct ResidentLOD
     {
-        std::vector<SurfelVertex> rawSurfels;
-        std::vector<PackedSurfelGPU> packedSurfels;
+        std::vector<SplatPoint> rawSplats;
+        std::vector<PackedPointGPU> packedPoints;
         std::vector<PackedSplatGPU> splats;   // Splat mode: the level's 20-byte Gaussian records
         std::vector<uint8_t>        splatSH;  // Splat mode: the level's spherical-harmonics stream
         std::vector<MeshletChunkGPU> meshletChunks;
@@ -116,7 +116,7 @@ namespace Surfels
         float           dilationMorphAmount = 0.25f;
         bool            showChunkStream = true;              // Arrival glow on delivered blocks
         float           chunkStreamDuration = 2.5f;
-        bool            splatDrawAsSurfels = false;
+        bool            splatDrawAsDiscs = false;
     };
 
     // The camera the stream follows (the frozen one, when detached), and the viewport
@@ -181,14 +181,14 @@ namespace Surfels
         // State (read-only for hosts, see the file comment)
         std::vector<std::vector<StreamChunk>> m_lodStreamChunks;
         std::vector<StreamChunk*>             m_allStreamChunkPtrs;
-        std::vector<size_t>                   m_lodTotalSurfels, m_lodResidentSurfels;
+        std::vector<size_t>                   m_lodTotalSplats, m_lodResidentSplats;
         std::vector<float>                    m_lodSpacing;
         std::vector<float>                    m_smoothedLodResidentPct;
         std::vector<uint32_t>                 m_smoothedLodResidentBlocks;
         std::vector<MeshletChunkGPU>          m_rendererMeshletChunks;
         std::vector<StreamChunk*>             m_rendererSourceChunks;
-        std::vector<PackedSurfelGPU>          m_unifiedPackedSurfels;
-        std::vector<SurfelVertex>             m_unifiedRawSurfels;
+        std::vector<PackedPointGPU>          m_unifiedPackedSplats;
+        std::vector<SplatPoint>             m_unifiedRawSplats;
         std::vector<PackedSplatGPU>           m_unifiedSplats;
         std::vector<uint8_t>                  m_unifiedSH;
         StreamOrder               m_streamOrder;
@@ -203,7 +203,7 @@ namespace Surfels
         std::vector<std::pair<uint32_t, uint32_t>> m_refineDeferred;
         float    m_simulatedBytesDelivered = 0.0f, m_totalStreamBytes = 0.0f, m_streamRefinementProgress = 1.0f;
         float    m_decayBytesPerSec = 0.0f, m_decayReferenceBandwidthBps = 0.0f;
-        size_t   m_evictedSurfelCount = 0;
+        size_t   m_evictedSplatCount = 0;
         uint32_t m_deliverySeqCounter = 0, m_residencyEpoch = 0, m_streamFrame = 0;
         uint32_t m_redeliveredBlocks = 0, m_extraDeliveries = 0;
         uint32_t m_lastActiveTransitions = 0, m_edgeRefineStartsThisFrame = 0;

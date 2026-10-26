@@ -1,15 +1,15 @@
 // PayloadDecode.cpp
-// Surfels Core -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SplatPak Core -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
 // See PayloadDecode.h.
 
 #include "PayloadDecode.h"
-#include "../../src/SurfelsCore/WaveletTypes.h"
+#include "../../src/SplatCore/WaveletTypes.h"
 #include "ByteShuffle.h"
 #include <brotli/decode.h>
 
-namespace Surfels
+namespace Splat
 {
     bool PayloadDecode::Decompress(const uint8_t* src, size_t srcSize, uint8_t* dst, size_t dstSize, uint32_t codec)
     {

@@ -1,5 +1,5 @@
 # CleanStaleBinaries.cmake
-# Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+# SplatPak -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 # SPDX-License-Identifier: Apache-2.0
 #
 # Run with `cmake -DBIN_DIR=<dir> -P CleanStaleBinaries.cmake` before any executable links (see the

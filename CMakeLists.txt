@@ -4,7 +4,7 @@ cmake_minimum_required(VERSION 3.24)
 # Vulkan SDK is never required just to build this sample.
 set(GFX_API "DX12")
 
-project(SurfelsPrivate_${GFX_API})
+project(SplatLab_${GFX_API})
 
 if(MSVC_TOOLSET_VERSION VERSION_LESS 142)
     message(FATAL_ERROR "Cannot find MSVC toolset version 142 or greater. Please make sure Visual Studio 2019 or newer is installed")
@@ -44,9 +44,9 @@ set(CMAKE_SHARED_LINKER_FLAGS_RELEASE "${CMAKE_SHARED_LINKER_FLAGS_RELEASE} /DEB
 
 add_subdirectory(libs/cauldron)
 add_subdirectory(libs/gstx)
-add_subdirectory(src/SurfelsCore)   # surfels_core: everything both executables share (must precede them)
+add_subdirectory(src/SplatCore)   # splat_core: everything both executables share (must precede them)
 add_subdirectory(src/DX12)
-add_subdirectory(tools/SurfelsPreprocess)
+add_subdirectory(tools/SplatLab)
 add_subdirectory(tests)
 
 # Never run a stale binary: before any executable links, every .exe/.pdb in bin/ is deleted (both
@@ -59,7 +59,7 @@ add_custom_target(clean_stale_binaries
     COMMENT "Removing stale executables from bin/"
 )
 set_target_properties(clean_stale_binaries PROPERTIES FOLDER "Core")
-foreach(_exe SplatLab Surfels_DX12 CompressVenus TestGPUSort TestBitonicCPU TestLoadPackage TestSplatCodec TestGeometryCull TestOcclusionVolume)
+foreach(_exe SplatLab SplatLabViewer CompressVenus TestGPUSort TestBitonicCPU TestLoadPackage TestSplatCodec TestGeometryCull TestOcclusionVolume)
     if(TARGET ${_exe})
         add_dependencies(${_exe} clean_stale_binaries)
     endif()

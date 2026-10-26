@@ -1,5 +1,5 @@
 ﻿// TestGeometryCull.cpp
-// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SplatPak -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
 // Unit test for GeometryCullStats' derived math (reduction ratios, rejection-stage
@@ -9,43 +9,43 @@
 #include <vector>
 #include <cassert>
 #include <DirectXMath.h>
-#include "../src/SurfelsCore/WaveletTypes.h"
+#include "../src/SplatCore/WaveletTypes.h"
 
 using namespace DirectX;
-using namespace Surfels;
+using namespace Splat;
 
 int main()
 {
     std::cout << "Running Geometry Culling and Optimization Stats Test...\n";
 
     GeometryCullStats stats = {};
-    stats.totalDatasetSurfels = 1000000;
+    stats.totalDatasetSplats = 1000000;
     stats.totalDatasetChunks  = 1000;
-    stats.lodActiveSurfels    = 400000;
+    stats.lodActiveSplats    = 400000;
     stats.lodActiveChunks     = 400;
-    stats.lodPrunedSurfels    = 600000;
+    stats.lodPrunedSplats    = 600000;
 
     stats.asFrustumCulledChunks  = 150;
-    stats.asFrustumCulledSurfels = 150000;
+    stats.asFrustumCulledSplats = 150000;
     stats.asConeCulledChunks     = 50;
-    stats.asConeCulledSurfels    = 50000;
+    stats.asConeCulledSplats    = 50000;
     stats.asPassedChunks         = 200;
-    stats.asPassedSurfels        = 200000;
-    stats.msDrawnSurfels         = 200000;
-    stats.generatedVertices      = stats.msDrawnSurfels * 4;
-    stats.generatedTriangles     = stats.msDrawnSurfels * 2;
+    stats.asPassedSplats        = 200000;
+    stats.msDrawnSplats         = 200000;
+    stats.generatedVertices      = stats.msDrawnSplats * 4;
+    stats.generatedTriangles     = stats.msDrawnSplats * 2;
 
-    stats.totalCullingRatio = ((float)(stats.totalDatasetSurfels - stats.msDrawnSurfels) / (float)stats.totalDatasetSurfels) * 100.0f;
-    stats.lodDecimationRatio = ((float)stats.lodPrunedSurfels / (float)stats.totalDatasetSurfels) * 100.0f;
-    stats.asCullingRatio = ((float)(stats.asFrustumCulledSurfels + stats.asConeCulledSurfels) / (float)stats.lodActiveSurfels) * 100.0f;
-    stats.vramBandwidthSavedMB = (float)(stats.lodPrunedSurfels + stats.asFrustumCulledSurfels + stats.asConeCulledSurfels) * 8.0f / (1024.0f * 1024.0f);
+    stats.totalCullingRatio = ((float)(stats.totalDatasetSplats - stats.msDrawnSplats) / (float)stats.totalDatasetSplats) * 100.0f;
+    stats.lodDecimationRatio = ((float)stats.lodPrunedSplats / (float)stats.totalDatasetSplats) * 100.0f;
+    stats.asCullingRatio = ((float)(stats.asFrustumCulledSplats + stats.asConeCulledSplats) / (float)stats.lodActiveSplats) * 100.0f;
+    stats.vramBandwidthSavedMB = (float)(stats.lodPrunedSplats + stats.asFrustumCulledSplats + stats.asConeCulledSplats) * 8.0f / (1024.0f * 1024.0f);
 
-    std::cout << "Total dataset points: " << stats.totalDatasetSurfels << "\n";
-    std::cout << "Drawn points:         " << stats.msDrawnSurfels << "\n";
+    std::cout << "Total dataset points: " << stats.totalDatasetSplats << "\n";
+    std::cout << "Drawn points:         " << stats.msDrawnSplats << "\n";
     std::cout << "Overall reduction:    " << stats.totalCullingRatio << "%\n";
-    std::cout << "LOD pruned points:    " << stats.lodPrunedSurfels << " (" << stats.lodDecimationRatio << "%)\n";
-    std::cout << "Frustum culled:       " << stats.asFrustumCulledSurfels << "\n";
-    std::cout << "Cone culled:          " << stats.asConeCulledSurfels << "\n";
+    std::cout << "LOD pruned points:    " << stats.lodPrunedSplats << " (" << stats.lodDecimationRatio << "%)\n";
+    std::cout << "Frustum culled:       " << stats.asFrustumCulledSplats << "\n";
+    std::cout << "Cone culled:          " << stats.asConeCulledSplats << "\n";
     std::cout << "Vertices generated:   " << stats.generatedVertices << " (4x)\n";
     std::cout << "Triangles generated:  " << stats.generatedTriangles << " (2x)\n";
     std::cout << "VRAM Bandwidth saved: " << stats.vramBandwidthSavedMB << " MB/frame\n";

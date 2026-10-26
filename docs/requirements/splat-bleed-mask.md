@@ -40,7 +40,7 @@ viewed above level 0 keeps a clean rim.
 ## Non-goals
 - Bleed across interior depth steps (one part of the model in front of another). Only the outer
   silhouette against the background is masked.
-- Surfel disc modes (tangent discs and billboards). The controls are hidden outside splat mode.
+- Splat disc modes (tangent discs and billboards). The controls are hidden outside splat mode.
 - Packages without an occlusion volume: rendering is unchanged; only the warning is shown.
 - Any change to the `.gstx` format or to the occlusion volume bake.
 
@@ -58,12 +58,12 @@ viewed above level 0 keeps a clean rim.
   Volume Only view keep working with the mask on.
 
 ## Public / private placement
-Entirely public app code in `src/SurfelsCore` (renderer passes, shaders, UI, config keys). The mask
+Entirely public app code in `src/SplatCore` (renderer passes, shaders, UI, config keys). The mask
 consumes the occlusion volume as packaged data through the existing renderer interface. Nothing in
 `libs/bluesec-codec` changes, and the bake of the occlusion volume is not involved.
 
 ## Acceptance criteria
-1. `Surfels_DX12`, `SplatLab` and the test executables build in Release for all three render paths.
+1. `SplatLabViewer`, `SplatLab` and the test executables build in Release for all three render paths.
 2. Open the bundled Cthulhu splat package in Viewer mode with the temporal filter off, force the
    preview level to 2 or higher, and take a screenshot with Bleed Mask on and off. With the mask on,
    background pixels farther from the model rim than the dilation plus margin plus feather are the
@@ -82,7 +82,7 @@ consumes the occlusion volume as packaged data through the existing renderer int
    normal frame.
 9. Turning Bleed Mask off, closing the app, and reopening it restores it off from `config.json`;
    editing `bleed_mask_margin_px` in the file changes the tinted region in the overlay.
-10. In a surfel disc mode the Bleed Mask group is not shown and screenshots are unchanged from
+10. In a splat disc mode the Bleed Mask group is not shown and screenshots are unchanged from
     the previous build.
 11. Enabling the temporal filter with the mask on shows no swimming or flicker along the rim in a
     10 second orbit recording or screenshot sequence.

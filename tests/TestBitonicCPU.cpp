@@ -1,5 +1,5 @@
 // TestBitonicCPU.cpp
-// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SplatPak -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
 // Standalone CPU reference implementation of the bitonic sort network used by

@@ -1,5 +1,5 @@
 // TestGPUSort.cpp
-// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SplatPak -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
 // Standalone GPU bitonic/radix depth sort verification tool: runs GPURadixSortCS.hlsl
@@ -26,7 +26,7 @@ using namespace DirectX;
 #pragma comment(lib, "dxgi.lib")
 #pragma comment(lib, "d3dcompiler.lib")
 
-struct RawSurfel
+struct RawSplat
 {
     XMFLOAT3 position;
     XMFLOAT3 normal;
@@ -34,7 +34,7 @@ struct RawSurfel
     float    radius;
 };
 
-struct PackedSurfel
+struct PackedPoint
 {
     uint32_t packedPosRadius;
     uint32_t packedNormalColor;
@@ -45,7 +45,7 @@ struct BitonicCB
     XMFLOAT3 camPos;
     float    pad0;
     XMFLOAT3 camForward;
-    uint32_t totalSurfels;
+    uint32_t totalSplats;
     uint32_t level;
     uint32_t levelMask;
     uint32_t numElements;
@@ -123,8 +123,8 @@ int main(int argc, char** argv)
     XMFLOAT3 aabbMax(50.0f, 50.0f, 50.0f);
     XMFLOAT3 aabbExtents(100.0f, 100.0f, 100.0f);
 
-    std::vector<RawSurfel> rawData(numPoints);
-    std::vector<PackedSurfel> packedData(numPoints);
+    std::vector<RawSplat> rawData(numPoints);
+    std::vector<PackedPoint> packedData(numPoints);
 
     for (uint32_t i = 0; i < numPoints; i++)
     {
@@ -165,9 +165,9 @@ int main(int argc, char** argv)
 
     // 3. Benchmark CPU Reference Sorts
     // 3A. CPU std::sort (single-threaded comparator)
-    std::vector<RawSurfel> expectedCPU = rawData;
+    std::vector<RawSplat> expectedCPU = rawData;
     auto cpuStdStart = std::chrono::high_resolution_clock::now();
-    std::sort(expectedCPU.begin(), expectedCPU.end(), [&](const RawSurfel& a, const RawSurfel& b) {
+    std::sort(expectedCPU.begin(), expectedCPU.end(), [&](const RawSplat& a, const RawSplat& b) {
         float dA = (a.position.x - camPos.x) * camForward.x + (a.position.y - camPos.y) * camForward.y + (a.position.z - camPos.z) * camForward.z;
         float dB = (b.position.x - camPos.x) * camForward.x + (b.position.y - camPos.y) * camForward.y + (b.position.z - camPos.z) * camForward.z;
         return dA > dB; // Descending (back-to-front)
@@ -232,11 +232,11 @@ int main(int argc, char** argv)
     // 4. Create GPU Buffers (Padded power of 2)
     uint32_t numElements = 1;
     while (numElements < numPoints) numElements <<= 1;
-    uint32_t stride = (testMode == 1) ? sizeof(PackedSurfel) : sizeof(RawSurfel);
-    uint64_t surfelBufferSize = (uint64_t)numElements * stride;
+    uint32_t stride = (testMode == 1) ? sizeof(PackedPoint) : sizeof(RawSplat);
+    uint64_t splatBufferSize = (uint64_t)numElements * stride;
     uint64_t pairBufferSize = (uint64_t)numElements * sizeof(uint32_t) * 2; // SortPair = 8 bytes
 
-    std::cout << "Allocating GPU Buffers for " << numElements << " elements (" << (surfelBufferSize / (1024 * 1024)) << " MB surfels + " << (pairBufferSize / (1024 * 1024)) << " MB keys)...\n";
+    std::cout << "Allocating GPU Buffers for " << numElements << " elements (" << (splatBufferSize / (1024 * 1024)) << " MB splats + " << (pairBufferSize / (1024 * 1024)) << " MB keys)...\n";
 
     D3D12_HEAP_PROPERTIES heapDefault = { D3D12_HEAP_TYPE_DEFAULT };
     D3D12_HEAP_PROPERTIES heapUpload = { D3D12_HEAP_TYPE_UPLOAD };
@@ -244,7 +244,7 @@ int main(int argc, char** argv)
     
     D3D12_RESOURCE_DESC uavBufDesc = {};
     uavBufDesc.Dimension = D3D12_RESOURCE_DIMENSION_BUFFER;
-    uavBufDesc.Width = surfelBufferSize;
+    uavBufDesc.Width = splatBufferSize;
     uavBufDesc.Height = 1;
     uavBufDesc.DepthOrArraySize = 1;
     uavBufDesc.MipLevels = 1;
@@ -278,8 +278,8 @@ int main(int argc, char** argv)
     uploadBuffer->Map(0, nullptr, &pMapped);
     if (testMode == 1)
     {
-        memcpy(pMapped, packedData.data(), numPoints * sizeof(PackedSurfel));
-        PackedSurfel* pExt = (PackedSurfel*)pMapped;
+        memcpy(pMapped, packedData.data(), numPoints * sizeof(PackedPoint));
+        PackedPoint* pExt = (PackedPoint*)pMapped;
         for (uint32_t i = numPoints; i < numElements; i++)
         {
             pExt[i].packedPosRadius = 0xFFFFFFFF;
@@ -288,8 +288,8 @@ int main(int argc, char** argv)
     }
     else
     {
-        memcpy(pMapped, rawData.data(), numPoints * sizeof(RawSurfel));
-        RawSurfel* pExt = (RawSurfel*)pMapped;
+        memcpy(pMapped, rawData.data(), numPoints * sizeof(RawSplat));
+        RawSplat* pExt = (RawSplat*)pMapped;
         for (uint32_t i = numPoints; i < numElements; i++)
         {
             pExt[i].position = XMFLOAT3(0.0f, 0.0f, 0.0f);
@@ -312,7 +312,7 @@ int main(int argc, char** argv)
 
     // 5. Compile Shaders & Create Root Signature / PSOs
     ComPtr<ID3DBlob> blobProject, blobLocalSort, blobGlobalSort, blobLocalMerge, blobGather, errBlob;
-    HRESULT hr = D3DCompileFromFile(L"C:/github/surfels/src/DX12/Shaders/GPURadixSortCS.hlsl", nullptr, nullptr, "ProjectKeysCS", "cs_5_1", 0, 0, &blobProject, &errBlob);
+    HRESULT hr = D3DCompileFromFile(L"C:/github/splats/src/DX12/Shaders/GPURadixSortCS.hlsl", nullptr, nullptr, "ProjectKeysCS", "cs_5_1", 0, 0, &blobProject, &errBlob);
     if (FAILED(hr))
     {
         std::cerr << "Shader compile error (ProjectKeysCS)!\n";
@@ -320,7 +320,7 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    hr = D3DCompileFromFile(L"C:/github/surfels/src/DX12/Shaders/GPURadixSortCS.hlsl", nullptr, nullptr, "BitonicLocalSortCS", "cs_5_1", 0, 0, &blobLocalSort, &errBlob);
+    hr = D3DCompileFromFile(L"C:/github/splats/src/DX12/Shaders/GPURadixSortCS.hlsl", nullptr, nullptr, "BitonicLocalSortCS", "cs_5_1", 0, 0, &blobLocalSort, &errBlob);
     if (FAILED(hr))
     {
         std::cerr << "Shader compile error (BitonicLocalSortCS)!\n";
@@ -328,7 +328,7 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    hr = D3DCompileFromFile(L"C:/github/surfels/src/DX12/Shaders/GPURadixSortCS.hlsl", nullptr, nullptr, "BitonicGlobalSortCS", "cs_5_1", 0, 0, &blobGlobalSort, &errBlob);
+    hr = D3DCompileFromFile(L"C:/github/splats/src/DX12/Shaders/GPURadixSortCS.hlsl", nullptr, nullptr, "BitonicGlobalSortCS", "cs_5_1", 0, 0, &blobGlobalSort, &errBlob);
     if (FAILED(hr))
     {
         std::cerr << "Shader compile error (BitonicGlobalSortCS)!\n";
@@ -336,7 +336,7 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    hr = D3DCompileFromFile(L"C:/github/surfels/src/DX12/Shaders/GPURadixSortCS.hlsl", nullptr, nullptr, "BitonicLocalMergeCS", "cs_5_1", 0, 0, &blobLocalMerge, &errBlob);
+    hr = D3DCompileFromFile(L"C:/github/splats/src/DX12/Shaders/GPURadixSortCS.hlsl", nullptr, nullptr, "BitonicLocalMergeCS", "cs_5_1", 0, 0, &blobLocalMerge, &errBlob);
     if (FAILED(hr))
     {
         std::cerr << "Shader compile error (BitonicLocalMergeCS)!\n";
@@ -344,10 +344,10 @@ int main(int argc, char** argv)
         return -1;
     }
 
-    hr = D3DCompileFromFile(L"C:/github/surfels/src/DX12/Shaders/GPURadixSortCS.hlsl", nullptr, nullptr, "GatherSurfelsCS", "cs_5_1", 0, 0, &blobGather, &errBlob);
+    hr = D3DCompileFromFile(L"C:/github/splats/src/DX12/Shaders/GPURadixSortCS.hlsl", nullptr, nullptr, "GatherSplatsCS", "cs_5_1", 0, 0, &blobGather, &errBlob);
     if (FAILED(hr))
     {
-        std::cerr << "Shader compile error (GatherSurfelsCS)!\n";
+        std::cerr << "Shader compile error (GatherSplatsCS)!\n";
         if (errBlob) std::cerr << (char*)errBlob->GetBufferPointer() << "\n";
         return -1;
     }
@@ -356,17 +356,17 @@ int main(int argc, char** argv)
     rootParams[0].ParameterType = D3D12_ROOT_PARAMETER_TYPE_CBV;
     rootParams[0].Descriptor.ShaderRegister = 0; // b0
     rootParams[1].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    rootParams[1].Descriptor.ShaderRegister = 0; // t0 (InPackedSurfels)
+    rootParams[1].Descriptor.ShaderRegister = 0; // t0 (InPackedSplats)
     rootParams[2].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
-    rootParams[2].Descriptor.ShaderRegister = 1; // t1 (InRawSurfels)
+    rootParams[2].Descriptor.ShaderRegister = 1; // t1 (InRawSplats)
     rootParams[3].ParameterType = D3D12_ROOT_PARAMETER_TYPE_SRV;
     rootParams[3].Descriptor.ShaderRegister = 2; // t2 (InChunks)
     rootParams[4].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
     rootParams[4].Descriptor.ShaderRegister = 0; // u0 (SortPairs)
     rootParams[5].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    rootParams[5].Descriptor.ShaderRegister = 1; // u1 (OutPackedSurfels)
+    rootParams[5].Descriptor.ShaderRegister = 1; // u1 (OutPackedSplats)
     rootParams[6].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
-    rootParams[6].Descriptor.ShaderRegister = 2; // u2 (OutRawSurfels)
+    rootParams[6].Descriptor.ShaderRegister = 2; // u2 (OutRawSplats)
     rootParams[7].ParameterType = D3D12_ROOT_PARAMETER_TYPE_UAV;
     rootParams[7].Descriptor.ShaderRegister = 3; // u3 (OutSortedChunkIndices)
 
@@ -465,7 +465,7 @@ int main(int argc, char** argv)
     BitonicCB baseCB = {};
     baseCB.camPos = camPos;
     baseCB.camForward = camForward;
-    baseCB.totalSurfels = numPoints;
+    baseCB.totalSplats = numPoints;
     baseCB.numElements = numElements;
     baseCB.renderMode = testMode;
     baseCB.aabbMin = aabbMin;
@@ -599,7 +599,7 @@ int main(int argc, char** argv)
     std::vector<float> gpuSortedDepths(numPoints);
     if (testMode == 1)
     {
-        PackedSurfel* pOut = (PackedSurfel*)pGpuResultsMapped;
+        PackedPoint* pOut = (PackedPoint*)pGpuResultsMapped;
         for (uint32_t i = 0; i < numPoints; i++)
         {
             uint32_t qx = pOut[i].packedPosRadius & 0x3FF;
@@ -613,7 +613,7 @@ int main(int argc, char** argv)
     }
     else
     {
-        RawSurfel* pOut = (RawSurfel*)pGpuResultsMapped;
+        RawSplat* pOut = (RawSplat*)pGpuResultsMapped;
         for (uint32_t i = 0; i < numPoints; i++)
         {
             gpuSortedDepths[i] = (pOut[i].position.x - camPos.x) * camForward.x + (pOut[i].position.y - camPos.y) * camForward.y + (pOut[i].position.z - camPos.z) * camForward.z;

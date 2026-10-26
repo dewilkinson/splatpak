@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "total_surfels_lod0": 300000,
+  "total_splats_lod0": 300000,
   "num_chunks": 40,
   "max_lods": 4,
   "bounds_min": [-11.0565, -0.063, -80.0587],

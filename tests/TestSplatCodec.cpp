@@ -1,9 +1,9 @@
 // TestSplatCodec.cpp
-// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SplatPak -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
 // Splat mode round trip: loads a 3D Gaussian Splatting .ply with its full attributes, encodes and
-// decodes the records in memory, bakes a splat-mode .gstx (surfel format 1) through the packager,
+// decodes the records in memory, bakes a splat-mode .gstx (splat format 1) through the packager,
 // reloads it, and checks that every level-0 Gaussian survives within the format's quantisation.
 //
 //   TestSplatCodec <input.ply> <output-base> [max-points] [sh-degree]
@@ -17,12 +17,12 @@
 #include <cmath>
 #include <cstdlib>
 #include <algorithm>
-#include "../src/SurfelsCore/PLYLoader.h"
-#include "../src/SurfelsCore/SpatialOctree.h"
-#include "../src/SurfelsCore/StreamPackager.h"
+#include "../src/SplatCore/PLYLoader.h"
+#include "../src/SplatCore/SpatialOctree.h"
+#include "../src/SplatCore/StreamPackager.h"
 #include "../libs/gstx/SplatCodec.h"
 
-using namespace Surfels;
+using namespace Splat;
 
 static int g_failures = 0;
 static void Check(bool ok, const char* what, double got, double limit)
@@ -46,10 +46,10 @@ int main(int argc, char** argv)
     const size_t maxPoints = (argc > 3) ? (size_t)atoll(argv[3]) : 200000;
     const uint32_t shDegree = (argc > 4) ? (uint32_t)atoi(argv[4]) : 1;
 
-    std::vector<SurfelVertex> surfels;
+    std::vector<SplatPoint> splats;
     std::vector<SplatAttributes> attrs;
     double origin[3] = { 0, 0, 0 };
-    if (!PLYLoader::LoadPLY(inputPLY, surfels, origin, &attrs))
+    if (!PLYLoader::LoadPLY(inputPLY, splats, origin, &attrs))
     {
         std::cerr << "Failed to load " << inputPLY << std::endl;
         return 1;
@@ -59,18 +59,18 @@ int main(int argc, char** argv)
         std::cerr << inputPLY << " carries no Gaussian attributes" << std::endl;
         return 1;
     }
-    if (surfels.size() > maxPoints)
+    if (splats.size() > maxPoints)
     {
         // Keep an evenly spaced subset; the attributes stay whole (sourceIndex still refers into them)
-        std::vector<SurfelVertex> sub;
-        const size_t step = surfels.size() / maxPoints;
-        for (size_t i = 0; i < surfels.size(); i += step) sub.push_back(surfels[i]);
-        surfels.swap(sub);
+        std::vector<SplatPoint> sub;
+        const size_t step = splats.size() / maxPoints;
+        for (size_t i = 0; i < splats.size(); i += step) sub.push_back(splats[i]);
+        splats.swap(sub);
     }
-    std::cout << "Loaded " << surfels.size() << " points (" << attrs.size() << " Gaussians), SH degree " << shDegree << std::endl;
+    std::cout << "Loaded " << splats.size() << " points (" << attrs.size() << " Gaussians), SH degree " << shDegree << std::endl;
 
     XMFLOAT3 minP(1e9f, 1e9f, 1e9f), maxP(-1e9f, -1e9f, -1e9f);
-    for (const auto& s : surfels)
+    for (const auto& s : splats)
     {
         minP.x = std::min(minP.x, s.position.x); minP.y = std::min(minP.y, s.position.y); minP.z = std::min(minP.z, s.position.z);
         maxP.x = std::max(maxP.x, s.position.x); maxP.y = std::max(maxP.y, s.position.y); maxP.z = std::max(maxP.z, s.position.z);
@@ -86,10 +86,10 @@ int main(int argc, char** argv)
     {
         std::vector<PackedSplatGPU> records;
         std::vector<uint8_t> sh;
-        SplatCodec::Encode(surfels, attrs, 0, params, records, sh);
-        Check(records.size() == surfels.size(), "record count", (double)records.size(), (double)surfels.size());
-        Check(sh.size() == surfels.size() * SplatCodec::SHRecordBytes(shDegree), "sh stream size", (double)sh.size(), (double)(surfels.size() * SplatCodec::SHRecordBytes(shDegree)));
-        std::vector<SurfelVertex> back;
+        SplatCodec::Encode(splats, attrs, 0, params, records, sh);
+        Check(records.size() == splats.size(), "record count", (double)records.size(), (double)splats.size());
+        Check(sh.size() == splats.size() * SplatCodec::SHRecordBytes(shDegree), "sh stream size", (double)sh.size(), (double)(splats.size() * SplatCodec::SHRecordBytes(shDegree)));
+        std::vector<SplatPoint> back;
         std::vector<SplatAttributes> backAttrs;
         SplatCodec::Decode(records, sh.data(), sh.size(), params, 0, 0, back, backAttrs);
 
@@ -97,10 +97,10 @@ int main(int argc, char** argv)
         const float log2Step = (params.scaleLog2Max - params.scaleLog2Min) / 255.0f;
         double maxPosErr = 0, maxScaleErr = 0, minQuatDot = 1, maxOpErr = 0, maxColErr = 0, maxShErr = 0;
         const uint32_t shCoeffs = SplatCodec::SHCoefficientsPerChannel(shDegree) * 3;
-        for (size_t i = 0; i < surfels.size(); i++)
+        for (size_t i = 0; i < splats.size(); i++)
         {
-            const SurfelVertex& a = surfels[i];
-            const SurfelVertex& b = back[i];
+            const SplatPoint& a = splats[i];
+            const SplatPoint& b = back[i];
             const SplatAttributes& sa = attrs[a.sourceIndex];
             const SplatAttributes& sb = backAttrs[i];
             maxPosErr = std::max(maxPosErr, (double)std::max(std::fabs(a.position.x - b.position.x), std::max(std::fabs(a.position.y - b.position.y), std::fabs(a.position.z - b.position.z))));
@@ -128,7 +128,7 @@ int main(int argc, char** argv)
     // 2. Bake a splat-mode package and reload it
     const float chunkSize = std::max(0.10f, maxDim / 4.0f);
     const uint32_t maxLODs = 3;
-    auto chunks = SpatialOctree::PartitionIntoChunks(surfels, chunkSize);
+    auto chunks = SpatialOctree::PartitionIntoChunks(splats, chunkSize);
     SplatBakeInput bake;
     bake.attributes = &attrs;
     bake.shDegree = shDegree;
@@ -144,7 +144,7 @@ int main(int argc, char** argv)
         std::cerr << "LoadPackage failed: " << reason << std::endl;
         return 1;
     }
-    Check(pkg.IsSplatPackage(), "splat package flag", pkg.header.surfelFormat, 1);
+    Check(pkg.IsSplatPackage(), "splat package flag", pkg.header.recordFormat, 1);
     Check(pkg.header.version == SFLW_VERSION, "version", pkg.header.version, SFLW_VERSION);
     Check(pkg.header.shDegree == shDegree, "sh degree", pkg.header.shDegree, shDegree);
     Check(pkg.header.splatRecordBytes == sizeof(PackedSplatGPU), "record bytes", pkg.header.splatRecordBytes, sizeof(PackedSplatGPU));
@@ -155,14 +155,14 @@ int main(int argc, char** argv)
     {
         levels = std::max(levels, pkg.chunkLODSplats[c].size());
         if (pkg.chunkLODSplats[c].empty()) continue;
-        std::vector<SurfelVertex> back;
+        std::vector<SplatPoint> back;
         std::vector<SplatAttributes> backAttrs;
         const std::vector<uint8_t>& sh = pkg.chunkLODSH[c][0];
         SplatCodec::Decode(pkg.chunkLODSplats[c][0], sh.empty() ? nullptr : sh.data(), sh.size(), pkg.splatParams, 0, 0, back, backAttrs);
         total0 += back.size();
         totalSH += sh.size();
         // The chunk's level-0 points are the bake input in order (the packager decomposes per chunk)
-        const auto& src = chunks[c].surfels;
+        const auto& src = chunks[c].splats;
         Check(back.size() == src.size(), "chunk level-0 count", (double)back.size(), (double)src.size());
         const uint32_t shCoeffs = SplatCodec::SHCoefficientsPerChannel(shDegree) * 3;
         for (size_t i = 0; i < std::min(back.size(), src.size()); i++)
@@ -180,15 +180,15 @@ int main(int argc, char** argv)
     }
     const float gExt = std::max(pkg.header.globalBoundsMax.x - pkg.header.globalBoundsMin.x, std::max(pkg.header.globalBoundsMax.y - pkg.header.globalBoundsMin.y, pkg.header.globalBoundsMax.z - pkg.header.globalBoundsMin.z));
     Check(maxPosErr <= gExt / 65535.0f * 1.5f, "package position error", maxPosErr, gExt / 65535.0f * 1.5f);
-    Check(total0 == surfels.size(), "package level-0 count", (double)total0, (double)surfels.size());
+    Check(total0 == splats.size(), "package level-0 count", (double)total0, (double)splats.size());
     if (shDegree > 0) Check(maxPkgShErr <= 1.0 / 127.0 + 2e-3, "package spherical harmonics", maxPkgShErr, 1.0 / 127.0);
     std::cout << "Package round trip: position " << maxPosErr << ", SH " << maxPkgShErr << " of max, SH stream " << totalSH << " bytes" << std::endl;
     Check(levels == maxLODs + 1, "levels in package", (double)levels, (double)(maxLODs + 1));
 
     std::ifstream out(outputBase + ".gstx", std::ios::ate | std::ios::binary);
     const uint64_t packageBytes = out.is_open() ? (uint64_t)out.tellg() : 0;
-    std::cout << "Package: " << packageBytes / (1024.0 * 1024.0) << " MB for " << surfels.size() << " splats over " << levels << " levels ("
-              << (double)packageBytes / (double)std::max<size_t>(1, surfels.size()) << " bytes per level-0 splat, all levels included; "
+    std::cout << "Package: " << packageBytes / (1024.0 * 1024.0) << " MB for " << splats.size() << " splats over " << levels << " levels ("
+              << (double)packageBytes / (double)std::max<size_t>(1, splats.size()) << " bytes per level-0 splat, all levels included; "
               << pkg.header.splatRecordBytes << " + " << pkg.header.shRecordBytes << " bytes per record before compression)" << std::endl;
 
     if (g_failures == 0) std::cout << "TestSplatCodec: PASS" << std::endl;

@@ -1,5 +1,5 @@
 // TestStreamRuntime.cpp
-// Surfels -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+// SplatPak -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
 // GPU-free driver for the streaming runtime (libs/gstx/StreamRuntime.h): loads a splat package
@@ -11,11 +11,11 @@
 #include <cstdio>
 #include <cmath>
 #include <numeric>
-#include "../src/SurfelsCore/StreamPackager.h"
-#include "../src/SurfelsCore/SpatialOctree.h"
+#include "../src/SplatCore/StreamPackager.h"
+#include "../src/SplatCore/SpatialOctree.h"
 #include "../libs/gstx/StreamRuntime.h"
 
-using namespace Surfels;
+using namespace Splat;
 
 int main(int argc, char** argv)
 {
@@ -29,7 +29,7 @@ int main(int argc, char** argv)
     }
 
     // Each level: every chunk's records, decoded for positions, then sorted in one spatial order over the
-    // package bounds with the records and harmonics carried along (as SurfelsApp::PrecacheResidentLODs)
+    // package bounds with the records and harmonics carried along (as SplatLabApp::PrecacheResidentLODs)
     const XMFLOAT3 bmin = pkg.header.globalBoundsMin, bmax = pkg.header.globalBoundsMax;
     const uint32_t shBytes = SplatCodec::SHRecordBytes(pkg.splatParams.shDegree);
     size_t numLevels = 0;
@@ -45,7 +45,7 @@ int main(int argc, char** argv)
             records.insert(records.end(), pkg.chunkLODSplats[c][lvl].begin(), pkg.chunkLODSplats[c][lvl].end());
             if (lvl < pkg.chunkLODSH[c].size()) sh.insert(sh.end(), pkg.chunkLODSH[c][lvl].begin(), pkg.chunkLODSH[c][lvl].end());
         }
-        std::vector<SurfelVertex> points;
+        std::vector<SplatPoint> points;
         std::vector<SplatAttributes> attributes;
         SplatCodec::Decode(records, sh.empty() ? nullptr : sh.data(), sh.size(), pkg.splatParams, (uint32_t)lvl, 0, points, attributes);
         ResidentLOD& out = levels[lvl];
@@ -59,7 +59,7 @@ int main(int argc, char** argv)
             if (shBytes > 0 && sh.size() >= (size_t)(src + 1) * shBytes)
                 std::copy(sh.begin() + (size_t)src * shBytes, sh.begin() + (size_t)(src + 1) * shBytes, out.splatSH.begin() + i * shBytes);
         }
-        out.rawSurfels = std::move(points);
+        out.rawSplats = std::move(points);
     }
 
     StreamRuntime rt;
@@ -95,11 +95,11 @@ int main(int argc, char** argv)
         {
             printf("t=%2ds level %d  render list %6u blocks  resident", frame / 60, rt.settings.selectedPreviewLOD, rt.FrameChunkCount());
             for (size_t l = 0; l < numLevels; l++)
-                printf("  L%zu %5.1f%%", l, rt.m_lodTotalSurfels[l] ? 100.0 * rt.m_lodResidentSurfels[l] / rt.m_lodTotalSurfels[l] : 0.0);
+                printf("  L%zu %5.1f%%", l, rt.m_lodTotalSplats[l] ? 100.0 * rt.m_lodResidentSplats[l] / rt.m_lodTotalSplats[l] : 0.0);
             printf("\n");
         }
     }
-    const bool full = rt.m_lodResidentSurfels[0] == rt.m_lodTotalSurfels[0];
+    const bool full = rt.m_lodResidentSplats[0] == rt.m_lodTotalSplats[0];
     printf("Level 0 %s\n", full ? "fully resident" : "NOT fully resident");
     return full ? 0 : 1;
 }

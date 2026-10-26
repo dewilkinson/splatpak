@@ -26,6 +26,6 @@ shaders in particular ship as plain-text `.hlsl` next to every executable today 
 `bin/ShaderLibDX/`) and are not addressed by this split at all. Treat this as the first layer
 (keeping source out of ordinary distribution and off anyone's screen who doesn't need it),
 not the only one -- NDAs on anyone who does see this source, and a decision about whether the
-GPU-side logic in `src/DX12/Shaders/Surfels.hlsl` needs a similar treatment (shipping
+GPU-side logic in `src/DX12/Shaders/Splat.hlsl` needs a similar treatment (shipping
 precompiled DXIL instead of source), are the natural next steps if this needs to hold up
 against a more determined party.
