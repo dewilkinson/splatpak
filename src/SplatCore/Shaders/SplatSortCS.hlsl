@@ -47,7 +47,7 @@ cbuffer SplatSortCB : register(b0)
     uint     g_OccWidth;       // Occlusion grid size in pixels
     uint     g_OccHeight;
     uint     g_OccFlags;       // 1 = the shadow-mesh test: its own depth at each pixel (the occluder's: each triangle's
-                               // farthest), on a finer grid, and ShadowMeshHides in place of ChunkOccluded
+                               // farthest), on a finer grid, and ShadowMeshHides in place of ChunkOccluded; 2 = no frustum culling
     float    g_OccMargin;      // Shadow-mesh test: how far behind the mesh a chunk must lie to be hidden (metres of view depth)
 };
 
@@ -269,7 +269,7 @@ void ExpandCS(uint3 groupId : SV_GroupID, uint threadId : SV_GroupThreadID)
     if (chunkIdx >= g_TotalChunks) return;
     MeshletChunk chunk = g_Chunks[chunkIdx];
     uint base = g_ChunkSlotBase[chunkIdx];
-    bool inFrustum = ChunkInFrustum(chunk);
+    bool inFrustum = (g_OccFlags & 2u) != 0 || ChunkInFrustum(chunk); // Flag 2: no frustum culling (the optimization slider)
     // An if, not ?: or &&: HLSL before 2021 evaluates both sides of those, and the grid is only valid when culling is on.
     // The condition is uniform across the group, as ChunkOccluded's barriers need.
     bool occluded = false;

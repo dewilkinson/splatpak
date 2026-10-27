@@ -395,6 +395,44 @@ namespace Splat
             {
                 m_occlusionMarginEdges = (float)atof(args[++i].c_str()); // The shadow-mesh test's margin, in median edges
             }
+            else if (a == "--solid-alpha" && i + 1 < args.size())
+            {
+                m_solidAlpha = (float)atof(args[++i].c_str()); // Solid splat depth: the core's alpha (0 = off)
+                m_solidDepthOn = m_solidAlpha > 0.0f;
+            }
+            else if (a == "--opaque-front" && i + 1 < args.size())
+            {
+                m_cliOpaqueSurface = args[++i] == "off" ? 0 : 1; // Opaque Front Surface for this run (not saved)
+            }
+            else if (a == "--occluder-push" && i + 1 < args.size())
+            {
+                m_occluderPushEdges = (float)atof(args[++i].c_str()); // The occluder mesh pushed back, in median edges
+            }
+            else if (a == "--opt-level" && i + 1 < args.size())
+            {
+                m_cliOptLevel = atoi(args[++i].c_str()); // The optimization slider's position, once the view is fitted
+            }
+            else if (a == "--far-tint")
+            {
+                m_farTint = true; // The far side drawn magenta
+            }
+            else if (a == "--opaque-debug")
+            {
+                m_vizShowThrough = m_vizCoverage = true; // Show-through over the occlusion volume in red, coverage elsewhere in green
+            }
+            else if (a == "--view" && i + 1 < args.size())
+            {
+                // Orbit yaw,pitch in degrees, and optionally lift: the target raised by that fraction of the model's height
+                m_cliViewSet = sscanf_s(args[++i].c_str(), "%f,%f,%f", &m_cliViewYaw, &m_cliViewPitch, &m_cliViewLift) >= 2;
+            }
+            else if (a == "--opaque-ramp" && i + 1 < args.size())
+            {
+                sscanf_s(args[++i].c_str(), "%f,%f", &m_opaqueLo, &m_opaqueHi); // Its coverage ramp, "lo,hi"
+            }
+            else if (a == "--solid-margin" && i + 1 < args.size())
+            {
+                m_solidMargin = (float)atof(args[++i].c_str()); // Solid splat depth: metres the core's depth is pushed back
+            }
             else if (a == "--distance" && i + 1 < args.size())
             {
                 m_cliDistanceFactor = (float)atof(args[++i].c_str()); // The framing distance times this, once the model shows
@@ -597,6 +635,10 @@ namespace Splat
                         if (hPos != std::string::npos) eqPos = line.find(':', hPos);
                         else if (line.find("occlusion_test=") != std::string::npos) eqPos = line.find('=');
                         if (eqPos != std::string::npos) m_occlusionTest = line.find("shadow", eqPos) != std::string::npos ? 1 : 0;
+                    }
+                    {
+                        size_t hPos = line.find("\"opaque_front_surface\":");
+                        if (hPos != std::string::npos) m_opaqueSurface = line.find("false", hPos) == std::string::npos;
                     }
                     {
                         size_t hPos = line.find("\"lod_per_block\":");
@@ -1000,6 +1042,7 @@ namespace Splat
             out << "  \"lod_screen_space\": " << (m_lodScreenSpace ? "true" : "false") << ",\n";
             out << "  \"lod_per_block\": " << (m_lodPerBlock ? "true" : "false") << ",\n";
             out << "  \"occlusion_test\": \"" << (m_occlusionTest == 0 ? "occluder" : "shadow") << "\",\n";
+            out << "  \"opaque_front_surface\": " << (m_opaqueSurface ? "true" : "false") << ",\n";
             out << "  \"lod_pixel_spacing\": " << m_lodPixelSpacing << ",\n";
             out << "  \"render_path\": \"" << m_renderPathConfig << "\",\n";
             out << "  \"active_tab\": " << m_activeTab << ",\n";
@@ -1111,6 +1154,15 @@ namespace Splat
         else
         {
             std::vector<std::string> startupPaths = ResolveRelativeCandidates(m_startupDatasetPath);
+            // A configured dataset that is not there (moved, or an old format since removed) falls back to the built-in one
+            const std::string builtIn = kBuiltInDataset;
+            bool configuredFound = false;
+            for (const auto& path : startupPaths) configuredFound = configuredFound || std::ifstream(path, std::ios::binary).good();
+            if (!configuredFound && m_startupDatasetPath != builtIn)
+            {
+                LogTransitionTrace("Startup: '%s' not found; opening the built-in '%s'", m_startupDatasetPath.c_str(), builtIn.c_str());
+                startupPaths = ResolveRelativeCandidates(builtIn);
+            }
 
             bool loaded = false;
             for (const auto& path : startupPaths)
@@ -1168,7 +1220,7 @@ namespace Splat
             if (message == WM_KEYDOWN) return 0;
         }
         const bool closing = message == WM_CLOSE || (message == WM_KEYDOWN && wParam == VK_ESCAPE);
-        if (closing && s_closeGuardApp && !s_closeGuardApp->OnCloseRequested()) return 0;
+        if (closing && s_closeGuardApp && !s_closeGuardApp->OnCloseRequested(message == WM_KEYDOWN)) return 0;
         return CallWindowProc(s_closeGuardBase, hWnd, message, wParam, lParam);
     }
 
@@ -1252,9 +1304,8 @@ namespace Splat
     }
 
     // The window's close button, Alt+F4 or Esc. A save under way finishes first (the app closes when it has written the
-    // package); a bake no package holds yet asks "<name>.gstx is not saved. Save and quit?": Yes opens the save dialog and
-    // closes once that save is written, No closes, Cancel stays.
-    bool SplatPakApp::OnCloseRequested()
+    // package); a bake no package holds yet opens the close prompt (DrawClosePrompt). While it is up, Esc cancels it.
+    bool SplatPakApp::OnCloseRequested(bool escape)
     {
         if (Unattended()) return true;
         if (m_op.Busy() && m_op.Title().rfind("Saving", 0) == 0)
@@ -1265,12 +1316,18 @@ namespace Splat
             return false;
         }
         if (!m_bakeUnsaved || m_rawSplats.empty()) return true;
-        std::string stem = m_loadedFilePath.substr(m_loadedFilePath.find_last_of("/\\") + 1);
-        stem = stem.substr(0, stem.find_last_of('.'));
-        const std::string question = stem + ".gstx is not saved.\n\nSave and quit?";
-        const int answer = MessageBoxA(m_windowHwnd, question.c_str(), "SplatPak", MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON1);
-        if (answer == IDNO) return true;
-        if (answer != IDYES) return false;
+        if (m_closePrompt != ClosePrompt::None)
+        {
+            if (escape) m_closePrompt = ClosePrompt::Cancel;
+            return false;
+        }
+        m_closePrompt = ClosePrompt::Open;
+        return false;
+    }
+
+    // Saves the bake through the save dialog; quitAfter closes once the package is written. False if no save started.
+    bool SplatPakApp::SaveBakeFromPrompt(bool quitAfter)
+    {
         std::string savePath = SaveFileDialog("GSTx Package (*.gstx)\0*.gstx\0", "gstx", "Save Compressed Package (.gstx)");
         if (savePath.empty()) return false;
         if (savePath.size() > 5 && savePath.substr(savePath.size() - 5) == ".gstx") savePath = savePath.substr(0, savePath.size() - 5);
@@ -1281,8 +1338,56 @@ namespace Splat
             MessageBoxA(m_windowHwnd, ("Could not save: " + m_statusMessage).c_str(), "SplatPak", MB_OK | MB_ICONWARNING);
             return false;
         }
-        m_quitAfterSave = true;
-        return false;
+        m_quitAfterSave = quitAfter;
+        return true;
+    }
+
+    // The close prompt, in the form other apps use for unsaved work ("Save changes to X before closing?"), with the
+    // primary choice first and Cancel last: Save and Quit (Enter), Save (keeps working), Quit Without Saving, Cancel (Esc).
+    void SplatPakApp::DrawClosePrompt()
+    {
+        if (m_closePrompt == ClosePrompt::None) return;
+        const char* kTitle = "Unsaved Package##closeprompt";
+        if (m_closePrompt == ClosePrompt::Open)
+        {
+            ImGui::OpenPopup(kTitle);
+            m_closePrompt = ClosePrompt::Shown;
+        }
+        ImGui::SetNextWindowPos(ImVec2(m_Width * 0.5f, m_Height * 0.4f), ImGuiCond_Appearing, ImVec2(0.5f, 0.5f));
+        if (!ImGui::BeginPopupModal(kTitle, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings))
+        {
+            m_closePrompt = ClosePrompt::None;
+            return;
+        }
+        std::string stem = m_loadedFilePath.substr(m_loadedFilePath.find_last_of("/\\") + 1);
+        stem = stem.substr(0, stem.find_last_of('.'));
+        ImGui::Text("Save changes to %s.gstx before closing?", stem.c_str());
+        ImGui::TextDisabled("The bake on screen is not in any package yet.");
+        ImGui::Spacing();
+        int choice = 0; // 1 save and quit, 2 save, 3 quit without saving, 4 cancel
+        ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.20f, 0.42f, 0.75f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.26f, 0.50f, 0.85f, 1.0f));
+        if (ImGui::Button("Save and Quit", ImVec2(130, 0)) || ImGui::IsKeyPressed(VK_RETURN, false)) choice = 1;
+        ImGui::PopStyleColor(2);
+        if (ImGui::IsItemHovered()) ShowTooltip("Saves the package, then closes SplatPak once it is written (Enter).");
+        ImGui::SameLine();
+        if (ImGui::Button("Save", ImVec2(80, 0))) choice = 2;
+        if (ImGui::IsItemHovered()) ShowTooltip("Saves the package and keeps SplatPak open.");
+        ImGui::SameLine();
+        if (ImGui::Button("Quit Without Saving", ImVec2(150, 0))) choice = 3;
+        if (ImGui::IsItemHovered()) ShowTooltip("Closes SplatPak; the bake is lost.");
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(80, 0)) || m_closePrompt == ClosePrompt::Cancel) choice = 4;
+        if (ImGui::IsItemHovered()) ShowTooltip("Back to SplatPak (Esc).");
+        if (choice != 0)
+        {
+            ImGui::CloseCurrentPopup();
+            m_closePrompt = ClosePrompt::None;
+        }
+        ImGui::EndPopup();
+        if (choice == 1) SaveBakeFromPrompt(true);
+        else if (choice == 2) SaveBakeFromPrompt(false);
+        else if (choice == 3) PostQuitMessage(0);
     }
 
     void SplatPakApp::OnDestroy()
@@ -4345,10 +4450,28 @@ namespace Splat
         if (m_cliSpinDegPerSec != 0.0f && m_state.chunkCount > 0)
             m_yaw += XMConvertToRadians(m_cliSpinDegPerSec) * (float)(m_deltaTime / 1000.0);
         // --distance: the orbit distance, once, as a fraction of the framing distance (a repeatable close view)
-        if (m_cliDistanceFactor > 0.0f && m_state.chunkCount > 0)
+        // after the view has been fitted to the model (before it, the fit would overwrite it)
+        // and the model has been on screen for two seconds (the load's own framing settles first)
+        if (m_state.chunkCount > 0 && !m_fitViewPending && m_lastFitDistance > 0.0f) m_cliShownSeconds += m_deltaTime / 1000.0;
+        const bool fitted = m_cliShownSeconds > 2.0;
+        if (m_cliDistanceFactor > 0.0f && fitted)
         {
-            m_distance *= m_cliDistanceFactor;
+            m_distance = m_lastFitDistance * m_cliDistanceFactor;
             m_cliDistanceFactor = 0.0f;
+        }
+        // --opt-level: the optimization slider's position, once
+        if (m_cliOptLevel >= 0 && fitted)
+        {
+            ApplyOptimizationLevel(m_cliOptLevel);
+            m_cliOptLevel = -1;
+        }
+        // --view: the orbit's yaw and pitch, once (a repeatable angle)
+        if (m_cliViewSet && fitted)
+        {
+            m_yaw = XMConvertToRadians(m_cliViewYaw);
+            m_pitch = XMConvertToRadians(m_cliViewPitch);
+            m_target.y += m_cliViewLift * m_extents.y;
+            m_cliViewSet = false;
         }
         // --zoom: the orbit distance swings from the framing distance in to a third of it and back, once a period
         if (m_cliZoomPeriodSec > 0.0f && m_state.chunkCount > 0)
@@ -4372,7 +4495,7 @@ namespace Splat
                 m_streamDtAccumMs += m_deltaTime;
                 m_frameSimMs = 0.0f;
                 m_frameTraversalMs = 0.0f;
-                const bool onThread = UseBackgroundOps() && !Unattended();
+                const bool onThread = UseBackgroundOps() && !Unattended() && m_streamOnThread;
                 if (onThread)
                 {
                     if (!StreamJobBusy())
@@ -5825,49 +5948,71 @@ namespace Splat
                     ImGui::NextColumn();
                     ImGui::Columns(1);
 
-                    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Optimization Efficiency: %.1fx reduction (%.1f%% eliminated)", reductionFactor, reductionPct);
+                    // Thermometer of the share of the model drawn (the cost): cool green at a distant view to hot red when most
+                    // of it is drawn. Zone tops from Cthulhu (3.3 M splats): 2.9% drawn far, 8.7% mid, ~48% close up.
+                    static const float kZoneTop[5] = { 0.05f, 0.15f, 0.30f, 0.50f, 1.00f };
+                    static const ImVec4 kZoneColour[5] = { ImVec4(0.20f, 0.80f, 0.20f, 1.0f), ImVec4(0.27f, 0.51f, 0.90f, 1.0f),
+                        ImVec4(0.94f, 0.82f, 0.16f, 1.0f), ImVec4(1.00f, 0.55f, 0.00f, 1.0f), ImVec4(0.90f, 0.20f, 0.16f, 1.0f) };
+                    static const char* kZoneName[5] = { "excellent", "good", "fair", "heavy", "overloaded" };
+                    const float fracDrawn = totalSplats > 0 ? (float)drawnSplats / (float)totalSplats : 0.0f;
+                    int zone = 0;
+                    while (zone < 4 && fracDrawn > kZoneTop[zone]) zone++;
+
+                    ImGui::TextColored(kZoneColour[zone], "Optimization Efficiency: %.1fx reduction (%.1f%% eliminated)", reductionFactor, reductionPct);
 
                     ImGui::Spacing();
 
-                    // Visual Proportional Multi-Segment Breakdown Bar
                     if (totalSplats > 0)
                     {
-                        ImVec2 barSize = ImVec2(ImGui::GetContentRegionAvailWidth(), 16.0f);
-                        ImVec2 barPos = ImGui::GetCursorScreenPos();
+                        // Square-root scale, so the narrow cool zones stay readable
+                        auto scaleX = [](float frac) { return sqrtf(std::min(1.0f, std::max(0.0f, frac))); };
                         ImDrawList* drawList = ImGui::GetWindowDrawList();
+                        const ImVec2 origin = ImGui::GetCursorScreenPos();
+                        const float bulbR = 9.0f, tubeH = 10.0f;
+                        const float x0 = origin.x + bulbR * 1.6f, x1 = origin.x + ImGui::GetContentRegionAvailWidth() - 4.0f;
+                        const float cy = origin.y + bulbR + 1.0f;
+                        const float y0 = cy - tubeH * 0.5f, y1 = cy + tubeH * 0.5f;
+                        const ImU32 glass = IM_COL32(30, 30, 30, 255), rim = IM_COL32(110, 110, 110, 255);
 
-                        drawList->AddRectFilled(barPos, ImVec2(barPos.x + barSize.x, barPos.y + barSize.y), IM_COL32(30, 30, 30, 255), 2.0f);
+                        drawList->AddRectFilled(ImVec2(x0 - bulbR, y0), ImVec2(x1, y1), glass, tubeH * 0.5f);
+                        // The mercury: a gradient through the zone colours up to the value
+                        const float fillX = x0 + (x1 - x0) * scaleX(fracDrawn);
+                        float zoneStart = 0.0f;
+                        for (int z = 0; z < 5 && x0 + (x1 - x0) * scaleX(zoneStart) < fillX; z++)
+                        {
+                            const float sx = x0 + (x1 - x0) * scaleX(zoneStart);
+                            const float ex = x0 + (x1 - x0) * scaleX(kZoneTop[z]);
+                            const ImU32 cl = ImGui::ColorConvertFloat4ToU32(kZoneColour[z]);
+                            const float clipX = std::min(ex, fillX);
+                            // The right colour where the segment is cut at the value, so the fill ends in its own shade
+                            const float t = ex > sx ? (clipX - sx) / (ex - sx) : 1.0f;
+                            const ImVec4 l = kZoneColour[z], r = kZoneColour[std::min(z + 1, 4)];
+                            const ImU32 cEnd = ImGui::ColorConvertFloat4ToU32(ImVec4(l.x + (r.x - l.x) * t, l.y + (r.y - l.y) * t, l.z + (r.z - l.z) * t, 1.0f));
+                            drawList->AddRectFilledMultiColor(ImVec2(sx, y0 + 2.0f), ImVec2(clipX, y1 - 2.0f), cl, cEnd, cEnd, cl);
+                            zoneStart = kZoneTop[z];
+                        }
+                        drawList->AddRectFilled(ImVec2(x0 - bulbR, y0 + 2.0f), ImVec2(x0, y1 - 2.0f), ImGui::ColorConvertFloat4ToU32(kZoneColour[0]));
+                        drawList->AddRect(ImVec2(x0 - bulbR, y0), ImVec2(x1, y1), rim, tubeH * 0.5f);
+                        // The bulb, in the colour of the zone the value is in
+                        drawList->AddCircleFilled(ImVec2(origin.x + bulbR, cy), bulbR, glass, 20);
+                        drawList->AddCircleFilled(ImVec2(origin.x + bulbR, cy), bulbR - 2.5f, ImGui::ColorConvertFloat4ToU32(kZoneColour[zone]), 20);
+                        drawList->AddCircle(ImVec2(origin.x + bulbR, cy), bulbR, rim, 20);
+                        // Graduations at the zone boundaries
+                        for (int z = 0; z < 4; z++)
+                        {
+                            const float tx = x0 + (x1 - x0) * scaleX(kZoneTop[z]);
+                            drawList->AddLine(ImVec2(tx, y1 + 1.0f), ImVec2(tx, y1 + 5.0f), rim);
+                            char tick[8];
+                            snprintf(tick, sizeof(tick), "%d%%", (int)(kZoneTop[z] * 100.0f + 0.5f));
+                            drawList->AddText(ImVec2(tx - ImGui::CalcTextSize(tick).x * 0.5f, y1 + 5.0f), IM_COL32(150, 150, 150, 255), tick);
+                        }
+                        ImGui::Dummy(ImVec2(x1 - origin.x, bulbR * 2.0f + ImGui::GetTextLineHeight() + 6.0f));
 
-                        float fracDrawn   = (float)drawnSplats / (float)totalSplats;
-                        float fracFrustum = (float)cStats.asFrustumCulledSplats / (float)totalSplats;
-                        float fracCone    = (float)cStats.asConeCulledSplats / (float)totalSplats;
-                        float fracLod     = (float)cStats.lodPrunedSplats / (float)totalSplats;
-
-                        float curX = barPos.x;
-                        auto drawSegment = [&](float frac, ImU32 col) {
-                            float w = frac * barSize.x;
-                            if (w > 0.5f)
-                            {
-                                drawList->AddRectFilled(ImVec2(curX, barPos.y), ImVec2(curX + w, barPos.y + barSize.y), col, 2.0f);
-                                curX += w;
-                            }
-                        };
-
-                        drawSegment(fracDrawn,   IM_COL32(50, 205, 50, 255));   // Green: Drawn
-                        drawSegment(fracFrustum, IM_COL32(70, 130, 230, 255));  // Blue: Frustum Culled
-                        drawSegment(fracCone,    IM_COL32(255, 140, 0, 255));   // Orange: Normal Cone Culled
-                        drawSegment(fracLod,     IM_COL32(160, 90, 220, 255));  // Purple: LOD Decimated
-
-                        ImGui::Dummy(barSize);
-
-                        // Legend Swatches
-                        ImGui::TextColored(ImVec4(0.2f, 0.8f, 0.2f, 1.0f), "[■] Drawn (%.1f%%)", fracDrawn * 100.0f);
-                        ImGui::SameLine();
-                        ImGui::TextColored(ImVec4(0.3f, 0.6f, 1.0f, 1.0f), "[■] Frustum (%.1f%%)", fracFrustum * 100.0f);
-                        ImGui::SameLine();
-                        ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.1f, 1.0f), "[■] Cone (%.1f%%)", fracCone * 100.0f);
-                        ImGui::SameLine();
-                        ImGui::TextColored(ImVec4(0.7f, 0.4f, 0.9f, 1.0f), "[■] LOD (%.1f%%)", fracLod * 100.0f);
+                        ImGui::TextColored(kZoneColour[zone], "Drawn %.1f%% of the model: %s", fracDrawn * 100.0f, kZoneName[zone]);
+                        if (ImGui::IsItemHovered())
+                            ImGui::SetTooltip("The share of the model's splats drawn this frame (the cost).\n"
+                                              "Up to 5%% excellent (green), 15%% good (blue), 30%% fair (yellow),\n"
+                                              "50%% heavy (orange), above that overloaded (red).");
                     }
 
                     ImGui::Spacing();
@@ -5983,6 +6128,7 @@ namespace Splat
 
         // 3b. Presentation Mode, under the analytics panel
         DrawPresentationPanel((float)m_Width - rightPanelWidth - 10.0f, rightPanelWidth, std::max(ImGui::GetFrameHeight() * 2.0f, 30.0f + panelHeight - m_rightPanelRect.w));
+        DrawClosePrompt();
 
         // 4. Bottom Status & Notification Bar
         ImGui::SetNextWindowPos(ImVec2(10, (float)m_Height - 32));
@@ -6222,7 +6368,8 @@ namespace Splat
                 // state, so it must not depend on the Highlight Edge Chunks visualizer toggle (which only
                 // tints the viewport). Edge detection runs while refinement or highlighting is enabled.
                 bool isSil = (isLit && silCount > 0);
-                bool isTrans = (isLit && transCount > 0);
+                // A locked level's bar holds still: no transition highlight (its blocks still fade as the view refines)
+                bool isTrans = (isLit && transCount > 0) && !(m_enableStreamingSimulation && m_stream.LevelLocked(lodIdx));
 
                 if (isLit)
                 {
@@ -6278,7 +6425,35 @@ namespace Splat
                 }
             }
 
-            ImGui::Dummy(ImVec2(availWidth, barHeight + 4.0f));
+            // The bar is a toggle: a click locks the level against eviction (StreamRuntime::m_lodLocked); a locked bar is
+            // dimmed, with a padlock over its middle
+            ImGui::SetCursorScreenPos(p0);
+            ImGui::PushID(lodIdx);
+            const bool barClicked = ImGui::InvisibleButton("##lodlock", ImVec2(availWidth, barHeight + 4.0f));
+            ImGui::PopID();
+            const bool canLock = m_enableStreamingSimulation && lodIdx < kMaxStreamLevels;
+            if (barClicked && canLock)
+            {
+                SyncStreamInputs();
+                m_stream.m_lodLocked[lodIdx] = !m_stream.m_lodLocked[lodIdx];
+                MarkStreamDirty();
+            }
+            if (ImGui::IsItemHovered())
+                ShowTooltip(canLock ? (m_stream.LevelLocked(lodIdx) ? "LOD %d is locked: its resident blocks are never evicted (view release, decay, Evict). Click to unlock."
+                                                                    : "Click to lock LOD %d: its resident blocks are never evicted (view release, decay, Evict).")
+                                    : "Locking a level needs Simulate Network Streaming (without it every level is resident).", lodIdx);
+            if (canLock && m_stream.LevelLocked(lodIdx))
+            {
+                drawList->AddRectFilled(p0, ImVec2(p0.x + availWidth, p0.y + barHeight), IM_COL32(0, 0, 0, 150), 2.0f);
+                // The padlock: a shackle arc over a body, centred on the bar
+                const float cx = p0.x + availWidth * 0.5f, bodyW = 9.0f, bodyH = 7.0f;
+                const float bodyTop = p0.y + barHeight * 0.5f - bodyH * 0.5f + 1.5f;
+                const ImU32 lockCol = IM_COL32(255, 220, 120, 255);
+                drawList->PathArcTo(ImVec2(cx, bodyTop), 3.0f, 3.14159f, 6.28318f, 10);
+                drawList->PathStroke(lockCol, false, 1.6f);
+                drawList->AddRectFilled(ImVec2(cx - bodyW * 0.5f, bodyTop), ImVec2(cx + bodyW * 0.5f, bodyTop + bodyH), lockCol, 1.5f);
+                drawList->AddRectFilled(ImVec2(cx - 0.75f, bodyTop + 2.0f), ImVec2(cx + 0.75f, bodyTop + 4.5f), IM_COL32(60, 45, 10, 255));
+            }
         }
 
         ImGui::Spacing();
@@ -7121,6 +7296,15 @@ namespace Splat
                 ShowTooltip("The shadow mesh (the model's surface) drawn at its own depth from the camera: a block more than %.1f median edges (%.1f cm) behind it is dropped. It drops more (close up on Cthulhu 46%% of the splats against 33%%), but the mesh bridges the gaps in thin, open parts, so visible splats behind those bridges go too: holes in Cthulhu's wings. A margin wide enough to close them drops fewer than the occluder volume.",
                     m_occlusionMarginEdges, m_shadowMeshMedianEdge * m_occlusionMarginEdges * 100.0f);
             if (changed) SaveConfigFile();
+        }
+
+        // Opaque Front Surface (remembered: opaque_front_surface)
+        if (m_enableOcclusionCulling)
+        {
+            if (ImGui::Checkbox("Opaque Front Surface", &m_opaqueSurface)) SaveConfigFile();
+            if (ImGui::IsItemHovered())
+                ShowTooltip("Where the occlusion volume lies behind the splats, a surface they mostly cover (from %.0f%%, fully from %.0f%%) is drawn opaque, so the volume's flat colour does not show through a thin front shell -- the top of a head seen edge-on, which shifts against the surface as the model turns. The splats are blended into a layer of their own and laid over the scene; silhouettes against the background are unchanged.",
+                    m_opaqueLo * 100.0f, m_opaqueHi * 100.0f);
         }
 
         // The model views in place of the splats: the occlusion volume alone, and the shadow mesh
@@ -8084,6 +8268,18 @@ namespace Splat
             m_state.shadowMeshVersion = m_shadowMeshVersion;
             m_state.occlusionTest = (uint32_t)m_occlusionTest;
             m_state.occlusionMargin = m_shadowMeshMedianEdge * m_occlusionMarginEdges;
+            m_state.solidDepth = m_solidDepthOn && m_solidAlpha > 0.0f;
+            m_state.solidAlpha = m_solidAlpha;
+            m_state.solidMargin = m_solidMargin;
+            m_state.occluderPush = m_shadowMeshMedianEdge * m_occluderPushEdges;
+            m_state.farTint = m_farTint;
+            m_state.trimQuads = m_trimQuads;
+            m_state.sortOnlyWhenMoved = m_sortOnlyWhenMoved;
+            m_state.frustumCull = m_frustumCull;
+            m_state.opaqueSurface = m_cliOpaqueSurface < 0 ? m_opaqueSurface : m_cliOpaqueSurface == 1;
+            m_state.opaqueLo = m_opaqueLo;
+            m_state.opaqueHi = m_opaqueHi;
+            m_state.opaqueDebug = (m_vizShowThrough ? 1u : 0u) | (m_vizCoverage ? 2u : 0u);
             const bool hasOccluder = HasOccluderMesh() && !m_occluderMeshGpu.vertices.empty();
             m_state.pOccluderMeshVertices = hasOccluder ? m_occluderMeshGpu.vertices.data() : nullptr;
             m_state.occluderMeshVertexCount = hasOccluder ? m_occluderMeshGpu.VertexCount() : 0;
@@ -8401,9 +8597,107 @@ namespace Splat
             if (ImGui::IsItemHovered()) ShowTooltip("Removes the model and resets the view, ready to load one.");
             ImGui::Unindent();
         }
+        if (MenuHeader("Optimizations##Presentation"))
+        {
+            ImGui::Indent();
+            static const char* kOptName[kOptLevels] = { "Brute force", "+ Trimmed quads", "+ Sort on movement", "+ Culling", "+ Level of detail", "+ Streaming" };
+            static const char* kOptText[kOptLevels] = {
+                "Nothing optimized: every splat of the finest level is sorted every frame and drawn as its full quad, whether on screen or not, with all the work on the main thread.",
+                "GPU: each splat's quad is shrunk to where it is still visible (alpha above 1/255), so far fewer pixels are shaded and blended.",
+                "GPU: the depth sort runs only when the view has moved enough to change the order, not on every frame.",
+                "GPU: blocks outside the view, and blocks hidden behind the occlusion volume, are dropped before the sort and never drawn.",
+                "CPU: the whole model is drawn at the coarsest level of detail that still looks the same at this distance.",
+                "Streaming: blocks arrive view-first, each at the level its on-screen size needs; unused blocks are released, and the streaming runs on its own CPU thread." };
+            ImGui::PushItemWidth(-1.0f);
+            int level = m_optLevel;
+            if (ImGui::SliderInt("##OptLevel", &level, 0, kOptLevels - 1, kOptName[std::clamp(level, 0, kOptLevels - 1)]) && level != m_optLevel)
+                ApplyOptimizationLevel(level);
+            ImGui::PopItemWidth();
+            ImGui::PushTextWrapPos(0.0f);
+            ImGui::TextColored(ImVec4(0.75f, 0.85f, 1.0f, 1.0f), "%s", kOptText[m_optLevel]);
+            ImGui::PopTextWrapPos();
+            ImGui::Text("%.0f fps, %.2f ms a frame", ImGui::GetIO().Framerate, 1000.0f / std::max(1.0f, ImGui::GetIO().Framerate));
+            ImGui::Unindent();
+        }
+        if (MenuHeader("Occlusion##Presentation"))
+        {
+            ImGui::Indent();
+            if (ImGui::RadioButton("Back of the Head##OccPreset", m_presentOcclusionPreset == kPresetBackOfHead))
+            {
+                m_presentOcclusionPreset = kPresetBackOfHead;
+                ApplyBackOfHeadView();
+                SchedulePresentationShot("Occlusion - Back of the Head");
+            }
+            if (ImGui::IsItemHovered())
+                ShowTooltip("The crown of the head from behind and a little above, close up, with the occlusion volume on: where the\nfront shell of splats is thin, the volume inside shows through it (a dark band that shifts against the surface\nas the model turns; some of the band is the scan's own shadow).");
+            // The visualisation, on or off from wherever the view is: red and green together
+            bool viz = m_vizShowThrough || m_vizCoverage;
+            if (ImGui::Checkbox("Occluder Show-Through##Occ", &viz))
+            {
+                m_vizShowThrough = m_vizCoverage = viz;
+                if (viz) SchedulePresentationShot("Occlusion - Show-Through");
+            }
+            if (ImGui::IsItemHovered())
+                ShowTooltip("Over the occlusion volume, how much of it shows through the splats in front: black none, bright red all of it\n(linear). Elsewhere, how much the splats cover, in green (the model's rim against the background).\nThe view stays where it is.");
+            ImGui::Checkbox("Far Side in Magenta##Occ", &m_farTint);
+            if (ImGui::IsItemHovered())
+                ShowTooltip("The splats beyond the plane through the model's centre, facing the camera, drawn magenta: any magenta on the\nnear side is the far side showing through it. The view stays where it is.");
+            ImGui::Checkbox("Solid Splat Depth##Occ", &m_solidDepthOn);
+            if (ImGui::IsItemHovered())
+                ShowTooltip("Before the splats are blended, each one's solid core -- where its own opacity reaches the threshold -- writes depth,\nso the far side behind the near shell is not drawn, also where the occlusion volume does not reach (the crown\nseen edge-on). Experimental.");
+            if (m_solidDepthOn)
+            {
+                ImGui::SliderFloat("Core opacity##Occ", &m_solidAlpha, 0.05f, 0.8f, "%.2f");
+                if (ImGui::IsItemHovered())
+                    ShowTooltip("A splat writes depth where its own opacity is at least this. Lower hides more of the far side; too low and\nfaint splats of the near surface hide each other.");
+            }
+            ImGui::Unindent();
+        }
 
         RecordSidePanel(m_presentPanelRect, m_presentPanelCollapsed);
         ImGui::End();
+    }
+
+    // Occlusion - Back of the Head: the crown from behind and a little above (yaw 214, pitch 20 degrees), the target raised
+    // 38% of the model's height and at 45% of the fitted distance, with the occlusion volume on. Made on Cthulhu, where
+    // the volume shows through the thin shell on top of the head.
+    void SplatPakApp::ApplyBackOfHeadView()
+    {
+        ResetPresentationCamera();
+        m_splatViz = 0;
+        m_loupeEnabled = false;
+        m_enableOcclusionCulling = true;
+        m_yaw = XMConvertToRadians(214.0f);
+        m_pitch = XMConvertToRadians(20.0f);
+        m_target = m_center;
+        m_target.y += 0.38f * m_extents.y;
+        ApplyFitDistance();
+        m_distance *= 0.45f;
+    }
+
+    // The optimization slider: each level keeps the ones below it. Streaming and the level of detail are switched the way
+    // their own checkboxes do (Simulate Network Streaming, Auto Distance LOD); the GPU ones are SplatRenderer::State flags.
+    void SplatPakApp::ApplyOptimizationLevel(int level)
+    {
+        m_optLevel = std::clamp(level, 0, kOptLevels - 1);
+        m_trimQuads = m_optLevel >= 1;
+        m_sortOnlyWhenMoved = m_optLevel >= 2;
+        m_frustumCull = m_optLevel >= 3;
+        m_enableOcclusionCulling = m_optLevel >= 3 && (HasOccluderMesh() || !m_occlusionVoxels.empty());
+        const bool lod = m_optLevel >= 4, streaming = m_optLevel >= 5;
+        m_streamOnThread = streaming;
+        m_releaseUnusedSegments = streaming;
+        m_autoLOD = lod;
+        if (lod) { m_lodScreenSpace = true; m_lodPerBlock = streaming; }
+        else m_selectedPreviewLOD = 0;
+        if (streaming != m_enableStreamingSimulation)
+        {
+            m_enableStreamingSimulation = streaming;
+            if (streaming) InitStreamingSimulation();
+            else UpdatePreviewSplats();
+        }
+        else if (!streaming) UpdatePreviewSplats();
+        MarkStreamDirty();
     }
 
     void SplatPakApp::ResetPresentationCamera()
@@ -9332,8 +9626,8 @@ namespace Splat
                     why += buf;
                 }
                 else why += ".";
-                if (p.settings.shDegree != r.shDegree) r.warn[kEncDegree] = why;
-                if (memcmp(p.settings.shBits, r.shBits, std::min<uint32_t>(3u, std::min(p.settings.shDegree, r.shDegree))) != 0 || p.settings.shDegree != r.shDegree) r.warn[kEncBits] = why;
+                if (p.settings.shDegree != r.shDegree) { r.warn[kEncDegree] = why; r.severity[kEncDegree] = 2; }
+                if (memcmp(p.settings.shBits, r.shBits, std::min<uint32_t>(3u, std::min(p.settings.shDegree, r.shDegree))) != 0 || p.settings.shDegree != r.shDegree) { r.warn[kEncBits] = why; r.severity[kEncBits] = 2; }
             }
         }
 
@@ -9343,15 +9637,18 @@ namespace Splat
         {
             snprintf(buf, sizeof(buf), "At %s the first picture takes %.1f s; the target is %.1f s (Compression (RDO) menu).", r.profile.c_str(), firstSeconds, m_rdoTarget.firstViewSeconds);
             r.warn[kEncFirstView] = buf;
+            r.severity[kEncFirstView] = 3;
             if (r.levels - 1 < 6)
             {
                 r.recMaxLODs = r.levels; // One more level: a smaller coarse envelope
                 snprintf(buf, sizeof(buf), "One more level (%d) makes the coarse envelope that arrives first smaller.", r.levels + 1);
                 r.warn[kEncLevels] = buf;
+                r.severity[kEncLevels] = 2;
             }
             if (!analysed && r.shDegree > 0)
             {
                 r.warn[kEncBits] = "No RDO analysis of this scan yet: Re-encode analyses the compression and picks the spherical-harmonics bits that arrive in time.";
+                r.severity[kEncBits] = 1;
                 r.needsAnalysis = true;
             }
         }
@@ -9359,27 +9656,32 @@ namespace Splat
         {
             snprintf(buf, sizeof(buf), "At %s a typical close view reaches full detail in %.1f s; the target is %.1f s (Compression (RDO) menu).", r.profile.c_str(), fullSeconds, m_rdoTarget.fullDetailSeconds);
             r.warn[kEncFullDetail] = buf;
+            r.severity[kEncFullDetail] = 3;
         }
         if (bw <= 0.0 && !analysed && r.shDegree > 0 && (r.shBits[0] < 8 || r.shBits[1] < 8 || r.shBits[2] < 8))
         {
             r.warn[kEncBits] = "Full bandwidth does not need the reduced spherical-harmonics precision: Re-encode analyses the compression and picks the best that streams in time.";
+            r.severity[kEncBits] = 1;
             r.needsAnalysis = true;
         }
         if (r.levels < 3)
         {
             snprintf(buf, sizeof(buf), "Only %d level%s: the first picture is nearly the whole model. At least 3 levels give the stream a coarse envelope to send first.", r.levels, r.levels == 1 ? "" : "s");
             r.warn[kEncLevels] = buf;
+            r.severity[kEncLevels] = 2;
             r.recMaxLODs = std::max(r.recMaxLODs, 3);
         }
         if (r.blocks < 8)
         {
             snprintf(buf, sizeof(buf), "Only %zu block%s at full detail: the stream cannot send what is in view first. A smaller Octree Chunk cuts the model into more blocks.", r.blocks, r.blocks == 1 ? "" : "s");
             r.warn[kEncChunks] = buf;
+            r.severity[kEncChunks] = 2;
             r.recChunk = std::max(0.05f, std::max(m_extents.x, std::max(m_extents.y, m_extents.z)) / 4.0f);
         }
         if (!r.occlusion)
         {
             r.warn[kEncOcclusion] = "No occlusion volume: blocks hidden behind the model are streamed and sorted anyway. Re-encode bakes one.";
+            r.severity[kEncOcclusion] = 1;
             r.recOcclusion = true;
         }
         // A time warning the encoding already does its best on: say so, so the row is not read as a re-encode away
@@ -9398,10 +9700,14 @@ namespace Splat
         if (!rep.valid) { ImGui::TextDisabled("Nothing baked yet."); return; }
         constexpr double kMiB = 1024.0 * 1024.0;
 
-        // A row, with a warning triangle in front of it when that part of the encoding should be baked again
+        // A row, with a warning triangle in front of it when that part of the encoding should be baked again, triangle and
+        // text in the row's severity: yellow a recommendation, orange a suboptimal setting, red a missed time target
+        static const ImU32 kSeverityTriangle[4] = { 0, IM_COL32(255, 210, 40, 255), IM_COL32(255, 140, 20, 255), IM_COL32(235, 55, 45, 255) };
+        static const ImVec4 kSeverityText[4] = { ImVec4(1, 1, 1, 1), ImVec4(1.0f, 0.88f, 0.40f, 1.0f), ImVec4(1.0f, 0.62f, 0.25f, 1.0f), ImVec4(1.0f, 0.38f, 0.33f, 1.0f) };
         auto row = [&](int k, const char* text, const char* tip = nullptr)
         {
             const bool warned = k >= 0 && !rep.warn[k].empty();
+            const int sev = warned ? std::min(3, std::max(1, rep.severity[k])) : 0;
             const float h = ImGui::GetTextLineHeight();
             ImGui::BeginGroup();
             const ImVec2 p = ImGui::GetCursorScreenPos();
@@ -9410,13 +9716,14 @@ namespace Splat
                 ImDrawList* dl = ImGui::GetWindowDrawList();
                 const float s = h * 0.95f, top = p.y + 0.5f;
                 const float cx = p.x + s * 0.5f;
-                dl->AddTriangleFilled(ImVec2(cx, top), ImVec2(p.x, top + s), ImVec2(p.x + s, top + s), IM_COL32(255, 190, 40, 255));
-                dl->AddLine(ImVec2(cx, top + s * 0.34f), ImVec2(cx, top + s * 0.68f), IM_COL32(40, 28, 0, 255), 1.6f);
-                dl->AddCircleFilled(ImVec2(cx, top + s * 0.83f), 1.1f, IM_COL32(40, 28, 0, 255));
+                const ImU32 mark = sev == 3 ? IM_COL32(255, 255, 255, 255) : IM_COL32(40, 28, 0, 255);
+                dl->AddTriangleFilled(ImVec2(cx, top), ImVec2(p.x, top + s), ImVec2(p.x + s, top + s), kSeverityTriangle[sev]);
+                dl->AddLine(ImVec2(cx, top + s * 0.34f), ImVec2(cx, top + s * 0.68f), mark, 1.6f);
+                dl->AddCircleFilled(ImVec2(cx, top + s * 0.83f), 1.1f, mark);
             }
             ImGui::Dummy(ImVec2(h + 4.0f, h));
             ImGui::SameLine(0.0f, 0.0f);
-            if (warned) ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.45f, 1.0f), "%s", text);
+            if (warned) ImGui::TextColored(kSeverityText[sev], "%s", text);
             else ImGui::TextUnformatted(text);
             ImGui::EndGroup();
             if (ImGui::IsItemHovered())
@@ -9512,7 +9819,7 @@ namespace Splat
                 if (!r.warn[k].empty())
                 {
                     ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + 520.0f);
-                    ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.45f, 1.0f), "%s:", s_rows[k]);
+                    ImGui::TextColored(kSeverityText[std::min(3, std::max(1, r.severity[k]))], "%s:", s_rows[k]);
                     ImGui::SameLine();
                     ImGui::TextWrapped("%s", r.warn[k].c_str());
                     ImGui::PopTextWrapPos();

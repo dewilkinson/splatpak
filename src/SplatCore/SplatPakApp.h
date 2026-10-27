@@ -72,7 +72,12 @@ namespace Splat
         void OnParseCommandLine(LPSTR lpCmdLine, uint32_t* pWidth, uint32_t* pHeight) override;
         void OnCreate() override;
         void OnDestroy() override;
-        bool OnCloseRequested();                    // Asks to save an unsaved bake; waits for a save in progress (the window's close and Esc, through CloseGuardProc)
+        bool OnCloseRequested(bool escape);         // Asks to save an unsaved bake; waits for a save in progress (the window's close and Esc, through CloseGuardProc)
+        // The close prompt for an unsaved bake (DrawClosePrompt): Open asks it to appear, Shown while it is up, Cancel = Esc
+        enum class ClosePrompt { None, Open, Shown, Cancel };
+        ClosePrompt m_closePrompt = ClosePrompt::None;
+        void DrawClosePrompt();
+        bool SaveBakeFromPrompt(bool quitAfter);
         bool m_bakeUnsaved = false;                 // A bake on screen that no .gstx holds yet (cleared by a save or a package open)
         bool m_quitAfterSave = false;               // Close once the save under way has written its package
         // Mouse-look (Tab; Esc or Tab again, or losing focus, leaves it): the cursor is hidden and held at the window's
@@ -208,7 +213,8 @@ namespace Splat
         // Dataset auto-loaded on launch when no file is passed on the command line (see OnCreate()).
         // Configurable via config.json or config.ini ("startup_dataset") so a different default
         // can be swapped in without recompiling. Tried as-is and at a few relative CWD depths.
-        std::string m_startupDatasetPath = "assets/dwarves/dwarves.gstx";
+        static constexpr const char* kBuiltInDataset = "assets/cthulu/cthulu.gstx"; // Opened when the configured one is not there
+        std::string m_startupDatasetPath = kBuiltInDataset;
 
         // Interior Occlusion Volume: solid depth-writing cubes baked at preprocessing time so far-side
         // splats can't show through gaps in the near side. Optional and disabled by default.
@@ -254,6 +260,15 @@ namespace Splat
         uint32_t m_shadowMeshVersion = 0;    // Bumped when the mesh or the drawn level changes (renderer re-upload)
         float    m_shadowMeshMedianEdge = 0.0f; // Level 0's median edge: the unit of the shadow-mesh occlusion test's margin
         float    m_occlusionMarginEdges = 1.0f; // The shadow-mesh test's margin in those edges (--occlusion-margin)
+        bool     m_solidDepthOn = false;    // Solid splat depth (SplatRenderer::State::solidDepth), experimental; --solid-alpha
+        float    m_solidAlpha = 0.3f;       // Its core opacity threshold
+        float    m_solidMargin = 0.02f;     // Its depth push-back in metres; --solid-margin
+        bool     m_opaqueSurface = true;    // Opaque Front Surface (SplatRenderer::State::opaqueSurface); config opaque_front_surface, --opaque-front on|off
+        float    m_opaqueLo = 0.3f, m_opaqueHi = 0.8f; // Its coverage ramp; --opaque-ramp lo,hi
+        float    m_occluderPushEdges = 0.0f; // The occluder mesh pushed back this many median edges under the splats (experimental); --occluder-push
+        bool     m_farTint = false;         // The far side drawn magenta, a see-through test (SplatRenderer::State::farTint); --far-tint
+        bool     m_vizShowThrough = false;  // Over the occlusion volume, how much of it shows through the splats, in red (--opaque-debug)
+        bool     m_vizCoverage = false;     // Elsewhere, the splats' coverage in green (--opaque-debug)
         int      m_occlusionTest = 0;       // The sort's occlusion test: 0 the occluder mesh, 1 the shadow mesh's depth (experimental; SplatRenderer::State::occlusionTest); config occlusion_test, --occlusion-test
         ShadowMeshDisplay m_shadowMeshGpu;   // The drawn level, subdivided and smooth-shaded (ShadowMeshDisplay.h)
         int      m_shadowMeshGpuLevel = -1;
@@ -561,6 +576,9 @@ namespace Splat
             double   bandwidthMBps = 0.0;      // 0 = Full (uncapped)
             std::string profile;               // "4G (2 MB/s)"
             std::string warn[kEncRowCount];    // Empty = nothing to fix on that row
+            // The row's severity, which colours its triangle and text: 1 a recommendation (yellow), 2 a suboptimal setting
+            // (orange), 3 incompatible with the network profile's bitrate -- the time target is missed (red)
+            int      severity[kEncRowCount] = {};
             // What a re-encode would change: -1 / 0 = keep
             int      recMaxLODs = -1;
             float    recChunk = 0.0f;
@@ -818,6 +836,7 @@ namespace Splat
         float       m_subjectRadius = 0.0f;
         bool        m_noSubject = false;            // --no-subject: no boost (the measurement's baseline)
         int         m_cliOcclusion = -1;            // --occlusion on|off: the volume culls and depth-tests (or not) this run; -1 = the setting
+        int         m_cliOpaqueSurface = -1;        // --opaque-front on|off: Opaque Front Surface this run; -1 = the setting
         // The background behind the model (Renderer tab, Background; config background_*). Recommended takes the package's
         // own (PackageView background) or, for a scan, BackgroundEstimate's; the others are the user's own and win over it.
         enum BackgroundChoice { BgRecommended = 0, BgBlack, BgStudioWhite, BgLightGrey, BgDarkGrey, BgCustom, BgGradient, BgImage, BgChoiceCount };
@@ -860,6 +879,10 @@ namespace Splat
         float    m_cliZoomPeriodSec = 0.0f;         // --zoom P: the orbit distance swings in and out once every P seconds (motion benchmark)
         float    m_cliZoomBaseDistance = 0.0f, m_cliZoomPhase = 0.0f;
         float    m_cliDistanceFactor = 0.0f;        // --distance F: the orbit distance is set to F x the framing distance once the model shows
+        bool     m_cliViewSet = false;              // --view yaw,pitch[,lift] (degrees; lift x the model's height raises the target), once the model shows
+        float    m_cliViewYaw = 0.0f, m_cliViewPitch = 0.0f, m_cliViewLift = 0.0f;
+        int      m_cliOptLevel = -1;                // --opt-level N: the optimization slider's position (-1 = as it is)
+        double   m_cliShownSeconds = 0.0;           // How long the fitted model has been on screen (--distance and --view wait for 2 s)
         bool     m_modelClickArmed = false;         // A left press began over the viewport: its release, if not a drag, may be a click on the model
         bool     ClickHitsModel(float x, float y) const;
         double   m_streamDtAccumMs = 0.0;           // Time since the stream's last update (it runs at most kStreamUpdateHz a second)
@@ -907,9 +930,18 @@ namespace Splat
         // (DrawPresentationPanel); the choice is shown but nothing is held: a preset applies once, when it is picked.
         ImVec4 m_presentPanelRect = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
         bool   m_presentPanelCollapsed = false;
-        static constexpr int kPresetNone = -1, kPresetClear = 0, kPresetPoints = 1, kPresetOutlines = 2, kPresetFull = 3, kPresetCulling = 4;
+        static constexpr int kPresetNone = -1, kPresetClear = 0, kPresetPoints = 1, kPresetOutlines = 2, kPresetFull = 3, kPresetCulling = 4, kPresetBackOfHead = 5;
         int    m_presentSplatPreset = kPresetNone;
         int    m_presentStreamPreset = kPresetNone;
+        int    m_presentOcclusionPreset = kPresetNone;
+        void   ApplyBackOfHeadView();                // Occlusion - Back of the Head: the crown from behind, close up
+        // Optimizations: a slider from brute force (0: every splat of the finest level, sorted every frame, full quads, no
+        // culling, all on the main thread) to everything on (5), each step adding one group (ApplyOptimizationLevel)
+        static constexpr int kOptLevels = 6;
+        int    m_optLevel = kOptLevels - 1;
+        bool   m_trimQuads = true, m_sortOnlyWhenMoved = true, m_frustumCull = true; // SplatRenderer::State's, set by the slider
+        bool   m_streamOnThread = true;              // The streaming update on its own thread (off: on the main thread, as scripted runs)
+        void   ApplyOptimizationLevel(int level);
         void   DrawPresentationPanel(float x, float width, float maxHeight);
         void   ApplyPresentationClear();             // Clear: no model, the launch view, the visualizers back to normal, no loupe
         void   ResetPresentationCamera();            // Live camera, no auto-rotate: what every preset but Culling starts from

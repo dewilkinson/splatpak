@@ -196,6 +196,11 @@ namespace Splat
         SplatEncodeParams m_splatParams;
         size_t            m_bytesPerRenderPoint = 20;
 
+        // Levels locked against eviction (the residency panel's padlocks): their resident blocks stay resident through
+        // view-driven release, decay and the Evict button; only a Re-Stream reset clears them
+        bool              m_lodLocked[kMaxStreamLevels] = {};
+        bool LevelLocked(int lvl) const { return lvl >= 0 && lvl < kMaxStreamLevels && m_lodLocked[lvl]; }
+
         float MaxRingBufferMB() const;
         void InitStreamingSimulation();
         void ResetStreamingSimulation();

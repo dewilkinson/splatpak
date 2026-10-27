@@ -181,7 +181,23 @@ int main(int argc, char** argv)
     if (!policyRun)
     {
         printf("Level 0 %s\n", full ? "fully resident" : "NOT fully resident");
-        return full ? 0 : 1;
+        // The residency panel's locks: every level but 0 locked, then Evict. Level 1 must stay resident and be drawn on the
+        // very next update (its blocks show themselves), not fade back up from the coarsest level.
+        for (int l = 1; l < (int)numLevels && l < kMaxStreamLevels; l++) rt.m_lodLocked[l] = true;
+        rt.ClearResidentStream();
+        rt.UpdateStreamingSimulation(dt);
+        uint32_t byLevel[kMaxStreamLevels] = {};
+        for (const auto& c : rt.m_rendererMeshletChunks) if (c.lodLevel < (uint32_t)kMaxStreamLevels) byLevel[c.lodLevel]++;
+        printf("Locked 1..%zu, Evict: L0 %.1f%%  L1 %.1f%% resident; render list by level:", numLevels - 1,
+            rt.m_lodTotalSplats[0] ? 100.0 * rt.m_lodResidentSplats[0] / rt.m_lodTotalSplats[0] : 0.0,
+            rt.m_lodTotalSplats[1] ? 100.0 * rt.m_lodResidentSplats[1] / rt.m_lodTotalSplats[1] : 0.0);
+        for (size_t l = 0; l < numLevels; l++) printf(" L%zu %u", l, byLevel[l]);
+        printf("\n");
+        uint32_t listTotal = 0;
+        for (size_t l = 0; l < numLevels; l++) listTotal += byLevel[l];
+        const bool lockHeld = rt.m_lodResidentSplats[1] == rt.m_lodTotalSplats[1] && byLevel[1] * 2 > listTotal;
+        printf("Locks %s\n", lockHeld ? "held: level 1 drawn at once" : "FAILED: level 1 not resident or not drawn");
+        return (full && lockHeld) ? 0 : 1;
     }
     // The policy checks, at the final (still) view
     auto pct = [&](int l) { return rt.m_lodTotalSplats[l] ? 100.0 * rt.m_lodResidentSplats[l] / rt.m_lodTotalSplats[l] : 0.0; };

@@ -141,6 +141,31 @@ namespace Splat
             // wide enough to keep them (8 mesh edges) drops fewer than the occluder. The draw's per-pixel test stays the occluder's.
             uint32_t                 occlusionTest = 0;
             float                    occlusionMargin = 0.0f; // Metres (the shadow mesh's median edge)
+            // Solid splat depth (experimental, splat mode): before the blended pass, each splat's solid core -- where its own
+            // alpha reaches solidAlpha -- writes depth pushed solidMargin metres back along the view ray, and the blended pass
+            // is depth-tested against it, so what lies behind an opaque front surface is not drawn (no see-through).
+            bool                     solidDepth = false;
+            float                    solidAlpha = 0.5f;
+            float                    solidMargin = 0.02f;
+            // Opaque Front Surface (splat mode, with the occlusion volume): the splats are blended into a layer of their own,
+            // and where the occlusion volume lies behind a pixel, a layer at least opaqueLo covered is made opaque (fully
+            // from opaqueHi), so the volume's flat colour cannot show through a thin front shell (SplatComposite.hlsl).
+            float                    occluderPush = 0.0f; // Metres the occluder mesh is pushed back along the view ray (ShadowMesh.hlsl, occluderMeshVS)
+            // GPU optimizations that only the Presentation Mode optimization slider turns off (splat mode): each quad shrunk to
+            // where its splat's alpha reaches 1/255 and sub-pixel discs as dots; the sort run only once the view has moved
+            // enough to change the order; blocks outside the view dropped in the sort
+            bool                     trimQuads = true;
+            bool                     sortOnlyWhenMoved = true;
+            bool                     frustumCull = true;
+            // Far-side tint (a see-through test): the splats beyond the plane through the model's centre, facing the camera,
+            // drawn magenta, so any of the far side that shows through the near side is plain to see
+            bool                     farTint = false;
+            bool                     opaqueSurface = false;
+            float                    opaqueLo = 0.3f;
+            float                    opaqueHi = 0.8f;
+            // Its visualisation (SplatComposite.hlsl), a mask: 1 over the occlusion volume, how much of it shows through the
+            // splats (black none .. red all); 2 elsewhere, the splats' coverage (green). Either one draws the splats layered.
+            uint32_t                 opaqueDebug = 0;
             bool                     showGrid = true;       // The editor grid on the y = 0 plane (Grid.hlsl)
             // Occluder mesh (format 13): the occlusion volume as a mesh, drawn in its place (same vertex layout)
             const void*              pOccluderMeshVertices = nullptr;
@@ -293,8 +318,14 @@ namespace Splat
             float      splatDiscRadius[8];    // Splat mode: camera-facing disc radius per level for level 2 and up, world units (two float4 rows in the shader; splatSlotCount ends a 16-byte row, so no padding)
             float      splatDiscOpacityFloor; // Splat mode: opacity floor for the discs of level 1 and up (see State)
             uint32_t   splatViz;              // g_SplatViz: State::splatViz in the main pass, State::loupeViz in the loupe pass
-            float      splatDiscPad[2];       // Pads to a whole 16-byte row (float2 g_SplatDiscPad in the shader)
+            float      solidAlpha;            // Solid splat depth: State::solidAlpha
+            float      solidMargin;           // Solid splat depth: State::solidMargin
+            uint32_t   solidPass;             // 1 = this draw is the solid splat depth pass
+            float      occluderPush;          // Metres the occluder mesh is pushed back along the view ray (State::occluderPush)
+            uint32_t   farTint;               // State::farTint
+            uint32_t   fullQuads;             // 1 = !State::trimQuads
         };
+        static_assert(offsetof(SplatCB, occluderPush) == 500, "SplatCB::occluderPush must stay at c31.y: ShadowMesh.hlsl reads it with packoffset");
         static_assert(offsetof(SplatCB, splatDiscRadius) % 16 == 0, "SplatCB::splatDiscRadius must start a 16-byte row: the shader reads it as float4 g_SplatDiscRadius[2]");
         static_assert(sizeof(SplatCB) % 16 == 0, "SplatCB must be a whole number of 16-byte rows");
 
@@ -325,6 +356,8 @@ namespace Splat
         ID3D12PipelineState* m_pSplatPSOLinear = nullptr;
         ID3D12PipelineState* m_pSplatPSODisplayDepth = nullptr; // Same, depth-tested (no write) against the occlusion volume
         ID3D12PipelineState* m_pSplatPSOLinearDepth = nullptr;
+        ID3D12PipelineState* m_pSolidDepthPSODisplay = nullptr; // Solid splat depth pass: no colour, depth LESS test + write
+        ID3D12PipelineState* m_pSolidDepthPSOLinear = nullptr;
         ID3D12PipelineState* m_pOccluderPSOUnorm = nullptr;     // The occluder on the UNORM target of display-space splat blending
         DXGI_FORMAT          m_unormFormat = DXGI_FORMAT_R8G8B8A8_UNORM;
         DXGI_FORMAT          m_srgbFormat = DXGI_FORMAT_R8G8B8A8_UNORM_SRGB;
@@ -419,6 +452,7 @@ namespace Splat
         D3D12_RESOURCE_STATES      m_chunkSlotBaseState = D3D12_RESOURCE_STATE_COPY_DEST;
         uint32_t                   m_splatSlotCount = 0;             // Sum of the render list's splat counts
         bool                       m_splatSortNeedsRun = true;
+        bool                       m_sortFrustumCull = true; // State::frustumCull at the last sort: a change re-sorts
         uint32_t                   m_heartbeatSorts = 0;             // Splat sorts and render-list uploads since the last heartbeat line
         uint32_t                   m_heartbeatListUploads = 0;
         uint32_t                   m_heartbeatCopiesInFlight = 0; // List uploads that found the previous list's copy still running (what tore the list before the upload ring)
@@ -632,6 +666,18 @@ namespace Splat
         void CreateBackdropPipelines(CAULDRON_DX12::SwapChain* pSwapChain);
         void UpdateBackdropImage(const std::string& path);
         void DrawBackdrop(ID3D12GraphicsCommandList* pCmdLst, const State* pState, bool linearOut);
+
+        // Opaque Front Surface (State::opaqueSurface): the splats' own layer (the scene colour buffer's layout, both views)
+        // and SplatComposite.hlsl, which lays it over the scene: b0 four root constants, t0 the layer and t1 the depth
+        // buffer (one table), a PSO per render-target format.
+        CAULDRON_DX12::Texture     m_splatLayer;
+        CAULDRON_DX12::RTV         m_splatLayerRTV;
+        CAULDRON_DX12::RTV         m_splatLayerRTVUnorm;
+        CAULDRON_DX12::CBV_SRV_UAV m_compositeTableSRVs;
+        ID3D12RootSignature*       m_pCompositeRootSig = nullptr;
+        ID3D12PipelineState*       m_pCompositePSO = nullptr;
+        ID3D12PipelineState*       m_pCompositePSOUnorm = nullptr;
+        void CreateCompositePipelines(CAULDRON_DX12::SwapChain* pSwapChain);
 
         ID3D12RootSignature*       m_pTemporalRootSig = nullptr;
         ID3D12PipelineState*       m_pTemporalPSO = nullptr;

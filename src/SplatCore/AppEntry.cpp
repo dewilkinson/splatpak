@@ -128,7 +128,7 @@ int Splat::RunSplatPakApp(HINSTANCE hInstance, LPSTR lpCmdLine, int nCmdShow, co
                 forwarded += "--render-path " + args[++i] + " ";
                 continue;
             }
-            if (a == "--stream-test" || a == "--remember-settings" || a == "--level0" || a == "--no-taa" || a == "--no-subject" || a == "--ring-test")
+            if (a == "--stream-test" || a == "--remember-settings" || a == "--level0" || a == "--no-taa" || a == "--no-subject" || a == "--ring-test" || a == "--opaque-debug" || a == "--far-tint")
             {
                 forwarded += a + " ";
                 continue;
@@ -143,7 +143,7 @@ int Splat::RunSplatPakApp(HINSTANCE hInstance, LPSTR lpCmdLine, int nCmdShow, co
                 forwarded += a + " \"" + args[++i] + "\" ";
                 continue;
             }
-            if (a == "--camera-capture" || a == "--cameras" || a == "--camera" || a == "--camera-list" || a == "--size" || a == "--scene" || a == "--spin" || a == "--occlusion" || a == "--policy" || a == "--zoom" || a == "--occlusion-test" || a == "--distance" || a == "--occlusion-margin")
+            if (a == "--camera-capture" || a == "--cameras" || a == "--camera" || a == "--camera-list" || a == "--size" || a == "--scene" || a == "--spin" || a == "--occlusion" || a == "--policy" || a == "--zoom" || a == "--occlusion-test" || a == "--distance" || a == "--occlusion-margin" || a == "--solid-alpha" || a == "--solid-margin" || a == "--opaque-front" || a == "--opaque-ramp" || a == "--view" || a == "--occluder-push" || a == "--opt-level")
             {
                 if (i + 1 >= args.size())
                 {

@@ -8,15 +8,16 @@
 // no input layout, so it runs on every render path (mesh shaders, VS SM6, and VS SM5 under FXC): the vertex shader
 // fetches the index list and the vertices from structured buffers bound at t0 and t1 of the shared root signature.
 
-// The leading members of SplatCB (Splat.hlsl); only these are read here
+// The members of SplatCB (Splat.hlsl) read here, at their offsets (g_OccluderPush: SplatRenderer.h asserts byte 500)
 cbuffer SplatCB : register(b0)
 {
-    float4x4 g_ViewProj;
-    float3   g_CamRight;
-    float    g_Radius;
-    float3   g_CamUp;
-    float    g_Time;
-    float3   g_ViewerEyePos;
+    float4x4 g_ViewProj      : packoffset(c0);
+    float3   g_CamRight      : packoffset(c4);
+    float    g_Radius        : packoffset(c4.w);
+    float3   g_CamUp         : packoffset(c5);
+    float    g_Time          : packoffset(c5.w);
+    float3   g_ViewerEyePos  : packoffset(c6);
+    float    g_OccluderPush  : packoffset(c31.y);
 };
 
 struct ShadowMeshVertex
@@ -53,6 +54,18 @@ ShadowMeshVSOut shadowMeshVS(uint vertexId : SV_VertexID)
     o.pos = mul(g_ViewProj, float4(v.position, 1.0));
     o.color = float3(v.colour & 0xFF, (v.colour >> 8) & 0xFF, (v.colour >> 16) & 0xFF) / 255.0;
     o.normal = v.normal != 0 ? DecodeOctNormal(v.normal) : float3(0, 0, 0);
+    return o;
+}
+
+// The occluder mesh under the splats: pushed g_OccluderPush back along the view ray. A splat is drawn as a camera-facing
+// quad at its centre's depth, so where the inset occluder is seen edge-on (the top of a head) its near surface can lie in
+// front of a front splat's centre over part of that quad: the depth test cut holes in the shell there, and the occluder
+// showed in them. The push keeps it behind the shell's splats; the far side stays far behind it.
+ShadowMeshVSOut occluderMeshVS(uint vertexId : SV_VertexID)
+{
+    ShadowMeshVSOut o = shadowMeshVS(vertexId);
+    const float3 pushed = o.world + normalize(o.world - g_ViewerEyePos) * g_OccluderPush;
+    o.pos = mul(g_ViewProj, float4(pushed, 1.0));
     return o;
 }
 

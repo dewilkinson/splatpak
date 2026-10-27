@@ -118,6 +118,9 @@ namespace Splat
         m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(1, &m_blurUavA);
         m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(1, &m_blurUavB);
         m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(1, &m_backdropSrv);
+        m_resourceViewHeaps.AllocRTVDescriptor(1, &m_splatLayerRTV);
+        m_resourceViewHeaps.AllocRTVDescriptor(1, &m_splatLayerRTVUnorm);
+        m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(2, &m_compositeTableSRVs);
 
         // The loading veil's blur (LoadingBlurCS.hlsl): b0 five root constants, t0 the input, u0 the output. A failure
         // only loses the veil.
@@ -498,6 +501,26 @@ namespace Splat
             };
             makeSplatDepth(m_unormFormat, &m_pSplatPSODisplayDepth, "splat display depth");
             makeSplatDepth(m_srgbFormat, &m_pSplatPSOLinearDepth, "splat linear depth");
+            // Solid splat depth pass (State::solidDepth): no colour, depth LESS test + write
+            auto makeSolid = [&](DXGI_FORMAT fmt, ID3D12PipelineState** ppOut, const char* name)
+            {
+                CD3DX12_BLEND_DESC noColour(D3D12_DEFAULT);
+                noColour.RenderTarget[0].RenderTargetWriteMask = 0;
+                MeshShaderPipelineStateStream v = stream;
+                v.DepthStencilState = depthStencilItem;
+                v.BlendState = noColour;
+                D3D12_RT_FORMAT_ARRAY fmts = {};
+                fmts.NumRenderTargets = 1;
+                fmts.RTFormats[0] = fmt;
+                v.RTVFormats = fmts;
+                D3D12_PIPELINE_STATE_STREAM_DESC vd = {};
+                vd.SizeInBytes = sizeof(v);
+                vd.pPipelineStateSubobjectStream = &v;
+                if (FAILED(device2->CreatePipelineState(&vd, IID_PPV_ARGS(ppOut))))
+                    LogTransitionTrace("SplatRenderer::OnCreate ERROR: CreatePipelineState(%s) failed -- no solid splat depth.", name);
+            };
+            makeSolid(m_unormFormat, &m_pSolidDepthPSODisplay, "solid depth display");
+            makeSolid(m_srgbFormat, &m_pSolidDepthPSOLinear, "solid depth linear");
         }
 
         if (FAILED(hrMainPSO) || FAILED(hrItemPSO) || m_pPipelineState == nullptr || m_pItemPrepassPSO == nullptr)
@@ -515,6 +538,8 @@ namespace Splat
             if (m_pSplatPSOLinear) { m_pSplatPSOLinear->Release(); m_pSplatPSOLinear = nullptr; }
             if (m_pSplatPSODisplayDepth) { m_pSplatPSODisplayDepth->Release(); m_pSplatPSODisplayDepth = nullptr; }
             if (m_pSplatPSOLinearDepth) { m_pSplatPSOLinearDepth->Release(); m_pSplatPSOLinearDepth = nullptr; }
+            if (m_pSolidDepthPSODisplay) { m_pSolidDepthPSODisplay->Release(); m_pSolidDepthPSODisplay = nullptr; }
+            if (m_pSolidDepthPSOLinear) { m_pSolidDepthPSOLinear->Release(); m_pSolidDepthPSOLinear = nullptr; }
             if (m_pOccluderPSOUnorm) { m_pOccluderPSOUnorm->Release(); m_pOccluderPSOUnorm = nullptr; }
             if (m_pItemPrepassPSO) { m_pItemPrepassPSO->Release(); m_pItemPrepassPSO = nullptr; }
             if (m_pOccluderPSO) { m_pOccluderPSO->Release(); m_pOccluderPSO = nullptr; }
@@ -525,6 +550,7 @@ namespace Splat
         CreateShadowMeshPipelines(pSwapChain); // Classic graphics pipeline: the same on every render path
         CreateGridPipelines(pSwapChain);
         CreateBackdropPipelines(pSwapChain);
+        CreateCompositePipelines(pSwapChain);
         if (m_renderPath != RenderPath::MeshShaders)
         {
             CreateVertexShaderPipelines(pSwapChain);
@@ -778,8 +804,9 @@ namespace Splat
     // like the occluder. A failure only loses the debug view.
     void SplatRenderer::CreateShadowMeshPipelines(SwapChain* pSwapChain)
     {
-        D3D12_SHADER_BYTECODE vs = {}, ps = {}, flatPs = {};
+        D3D12_SHADER_BYTECODE vs = {}, ps = {}, flatPs = {}, occVs = {};
         const bool ok = CompileShaderFromFile("ShadowMesh.hlsl", NULL, "shadowMeshVS", "-T vs_6_0", &vs) && vs.pShaderBytecode != nullptr &&
+                        CompileShaderFromFile("ShadowMesh.hlsl", NULL, "occluderMeshVS", "-T vs_6_0", &occVs) && occVs.pShaderBytecode != nullptr &&
                         CompileShaderFromFile("ShadowMesh.hlsl", NULL, "shadowMeshPS", "-T ps_6_0", &ps) && ps.pShaderBytecode != nullptr &&
                         CompileShaderFromFile("ShadowMesh.hlsl", NULL, "shadowMeshFlatPS", "-T ps_6_0", &flatPs) && flatPs.pShaderBytecode != nullptr;
         if (!ok)
@@ -803,7 +830,7 @@ namespace Splat
         {
             D3D12_GRAPHICS_PIPELINE_STATE_DESC d = {};
             d.pRootSignature = m_pRootSignature;
-            d.VS = vs;
+            d.VS = k >= 4 ? occVs : vs;
             d.PS = k < 2 ? ps : flatPs;
             d.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
             d.SampleMask = UINT_MAX;
@@ -918,6 +945,62 @@ namespace Splat
             ID3D12PipelineState** out = k == 0 ? &m_pBackdropPSO : &m_pBackdropPSOUnorm;
             const HRESULT hr = m_pDevice->GetDevice()->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(out));
             if (FAILED(hr)) LogTransitionTrace("SplatRenderer::CreateBackdropPipelines ERROR: PSO %d failed hr=0x%08X", k, (unsigned int)hr);
+        }
+    }
+
+    // Opaque Front Surface: SplatComposite.hlsl, a full-screen triangle laying the splat layer over the scene with the
+    // splats' premultiplied blend, no depth (the depth buffer is read as t1), in both render-target formats. A failure
+    // leaves the splats drawn straight into the scene, as without it.
+    void SplatRenderer::CreateCompositePipelines(SwapChain* pSwapChain)
+    {
+        CD3DX12_DESCRIPTOR_RANGE srvRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 2, 0);
+        CD3DX12_ROOT_PARAMETER params[2];
+        params[0].InitAsConstants(4, 0, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+        params[1].InitAsDescriptorTable(1, &srvRange, D3D12_SHADER_VISIBILITY_PIXEL);
+        CD3DX12_ROOT_SIGNATURE_DESC desc(2, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE);
+        Microsoft::WRL::ComPtr<ID3DBlob> blob, err;
+        D3D12_SHADER_BYTECODE vs = {}, ps = {};
+        const bool ok = SUCCEEDED(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err)) &&
+                        SUCCEEDED(m_pDevice->GetDevice()->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&m_pCompositeRootSig))) &&
+                        CompileShaderFromFile("SplatComposite.hlsl", NULL, "compositeVS", "-T vs_6_0", &vs) && vs.pShaderBytecode != nullptr &&
+                        CompileShaderFromFile("SplatComposite.hlsl", NULL, "compositePS", "-T ps_6_0", &ps) && ps.pShaderBytecode != nullptr;
+        if (!ok)
+        {
+            LogTransitionTrace("SplatRenderer::CreateCompositePipelines ERROR: SplatComposite.hlsl failed -- no Opaque Front Surface.");
+            return;
+        }
+        CD3DX12_RASTERIZER_DESC rasterizer(D3D12_DEFAULT);
+        rasterizer.CullMode = D3D12_CULL_MODE_NONE;
+        CD3DX12_DEPTH_STENCIL_DESC depth(D3D12_DEFAULT);
+        depth.DepthEnable = FALSE;
+        depth.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+        CD3DX12_BLEND_DESC blend(D3D12_DEFAULT);
+        blend.RenderTarget[0].BlendEnable = TRUE;
+        blend.RenderTarget[0].SrcBlend = D3D12_BLEND_ONE;
+        blend.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        blend.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+        blend.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+        blend.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        blend.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        for (int k = 0; k < 2; k++)
+        {
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC d = {};
+            d.pRootSignature = m_pCompositeRootSig;
+            d.VS = vs;
+            d.PS = ps;
+            d.BlendState = blend;
+            d.SampleMask = UINT_MAX;
+            d.RasterizerState = rasterizer;
+            d.DepthStencilState = depth;
+            d.InputLayout = { nullptr, 0 };
+            d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            d.NumRenderTargets = 1;
+            d.RTVFormats[0] = k == 0 ? pSwapChain->GetFormat() : m_unormFormat;
+            d.DSVFormat = DXGI_FORMAT_UNKNOWN; // The depth buffer is read, so it is not bound
+            d.SampleDesc = DXGI_SAMPLE_DESC{ 1, 0 };
+            ID3D12PipelineState** out = k == 0 ? &m_pCompositePSO : &m_pCompositePSOUnorm;
+            const HRESULT hr = m_pDevice->GetDevice()->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(out));
+            if (FAILED(hr)) LogTransitionTrace("SplatRenderer::CreateCompositePipelines ERROR: PSO %d failed hr=0x%08X", k, (unsigned int)hr);
         }
     }
 
@@ -1132,6 +1215,12 @@ namespace Splat
         create(vs, ps, splatBlend, depthOff, m_srgbFormat, &m_pSplatPSOLinear, "splat linear");
         create(vs, ps, splatBlend, depthTestOnly, m_unormFormat, &m_pSplatPSODisplayDepth, "splat display depth");
         create(vs, ps, splatBlend, depthTestOnly, m_srgbFormat, &m_pSplatPSOLinearDepth, "splat linear depth");
+        {
+            CD3DX12_BLEND_DESC noColour(D3D12_DEFAULT);
+            noColour.RenderTarget[0].RenderTargetWriteMask = 0;
+            create(vs, ps, noColour, depthWrite, m_unormFormat, &m_pSolidDepthPSODisplay, "solid depth display");
+            create(vs, ps, noColour, depthWrite, m_srgbFormat, &m_pSolidDepthPSOLinear, "solid depth linear");
+        }
         ok = create(itemVs, itemPs, opaqueBlend, depthWrite, DXGI_FORMAT_R32_UINT, &m_pItemPrepassPSO, "item prepass") && ok;
         if (occOk)
         {
@@ -1219,6 +1308,8 @@ namespace Splat
         if (m_pSplatPSOLinear) { m_pSplatPSOLinear->Release(); m_pSplatPSOLinear = nullptr; }
         if (m_pSplatPSODisplayDepth) { m_pSplatPSODisplayDepth->Release(); m_pSplatPSODisplayDepth = nullptr; }
         if (m_pSplatPSOLinearDepth) { m_pSplatPSOLinearDepth->Release(); m_pSplatPSOLinearDepth = nullptr; }
+        if (m_pSolidDepthPSODisplay) { m_pSolidDepthPSODisplay->Release(); m_pSolidDepthPSODisplay = nullptr; }
+        if (m_pSolidDepthPSOLinear) { m_pSolidDepthPSOLinear->Release(); m_pSolidDepthPSOLinear = nullptr; }
         if (m_pOccluderPSOUnorm) { m_pOccluderPSOUnorm->Release(); m_pOccluderPSOUnorm = nullptr; }
         if (m_pBackBufferUnormRtvHeap) { m_pBackBufferUnormRtvHeap->Release(); m_pBackBufferUnormRtvHeap = nullptr; }
 
@@ -1271,6 +1362,9 @@ namespace Splat
         if (m_pBackdropPSO) { m_pBackdropPSO->Release(); m_pBackdropPSO = nullptr; }
         if (m_pBackdropPSOUnorm) { m_pBackdropPSOUnorm->Release(); m_pBackdropPSOUnorm = nullptr; }
         if (m_pBackdropRootSig) { m_pBackdropRootSig->Release(); m_pBackdropRootSig = nullptr; }
+        if (m_pCompositePSO) { m_pCompositePSO->Release(); m_pCompositePSO = nullptr; }
+        if (m_pCompositePSOUnorm) { m_pCompositePSOUnorm->Release(); m_pCompositePSOUnorm = nullptr; }
+        if (m_pCompositeRootSig) { m_pCompositeRootSig->Release(); m_pCompositeRootSig = nullptr; }
         if (m_backdropImageOk) { m_backdropImage.OnDestroy(); m_backdropImageOk = false; }
         if (m_pShadowMeshVertexBuffer) { m_pShadowMeshVertexBuffer->Release(); m_pShadowMeshVertexBuffer = nullptr; }
         if (m_pShadowMeshIndexBuffer) { m_pShadowMeshIndexBuffer->Release(); m_pShadowMeshIndexBuffer = nullptr; }
@@ -1290,6 +1384,7 @@ namespace Splat
 
         m_depthBuffer.OnDestroy();
         m_sceneColorBuffer.OnDestroy();
+        m_splatLayer.OnDestroy();
         m_historyColorBuffer.OnDestroy();
         m_resolvedColorBuffer.OnDestroy();
         m_blurA.OnDestroy();
@@ -1385,7 +1480,11 @@ namespace Splat
         const float turn = forward.x * m_sortForward.x + forward.y * m_sortForward.y + forward.z * m_sortForward.z;
         const bool viewMoved = moved > 0.005f * std::max(eyeDist, 1e-3f) || turn < 0.99996f;
         const bool frozenCullChanged = pState->detachCullCamera && memcmp(&cullViewProj, &m_occLastCullViewProj, sizeof(XMFLOAT4X4)) != 0;
-        if (occKey != m_occLastKey || viewMoved || frozenCullChanged) m_splatSortNeedsRun = true;
+        // Without State::sortOnlyWhenMoved (the optimization slider's lower settings) every frame sorts; a change of the
+        // frustum flag re-sorts too
+        const bool frustumChanged = pState->frustumCull != m_sortFrustumCull;
+        m_sortFrustumCull = pState->frustumCull;
+        if (occKey != m_occLastKey || viewMoved || frozenCullChanged || frustumChanged || !pState->sortOnlyWhenMoved) m_splatSortNeedsRun = true;
         XMFLOAT4X4 sortCullViewProj = cullViewProj;
         if (!pState->detachCullCamera)
             for (int r = 0; r < 4; r++) { sortCullViewProj.m[r][0] /= 1.04f; sortCullViewProj.m[r][1] /= 1.04f; } // Clip x and y: a 4% wider frustum
@@ -1461,7 +1560,7 @@ namespace Splat
         };
         const uint32_t occWidth = shadowTest ? kOccShadowGridWidth : kOccGridWidth;
         const uint32_t occHeight = std::clamp((uint32_t)std::lround(occWidth / std::max(0.25f, pState->aspectRatio)), 16u, kOccGridMaxPixels / occWidth);
-        const uint32_t occFlags = shadowTest ? 1u : 0u; // The shadow-mesh test (SplatSortCS.hlsl g_OccFlags)
+        const uint32_t occFlags = (shadowTest ? 1u : 0u) | (pState->frustumCull ? 0u : 2u); // SplatSortCS.hlsl g_OccFlags
         auto bindCB = [&](uint32_t pass)
         {
             SplatSortCB* pCB = nullptr;
@@ -2446,6 +2545,18 @@ namespace Splat
 
         m_depthBuffer.CreateSRV(0, &m_depthBufferSRV);
 
+        // Opaque Front Surface: the splats' own layer, cleared to transparent black, and its composite table (t0 the layer,
+        // t1 the depth buffer)
+        D3D12_CLEAR_VALUE layerClear = sceneClear;
+        layerClear.Color[3] = 0.0f;
+        m_splatLayer.Init(m_pDevice, "SplatRenderer::m_splatLayer",
+            &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_RENDER_TARGET),
+            D3D12_RESOURCE_STATE_RENDER_TARGET, &layerClear);
+        m_splatLayer.CreateRTV(0, &m_splatLayerRTV, 0, -1, -1, swapFormat);
+        m_splatLayer.CreateRTV(0, &m_splatLayerRTVUnorm, 0, -1, -1, DXGI_FORMAT_R8G8B8A8_UNORM);
+        m_splatLayer.CreateSRV(0, &m_compositeTableSRVs);
+        m_depthBuffer.CreateSRV(1, &m_compositeTableSRVs);
+
         // Populate contiguous 3-descriptor SRV table (t0: sceneColor, t1: depth, t2: historyColor)
         m_sceneColorBuffer.CreateSRV(0, &m_temporalTableSRVs);
         m_depthBuffer.CreateSRV(1, &m_temporalTableSRVs);
@@ -2463,6 +2574,7 @@ namespace Splat
     {
         m_loupeColor.OnDestroy();
         m_loupeDepth.OnDestroy();
+        m_splatLayer.OnDestroy();
         m_sceneColorBuffer.OnDestroy();
         m_historyColorBuffer.OnDestroy();
         m_resolvedColorBuffer.OnDestroy();
@@ -2892,7 +3004,12 @@ namespace Splat
         for (int l = 0; l < 8; l++) pCB->splatDiscRadius[l] = pState->splatDiscRadius[l];
         pCB->splatDiscOpacityFloor = pState->splatDiscOpacityFloor;
         pCB->splatViz = std::min(pState->splatViz, 3u);
-        pCB->splatDiscPad[0] = 0.0f; pCB->splatDiscPad[1] = 0.0f;
+        pCB->solidAlpha = pState->solidAlpha;
+        pCB->solidMargin = pState->solidMargin;
+        pCB->solidPass = 0;
+        pCB->occluderPush = pState->occluderPush;
+        pCB->farTint = pState->farTint ? 1u : 0u;
+        pCB->fullQuads = pState->trimQuads ? 0u : 1u;
         // Splat mode
         XMStoreFloat4x4(&pCB->view, view);
         pCB->viewportW = (float)m_width;
@@ -3113,6 +3230,33 @@ namespace Splat
                 pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
                 draw();
             }
+        };
+        // Solid splat depth (State::solidDepth): the splats' solid cores into depth first, through a copy of the pass's
+        // constant buffer with solidPass set; the blended pass after it is depth-tested against them.
+        ID3D12PipelineState* pSolidPSO = nullptr;
+        if (SortedGaussians(pState->renderMode) && pState->solidDepth)
+        {
+            const bool linear = (pState->splatBlendSpace == 1 && m_pSplatPSOLinear != nullptr);
+            ID3D12PipelineState* pTested = linear ? m_pSplatPSOLinearDepth : m_pSplatPSODisplayDepth;
+            pSolidPSO = linear ? m_pSolidDepthPSOLinear : m_pSolidDepthPSODisplay;
+            if (pSolidPSO != nullptr && pTested != nullptr) pMainSplatPSO = pTested;
+            else pSolidPSO = nullptr;
+        }
+        auto issueSolidDepth = [&](const SplatCB& passCB, uint32_t asGroupCount, uint32_t instances)
+        {
+            if (pSolidPSO == nullptr) return;
+            SplatCB* pSolidCB = nullptr;
+            D3D12_GPU_VIRTUAL_ADDRESS solidCbAddress = 0;
+            if (!m_constantBufferRing.AllocConstantBuffer(sizeof(SplatCB), (void**)&pSolidCB, &solidCbAddress)) return;
+            *pSolidCB = passCB;
+            pSolidCB->solidPass = 1;
+            ID3D12PipelineState* const pBlendPSO = pMainSplatPSO;
+            const D3D12_GPU_VIRTUAL_ADDRESS passCbAddress = cbAddress;
+            pMainSplatPSO = pSolidPSO;
+            cbAddress = solidCbAddress;
+            issueSplatDraws(asGroupCount, instances);
+            pMainSplatPSO = pBlendPSO;
+            cbAddress = passCbAddress;
         };
 
         bool chunkedPassDrawn = false; // The loupe replays the chunked pass (see below)
@@ -3473,7 +3617,43 @@ namespace Splat
                     const uint32_t asGroupCount = splatMode ? ((m_splatSlotCount + SPLATS_PER_GROUP - 1) / SPLATS_PER_GROUP) : ((chunkCount + AS_GROUP_SIZE - 1) / AS_GROUP_SIZE);
                     const uint32_t instances = splatMode ? m_splatSlotCount : (pState->useChunkedPipeline ? chunkCount * SPLATS_PER_GROUP : pState->splatCount);
                     if (!splatMode || (m_pSplatPairsA != nullptr && m_pSlotInfoBuffer != nullptr && m_splatSlotCount > 0))
+                    {
+                        // Opaque Front Surface: the splats into their own layer (same depth buffer), then laid over the scene
+                        ID3D12PipelineState* pCompositePSO = splatDisplayBlend ? m_pCompositePSOUnorm : m_pCompositePSO;
+                        const bool layered = splatMode && (pState->opaqueSurface || pState->opaqueDebug != 0) && pCompositePSO != nullptr && m_splatLayer.GetResource() != nullptr;
+                        if (layered)
+                        {
+                            D3D12_CPU_DESCRIPTOR_HANDLE layerRtv = splatDisplayBlend ? m_splatLayerRTVUnorm.GetCPU() : m_splatLayerRTV.GetCPU();
+                            const float clearLayer[4] = { 0.0f, 0.0f, 0.0f, 0.0f };
+                            pCmdLst->OMSetRenderTargets(1, &layerRtv, FALSE, &dsvHandle);
+                            pCmdLst->ClearRenderTargetView(layerRtv, clearLayer, 0, nullptr);
+                        }
+                        issueSolidDepth(*pCB, asGroupCount, instances);
                         issueSplatDraws(asGroupCount, instances);
+                        if (layered)
+                        {
+                            D3D12_RESOURCE_BARRIER toRead[2] = {
+                                CD3DX12_RESOURCE_BARRIER::Transition(m_splatLayer.GetResource(), D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE),
+                                CD3DX12_RESOURCE_BARRIER::Transition(m_depthBuffer.GetResource(), D3D12_RESOURCE_STATE_DEPTH_WRITE, D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE) };
+                            pCmdLst->ResourceBarrier(2, toRead);
+                            pCmdLst->OMSetRenderTargets(1, &rtvHandle, FALSE, nullptr);
+                            // Without Opaque Front Surface (a visualisation alone) the ramp lies past full coverage: nothing is made opaque
+                            const float lo = pState->opaqueSurface ? pState->opaqueLo : 2.0f, hi = pState->opaqueSurface ? pState->opaqueHi : 3.0f;
+                            const struct { float lo, hi; uint32_t linearIn, debug; } cc = { lo, hi, splatDisplayBlend ? 0u : 1u, pState->opaqueDebug };
+                            pCmdLst->SetGraphicsRootSignature(m_pCompositeRootSig);
+                            pCmdLst->SetGraphicsRoot32BitConstants(0, 4, &cc, 0);
+                            pCmdLst->SetGraphicsRootDescriptorTable(1, m_compositeTableSRVs.GetGPU());
+                            pCmdLst->SetPipelineState(pCompositePSO);
+                            pCmdLst->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                            pCmdLst->DrawInstanced(3, 1, 0, 0);
+                            D3D12_RESOURCE_BARRIER toWrite[2] = {
+                                CD3DX12_RESOURCE_BARRIER::Transition(m_splatLayer.GetResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
+                                CD3DX12_RESOURCE_BARRIER::Transition(m_depthBuffer.GetResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE) };
+                            pCmdLst->ResourceBarrier(2, toWrite);
+                            pCmdLst->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
+                            pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
+                        }
+                    }
 
                     auto mainDispatchEnd = std::chrono::high_resolution_clock::now();
                     m_metrics.mainDispatchTimeMs += std::chrono::duration<float, std::milli>(mainDispatchEnd - mainDispatchStart).count();
@@ -4027,7 +4207,10 @@ namespace Splat
                     const uint32_t asGroupCount = splatMode ? ((m_splatSlotCount + SPLATS_PER_GROUP - 1) / SPLATS_PER_GROUP) : ((chunkCount + AS_GROUP_SIZE - 1) / AS_GROUP_SIZE);
                     const uint32_t instances = splatMode ? m_splatSlotCount : chunkCount * SPLATS_PER_GROUP;
                     if (!splatMode || (m_pSplatPairsA != nullptr && m_pSlotInfoBuffer != nullptr && m_splatSlotCount > 0))
+                    {
+                        issueSolidDepth(*pLoupeCB, asGroupCount, instances);
                         issueSplatDraws(asGroupCount, instances);
+                    }
                 }
                 cbAddress = mainCbAddress;
                 pCmdLst->RSSetViewports(1, &viewport);

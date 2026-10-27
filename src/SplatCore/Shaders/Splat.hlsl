@@ -144,7 +144,12 @@ cbuffer SplatCB : register(b0)
     float4   g_SplatDiscRadius[2];   // Splat mode: camera-facing disc radius per level for level kSplatDiscMinLevel and up (world units), index = lodLevel 0..7; 0 = draw Gaussians
     float    g_SplatDiscOpacityFloor; // Splat mode: opacity floor for the discs of level 1 and up (Match Level 0 Softness; 0 = the record's opacity as is)
     uint     g_SplatViz;             // Splat display: the main pass takes the Renderer setting, the loupe pass its own. 0 = normal, 1 = outlines, 2 = a random colour per splat, 3 = centres (see SplatVizShade)
-    float2   g_SplatDiscPad;
+    float    g_SolidAlpha;           // Solid splat depth: a splat's core is where its own alpha reaches this
+    float    g_SolidMargin;          // Solid splat depth: metres the core's depth is pushed back along the view ray
+    uint     g_SolidPass;            // 1 = the solid splat depth pass: cores only, depth only (see SolidCoreScale)
+    float    g_OccluderPush;         // Metres the occluder mesh is pushed back along the view ray (ShadowMesh.hlsl, occluderMeshVS)
+    uint     g_FarTint;              // 1 = the splats beyond the plane through the model's centre, facing the camera, drawn magenta (FarTint)
+    uint     g_FullQuads;            // 1 = no quad trimming: every Gaussian's quad at its full 3-sigma size, no sub-pixel dots (the optimization slider's brute force)
 };
 
 // Splat display: a stable, saturated colour per splat index, so neighbouring splats tell apart.
@@ -866,6 +871,22 @@ bool DetachedCulledTint(float3 pos, bool frozenCulled, inout float3 color, inout
 // (every chunk outside that hand-over) the paths run exactly as before. wave is the chunk's
 // arrival-glow wave for SplatColor (0 when not chunked or not just delivered: no glow). frozenCulled:
 // Detach Camera mode, the chunk is outside the frozen camera's frustum (see DetachedCulledTint).
+// Solid splat depth pass: the scale that shrinks a splat's quad (and its uv) to its core, where its own alpha
+// (SplatFalloff times alpha) reaches g_SolidAlpha; 0 when it never does, and the splat is left out of the pass.
+float SolidCoreScale(float alpha)
+{
+    const float EXP4 = 0.01831563888873418; // exp(-4), as SplatFalloff
+    if (alpha <= g_SolidAlpha) return 0.0;
+    return sqrt(-log((g_SolidAlpha / alpha) * (1.0 - EXP4) + EXP4) * 0.25);
+}
+
+// Far-side tint (g_FarTint, a see-through test): magenta for a splat beyond the plane through the model's centre that
+// faces the camera, so far side showing through the near side is plain to see
+float3 FarTint(float3 pos, float3 color)
+{
+    return (g_FarTint != 0 && dot(pos - (g_AABBMin + 0.5 * g_AABBExtents), g_CamForward) > 0.0) ? float3(1.0, 0.0, 1.0) : color;
+}
+
 bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, float capScale, bool frozenCulled, out GaussianSplat gs)
 {
     gs.clipCenter = s_culledClipPos; gs.axis1 = float2(0.0, 0.0); gs.axis2 = float2(0.0, 0.0); gs.uvScale = 0.0; gs.color = float3(0.0, 0.0, 0.0); gs.alpha = 0.0; gs.disc = 0.0; gs.solid = 0.0;
@@ -882,6 +903,13 @@ bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, float
     if (viewPos.z > 0.0) return false;
     float4 clip = mul(g_ViewProj, float4(pos, 1.0));
     clip.z = clamp(clip.z, 0.0, abs(clip.w));
+    if (g_SolidPass == 1)
+    {
+        // Solid splat depth pass: the core's depth is the centre's pushed g_SolidMargin back along the view ray, so the
+        // splats of the same surface just behind it still pass the blended pass's depth test
+        float4 back = mul(g_ViewProj, float4(pos + normalize(pos - g_ViewerEyePos) * g_SolidMargin, 1.0));
+        clip.z = saturate(back.z / back.w) * clip.w;
+    }
 
     // Coarse levels (kSplatDiscMinLevel and up): a camera-facing disc of the level's point spacing in
     // place of the projected Gaussian, so a coarse level has no Gaussian bloom past the model's rim.
@@ -903,6 +931,7 @@ bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, float
         float3 tY = g_CamUp * discR;
         float solid;
         SolidDot(max(0.1f, clip.w), tX, tY, solid); // The disc modes' call: distance = the clip w (view depth)
+        if (g_FullQuads != 0) solid = 0.0;
         float2 axis1 = mul(g_ViewProj, float4(tX, 0.0)).xy;
         float2 axis2 = mul(g_ViewProj, float4(tY, 0.0)).xy;
         if (any((abs(clip.xy) - (abs(axis1) + abs(axis2))) > clip.w)) return false;
@@ -911,7 +940,16 @@ bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, float
         gs.axis1 = axis1;
         gs.axis2 = axis2;
         gs.uvScale = 1.0;
-        gs.color = SplatColor(splatIndex, pos, dc, shScale, wave, g_SplatBlendSpace == 1, lod);
+        if (g_SolidPass == 1)
+        {
+            // An opaque dot is solid throughout; a disc only over its core
+            float discAlphaCore = max(opacity, g_SplatDiscOpacityFloor) * saturate(fade);
+            float s = (solid > 0.5 && fade >= 0.999) ? 1.0 : SolidCoreScale(discAlphaCore);
+            if (s <= 0.0) return false;
+            gs.axis1 *= s; gs.axis2 *= s; gs.uvScale = s;
+            return true;
+        }
+        gs.color = FarTint(pos, SplatColor(splatIndex, pos, dc, shScale, wave, g_SplatBlendSpace == 1, lod));
         // Match Level 0 Softness: the discs (level 1 and up) take the opacity floor so a low-opacity record
         // does not read as a hole. A level 1 parent handing over to level 0 fades out by the chunk weight
         // (a sub-pixel disc drops its opaque-dot rule while fading so it can fade at all).
@@ -971,13 +1009,26 @@ bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, float
     float2 v1 = l1 * diagonalVector;
     float2 v2 = l2 * float2(diagonalVector.y, -diagonalVector.x);
 
+    if (g_SolidPass == 1)
+    {
+        // Solid splat depth pass: the core only, no colour
+        float sCore = SolidCoreScale(opacity);
+        if (sCore <= 0.0) return false;
+        gs.clipCenter = clip;
+        gs.axis1 = v1 * c * sCore;
+        gs.axis2 = v2 * c * sCore;
+        gs.uvScale = sCore;
+        gs.alpha = opacity;
+        return true;
+    }
+
     // Colour: DC plus the harmonics for this view direction, clamped at black
-    float3 color = SplatColor(splatIndex, pos, dc, shScale, wave, g_SplatBlendSpace == 1, lod);
+    float3 color = FarTint(pos, SplatColor(splatIndex, pos, dc, shScale, wave, g_SplatBlendSpace == 1, lod));
 
     DetachedCulledTint(pos, frozenCulled, color, opacity);
 
-    // Shrink the quad to where the Gaussian times opacity falls below 1/255
-    float clipS = min(1.0, sqrt(max(0.0, log(opacity * 255.0))) * 0.5);
+    // Shrink the quad to where the Gaussian times opacity falls below 1/255 (not with g_FullQuads)
+    float clipS = g_FullQuads != 0 ? 1.0 : min(1.0, sqrt(max(0.0, log(opacity * 255.0))) * 0.5);
 
     gs.clipCenter = clip;
     gs.axis1 = v1 * c * clipS;
@@ -1812,6 +1863,10 @@ float4 mainPS(VSOut i) : SV_Target
             }
         }
     }
+
+    // Solid splat depth pass: the quad is the splat's core (BuildGaussianSplat), its disc all solid; depth only
+    if (g_SolidPass == 1)
+        return float4(0.0, 0.0, 0.0, 0.0);
 
     if (g_SplatViz != 0)
         return SplatVizShade(i, d);
