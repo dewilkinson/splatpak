@@ -436,6 +436,9 @@ namespace Splat
         uint64_t                   m_occSlotFrame[kOccReadbackSlots] = {};
         uint32_t                   m_occCulledChunks = 0;            // Last counts read back
         uint32_t                   m_occCulledSplats = 0;
+        uint32_t                   m_occHiddenChunks = 0;            // Kept chunks whose every splat centre lies behind the occluder (statistics)
+        uint32_t                   m_occHiddenSplats = 0;            // Kept splats whose centre does
+        bool                       m_occActive = false;              // The last sort culled against the occluder mesh (heartbeat)
         uint32_t                   m_occLastKey = 0;                 // Occlusion settings the last sort ran with: a change re-runs it
         XMFLOAT4X4                 m_occLastCullViewProj = {};
         XMFLOAT3                   m_sortEye = { 1e30f, 1e30f, 1e30f }; // The view the last splat sort ran for: it re-runs once

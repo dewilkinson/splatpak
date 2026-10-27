@@ -1400,9 +1400,14 @@ namespace Splat
             uint64_t best = 0; int bestSlot = -1;
             for (uint32_t s = 0; s < kOccReadbackSlots; s++)
                 if (m_occSlotSerial[s] > best && m_occSlotFrame[s] + (kOccReadbackSlots - 1) <= m_occFrame) { best = m_occSlotSerial[s]; bestSlot = (int)s; }
-            if (bestSlot >= 0) { m_occCulledChunks = m_pOccCountMapped[bestSlot * 2]; m_occCulledSplats = m_pOccCountMapped[bestSlot * 2 + 1]; }
+            if (bestSlot >= 0)
+            {
+                const uint32_t* c = m_pOccCountMapped + bestSlot * 4;
+                m_occCulledChunks = c[0]; m_occCulledSplats = c[1]; m_occHiddenChunks = c[2]; m_occHiddenSplats = c[3];
+            }
         }
-        if (!occlusionCull) m_occCulledChunks = m_occCulledSplats = 0;
+        m_occActive = occlusionCull;
+        if (!occlusionCull) m_occCulledChunks = m_occCulledSplats = m_occHiddenChunks = m_occHiddenSplats = 0;
         m_cullStats.occlusionCulledChunks = m_occCulledChunks;
         m_cullStats.occlusionCulledSplats = m_occCulledSplats;
         m_cullStats.asPassedChunks -= std::min(m_cullStats.asPassedChunks, m_occCulledChunks);
@@ -1492,8 +1497,8 @@ namespace Splat
                 SetName(*ppOut, name);
             };
             makeBuffer((uint64_t)kOccGridMaxPixels * 4u, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &m_pOccDepthBuffer, "SplatRenderer::m_pOccDepthBuffer");
-            makeBuffer(8u, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &m_pOccCountBuffer, "SplatRenderer::m_pOccCountBuffer");
-            makeBuffer((uint64_t)kOccReadbackSlots * 8u, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, &m_pOccCountReadback, "SplatRenderer::m_pOccCountReadback");
+            makeBuffer(16u, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &m_pOccCountBuffer, "SplatRenderer::m_pOccCountBuffer");
+            makeBuffer((uint64_t)kOccReadbackSlots * 16u, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, &m_pOccCountReadback, "SplatRenderer::m_pOccCountReadback");
             void* mapped = nullptr;
             if (SUCCEEDED(m_pOccCountReadback->Map(0, nullptr, &mapped))) m_pOccCountMapped = (const uint32_t*)mapped;
         }
@@ -1528,7 +1533,7 @@ namespace Splat
             const uint32_t slot = (uint32_t)(m_occSortSerial % kOccReadbackSlots);
             D3D12_RESOURCE_BARRIER toCopy = CD3DX12_RESOURCE_BARRIER::Transition(m_pOccCountBuffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
             pCmdLst->ResourceBarrier(1, &toCopy);
-            pCmdLst->CopyBufferRegion(m_pOccCountReadback, slot * 8u, m_pOccCountBuffer, 0, 8u);
+            pCmdLst->CopyBufferRegion(m_pOccCountReadback, slot * 16u, m_pOccCountBuffer, 0, 16u);
             D3D12_RESOURCE_BARRIER toUav = CD3DX12_RESOURCE_BARRIER::Transition(m_pOccCountBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             pCmdLst->ResourceBarrier(1, &toUav);
             m_occSlotSerial[slot] = ++m_occSortSerial;
@@ -2521,9 +2526,10 @@ namespace Splat
         s_frameCounter++;
         if (s_frameCounter % 60 == 0)
         {
-            LogTransitionTrace("Renderer Heartbeat: frame=%u, chunkCount=%u, splatCount=%u, fps=%.1f, gpuWait=%.1fms, record=%.1fms, upload=%.1fms, mode=%u, sorts=%u, listUploads=%u, listCopiesInFlight=%u",
+            LogTransitionTrace("Renderer Heartbeat: frame=%u, chunkCount=%u, splatCount=%u, fps=%.1f, gpuWait=%.1fms, record=%.1fms, upload=%.1fms, mode=%u, sorts=%u, listUploads=%u, listCopiesInFlight=%u, occOn=%d, occTris=%u, occChunks=%u, occSplats=%u, hidChunks=%u, hidSplats=%u",
                 s_frameCounter, pState->chunkCount, pState->splatCount, m_metrics.frameRate,
-                m_smoothGpuWaitMs, m_smoothCommandRecordMs, m_smoothUploadMs, pState->renderMode, m_heartbeatSorts, m_heartbeatListUploads, m_heartbeatCopiesInFlight);
+                m_smoothGpuWaitMs, m_smoothCommandRecordMs, m_smoothUploadMs, pState->renderMode, m_heartbeatSorts, m_heartbeatListUploads, m_heartbeatCopiesInFlight,
+                (int)m_occActive, m_occluderMesh.indexCount / 3u, m_occCulledChunks, m_occCulledSplats, m_occHiddenChunks, m_occHiddenSplats);
             m_heartbeatCopiesInFlight = 0;
             m_heartbeatSorts = 0;
             m_heartbeatListUploads = 0;
@@ -3979,6 +3985,7 @@ namespace Splat
                 pLoupeCB->viewportH = (float)lh;
                 pLoupeCB->proj00 = XMVectorGetX(proj.r[0]) * sx;
                 pLoupeCB->splatViz = std::min(pState->loupeViz, 3u);
+                pLoupeCB->showChunkStream = 0; // The loupe shows the model itself: no Refinement Visualizer tint or glow
 
                 D3D12_CPU_DESCRIPTOR_HANDLE loupeRtv = splatDisplayBlend ? m_loupeRTVUnorm.GetCPU() : m_loupeRTV.GetCPU();
                 D3D12_CPU_DESCRIPTOR_HANDLE loupeDsv = m_loupeDSV.GetCPU();

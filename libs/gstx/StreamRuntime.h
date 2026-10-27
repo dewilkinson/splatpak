@@ -35,7 +35,6 @@ namespace Splat
         XMFLOAT3 avgNormal = { 0, 1, 0 };      // Representative surface normal for silhouette edge testing
         float    normalSpread = 0.0f;          // Normal angular variation
         float    detailScore = 0.0f;           // 0..1 from the package's detail grid over this block's bounds (DetailGrid::SampleBox); an input to the streaming order
-        uint8_t  octahedronFace = 0;           // Face (0..7) of the bounding octahedron this block was assigned by StreamOrder::Build
         SplatPointArray   rawSplats;
         std::vector<PackedPointGPU> packedPoints;
         size_t   byteSize = 0;
@@ -49,7 +48,7 @@ namespace Splat
         bool     isEvictionPending = false;    // Marked for eviction: waiting for parent demotion transition to complete
         bool     isLockedInTransition = false; // Locked against eviction while transition is running in either direction
         bool     hasRefined = false;           // Has refined into its children (CASE 2) since they last arrived. Only then does dropping back to this node (CASE 1) evict them; children that came in ahead of need and were never shown stay resident for when the view gets closer
-        bool     refinedBySilhouette = false;  // The refinement into its children was edge-driven (this node sits at or below the target level). When the flag drops and it demotes, the children are kept resident: evicting them only made the face lists re-stream them for the next flag, which flashed the visible faces while spinning
+        bool     refinedBySilhouette = false;  // The refinement into its children was edge-driven (this node sits at or below the target level). When the flag drops and it demotes, the children are kept resident: evicting them only made the load list re-stream them for the next flag, which flashed the visible faces while spinning
         bool     isSilhouette = false;         // Active in-view silhouette edge chunk (locked against eviction)
         float    transitionProgress = 0.0f;   // 0.0 (Parent Level N Solid) <-> 1.0 (Children Level N-1 Solid)
         float    streamWaveTimer = 0.0f;      // Arrival glow (Refinement Visualizer) countdown, m_chunkStreamDuration -> 0; started by the chunk's first draw after delivery (see streamWavePending)
@@ -131,8 +130,7 @@ namespace Splat
         bool            splatDrawAsDiscs = false;
         // An environment scene (docs/design/environment-scenes.md): a capture of a place, viewed from inside. Requests rank
         // by screen-space error (a block's level spacing over its distance, weighted by whether it is in view) and are
-        // delivered strictly in that order; nothing is dealt out across the bounding octahedron's faces, which mean nothing
-        // from inside. "Needed" is in the frustum (plus the neighbour buffer) or inside the residency ring: every block
+        // delivered strictly in that order. "Needed" is in the frustum (plus the neighbour buffer) or inside the residency ring: every block
         // within residencyRingRadius of the eye (a flattened disc: half as far up and down) is requested at the level its
         // distance alone asks for, behind everything in view, so turning round finds it loaded.
         bool            environmentScene = false;
@@ -140,7 +138,8 @@ namespace Splat
         // The view's requests ranked by screen-space error and delivered strictly in that order, for every model (an
         // environment always): measured 2026-10-26 at 5G, 2.4-2.6x as much level 0 on screen at each second on the bicycle
         // and about 2.6x the view's requests delivered per second on Cthulhu, against the octahedron's face-balanced
-        // order. Objects keep the face test as the filter for their hidden side until visibility feedback replaces it.
+        // order (the retired octahedron scheduler's). Off: the view's requests get only a share of each frame ahead of
+        // the scheduler's load list. Objects filter out their hidden side with FacesEye either way.
         bool            screenSpaceOrder = true;
         // What the scan is of (PackageView's subject: where the training cameras converge, out to where the density falls
         // away): blocks touching it rank kSubjectBoost times higher, for delivery and for the cross-fade admission alike,
@@ -173,7 +172,7 @@ namespace Splat
     class StreamRuntime
     {
     public:
-        static constexpr size_t kMaxEdgeQueuePerFace = 8192;
+        static constexpr size_t kMaxEdgeQueue = 65536;
         static constexpr bool   kSplatGaussianLevel0 = true;  // Splat packages: level 0 drawn as Gaussians
         static constexpr float  kMaxDecayRate = 10.0f;                   // Decay slider maximum
         static constexpr float  kDecayFullDrainSecondsAtMaxRate = 10.0f; // Full-drain time at rate 10, independent of bandwidth
@@ -220,6 +219,9 @@ namespace Splat
             const float reach = r + c.radius;
             return dx * dx + dy * dy + dz * dz <= reach * reach;
         }
+        // Objects: whether a block can face the eye (the far side of the model is hidden behind its near side, so it is
+        // neither refined nor, under Conservative, loaded). See the definition.
+        bool FacesEye(const StreamChunk& c, const XMFLOAT3& eye) const;
         float m_ringRequestTimer = 0.0f;           // The residency ring's requests are refreshed four times a second
         bool Greedy() const { return settings.streamingPolicy == StreamSettings::Policy::Greedy; }
         int  GreedyFloor() const { return m_greedyFloor; } // Greedy with releaseUnusedSegments: the finest level a visible block renders at (this frame)
@@ -229,7 +231,7 @@ namespace Splat
         float DecayFullDrainSeconds() const;
         void ComputeLodSpacing();
         void HealStaleRequestFlags();
-        void ClearFaceEdgeQueues();
+        void ClearEdgeQueue();
         uint32_t FrameChunkCount() const { return m_frameChunkCount; }
 
         // State (read-only for hosts, see the file comment)
@@ -248,9 +250,9 @@ namespace Splat
         StreamOrder               m_streamOrder;
         std::vector<ChunkRequest> m_demandRequestQueue;
         size_t                    m_demandRequestHead = 0;
-        std::vector<ChunkRequest> m_faceEdgeQueue[kOctahedronFaces];
-        size_t                    m_faceEdgeHead[kOctahedronFaces] = {};
-        std::vector<size_t>       m_faceDrainBuckets[kOctahedronFaces];
+        std::vector<ChunkRequest> m_edgeQueue;                 // TIER 1 (silhouette edges, bootstrap envelope), delivered ahead of the demand queue
+        size_t                    m_edgeHead = 0;
+        size_t                    m_edgeSortedEnd = 0;         // m_edgeQueue is ranked up to here (new entries are ranked as they are delivered)
         std::vector<uint32_t>     m_scratchLoadHandles;
         std::vector<StreamChunk*> m_scratchLoadList;
         std::vector<StreamChunk*> m_finishBatch;
@@ -263,13 +265,11 @@ namespace Splat
         uint32_t m_lastActiveTransitions = 0, m_edgeRefineStartsThisFrame = 0;
         uint32_t m_refineStartsThisFrame = 0, m_refineStartBudget = 0, m_refineStartsDeferred = 0, m_refineAdmitSeqLimit = 0;
         uint32_t m_frameChunkCount = 0;
-        // Bumped wherever a block's residency changes (the idle skip's test). The per-face resident and total blocks
-        // and m_lodResidentSplats are kept exact as single blocks land and leave (CountResidency); a bulk change (load,
+        // Bumped wherever a block's residency changes (the idle skip's test). m_lodResidentSplats is kept exact as single blocks land and leave (CountResidency); a bulk change (load,
         // reset, clear) marks them invalid and the next update recounts once. Recounting every frame cost two passes
         // over every block, about 1.5 ms on Cthulhu (137,104 blocks).
         uint32_t m_residencySerial = 0;
         bool     m_residencyCountsValid = false;
-        uint32_t m_faceResident[kOctahedronFaces] = {}, m_faceTotal[kOctahedronFaces] = {};
         bool     m_waveTimersRunning = false; // Some block's arrival glow is counting down (the countdown pass is skipped otherwise)
         // Idle skip: full updates in a row that changed nothing, and the camera and settings they saw. Once two have,
         // an update with the same inputs and the stream not marked dirty returns at once and the host keeps the last
@@ -288,7 +288,7 @@ namespace Splat
 
     private:
         static void Trace(const char* fmt, ...);
-        void CountResidency(const StreamChunk& c, int delta); // One block landed (+1) or left (-1): the face and level counts follow
-        void RecountResidency();                              // The face and level counts from scratch
+        void CountResidency(const StreamChunk& c, int delta); // One block landed (+1) or left (-1): the level counts follow
+        void RecountResidency();                              // The level counts from scratch
     };
 }

@@ -25,7 +25,7 @@ viewed above level 0 keeps a clean rim.
   entirely; there is no strength slider.
 - Only splats whose chunk is above level 0 are attenuated. Level 0 splats are never touched, so a
   view where every visible chunk is at level 0 renders exactly as before.
-- The mask works whether or not **Show Occlusion Volume** is on. It is built from the occlusion
+- The mask works whether or not **Enable Occlusion Volume** is on. It is built from the occlusion
   volume's silhouette, not from the visible occluder cubes.
 - The mask is rebuilt every frame the view changes and held when nothing changed. A change is any
   of: camera view or projection (ignoring the temporal-filter sub-pixel jitter), window resize,
@@ -70,7 +70,7 @@ consumes the occlusion volume as packaged data through the existing renderer int
    clear colour; with it off they show the halo.
 3. Same package, every visible chunk at level 0, temporal filter off: screenshots with the mask on
    and off are identical.
-4. With Show Occlusion Volume off, the level-2 screenshot with the mask on still shows the halo
+4. With Enable Occlusion Volume off, the level-2 screenshot with the mask on still shows the halo
    removed.
 5. With the camera still for 60 frames, the timing panel reports the mask as held on every frame
    after the first. Orbiting the camera reports a rebuild on every frame.

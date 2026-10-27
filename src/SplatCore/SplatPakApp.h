@@ -224,8 +224,8 @@ namespace Splat
         std::vector<OcclusionVoxelGPU> m_occlusionVoxels; // Baked result -- from BuildOcclusionVolume() or loaded from an .gstx's package
         OcclusionMipTable m_occlusionMips;       // Mip layout of m_occlusionVoxels (see OcclusionMipTable): from Bake, or the loaded package's header
         int   m_occlusionMipOverride = -1;       // Viewer: -1 = renderer picks the mip from projected cell size; 0.. = force that mip (debug / side-by-side compare)
-        bool  m_enableOcclusionCulling    = true;  // Viewer: "Show Occlusion Volume" -- draw the volume and depth-test splats against it (on by default)
-        bool  m_showOcclusionSetting      = true;  // The user's choice for the toggle above (the checkbox, config show_occlusion_volume): a load or a bake shows the volume only if this is on
+        bool  m_enableOcclusionCulling    = true;  // Viewer: "Enable Occlusion Volume" -- depth-test the splats against the volume, so the far side does not show through (on by default)
+        bool  m_showOcclusionSetting      = true;  // The user's choice for the toggle above (the checkbox, config enable_occlusion_volume): a load or a bake enables the volume only if this is on
         bool  m_showOcclusionVolumeOnly   = false; // Viewer: debug view -- render only the occluder geometry
         // Shadow mesh (ShadowMesh.h): from the package, or built in the background after a bake of a raw scan. Shared and
         // immutable once published, so a save on the worker can hold it while the UI replaces it.
@@ -352,7 +352,29 @@ namespace Splat
         };
         ColourEstimate m_colourEstimate;
         EntropyProfile m_entropy;                    // Tiers 2-4 in bits per byte (EntropyProfile.h): from the bake, or measured on a loaded package
-        void MeasurePackageEntropy();                // m_entropy for the loaded package, on a sample of its chunks
+        static EntropyProfile MeasurePackageEntropy(const StreamPackager::SFLWPackageData& pkg); // A package's entropy, on a sample of its chunks
+        // Everything a .gstx load produces: read, decoded and built on the worker (BuildPackageLoad), swapped in by
+        // ApplyPackageLoad on the UI thread, so only a package that loads replaces the model on screen
+        struct PackageLoad
+        {
+            StreamPackager::SFLWPackageData pkg;
+            std::string reason;                         // Why the package could not be read
+            SplatAttributeArray attributes;             // Every level's Gaussians: level 0 of every chunk, then level 1, ...
+            std::vector<ChunkData> chunks;              // Level 0 per chunk, for a re-save
+            std::vector<ChunkData> octreeChunks;        // The chunks' bounds, for the visualiser
+            SplatPointArray rawSplats;                  // Level 0, meshlet-ordered
+            std::vector<PackedPointGPU> packedSplats;   // The same, quantised
+            DetailGrid detailGrid;
+            bool detailFromPackage = false;
+            WaveletDecompositionResult wavelet;
+            std::vector<ResidentLOD> residentLODs;
+            StreamRuntime stream;
+            EntropyProfile entropy;
+            uint64_t packageBytes = 0, recordBytes = 0, shBytes = 0;
+        };
+        bool        BuildPackageLoad(const std::string& filepath, const StreamSettings& streamSettings, const StreamCamera& streamCamera,
+                                     PackageLoad& out, Progress& progress) const;
+        void        ApplyPackageLoad(const std::string& filepath, PackageLoad& loaded);
         // Everything a bake produces: built on the worker, swapped in by ApplyBake on the UI thread
         struct BakeResult
         {
@@ -749,7 +771,7 @@ namespace Splat
         void   ViewTrainingCamera(int index);
         // The kind of scan loaded, decided once per file from level 0 (docs/design/environment-scenes.md): an environment
         // (a 3DGS capture of a place: a dense core in a far wider shell) or an object. An environment loads with the
-        // occlusion volume off (for the session: show_occlusion_volume stays the choice for objects), opens at training
+        // occlusion volume off (for the session: enable_occlusion_volume stays the choice for objects), opens at training
         // camera 0 or inside its core, and does not auto-rotate.
         PackageView m_packageView;                  // The opened package's view settings (GSTXVEW1), when it carries them
         std::string m_sceneOverride;                // --scene environment|object: overrides the detection and the package
@@ -762,6 +784,7 @@ namespace Splat
         XMFLOAT3    m_subjectCentre = { 0.0f, 0.0f, 0.0f };
         float       m_subjectRadius = 0.0f;
         bool        m_noSubject = false;            // --no-subject: no boost (the measurement's baseline)
+        int         m_cliOcclusion = -1;            // --occlusion on|off: the volume culls and depth-tests (or not) this run; -1 = the setting
         // The background behind the model (Renderer tab, Background; config background_*). Recommended takes the package's
         // own (PackageView background) or, for a scan, BackgroundEstimate's; the others are the user's own and win over it.
         enum BackgroundChoice { BgRecommended = 0, BgBlack, BgStudioWhite, BgLightGrey, BgDarkGrey, BgCustom, BgGradient, BgImage, BgChoiceCount };
@@ -801,6 +824,8 @@ namespace Splat
         RgbaImage m_camCapImage;
         int      m_cliStartCamera = -1;             // --camera N: start at training camera N
         float    m_cliSpinDegPerSec = 0.0f;         // --spin D: the orbit turns D degrees a second on its own (motion benchmark)
+        bool     m_modelClickArmed = false;         // A left press began over the viewport: its release, if not a drag, may be a click on the model
+        bool     ClickHitsModel(float x, float y) const;
         double   m_streamDtAccumMs = 0.0;           // Time since the stream's last update (it runs at most kStreamUpdateHz a second)
         bool     m_camCapLevel0 = false;            // --level0: the capture draws level 0 everywhere
         void   StepCameraCapture();

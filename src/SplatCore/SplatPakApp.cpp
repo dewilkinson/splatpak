@@ -378,6 +378,14 @@ namespace Splat
             {
                 m_enableTemporalFiltering = false; // This run only: the setting is not saved
             }
+            else if (a == "--policy" && i + 1 < args.size())
+            {
+                m_objectStreamingPolicy = m_streamingPolicy = args[++i] == "conservative" ? 0 : 1; // This run's objects: Conservative or Greedy
+            }
+            else if (a == "--occlusion" && i + 1 < args.size())
+            {
+                m_cliOcclusion = args[++i] == "on" ? 1 : 0; // This run only, over Enable Occlusion Volume: the volume's cost/benefit measurement
+            }
             else if (a == "--spin" && i + 1 < args.size())
             {
                 m_cliSpinDegPerSec = (float)atof(args[++i].c_str());
@@ -698,13 +706,13 @@ namespace Splat
                         }
                     }
 
-                    // Display toggles that are handy to pin for a test run (JSON or INI): the occlusion volume ("Show
+                    // Display toggles that are handy to pin for a test run (JSON or INI): the occlusion volume ("Enable
                     // Occlusion Volume") and the arrival glow ("Refinement Visualizer"), both on by default, and the
                     // View Shadow Mesh debug view, off by default.
                     for (int toggle = 0; toggle < 3; toggle++)
                     {
-                        const char* jsonKey = toggle == 0 ? "\"show_occlusion_volume\":" : toggle == 1 ? "\"refinement_visualizer\":" : "\"show_shadow_mesh\":";
-                        const char* iniKey  = toggle == 0 ? "show_occlusion_volume=" : toggle == 1 ? "refinement_visualizer=" : "show_shadow_mesh=";
+                        const char* jsonKey = toggle == 0 ? "\"enable_occlusion_volume\":" : toggle == 1 ? "\"refinement_visualizer\":" : "\"show_shadow_mesh\":";
+                        const char* iniKey  = toggle == 0 ? "enable_occlusion_volume=" : toggle == 1 ? "refinement_visualizer=" : "show_shadow_mesh=";
                         size_t kPos = line.find(jsonKey);
                         size_t eqPos = std::string::npos;
                         if (kPos != std::string::npos) eqPos = line.find(':', kPos);
@@ -940,7 +948,7 @@ namespace Splat
                 std::replace(image.begin(), image.end(), '\\', '/'); // Kept valid JSON without escapes; Windows takes either
                 out << "  \"background_choice\": " << m_backgroundChoice << ",\n" << colours << "  \"background_image\": \"" << image << "\",\n";
             }
-            out << "  \"show_occlusion_volume\": " << (m_showOcclusionSetting ? "true" : "false") << ",\n";
+            out << "  \"enable_occlusion_volume\": " << (m_showOcclusionSetting ? "true" : "false") << ",\n";
             out << "  \"left_panel_collapsed\": " << (m_leftPanelCollapsed ? "true" : "false") << ",\n";
             out << "  \"right_panel_collapsed\": " << (m_rightPanelCollapsed ? "true" : "false") << ",\n";
             out << "  \"present_panel_collapsed\": " << (m_presentPanelCollapsed ? "true" : "false") << ",\n";
@@ -1743,45 +1751,286 @@ namespace Splat
         }
     }
 
-    // Loads a pre-compressed .gstx package and restores the full multi-LOD chunk hierarchy from it.
-    // An invalid package (bad signature, newer format version, truncated file, payload the linked codec
-    // cannot decode) raises a Retry / Cancel dialog that explains the fault and how to re-bake; Retry
-    // re-reads the file, which is what a user wants after re-copying or re-saving it.
+    // Runs f(i) for every i in [0, n) on up to 'threads' threads, an atomic counter handing out the indices
+    template <typename F>
+    static void LoadParallelFor(size_t n, unsigned threads, F&& f)
+    {
+        threads = (unsigned)std::max<size_t>(1, std::min<size_t>(threads, n));
+        if (threads <= 1) { for (size_t i = 0; i < n; i++) f(i); return; }
+        std::atomic<size_t> next{ 0 };
+        std::vector<std::thread> pool;
+        for (unsigned t = 0; t < threads; t++)
+            pool.emplace_back([&]() { for (size_t i = next++; i < n; i = next++) f(i); });
+        for (auto& th : pool) th.join();
+    }
+
+    // Loads a pre-compressed .gstx package and restores the full multi-LOD chunk hierarchy from it: read, decoded and built
+    // on the worker with the progress dialog (BuildPackageLoad), as a scan's open is, then swapped in whole (ApplyPackageLoad),
+    // so the window keeps drawing and only a package that loads replaces the one on screen. Done inline on the UI thread it
+    // froze the window for the whole load (about 7 s for Cthulhu) with no sign of progress.
+    // An invalid package (bad signature, newer format version, truncated file, payload the linked codec cannot decode) raises
+    // a Retry / Cancel dialog that explains the fault and how to re-bake; Retry re-reads the file, which is what a user wants
+    // after re-copying or re-saving it.
     bool SplatPakApp::LoadSFLWFile(const std::string& filepath)
     {
-        for (;;)
+        auto loaded = std::make_shared<PackageLoad>();
+        SyncStreamInputs();
+        const StreamSettings settings = m_stream.settings;
+        const StreamCamera camera = m_stream.camera;
+        const std::string name = filepath.substr(filepath.find_last_of("/\\") + 1);
+        m_statusMessage = "Opening " + name + "...";
+        return RunOperation("Opening " + name, [this, filepath, settings, camera, loaded](Progress& progress)
         {
-            m_statusMessage = "Loading compressed 3DGS stream package (.gstx)...";
-            std::string reason;
-            // Loaded into a temporary: only a package that loads replaces the current one
-            StreamPackager::SFLWPackageData pkg;
-            if (StreamPackager::LoadPackage(filepath, pkg, &reason))
+            return BuildPackageLoad(filepath, settings, camera, *loaded, progress);
+        },
+        [this, filepath, loaded](bool ok, bool cancelled)
+        {
+            if (ok)
             {
-                CancelShadowMeshBuild();
-                SetShadowMesh(pkg.shadowMesh.Empty() ? nullptr : std::make_shared<const ShadowMesh>(std::move(pkg.shadowMesh)));
-                SetOccluderMesh(pkg.occluderMesh.Empty() ? nullptr : std::make_shared<const ShadowMesh>(std::move(pkg.occluderMesh)));
-                m_loadedPackage = std::move(pkg);
-                break;
+                ApplyPackageLoad(filepath, *loaded);
+                return;
             }
-
+            if (cancelled)
+            {
+                m_statusMessage = "Open cancelled: the previous model is still loaded.";
+                m_statusIsSuccess = false;
+                LogTransitionTrace("Open of '%s' cancelled", filepath.c_str());
+                return;
+            }
+            const std::string reason = loaded->reason.empty() ? std::string("the package could not be decoded") : loaded->reason;
             m_statusMessage = "Failed to load compressed package: " + filepath + " -- " + reason;
             m_statusIsSuccess = false;
             LogTransitionTrace("LoadSFLWFile: LoadPackage failed for '%s': %s", filepath.c_str(), reason.c_str());
-
+            if (Unattended()) return; // A scripted run has nobody to answer the dialog: the trace has the reason
             const std::string dialogText =
                 std::string(AppTitle()) + " could not load this package:\n\n" + filepath + "\n\n" + reason + "\n\n" +
                 SFLWRebakeAdvice() + "\n\nRetry loads the file again. Cancel leaves the current model in place.";
             const std::string dialogTitle = std::string(AppTitle()) + " - Invalid .gstx Package";
-            if (Unattended()) return false; // A scripted run has nobody to answer the dialog: the trace has the reason
-            const int choice = MessageBoxA(nullptr, dialogText.c_str(), dialogTitle.c_str(), MB_RETRYCANCEL | MB_ICONWARNING);
-            if (choice != IDRETRY)
-                return false;
-            LogTransitionTrace("LoadSFLWFile: user chose Retry for '%s'", filepath.c_str());
+            if (MessageBoxA(nullptr, dialogText.c_str(), dialogTitle.c_str(), MB_RETRYCANCEL | MB_ICONWARNING) == IDRETRY)
+            {
+                LogTransitionTrace("LoadSFLWFile: user chose Retry for '%s'", filepath.c_str());
+                LoadSFLWFile(filepath);
+            }
+        });
+    }
+
+    // The worker's part of a package load: reads the file, decodes every level of every chunk (spread over the cores), and
+    // builds the renderer's level 0, the resident levels and a new streaming runtime. Reads only settings the progress dialog
+    // keeps the UI from changing.
+    bool SplatPakApp::BuildPackageLoad(const std::string& filepath, const StreamSettings& streamSettings, const StreamCamera& streamCamera,
+                                       PackageLoad& out, Progress& progress) const
+    {
+        const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
+        BakeStage(progress, "Reading the package", 0.0f);
+        {
+            std::ifstream in(ResolvePackagePath(filepath), std::ios::ate | std::ios::binary);
+            out.packageBytes = in.is_open() ? (uint64_t)in.tellg() : 0;
         }
+        char facts[96];
+        snprintf(facts, sizeof(facts), "%.1f MB package", out.packageBytes / (1024.0 * 1024.0));
+        progress.Detail(0, facts);
+        if (!StreamPackager::LoadPackage(filepath, out.pkg, &out.reason) || progress.Cancelled()) return false;
+        const auto& pkg = out.pkg;
         LogTransitionTrace("LoadSFLWFile: '%s' v%u: %zu chunks, %llu LOD0 splats, %zu baked occluder blocks in %u mips, source %llu bytes",
-            filepath.c_str(), m_loadedPackage.header.version, m_loadedPackage.chunkManifests.size(),
-            (unsigned long long)m_loadedPackage.totalSplats, m_loadedPackage.occlusionVoxels.size(), m_loadedPackage.occlusionMips.mipCount,
-            (unsigned long long)m_loadedPackage.header.sourceFileBytes);
+            filepath.c_str(), pkg.header.version, pkg.chunkManifests.size(), (unsigned long long)pkg.totalSplats, pkg.occlusionVoxels.size(),
+            pkg.occlusionMips.mipCount, (unsigned long long)pkg.header.sourceFileBytes);
+        snprintf(facts, sizeof(facts), "%.1f MB package, %s", out.packageBytes / (1024.0 * 1024.0), CountText((size_t)pkg.totalSplats, "Gaussians").c_str());
+        progress.Detail(0, facts);
+        const XMFLOAT3 aabbMin = pkg.header.globalBoundsMin, aabbMax = pkg.header.globalBoundsMax;
+        const size_t numChunks = pkg.chunkManifests.size();
+        size_t numLODs = 0;
+        for (const auto& cm : pkg.chunkManifests) numLODs = std::max(numLODs, cm.lods.size());
+
+        // Every level of every chunk decodes on its own: level 0 of each chunk first, then level 1 of each, and so on, which
+        // is the order their Gaussians take in the attribute array (each splat's sourceIndex points at its own entry)
+        struct Piece { size_t chunk, level; SplatPointArray points; SplatAttributeArray attributes; };
+        std::vector<Piece> pieces;
+        std::vector<int> level0Piece(numChunks, -1);
+        for (size_t c = 0; c < numChunks; c++)
+            if (!pkg.chunkLODSplats[c].empty()) { level0Piece[c] = (int)pieces.size(); pieces.push_back({ c, 0 }); }
+        for (size_t l = 1; l < numLODs; l++)
+            for (size_t c = 0; c < numChunks; c++)
+                if (l < pkg.chunkManifests[c].lods.size() && l < pkg.chunkLODSplats[c].size()) pieces.push_back({ c, l });
+        BakeStage(progress, "Decoding the levels", 0.05f, cores);
+        std::atomic<size_t> decoded{ 0 };
+        LoadParallelFor(pieces.size(), cores, [&](size_t i)
+        {
+            if (progress.Cancelled()) return;
+            Piece& p = pieces[i];
+            const std::vector<uint8_t>& sh = pkg.chunkLODSH[p.chunk][p.level];
+            SplatCodec::Decode(pkg.chunkLODSplats[p.chunk][p.level], sh.empty() ? nullptr : sh.data(), sh.size(), pkg.splatParams,
+                               (uint32_t)p.level, 0, p.points, p.attributes);
+            progress.Fraction(0.05f + 0.35f * (float)++decoded / (float)pieces.size());
+        });
+        if (progress.Cancelled()) return false;
+        size_t attributeCount = 0;
+        for (const Piece& p : pieces) attributeCount += p.attributes.size();
+        out.attributes.reserve(attributeCount);
+        std::vector<size_t> levelBase(numLODs, attributeCount); // The first attribute of each level
+        for (Piece& p : pieces)
+        {
+            const uint32_t base = (uint32_t)out.attributes.size();
+            levelBase[p.level] = std::min(levelBase[p.level], (size_t)base);
+            for (auto& s : p.points) s.sourceIndex += base;
+            out.attributes.insert(out.attributes.end(), p.attributes.begin(), p.attributes.end());
+            SplatAttributeArray().swap(p.attributes);
+        }
+
+        // Level 0: per chunk (with its bounds, for the visualiser and a re-save) and across the chunks for the renderer
+        for (size_t c = 0; c < numChunks; c++)
+        {
+            const auto& cm = pkg.chunkManifests[c];
+            ChunkData cd;
+            cd.chunkId = cm.chunkId;
+            cd.center = cm.center;
+            cd.boundingRadius = cm.boundingRadius;
+            cd.aabbMin = cm.aabbMin;
+            cd.aabbMax = cm.aabbMax;
+            out.octreeChunks.push_back(cd);
+            if (level0Piece[c] >= 0)
+            {
+                const SplatPointArray& points = pieces[level0Piece[c]].points;
+                out.rawSplats.insert(out.rawSplats.end(), points.begin(), points.end());
+                cd.splats = points;
+            }
+            out.chunks.push_back(std::move(cd));
+        }
+
+        // Detail heatmap: v7+ packages carry the one baked from the original cloud; older ones get a grid rebuilt here
+        // from the reconstructed LOD 0 (same measures, slightly lossier input)
+        out.detailFromPackage = pkg.detailGrid.Valid();
+        out.detailGrid = out.detailFromPackage ? pkg.detailGrid : DetailGrid::Build(out.rawSplats, aabbMin, aabbMax);
+        if (progress.Cancelled()) return false;
+
+        // The renderer's level 0 in meshlet order (64 splats per meshlet chunk), and quantised in that order
+        BakeStage(progress, "Preparing the levels", 0.45f, cores);
+        {
+            std::vector<MeshletChunkGPU> meshlets;
+            SpatialOctree::PartitionIntoMeshletChunks(out.rawSplats, meshlets, 64, m_enableMortonOrder);
+        }
+        out.packedSplats = Quantizer::QuantizePoints(out.rawSplats, aabbMin, aabbMax);
+
+        // The wavelet hierarchy: every level's splats across the chunks, with the chunks' mean geometric error
+        for (size_t lvl = 0; lvl < numLODs; lvl++)
+        {
+            WaveletLODLevel wLod;
+            wLod.level = (int)lvl;
+            float errorSum = 0.0f;
+            size_t errorCount = 0;
+            for (size_t c = 0; c < numChunks; c++)
+            {
+                const auto& cm = pkg.chunkManifests[c];
+                if (lvl >= cm.lods.size() || lvl >= pkg.chunkLODSplats[c].size()) continue;
+                errorSum += cm.lods[lvl].geometricError;
+                errorCount++;
+            }
+            if (lvl == 0) wLod.splats = out.rawSplats; // Level 0 was gathered already (the renderer's raw points, meshlet-ordered)
+            else
+                for (const Piece& p : pieces)
+                    if (p.level == lvl) wLod.splats.insert(wLod.splats.end(), p.points.begin(), p.points.end());
+            wLod.geometricError = errorCount > 0 ? (errorSum / (float)errorCount) : 0.0f;
+            out.wavelet.lodLevels.push_back(std::move(wLod));
+        }
+        std::vector<Piece>().swap(pieces);
+        if (progress.Cancelled()) return false;
+
+        // The resident levels. The package's own records and harmonics are carried into each level's spatial order through
+        // every splat's sourceIndex (as TestStreamRuntime does): re-encoding the decoded Gaussians, as a bake's levels are
+        // built, took about 3 s of the load on Cthulhu for records the package already holds.
+        const uint32_t shBytes = SplatCodec::SHRecordBytes(pkg.splatParams.shDegree);
+        bool carry = m_enableWavelet && !m_cascadeLOD && pkg.IsSplatPackage() && !out.wavelet.lodLevels.empty();
+        for (const auto& w : out.wavelet.lodLevels) carry = carry && !w.splats.empty();
+        if (carry)
+        {
+            // Each level's records and harmonics in attribute order (level 0 of each chunk, then level 1 of each, ...)
+            std::vector<std::vector<PackedSplatGPU>> records(numLODs);
+            std::vector<std::vector<uint8_t>> harmonics(numLODs);
+            for (size_t lvl = 0; lvl < numLODs; lvl++)
+                for (size_t c = 0; c < numChunks; c++)
+                {
+                    if (lvl >= pkg.chunkLODSplats[c].size()) continue;
+                    if (lvl == 0 ? level0Piece[c] < 0 : lvl >= pkg.chunkManifests[c].lods.size()) continue;
+                    records[lvl].insert(records[lvl].end(), pkg.chunkLODSplats[c][lvl].begin(), pkg.chunkLODSplats[c][lvl].end());
+                    const auto& sh = pkg.chunkLODSH[c][lvl];
+                    harmonics[lvl].insert(harmonics[lvl].end(), sh.begin(), sh.end());
+                }
+            out.residentLODs.resize(numLODs);
+            LoadParallelFor(numLODs, cores, [&](size_t lvl)
+            {
+                ResidentLOD& r = out.residentLODs[lvl];
+                r.rawSplats = out.wavelet.lodLevels[lvl].splats;
+                SpatialOctree::PartitionIntoMeshletChunks(r.rawSplats, r.meshletChunks, 64, m_enableMortonOrder, &aabbMin, &aabbMax);
+                for (auto& mc : r.meshletChunks)
+                {
+                    mc.lodLevel = (uint32_t)lvl; // The shader draws by level, as the stream does
+                    if (!m_splatDrawAsDiscs) mc.dilationMorph = 1.0f; // Resident at load, sorted Gaussians: Gaussians at once
+                }
+                r.packedPoints = Quantizer::QuantizePoints(r.rawSplats, aabbMin, aabbMax);
+                const auto& recs = records[lvl];
+                const auto& sh = harmonics[lvl];
+                r.splats.resize(r.rawSplats.size());
+                r.splatSH.assign(r.rawSplats.size() * shBytes, 0);
+                for (size_t i = 0; i < r.rawSplats.size(); i++)
+                {
+                    const size_t src = r.rawSplats[i].sourceIndex - levelBase[lvl];
+                    if (src >= recs.size()) continue;
+                    r.splats[i] = recs[src];
+                    if (shBytes > 0 && sh.size() >= (src + 1) * shBytes)
+                        std::copy(sh.begin() + src * shBytes, sh.begin() + (src + 1) * shBytes, r.splatSH.begin() + i * shBytes);
+                }
+            });
+        }
+        else
+        {
+            BakeSource source;
+            source.points = &out.rawSplats;
+            source.attributes = &out.attributes;
+            source.splatMode = pkg.IsSplatPackage();
+            source.shDegree = pkg.splatParams.shDegree;
+            if (pkg.header.payloadTransforms & PAYLOAD_TRANSFORM_SH_RESIDUAL) SHCoding::UnpackBits(pkg.header.payloadTransforms, source.shBits);
+            BuildResidentLODs(source, out.wavelet, aabbMin, aabbMax, pkg.splatParams, out.residentLODs);
+        }
+        if (progress.Cancelled()) return false;
+
+        // A new streaming runtime, built here and swapped in whole by ApplyPackageLoad (as a bake's is)
+        BakeStage(progress, "Building the stream", 0.8f);
+        StreamRuntime& rt = out.stream;
+        rt.settings = streamSettings;
+        rt.camera = streamCamera;
+        rt.m_levels = &out.residentLODs;
+        rt.m_waveletLevels = (int)out.wavelet.lodLevels.size();
+        rt.m_aabbMin = aabbMin; rt.m_aabbMax = aabbMax;
+        rt.m_center = XMFLOAT3((aabbMin.x + aabbMax.x) * 0.5f, (aabbMin.y + aabbMax.y) * 0.5f, (aabbMin.z + aabbMax.z) * 0.5f);
+        rt.m_extents = XMFLOAT3(aabbMax.x - aabbMin.x, aabbMax.y - aabbMin.y, aabbMax.z - aabbMin.z);
+        rt.m_lodSortFrameMin = aabbMin; rt.m_lodSortFrameMax = aabbMax;
+        rt.m_detailGrid = out.detailGrid;
+        rt.m_enableMortonOrder = m_enableMortonOrder;
+        rt.m_splatMode = pkg.IsSplatPackage();
+        rt.m_splatParams = pkg.splatParams;
+        rt.m_bytesPerRenderPoint = rt.m_splatMode ? (sizeof(PackedSplatGPU) + shBytes) : (m_enableQuantization ? sizeof(PackedPointGPU) : sizeof(SplatPoint));
+        rt.InitStreamingSimulation();
+        if (progress.Cancelled()) return false;
+
+        BakeStage(progress, "Measuring the package", 0.95f);
+        for (size_t c = 0; c < numChunks; c++)
+        {
+            for (const auto& lod : pkg.chunkManifests[c].lods) out.recordBytes += lod.uncompressedByteSize;
+            if (c < pkg.chunkLODSH.size())
+                for (const auto& sh : pkg.chunkLODSH[c]) out.shBytes += sh.size();
+        }
+        out.entropy = MeasurePackageEntropy(pkg);
+        progress.Fraction(1.0f);
+        LogTransitionTrace("Package load stages: %s", progress.Timings().c_str());
+        return !progress.Cancelled();
+    }
+
+    // The UI thread's part of a package load: the worker's result swapped into the app and the renderer
+    void SplatPakApp::ApplyPackageLoad(const std::string& filepath, PackageLoad& loaded)
+    {
+        CancelShadowMeshBuild();
+        SetShadowMesh(loaded.pkg.shadowMesh.Empty() ? nullptr : std::make_shared<const ShadowMesh>(std::move(loaded.pkg.shadowMesh)));
+        SetOccluderMesh(loaded.pkg.occluderMesh.Empty() ? nullptr : std::make_shared<const ShadowMesh>(std::move(loaded.pkg.occluderMesh)));
+        m_loadedPackage = std::move(loaded.pkg);
 
         m_loadedFilePath = filepath;
         m_rendererSourceDescription = filepath;
@@ -1790,7 +2039,6 @@ namespace Splat
         m_sourceHash = 0; // A package: nothing to remember bake settings against
         m_hasBakedParams = false; // Until the load finishes, the previous model's bake does not apply
         m_colourEstimate = ColourEstimate{}; // The figures describe a bake; a package shows what it stores
-        m_entropy = EntropyProfile{};
 
         // Set Bounding Box from package header
         m_aabbMin = m_loadedPackage.header.globalBoundsMin;
@@ -1808,7 +2056,6 @@ namespace Splat
 
         // Camera Framing
         m_target = m_center;
-        float maxDim = std::max(m_extents.x, std::max(m_extents.y, m_extents.z));
         ApplyFitDistance(); // Frame the whole model between the control panels
         m_fitViewPending = true; // Re-fit on the first frame, when the window is sized and the LOD points exist (tighter than the box)
 
@@ -1830,17 +2077,11 @@ namespace Splat
         m_occlusionVoxelsVersion++;
         m_generateOcclusionVolume = true;
 
-        // Collect all raw splats from package
-        m_rendererSplats.clear();
-        m_rendererOctreeChunks.clear();
-        m_chunks.clear();
-
-        // Splat packages (splat format 1) decode through SplatCodec: every level's records become
-        // splats plus their Gaussians, the latter appended to m_splatAttributes with each splat's
-        // sourceIndex pointing at its own entry, so re-encoding any level (preview, streaming, re-save)
-        // reads the attributes the package carried.
+        // Splat packages (splat format 1) decoded through SplatCodec on the worker: every level's records became
+        // splats plus their Gaussians, the latter in m_splatAttributes with each splat's sourceIndex pointing at its
+        // own entry, so re-encoding any level (preview, streaming, re-save) reads the attributes the package carried.
         const bool splatPkg = m_loadedPackage.IsSplatPackage();
-        m_splatAttributes.clear();
+        m_splatAttributes = std::move(loaded.attributes);
         m_sourceHasSplatAttributes = splatPkg;
         m_splatMode = splatPkg;
         if (splatPkg)
@@ -1859,85 +2100,22 @@ namespace Splat
                 for (int p = 0; p < 4; p++) if (kSHPrecisionBits[p] == bits[0]) m_shPrecision = p;
             }
         }
-        SplatPointArray decodedLOD0; // Splat packages: LOD 0 across every chunk, in chunk order
-        auto decodeSplatLevel = [&](size_t c, size_t l, SplatPointArray& outSplats)
-        {
-            SplatAttributeArray attrs;
-            const std::vector<uint8_t>& sh = m_loadedPackage.chunkLODSH[c][l];
-            SplatCodec::Decode(m_loadedPackage.chunkLODSplats[c][l], sh.empty() ? nullptr : sh.data(), sh.size(),
-                               m_loadedPackage.splatParams, (uint32_t)l, (uint32_t)m_splatAttributes.size(), outSplats, attrs);
-            m_splatAttributes.insert(m_splatAttributes.end(), attrs.begin(), attrs.end());
-        };
+        m_rendererOctreeChunks = std::move(loaded.octreeChunks);
+        // The chunks' points too: Save Compressed Package re-runs the wavelet pipeline over m_chunks, and with only the
+        // bounds filled in every chunk decomposed to nothing, so a package re-saved from a loaded package came out with a
+        // single level.
+        m_chunks = std::move(loaded.chunks);
+        m_rendererRawSplats = std::move(loaded.rawSplats);
+        m_rendererSplats = std::move(loaded.packedSplats);
+        m_detailGrid = std::move(loaded.detailGrid);
+        LogTransitionTrace("DetailHeatmap: %ux%ux%u cells (%.4f m), %u occupied, %s",
+            m_detailGrid.nx, m_detailGrid.ny, m_detailGrid.nz, m_detailGrid.cellSize, m_detailGrid.occupiedCells,
+            loaded.detailFromPackage ? "read from package" : "rebuilt from LOD 0 (none in the package)");
 
-        for (size_t c = 0; c < m_loadedPackage.chunkManifests.size(); c++)
-        {
-            const auto& cm = m_loadedPackage.chunkManifests[c];
-
-            SplatPointArray chunkDecoded;
-            if (!m_loadedPackage.chunkLODSplats[c].empty()) decodeSplatLevel(c, 0, chunkDecoded);
-            decodedLOD0.insert(decodedLOD0.end(), chunkDecoded.begin(), chunkDecoded.end());
-
-            // Octree bounding boxes for visualizer
-            ChunkData cd;
-            cd.chunkId = cm.chunkId;
-            cd.center = cm.center;
-            cd.boundingRadius = cm.boundingRadius;
-            cd.aabbMin = cm.aabbMin;
-            cd.aabbMax = cm.aabbMax;
-            m_rendererOctreeChunks.push_back(cd);
-            // The chunk's points too: Save Compressed Package re-runs the wavelet pipeline over m_chunks,
-            // and with only the bounds filled in (as this used to do) every chunk decomposed to nothing,
-            // so a package re-saved from a loaded package came out with a single level.
-            cd.splats = std::move(chunkDecoded);
-            m_chunks.push_back(cd);
-        }
-
-        // Unquantize splats to raw format (splat packages were decoded above)
-        m_rendererRawSplats = std::move(decodedLOD0);
-
-        // Detail heatmap: v7+ packages carry the one baked from the original cloud; older ones get a
-        // grid rebuilt here from the reconstructed LOD 0 (same measures, slightly lossier input).
-        if (m_loadedPackage.detailGrid.Valid())
-        {
-            m_detailGrid = m_loadedPackage.detailGrid;
-            LogTransitionTrace("DetailHeatmap: %ux%ux%u cells (%.4f m), %u occupied, read from package",
-                m_detailGrid.nx, m_detailGrid.ny, m_detailGrid.nz, m_detailGrid.cellSize, m_detailGrid.occupiedCells);
-        }
-        else
-        {
-            m_detailGrid = DetailGrid::Build(m_rendererRawSplats, m_aabbMin, m_aabbMax);
-            LogTransitionTrace("DetailHeatmap: %ux%ux%u cells (%.4f m), %u occupied, rebuilt from LOD 0 (none in the package)",
-                m_detailGrid.nx, m_detailGrid.ny, m_detailGrid.nz, m_detailGrid.cellSize, m_detailGrid.occupiedCells);
-        }
-
-        // Partition into GPU micro-meshlets (64 splats per meshlet chunk)
-        m_stream.m_rendererMeshletChunks.clear();
-        SpatialOctree::PartitionIntoMeshletChunks(
-            m_rendererRawSplats,
-            m_stream.m_rendererMeshletChunks,
-            64,
-            m_enableMortonOrder
-        );
-        // Sorted Gaussian pipeline: dilationMorph is the level 0 Gaussian fade-in weight (see AppendChunkToRenderer);
-        // chunks resident at load show Gaussians at once, so they carry 1. Drawn as splats: the splat value (0).
-        if (m_splatMode && !m_splatDrawAsDiscs) for (auto& mc : m_stream.m_rendererMeshletChunks) mc.dilationMorph = 1.0f;
-
-        // Re-quantize to guarantee exact alignment with meshlet ordering
-        m_rendererSplats = Quantizer::QuantizePoints(m_rendererRawSplats, m_aabbMin, m_aabbMax);
-
-        // Populate wavelet result metadata for the full LOD hierarchy. The package stores every LOD
-        // level per chunk (m_loadedPackage.chunkManifests[c].lods / chunkLODSplats[c][lvl]); the residency
-        // equalizer, decay, silhouette refinement and PrecacheResidentLODs/InitStreamingSimulation all key off
-        // m_waveletResult.lodLevels.size(). Reassemble each level by concatenating that level's decoded
-        // splats across every chunk that has it (chunks can have fewer levels than the global max, e.g. very
-        // small chunks whose wavelet decomposition terminated early).
-        m_waveletResult.lodLevels.clear();
-
-        size_t numLODs = 0;
-        for (const auto& cm : m_loadedPackage.chunkManifests)
-        {
-            numLODs = std::max(numLODs, cm.lods.size());
-        }
+        // The wavelet hierarchy for the full LOD hierarchy: the residency equalizer, decay, silhouette refinement and the
+        // streaming runtime key off m_waveletResult.lodLevels.size()
+        m_waveletResult = std::move(loaded.wavelet);
+        const size_t numLODs = m_waveletResult.lodLevels.size();
         // The Max Wavelet LODs control follows the package, so a re-save reproduces the same hierarchy
         // instead of whatever the slider last held (levels = Max Wavelet LODs + 1).
         if (numLODs >= 2) m_maxLODLevels = (int)numLODs - 1;
@@ -1947,61 +2125,28 @@ namespace Splat
             LogTransitionTrace("LoadSFLW: %zu chunks carry %zu points for re-export, %zu levels in package, Max Wavelet LODs set to %d", m_chunks.size(), chunkPoints, numLODs, m_maxLODLevels);
         }
 
-        for (size_t lvl = 0; lvl < numLODs; lvl++)
-        {
-            SplatPointArray levelDecoded;
-            float errorSum = 0.0f;
-            size_t errorCount = 0;
-
-            for (size_t c = 0; c < m_loadedPackage.chunkManifests.size(); c++)
-            {
-                const auto& cm = m_loadedPackage.chunkManifests[c];
-                if (lvl >= cm.lods.size() || lvl >= m_loadedPackage.chunkLODSplats[c].size()) continue;
-                if (lvl > 0)
-                {
-                    SplatPointArray tmp;
-                    decodeSplatLevel(c, lvl, tmp);
-                    levelDecoded.insert(levelDecoded.end(), tmp.begin(), tmp.end());
-                }
-                errorSum += cm.lods[lvl].geometricError;
-                errorCount++;
-            }
-
-            WaveletLODLevel wLod;
-            wLod.level = (int)lvl;
-            // Level 0 was decoded once already (the renderer's raw points, meshlet-ordered)
-            wLod.splats = lvl == 0 ? m_rendererRawSplats : std::move(levelDecoded);
-            wLod.geometricError = errorCount > 0 ? (errorSum / (float)errorCount) : 0.0f;
-            m_waveletResult.lodLevels.push_back(std::move(wLod));
-        }
-
         // Compression ratio = original input file vs this package file. The original's size is
         // carried in the header (0 = unknown: the 248-byte-per-splat 3DGS baseline).
         m_sourceFileBytes = m_loadedPackage.header.sourceFileBytes;
         m_rawFileSizeMB = m_sourceFileBytes > 0
             ? (float)m_sourceFileBytes / (1024.0f * 1024.0f)
             : (m_rendererSplats.size() * 248.0f) / (1024.0f * 1024.0f);
-        {
-            std::ifstream pkg(ResolvePackagePath(filepath), std::ios::ate | std::ios::binary);
-            uint64_t packageBytes = pkg.is_open() ? (uint64_t)pkg.tellg() : (uint64_t)m_loadedPackage.totalCompressedBytes;
-            m_compressedSizeMB = (float)packageBytes / (1024.0f * 1024.0f);
-            uint64_t recordBytes = 0, shBytes = 0;
-            for (size_t c = 0; c < m_loadedPackage.chunkManifests.size(); c++)
-            {
-                for (const auto& lod : m_loadedPackage.chunkManifests[c].lods) recordBytes += lod.uncompressedByteSize;
-                if (c < m_loadedPackage.chunkLODSH.size())
-                    for (const auto& sh : m_loadedPackage.chunkLODSH[c]) shBytes += sh.size();
-            }
-            m_transformedMB = (float)(recordBytes + shBytes) / (1024.0f * 1024.0f);
-            m_transformedSHMB = (float)shBytes / (1024.0f * 1024.0f);
-        }
+        m_compressedSizeMB = (float)(loaded.packageBytes > 0 ? loaded.packageBytes : (uint64_t)m_loadedPackage.totalCompressedBytes) / (1024.0f * 1024.0f);
+        m_transformedMB = (float)(loaded.recordBytes + loaded.shBytes) / (1024.0f * 1024.0f);
+        m_transformedSHMB = (float)loaded.shBytes / (1024.0f * 1024.0f);
         m_compressionRatio = (m_rawFileSizeMB > 0 && m_compressedSizeMB > 0) ? (m_rawFileSizeMB / std::max(0.001f, m_compressedSizeMB)) : 0.0f;
-        MeasurePackageEntropy();
+        m_entropy = loaded.entropy;
 
         m_rawSplats = m_rendererRawSplats;
 
-        PrecacheResidentLODs();
-        InitStreamingSimulation();
+        // The resident levels and the streaming runtime built on the worker (see InitStreamingSimulation)
+        m_residentLODs = std::move(loaded.residentLODs);
+        m_lodSortFrameMin = m_aabbMin;
+        m_lodSortFrameMax = m_aabbMax;
+        m_stream = std::move(loaded.stream);
+        m_stream.m_levels = &m_residentLODs; // The runtime was built against the result's copy of the levels
+        ComputeSplatSoftness();
+        m_ringBufferCapacityMB = m_stream.settings.ringBufferCapacityMB; // The runtime defaults the ring buffer to its slider ceiling
         UpdatePreviewSplats();
         RebuildHeatmapClusterCubes();
 
@@ -2016,7 +2161,7 @@ namespace Splat
         }
         else
         {
-            m_enableOcclusionCulling = m_showOcclusionSetting; // Show Occlusion Volume: on whenever one exists, unless switched off
+            m_enableOcclusionCulling = m_showOcclusionSetting; // Enable Occlusion Volume: on whenever one exists, unless switched off
         }
 
         // Setup active renderer state pointing to renderer's dedicated buffers
@@ -2062,7 +2207,6 @@ namespace Splat
         }
         m_hasBakedParams = true;
         m_statusIsSuccess = true;
-        return true;
     }
 
     // Opens a raw .splat or .ply scan (StartOpenScan)
@@ -3006,11 +3150,11 @@ namespace Splat
                 {
                     const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.75f, 0.95f, 1.0f));
-                    ImGui::TextUnformatted("Running on");
+                    ImGui::TextUnformatted("Cores");
                     ImGui::PopStyleColor();
                     ImGui::SameLine();
                     const ImVec2 at = ImGui::GetCursorScreenPos();
-                    const float labelWidth = ImGui::CalcTextSize("Running on").x + ImGui::GetStyle().ItemSpacing.x;
+                    const float labelWidth = ImGui::CalcTextSize("Cores").x + ImGui::GetStyle().ItemSpacing.x;
                     const float gap = 2.0f * m_uiScale;
                     const float pitch = std::max(4.0f * m_uiScale, std::min(12.0f * m_uiScale, (barWidth - labelWidth) / (float)cores));
                     const float side = std::max(2.0f, pitch - gap);
@@ -3640,6 +3784,10 @@ namespace Splat
             if (m_loupeDrag == 0 && m_loupeHover != 0 && io.MouseClicked[0] && !io.WantCaptureMouse)
                 m_loupeDrag = m_loupeHover;
         }
+        // The wheel over the inset zooms the loupe alone (as [ and ] do, a notch at a time); the camera keeps its distance
+        const bool wheelOnLoupe = overInset && io.MouseWheel != 0.0f && !io.WantCaptureMouse;
+        if (wheelOnLoupe)
+            m_loupeZoom = std::max(kLoupeZoomMin, std::min(kLoupeZoomMax, m_loupeZoom * powf(1.25f, io.MouseWheel)));
         if (m_loupeDrag != 0)
         {
             if (!io.MouseDown[0] || !m_loupeEnabled)
@@ -3869,6 +4017,19 @@ namespace Splat
             }
         }
 
+        // A left click on the model (pressed and released within 3 pixels, so not a drag that turns the view) toggles the
+        // Refinement Visualizer, as R does
+        if (io.MouseClicked[0]) m_modelClickArmed = !io.WantCaptureMouse && m_loupeDrag == 0 && !scriptedCamera && !m_mouseLook && !shiftDown;
+        if (io.MouseReleased[0] && m_modelClickArmed)
+        {
+            m_modelClickArmed = false;
+            if (io.MouseDragMaxDistanceSqr[0] < 9.0f && !io.WantCaptureMouse && ClickHitsModel(io.MousePos.x, io.MousePos.y))
+            {
+                m_showChunkStream = !m_showChunkStream;
+                m_stream.m_streamStateDirty = true;
+            }
+        }
+
         if (!io.WantCaptureMouse && m_loupeDrag == 0 && !scriptedCamera && !m_mouseLook)
         {
             if (shiftDown)
@@ -3914,7 +4075,8 @@ namespace Splat
                 }
             }
 
-            if (io.MouseWheel != 0.0f && m_navMode == NavFly)
+            if (wheelOnLoupe) {} // Zoomed the loupe above
+            else if (io.MouseWheel != 0.0f && m_navMode == NavFly)
             {
                 // Fly: the wheel sets the speed, as in mouse-look
                 m_flySpeedScale = std::clamp(m_flySpeedScale * powf(1.25f, io.MouseWheel), 0.05f, 50.0f);
@@ -4422,7 +4584,7 @@ namespace Splat
                 }
                 else if (m_generateOcclusionVolume)
                     ImGui::TextColored(ImVec4(1.0f, 0.6f, 0.3f, 1.0f), "Baked: no cubes survived (point cloud too sparse/thin at this resolution)");
-                // Show Occlusion Volume, Hide Splat Layer and View Shadow Mesh are rendering options: Renderer tab
+                // Enable Occlusion Volume, Hide Splat Layer and View Shadow Mesh are rendering options: Renderer tab
 
                 ImGui::Spacing();
                 ImGui::Separator();
@@ -6079,6 +6241,43 @@ namespace Splat
     // Refinement visualizer control on the Renderer tab (idSuffix keeps the widget ID distinct should the block ever be
     // drawn in a second place): the arrival-glow checkbox alone. Its fade duration, intensity and hue are no longer
     // shown (the user, 2026-10-26: "hide the options for the refinement visualizer"); they keep their config values.
+    // Whether the ray through window pixel (x, y) meets the model: any block of this frame's render list, by its bounding box
+    bool SplatPakApp::ClickHitsModel(float x, float y) const
+    {
+        if (m_Width == 0 || m_Height == 0 || m_stream.m_rendererMeshletChunks.empty()) return false;
+        XMFLOAT3 eye, fwd, up(0.0f, 1.0f, 0.0f);
+        if (m_state.poseCamera) { eye = m_state.poseEye; fwd = m_state.poseForward; up = m_state.poseUp; }
+        else
+        {
+            eye = XMFLOAT3(m_target.x + m_distance * cosf(m_pitch) * sinf(m_yaw), m_target.y + m_distance * sinf(m_pitch), m_target.z + m_distance * cosf(m_pitch) * cosf(m_yaw));
+            fwd = XMFLOAT3(m_target.x - eye.x, m_target.y - eye.y, m_target.z - eye.z);
+        }
+        const XMVECTOR f = XMVector3Normalize(XMLoadFloat3(&fwd));
+        const XMVECTOR r = XMVector3Normalize(XMVector3Cross(f, XMLoadFloat3(&up)));
+        const XMVECTOR u = XMVector3Cross(r, f);
+        const float t = tanf(0.5f * m_state.fovY), aspect = (float)m_Width / (float)m_Height;
+        const float nx = (2.0f * x / (float)m_Width - 1.0f) * t * aspect, ny = (1.0f - 2.0f * y / (float)m_Height) * t;
+        XMFLOAT3 d;
+        XMStoreFloat3(&d, XMVector3Normalize(f + r * nx + u * ny));
+        const float inv[3] = { 1.0f / (fabsf(d.x) > 1e-9f ? d.x : 1e-9f), 1.0f / (fabsf(d.y) > 1e-9f ? d.y : 1e-9f), 1.0f / (fabsf(d.z) > 1e-9f ? d.z : 1e-9f) };
+        const float o[3] = { eye.x, eye.y, eye.z };
+        for (const MeshletChunkGPU& c : m_stream.m_rendererMeshletChunks)
+        {
+            const float lo[3] = { c.aabbMin.x, c.aabbMin.y, c.aabbMin.z };
+            const float hi[3] = { c.aabbMin.x + c.aabbExtents.x, c.aabbMin.y + c.aabbExtents.y, c.aabbMin.z + c.aabbExtents.z };
+            float tNear = 0.0f, tFar = 1e30f;
+            for (int k = 0; k < 3 && tNear <= tFar; k++)
+            {
+                float t0 = (lo[k] - o[k]) * inv[k], t1 = (hi[k] - o[k]) * inv[k];
+                if (t0 > t1) std::swap(t0, t1);
+                tNear = std::max(tNear, t0);
+                tFar = std::min(tFar, t1);
+            }
+            if (tNear <= tFar) return true;
+        }
+        return false;
+    }
+
     void SplatPakApp::DrawRefinementVisualizerControls(const char* idSuffix)
     {
         std::string label = std::string("Refinement Visualizer") + idSuffix;
@@ -6086,7 +6285,7 @@ namespace Splat
         {
             m_stream.m_streamStateDirty = true;
         }
-        if (ImGui::IsItemHovered()) ShowTooltip("(R) Visualizer for progressive loading: every chunk that arrives is filled with a semi-transparent tint in its level's colour. The newest chunks -- the leading edge of the growing model -- glow bright, then settle to the regular tint and fade out. Press Evict to watch the whole model grow back in the scheduler's order. Named in the top-left banner while it is on.");
+        if (ImGui::IsItemHovered()) ShowTooltip("(R, or click the model) Visualizer for progressive loading: every chunk that arrives is filled with a semi-transparent tint in its level's colour. The newest chunks -- the leading edge of the growing model -- glow bright, then settle to the regular tint and fade out. Press Evict to watch the whole model grow back in the scheduler's order. Named in the top-left banner while it is on.");
     }
 
 
@@ -6710,7 +6909,7 @@ namespace Splat
     // Package Bake tab (right after baking) and the Renderer tab (while viewing). The shape is
     // set by the bake: the volume is baked into the .gstx, so the viewer shows exactly what was packaged
     // and offers nothing that would change it. "Hide
-    // Splat Layer" is intentionally independent of "Show Occlusion Volume" -- wanting to
+    // Splat Layer" is intentionally independent of "Enable Occlusion Volume" -- wanting to
     // just look at the volume shouldn't require also turning on splat culling against it.
     void SplatPakApp::DrawOcclusionVolumeControls()
     {
@@ -6721,9 +6920,9 @@ namespace Splat
                 ShowTooltip("Decided from the model when it loaded: half its Gaussians lie within %.1f m of its core and 99%% within %.1f m, a capture of a place rather than an object. An occlusion volume of a mostly open scene is solid blobs that hide the splats, so it starts off; ticking it below applies to this scene only, and objects keep your saved choice.",
                     m_coreRadius50, m_coreRadius99);
         }
-        if (ImGui::Checkbox("Show Occlusion Volume", &m_enableOcclusionCulling))
+        if (ImGui::Checkbox("Enable Occlusion Volume", &m_enableOcclusionCulling))
         {
-            // Remembered (show_occlusion_volume) for objects: the next load or bake follows it. In an environment the
+            // Remembered (enable_occlusion_volume) for objects: the next load or bake follows it. In an environment the
             // toggle is for this scene only.
             if (!m_sceneIsEnvironment)
             {
@@ -6734,9 +6933,9 @@ namespace Splat
         if (ImGui::IsItemHovered())
         {
             if (HasOccluderMesh())
-                ShowTooltip("Draws the baked interior occlusion volume (a mesh of %zu triangles) and depth-tests the splats against it, so far-side splats don't show through gaps in the near side; the shadow mesh fills the gaps with the model's colour. On by default.", m_occluderMesh->levels[0].TriangleCount());
+                ShowTooltip("Depth-tests the splats against the baked interior occlusion volume (a mesh of %zu triangles), so far-side splats don't show through gaps in the near side; the shadow mesh fills the gaps with the model's colour. On by default.", m_occluderMesh->levels[0].TriangleCount());
             else
-                ShowTooltip("Draws the baked interior occlusion volume (%zu cubes) and depth-tests the splats against it, so far-side splats don't show through gaps in the near side. On by default.", m_occlusionVoxels.size());
+                ShowTooltip("Depth-tests the splats against the baked interior occlusion volume (%zu cubes), so far-side splats don't show through gaps in the near side. On by default.", m_occlusionVoxels.size());
         }
 
         // The model views in place of the splats: the occlusion volume alone, and the shadow mesh
@@ -6744,7 +6943,7 @@ namespace Splat
         if (!m_occlusionVoxels.empty() || HasOccluderMesh())
         {
             if (ImGui::Checkbox("Hide Splat Layer", &m_showOcclusionVolumeOnly) && m_showOcclusionVolumeOnly) m_showShadowMesh = false;
-            if (ImGui::IsItemHovered()) ShowTooltip("Debug view: hides the splats and draws only the occlusion volume (the smooth occluder mesh, or its cubes until that is built). Works regardless of 'Show Occlusion Volume' above.");
+            if (ImGui::IsItemHovered()) ShowTooltip("Debug view: hides the splats and draws only the occlusion volume (the smooth occluder mesh, or its cubes until that is built). Works regardless of 'Enable Occlusion Volume' above.");
         }
         else
         {
@@ -6819,7 +7018,7 @@ namespace Splat
 
     // Rebuilds the occlusion volume, or clears it when generation is off. Called on every full pipeline
     // recompute. A freshly baked volume is shown straight
-    // away unless Show Occlusion Volume was switched off (m_showOcclusionSetting), which a bake respects.
+    // away unless Enable Occlusion Volume was switched off (m_showOcclusionSetting), which a bake respects.
     void SplatPakApp::RefreshOcclusionVolume()
     {
         if (m_generateOcclusionVolume)
@@ -7663,7 +7862,7 @@ namespace Splat
         // While the culling camera is detached the occluder shader culls the volume against that camera
         // too (faces turned away from it, cubes outside its frustum), so the volume stays on and shows
         // the same open shell the splats do.
-        m_state.enableOcclusionCulling = m_enableOcclusionCulling;
+        m_state.enableOcclusionCulling = m_cliOcclusion < 0 ? m_enableOcclusionCulling : (m_cliOcclusion == 1 && (HasOccluderMesh() || !m_occlusionVoxels.empty()));
         m_state.showOcclusionVolumeOnly = m_showOcclusionVolumeOnly;
         // View Shadow Mesh: the drawn level, subdivided twice and smooth-shaded, rebuilt when the mesh or the level changes
         {
@@ -8745,11 +8944,10 @@ namespace Splat
 
     // Tiers 2-4 of a loaded package in bits per byte (EntropyProfile.h): a few chunks of every level, each against its own
     // coarser level, as the package codes the harmonics (they are held absolute once loaded)
-    void SplatPakApp::MeasurePackageEntropy()
+    EntropyProfile SplatPakApp::MeasurePackageEntropy(const StreamPackager::SFLWPackageData& pkg)
     {
-        m_entropy = EntropyProfile{};
-        const auto& pkg = m_loadedPackage;
-        if (!pkg.IsSplatPackage() || pkg.chunkManifests.empty()) return;
+        EntropyProfile entropy;
+        if (!pkg.IsSplatPackage() || pkg.chunkManifests.empty()) return entropy;
         const auto t0 = std::chrono::high_resolution_clock::now();
         const size_t shStride = pkg.header.shRecordBytes;
         uint8_t bits[3] = { 8, 8, 8 };
@@ -8793,11 +8991,12 @@ namespace Splat
                 samples.push_back(s);
             }
         }
-        m_entropy = Entropy::Measure(samples, sizeof(PackedSplatGPU), shStride, bits);
-        m_entropy.seconds = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - t0).count();
+        entropy = Entropy::Measure(samples, sizeof(PackedSplatGPU), shStride, bits);
+        entropy.seconds = std::chrono::duration<double>(std::chrono::high_resolution_clock::now() - t0).count();
         LogTransitionTrace("Package entropy (bits per byte): Tier 2 %.3f, Tier 3 %.3f, Tier 4 %.3f (records %.3f / %.3f / %.3f, SH %.3f / %.3f / %.3f) in %.2f s",
-            m_entropy.tier2, m_entropy.tier3, m_entropy.tier4, m_entropy.records[0], m_entropy.records[1], m_entropy.records[2],
-            m_entropy.sh[0], m_entropy.sh[1], m_entropy.sh[2], m_entropy.seconds);
+            entropy.tier2, entropy.tier3, entropy.tier4, entropy.records[0], entropy.records[1], entropy.records[2],
+            entropy.sh[0], entropy.sh[1], entropy.sh[2], entropy.seconds);
+        return entropy;
     }
 
     static bool SameFile(const std::string& a, const std::string& b)

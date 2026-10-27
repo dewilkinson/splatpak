@@ -73,7 +73,8 @@ struct OccluderVertex { float3 position; uint colour; uint normal; }; // ShadowM
 StructuredBuffer<uint>           g_OccIndices  : register(t3);
 StructuredBuffer<OccluderVertex> g_OccVertices : register(t4);
 RWStructuredBuffer<uint>         g_OccDepth    : register(u4); // Per grid pixel: nearest occluder depth (clip w) as float bits; OCC_EMPTY = none
-RWStructuredBuffer<uint>         g_OccCulled   : register(u5); // [0] chunks, [1] splats dropped by occlusion (statistics)
+RWStructuredBuffer<uint>         g_OccCulled   : register(u5); // [0] chunks, [1] splats dropped by occlusion; [2] kept chunks whose every splat centre is
+                                                                // behind the occluder, [3] kept splats whose centre is (statistics)
 
 #define SLOT_CULLED_BIT 0x80000000u
 #define SLOT_FROZEN_BIT 0x40000000u
@@ -129,7 +130,7 @@ float3 OccProject(float3 p)
 void OccClearCS(uint3 id : SV_DispatchThreadID)
 {
     if (id.x < g_OccWidth * g_OccHeight) g_OccDepth[id.x] = OCC_EMPTY;
-    if (id.x < 2) g_OccCulled[id.x] = 0;
+    if (id.x < 4) g_OccCulled[id.x] = 0;
 }
 
 float OccEdge(float2 a, float2 b, float2 p) { return (b.x - a.x) * (p.y - a.y) - (b.y - a.y) * (p.x - a.x); }
@@ -166,6 +167,7 @@ void OccRasterCS(uint3 id : SV_DispatchThreadID)
 }
 
 groupshared uint gs_OccSeen;
+groupshared uint gs_SplatSeen; // Some splat centre of the chunk lies in front of the occluder (or off the grid)
 
 // Whether the chunk lies behind the occluder at every grid pixel its bounding box covers (grown by one
 // pixel, which absorbs the half pixel by which the raster's centre sampling can overreach a triangle's
@@ -228,6 +230,11 @@ void ExpandCS(uint3 groupId : SV_GroupID, uint threadId : SV_GroupThreadID)
     }
     bool kept = inFrustum && !occluded;
     bool visible = kept || g_DetachedCull == 1;
+    // Statistics: whether each kept splat's centre lies behind the occluder grid (a finer test than the box's)
+    const bool splatTest = g_OcclusionCull == 1 && kept;
+    if (threadId == 0) gs_SplatSeen = 0;
+    GroupMemoryBarrierWithGroupSync();
+    uint hiddenSplats = 0;
     for (uint t = threadId; t < chunk.splatCount; t += 64)
     {
         uint slot = base + t;
@@ -242,10 +249,22 @@ void ExpandCS(uint3 groupId : SV_GroupID, uint threadId : SV_GroupThreadID)
             float depth = dot(pos - g_CamPos, g_CamForward);
             key = 0xFFFFFFFEu - FloatToOrderableUint(depth); // Far first, and never the sentinel value
             info = kept ? chunkIdx : (chunkIdx | SLOT_FROZEN_BIT);
+            if (splatTest)
+            {
+                float3 p = OccProject(pos);
+                int px = (int)floor(p.x), py = (int)floor(p.y);
+                bool hidden = p.z > OCC_NEAR && px >= 0 && py >= 0 && px < (int)g_OccWidth && py < (int)g_OccHeight
+                           && asfloat(g_OccDepth[py * g_OccWidth + px]) < p.z;
+                if (hidden) hiddenSplats++;
+                else InterlockedOr(gs_SplatSeen, 1u);
+            }
         }
         g_SlotInfo[slot] = uint2(splatIndex, info);
         g_PairsIn[slot] = uint2(key, slot);
     }
+    if (splatTest && hiddenSplats > 0) InterlockedAdd(g_OccCulled[3], hiddenSplats);
+    GroupMemoryBarrierWithGroupSync();
+    if (splatTest && threadId == 0 && gs_SplatSeen == 0) InterlockedAdd(g_OccCulled[2], 1u);
 }
 
 // Pass 0 reads the expanded pairs; slots past g_SlotCount are sentinels that no kernel wrote.

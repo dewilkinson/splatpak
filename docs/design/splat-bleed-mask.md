@@ -93,7 +93,7 @@ depends on `docs/private/` or any other path the public sync strips.
 
 ## Decisions
 - **Independent depth-only silhouette draw** rather than reading the main depth after the visible
-  occluder pass: keeps the mask available with Show Occlusion Volume off, avoids the jittered
+  occluder pass: keeps the mask available with Enable Occlusion Volume off, avoids the jittered
   projection in the main pass, and decouples the mask from the display/linear blend PSO pairs.
   Costs one extra draw of the selected mip's blocks per rebuild.
 - **Half-resolution mask.** The feather is at least a few pixels wide, so half res is invisible in
@@ -141,7 +141,7 @@ depends on `docs/private/` or any other path the public sync strips.
   temporal filter off:
   1. Preview level forced to 2: screenshots with the mask on and off. On: no halo beyond the rim.
   2. Every chunk at level 0: on/off screenshots identical.
-  3. Show Occlusion Volume off, level 2: halo still removed.
+  3. Enable Occlusion Volume off, level 2: halo still removed.
   4. Camera still for 60 frames: timing panel says held after the first frame. Orbit: rebuilt.
   5. Timing panel Bleed Mask GPU time at 1920x1080 at most 0.5 ms.
   6. Repeat 1 and 3 with `--render-path mesh`, `vs6`, `vs5`; screenshots match.
