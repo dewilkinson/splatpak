@@ -1366,9 +1366,13 @@ namespace Splat
         }
 
         // Occlusion culling: the occluder mesh (a package's solid inner body) shown and the culling pipeline built
-        const bool occlusionCull = pState->enableOcclusionCulling && m_occluderMesh.indexCount >= 3 && m_occluderMesh.vertices != nullptr
+        // The shadow-mesh test (pState->occlusionTest 1) rasterises the shadow mesh instead, at its own depth at each pixel on a
+        // finer grid, and hides a chunk lying more than occlusionMargin behind it
+        const bool shadowTest = pState->occlusionTest == 1 && m_shadowMeshIndexCount >= 3 && m_pShadowMeshIndexBuffer != nullptr && m_pShadowMeshVertexBuffer != nullptr;
+        const bool occlusionCull = pState->enableOcclusionCulling && (shadowTest || (m_occluderMesh.indexCount >= 3 && m_occluderMesh.vertices != nullptr))
                                 && m_pOccClearPSO != nullptr && m_pOccRasterPSO != nullptr;
-        const uint32_t occKey = occlusionCull ? (m_occluderMesh.version + 1u) : 0u;
+        const uint32_t occTriCount = shadowTest ? m_shadowMeshIndexCount / 3u : m_occluderMesh.indexCount / 3u;
+        const uint32_t occKey = !occlusionCull ? 0u : shadowTest ? (0x80000000u | (m_shadowMeshUploadedVersion + 1u)) : (m_occluderMesh.version + 1u);
         // The order is only re-sorted once the view has moved enough to change it: the eye by more than 0.5% of its
         // distance to the model, or the view turned by more than half a degree. Between sorts the frames draw the last
         // order; splats that close in depth swap places only after more movement than that. The sort also culls, so
@@ -1402,12 +1406,13 @@ namespace Splat
                 if (m_occSlotSerial[s] > best && m_occSlotFrame[s] + (kOccReadbackSlots - 1) <= m_occFrame) { best = m_occSlotSerial[s]; bestSlot = (int)s; }
             if (bestSlot >= 0)
             {
-                const uint32_t* c = m_pOccCountMapped + bestSlot * 4;
+                const uint32_t* c = m_pOccCountMapped + bestSlot * kOccCounters;
                 m_occCulledChunks = c[0]; m_occCulledSplats = c[1];
             }
         }
         m_occActive = occlusionCull;
         if (!occlusionCull) m_occCulledChunks = m_occCulledSplats = 0;
+        m_occShadowTestActive = occlusionCull && shadowTest;
         m_cullStats.occlusionCulledChunks = m_occCulledChunks;
         m_cullStats.occlusionCulledSplats = m_occCulledSplats;
         m_cullStats.asPassedChunks -= std::min(m_cullStats.asPassedChunks, m_occCulledChunks);
@@ -1452,10 +1457,11 @@ namespace Splat
             XMFLOAT3   aabbMin;     uint32_t pass;
             XMFLOAT3   aabbExtents; uint32_t numBlocks;
             uint32_t   paddedSlotCount; uint32_t detachedCull, occlusionCull, occTriCount;
-            uint32_t   occWidth, occHeight, pad3, pad4;
+            uint32_t   occWidth, occHeight, occFlags; float occMargin;
         };
-        const uint32_t occWidth = kOccGridWidth;
-        const uint32_t occHeight = std::clamp((uint32_t)std::lround(kOccGridWidth / std::max(0.25f, pState->aspectRatio)), 16u, kOccGridMaxPixels / kOccGridWidth);
+        const uint32_t occWidth = shadowTest ? kOccShadowGridWidth : kOccGridWidth;
+        const uint32_t occHeight = std::clamp((uint32_t)std::lround(occWidth / std::max(0.25f, pState->aspectRatio)), 16u, kOccGridMaxPixels / occWidth);
+        const uint32_t occFlags = shadowTest ? 1u : 0u; // The shadow-mesh test (SplatSortCS.hlsl g_OccFlags)
         auto bindCB = [&](uint32_t pass)
         {
             SplatSortCB* pCB = nullptr;
@@ -1467,8 +1473,8 @@ namespace Splat
             pCB->aabbMin = pState->aabbMin; pCB->pass = pass;
             pCB->aabbExtents = pState->aabbExtents; pCB->numBlocks = numBlocks;
             pCB->paddedSlotCount = padded;  pCB->detachedCull = pState->detachCullCamera ? 1u : 0u;
-            pCB->occlusionCull = occlusionCull ? 1u : 0u; pCB->occTriCount = m_occluderMesh.indexCount / 3u;
-            pCB->occWidth = occWidth;       pCB->occHeight = occHeight; pCB->pad3 = pCB->pad4 = 0;
+            pCB->occlusionCull = occlusionCull ? 1u : 0u; pCB->occTriCount = occTriCount;
+            pCB->occWidth = occWidth;       pCB->occHeight = occHeight; pCB->occFlags = occFlags; pCB->occMargin = pState->occlusionMargin;
             pCmdLst->SetComputeRootConstantBufferView(0, addr);
             return true;
         };
@@ -1497,13 +1503,13 @@ namespace Splat
                 SetName(*ppOut, name);
             };
             makeBuffer((uint64_t)kOccGridMaxPixels * 4u, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &m_pOccDepthBuffer, "SplatRenderer::m_pOccDepthBuffer");
-            makeBuffer(16u, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &m_pOccCountBuffer, "SplatRenderer::m_pOccCountBuffer");
-            makeBuffer((uint64_t)kOccReadbackSlots * 16u, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, &m_pOccCountReadback, "SplatRenderer::m_pOccCountReadback");
+            makeBuffer(kOccCounters * 4u, D3D12_HEAP_TYPE_DEFAULT, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, &m_pOccCountBuffer, "SplatRenderer::m_pOccCountBuffer");
+            makeBuffer((uint64_t)kOccReadbackSlots * kOccCounters * 4u, D3D12_HEAP_TYPE_READBACK, D3D12_RESOURCE_FLAG_NONE, D3D12_RESOURCE_STATE_COPY_DEST, &m_pOccCountReadback, "SplatRenderer::m_pOccCountReadback");
             void* mapped = nullptr;
             if (SUCCEEDED(m_pOccCountReadback->Map(0, nullptr, &mapped))) m_pOccCountMapped = (const uint32_t*)mapped;
         }
-        pCmdLst->SetComputeRootShaderResourceView(8, occlusionCull ? m_occluderMesh.indices->GetGPUVirtualAddress() : 0);
-        pCmdLst->SetComputeRootShaderResourceView(9, occlusionCull ? m_occluderMesh.vertices->GetGPUVirtualAddress() : 0);
+        pCmdLst->SetComputeRootShaderResourceView(8, !occlusionCull ? 0 : shadowTest ? m_pShadowMeshIndexBuffer->GetGPUVirtualAddress() : m_occluderMesh.indices->GetGPUVirtualAddress());
+        pCmdLst->SetComputeRootShaderResourceView(9, !occlusionCull ? 0 : shadowTest ? m_pShadowMeshVertexBuffer->GetGPUVirtualAddress() : m_occluderMesh.vertices->GetGPUVirtualAddress());
         pCmdLst->SetComputeRootUnorderedAccessView(10, m_pOccDepthBuffer ? m_pOccDepthBuffer->GetGPUVirtualAddress() : 0);
         pCmdLst->SetComputeRootUnorderedAccessView(11, m_pOccCountBuffer ? m_pOccCountBuffer->GetGPUVirtualAddress() : 0);
         if (occlusionCull)
@@ -1514,7 +1520,7 @@ namespace Splat
             pCmdLst->Dispatch((occWidth * occHeight + 255u) / 256u, 1, 1);
             pCmdLst->ResourceBarrier(2, uavOcc);
             pCmdLst->SetPipelineState(m_pOccRasterPSO);
-            pCmdLst->Dispatch((m_occluderMesh.indexCount / 3u + 63u) / 64u, 1, 1);
+            pCmdLst->Dispatch((occTriCount + 63u) / 64u, 1, 1);
             pCmdLst->ResourceBarrier(1, &uavOcc[0]);
         }
 
@@ -1533,7 +1539,7 @@ namespace Splat
             const uint32_t slot = (uint32_t)(m_occSortSerial % kOccReadbackSlots);
             D3D12_RESOURCE_BARRIER toCopy = CD3DX12_RESOURCE_BARRIER::Transition(m_pOccCountBuffer, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
             pCmdLst->ResourceBarrier(1, &toCopy);
-            pCmdLst->CopyBufferRegion(m_pOccCountReadback, slot * 16u, m_pOccCountBuffer, 0, 16u);
+            pCmdLst->CopyBufferRegion(m_pOccCountReadback, slot * kOccCounters * 4u, m_pOccCountBuffer, 0, kOccCounters * 4u);
             D3D12_RESOURCE_BARRIER toUav = CD3DX12_RESOURCE_BARRIER::Transition(m_pOccCountBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
             pCmdLst->ResourceBarrier(1, &toUav);
             m_occSlotSerial[slot] = ++m_occSortSerial;
@@ -2526,10 +2532,10 @@ namespace Splat
         s_frameCounter++;
         if (s_frameCounter % 60 == 0)
         {
-            LogTransitionTrace("Renderer Heartbeat: frame=%u, chunkCount=%u, splatCount=%u, fps=%.1f, gpuWait=%.1fms, record=%.1fms, upload=%.1fms, mode=%u, sorts=%u, listUploads=%u, listCopiesInFlight=%u, occOn=%d, occTris=%u, occChunks=%u, occSplats=%u",
+            LogTransitionTrace("Renderer Heartbeat: frame=%u, chunkCount=%u, splatCount=%u, fps=%.1f, gpuWait=%.1fms, record=%.1fms, upload=%.1fms, mode=%u, sorts=%u, listUploads=%u, listCopiesInFlight=%u, occOn=%d, occTris=%u, occChunks=%u, occSplats=%u, occTest=%s",
                 s_frameCounter, pState->chunkCount, pState->splatCount, m_metrics.frameRate,
                 m_smoothGpuWaitMs, m_smoothCommandRecordMs, m_smoothUploadMs, pState->renderMode, m_heartbeatSorts, m_heartbeatListUploads, m_heartbeatCopiesInFlight,
-                (int)m_occActive, m_occluderMesh.indexCount / 3u, m_occCulledChunks, m_occCulledSplats);
+                (int)m_occActive, m_occluderMesh.indexCount / 3u, m_occCulledChunks, m_occCulledSplats, m_occShadowTestActive ? "shadow" : "occluder");
             m_heartbeatCopiesInFlight = 0;
             m_heartbeatSorts = 0;
             m_heartbeatListUploads = 0;

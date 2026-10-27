@@ -143,7 +143,7 @@ int Splat::RunSplatPakApp(HINSTANCE hInstance, LPSTR lpCmdLine, int nCmdShow, co
                 forwarded += a + " \"" + args[++i] + "\" ";
                 continue;
             }
-            if (a == "--camera-capture" || a == "--cameras" || a == "--camera" || a == "--camera-list" || a == "--size" || a == "--scene" || a == "--spin" || a == "--occlusion" || a == "--policy" || a == "--zoom")
+            if (a == "--camera-capture" || a == "--cameras" || a == "--camera" || a == "--camera-list" || a == "--size" || a == "--scene" || a == "--spin" || a == "--occlusion" || a == "--policy" || a == "--zoom" || a == "--occlusion-test" || a == "--distance" || a == "--occlusion-margin")
             {
                 if (i + 1 >= args.size())
                 {

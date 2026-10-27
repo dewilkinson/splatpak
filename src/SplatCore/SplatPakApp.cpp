@@ -391,6 +391,18 @@ namespace Splat
                 m_cliSpinDegPerSec = (float)atof(args[++i].c_str());
                 LogTransitionTrace("Command line: --spin %.1f deg/s", m_cliSpinDegPerSec);
             }
+            else if (a == "--occlusion-margin" && i + 1 < args.size())
+            {
+                m_occlusionMarginEdges = (float)atof(args[++i].c_str()); // The shadow-mesh test's margin, in median edges
+            }
+            else if (a == "--distance" && i + 1 < args.size())
+            {
+                m_cliDistanceFactor = (float)atof(args[++i].c_str()); // The framing distance times this, once the model shows
+            }
+            else if (a == "--occlusion-test" && i + 1 < args.size())
+            {
+                m_occlusionTest = args[++i] == "shadow" ? 1 : 0; // "occluder" (the inset volume) or "shadow" (the shadow mesh's depth)
+            }
             else if (a == "--zoom" && i + 1 < args.size())
             {
                 m_cliZoomPeriodSec = (float)atof(args[++i].c_str());
@@ -577,6 +589,14 @@ namespace Splat
                             std::string val = line.substr(eqPos + 1);
                             m_lodScreenSpace = !(val.find("false") != std::string::npos || val.find('0') != std::string::npos);
                         }
+                    }
+                    {
+                        // Occlusion test: "occluder" (the inset volume, the default) or "shadow" (the shadow mesh's depth, experimental)
+                        size_t hPos = line.find("\"occlusion_test\":");
+                        size_t eqPos = std::string::npos;
+                        if (hPos != std::string::npos) eqPos = line.find(':', hPos);
+                        else if (line.find("occlusion_test=") != std::string::npos) eqPos = line.find('=');
+                        if (eqPos != std::string::npos) m_occlusionTest = line.find("shadow", eqPos) != std::string::npos ? 1 : 0;
                     }
                     {
                         size_t hPos = line.find("\"lod_per_block\":");
@@ -979,6 +999,7 @@ namespace Splat
             }
             out << "  \"lod_screen_space\": " << (m_lodScreenSpace ? "true" : "false") << ",\n";
             out << "  \"lod_per_block\": " << (m_lodPerBlock ? "true" : "false") << ",\n";
+            out << "  \"occlusion_test\": \"" << (m_occlusionTest == 0 ? "occluder" : "shadow") << "\",\n";
             out << "  \"lod_pixel_spacing\": " << m_lodPixelSpacing << ",\n";
             out << "  \"render_path\": \"" << m_renderPathConfig << "\",\n";
             out << "  \"active_tab\": " << m_activeTab << ",\n";
@@ -3057,6 +3078,8 @@ namespace Splat
         m_shadowMesh = std::move(mesh);
         m_shadowMeshLevel = 0;
         m_shadowMeshSerial++;
+        m_shadowMeshMedianEdge = (m_shadowMesh && !m_shadowMesh->Empty()) ? MedianEdgeLength(m_shadowMesh->levels[0]) : 0.0f;
+        if (m_shadowMeshMedianEdge > 0.0f) LogTransitionTrace("Shadow mesh: median edge %.4f m (the shadow-mesh occlusion test's margin unit)", m_shadowMeshMedianEdge);
     }
 
     void SplatPakApp::ReleaseModelMeshes()
@@ -4321,6 +4344,12 @@ namespace Splat
         // --spin: the orbit turns at a steady rate on its own (a repeatable motion benchmark), from the moment a model is shown
         if (m_cliSpinDegPerSec != 0.0f && m_state.chunkCount > 0)
             m_yaw += XMConvertToRadians(m_cliSpinDegPerSec) * (float)(m_deltaTime / 1000.0);
+        // --distance: the orbit distance, once, as a fraction of the framing distance (a repeatable close view)
+        if (m_cliDistanceFactor > 0.0f && m_state.chunkCount > 0)
+        {
+            m_distance *= m_cliDistanceFactor;
+            m_cliDistanceFactor = 0.0f;
+        }
         // --zoom: the orbit distance swings from the framing distance in to a third of it and back, once a period
         if (m_cliZoomPeriodSec > 0.0f && m_state.chunkCount > 0)
         {
@@ -7077,6 +7106,23 @@ namespace Splat
                 ShowTooltip("Depth-tests the splats against the baked interior occlusion volume (%zu cubes), so far-side splats don't show through gaps in the near side. On by default.", m_occlusionVoxels.size());
         }
 
+        // Which test drops hidden blocks before the sort (remembered: occlusion_test). The shadow mesh is experimental: kept
+        // to show why the occluder must sit inside the splats.
+        if (m_enableOcclusionCulling && HasOccluderMesh() && m_shadowMesh && !m_shadowMesh->Empty())
+        {
+            ImGui::TextUnformatted("Cull hidden blocks by");
+            ImGui::SameLine();
+            bool changed = ImGui::RadioButton("Occluder volume##occtest", &m_occlusionTest, 0);
+            if (ImGui::IsItemHovered())
+                ShowTooltip("The occluder volume, which sits a little inside the splats, drawn at each triangle's farthest depth on a coarse grid: a block wholly behind it is dropped before the sort. Close up on Cthulhu it drops about a third of the splats, and never a visible one.");
+            ImGui::SameLine();
+            changed |= ImGui::RadioButton("Shadow mesh (experimental)##occtest", &m_occlusionTest, 1);
+            if (ImGui::IsItemHovered())
+                ShowTooltip("The shadow mesh (the model's surface) drawn at its own depth from the camera: a block more than %.1f median edges (%.1f cm) behind it is dropped. It drops more (close up on Cthulhu 46%% of the splats against 33%%), but the mesh bridges the gaps in thin, open parts, so visible splats behind those bridges go too: holes in Cthulhu's wings. A margin wide enough to close them drops fewer than the occluder volume.",
+                    m_occlusionMarginEdges, m_shadowMeshMedianEdge * m_occlusionMarginEdges * 100.0f);
+            if (changed) SaveConfigFile();
+        }
+
         // The model views in place of the splats: the occlusion volume alone, and the shadow mesh
         const bool modelHasMesh = m_shadowMesh && !m_shadowMesh->Empty();
         if (!m_occlusionVoxels.empty() || HasOccluderMesh())
@@ -8036,6 +8082,8 @@ namespace Splat
                 m_state.pShadowMeshIndices = nullptr; m_state.shadowMeshIndexCount = 0;
             }
             m_state.shadowMeshVersion = m_shadowMeshVersion;
+            m_state.occlusionTest = (uint32_t)m_occlusionTest;
+            m_state.occlusionMargin = m_shadowMeshMedianEdge * m_occlusionMarginEdges;
             const bool hasOccluder = HasOccluderMesh() && !m_occluderMeshGpu.vertices.empty();
             m_state.pOccluderMeshVertices = hasOccluder ? m_occluderMeshGpu.vertices.data() : nullptr;
             m_state.occluderMeshVertexCount = hasOccluder ? m_occluderMeshGpu.VertexCount() : 0;

@@ -252,6 +252,9 @@ namespace Splat
         bool     m_showGridSetting = true;   // The saved choice (config show_grid): what objects load with
         int      m_shadowMeshLevel = 0;      // Level drawn by the view
         uint32_t m_shadowMeshVersion = 0;    // Bumped when the mesh or the drawn level changes (renderer re-upload)
+        float    m_shadowMeshMedianEdge = 0.0f; // Level 0's median edge: the unit of the shadow-mesh occlusion test's margin
+        float    m_occlusionMarginEdges = 1.0f; // The shadow-mesh test's margin in those edges (--occlusion-margin)
+        int      m_occlusionTest = 0;       // The sort's occlusion test: 0 the occluder mesh, 1 the shadow mesh's depth (experimental; SplatRenderer::State::occlusionTest); config occlusion_test, --occlusion-test
         ShadowMeshDisplay m_shadowMeshGpu;   // The drawn level, subdivided and smooth-shaded (ShadowMeshDisplay.h)
         int      m_shadowMeshGpuLevel = -1;
         uint32_t m_shadowMeshSerial = 0;              // Bumped by every SetShadowMesh: a new mesh may reuse a freed one's address
@@ -856,6 +859,7 @@ namespace Splat
         float    m_cliSpinDegPerSec = 0.0f;         // --spin D: the orbit turns D degrees a second on its own (motion benchmark)
         float    m_cliZoomPeriodSec = 0.0f;         // --zoom P: the orbit distance swings in and out once every P seconds (motion benchmark)
         float    m_cliZoomBaseDistance = 0.0f, m_cliZoomPhase = 0.0f;
+        float    m_cliDistanceFactor = 0.0f;        // --distance F: the orbit distance is set to F x the framing distance once the model shows
         bool     m_modelClickArmed = false;         // A left press began over the viewport: its release, if not a drag, may be a click on the model
         bool     ClickHitsModel(float x, float y) const;
         double   m_streamDtAccumMs = 0.0;           // Time since the stream's last update (it runs at most kStreamUpdateHz a second)

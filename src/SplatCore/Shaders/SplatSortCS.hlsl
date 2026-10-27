@@ -22,6 +22,12 @@
 // drops a chunk when its bounding box, grown by a pixel, lies behind the occluder at every pixel it
 // covers: such a chunk cannot show (the splats are depth-tested against the same mesh), so it is
 // neither sorted nor drawn. Detach Camera keeps it, flagged like a frustum-culled chunk.
+//
+// The shadow-mesh test (g_OccFlags 1) rasterises the shadow mesh -- the splat surface itself -- instead, at
+// its own depth at each pixel on a finer grid, and drops a chunk whose nearest corner lies more than
+// g_OccMargin (in mesh edges) behind the mesh's farthest depth over its footprint. Experimental: it drops
+// more than the occluder (which sits inside the splats), but the mesh bridges the gaps in thin, open
+// parts, so visible splats behind those bridges go too (Cthulhu's wings).
 
 cbuffer SplatSortCB : register(b0)
 {
@@ -40,7 +46,9 @@ cbuffer SplatSortCB : register(b0)
     uint     g_OccTriCount;    // Occluder mesh triangles
     uint     g_OccWidth;       // Occlusion grid size in pixels
     uint     g_OccHeight;
-    uint     g_Pad3, g_Pad4;
+    uint     g_OccFlags;       // 1 = the shadow-mesh test: its own depth at each pixel (the occluder's: each triangle's
+                               // farthest), on a finer grid, and ShadowMeshHides in place of ChunkOccluded
+    float    g_OccMargin;      // Shadow-mesh test: how far behind the mesh a chunk must lie to be hidden (metres of view depth)
 };
 
 struct PackedSplat { uint w0, w1, w2, w3, w4; };
@@ -81,6 +89,8 @@ RWStructuredBuffer<uint>         g_OccCulled   : register(u5); // [0] chunks, [1
 #define OCC_NEAR 0.1           // The projection's near plane: geometry nearer than this is never treated as occluded or occluding
 #define OCC_MAX_TRI_PIXELS 8192u   // A triangle covering more of the grid than this is skipped (conservative: occludes nothing)
 #define OCC_MAX_CHUNK_PIXELS 4096u // A chunk covering more of the grid than this is never culled
+#define OCC_MAX_TRI_PIXELS_FINE 32768u   // The same two limits on the shadow-mesh test's finer grid
+#define OCC_MAX_CHUNK_PIXELS_FINE 16384u
 #define BLOCK 1024
 #define THREADS 256
 #define PER_THREAD 4
@@ -151,18 +161,62 @@ void OccRasterCS(uint3 id : SV_DispatchThreadID)
     int y0 = max(0, (int)floor(min(a.y, min(b.y, c.y))));
     int x1 = min((int)g_OccWidth - 1, (int)floor(max(a.x, max(b.x, c.x))));
     int y1 = min((int)g_OccHeight - 1, (int)floor(max(a.y, max(b.y, c.y))));
-    if (x1 < x0 || y1 < y0 || (uint)((x1 - x0 + 1) * (y1 - y0 + 1)) > OCC_MAX_TRI_PIXELS) return;
+    const bool perPixel = (g_OccFlags & 1u) != 0;
+    if (x1 < x0 || y1 < y0 || (uint)((x1 - x0 + 1) * (y1 - y0 + 1)) > (perPixel ? OCC_MAX_TRI_PIXELS_FINE : OCC_MAX_TRI_PIXELS)) return;
     uint depthBits = asuint(max(a.z, max(b.z, c.z))); // Positive floats order like their bits
+    const float invArea = 1.0 / abs(area);
     for (int y = y0; y <= y1; y++)
         for (int x = x0; x <= x1; x++)
         {
             float2 p = float2(x + 0.5, y + 0.5);
-            if (OccEdge(a.xy, b.xy, p) >= 0.0 && OccEdge(b.xy, c.xy, p) >= 0.0 && OccEdge(c.xy, a.xy, p) >= 0.0)
+            const float ea = OccEdge(b.xy, c.xy, p), eb = OccEdge(c.xy, a.xy, p), ec = OccEdge(a.xy, b.xy, p);
+            if (ea >= 0.0 && eb >= 0.0 && ec >= 0.0)
             {
+                // The shadow mesh: the depth at this pixel (1/w interpolates linearly across the screen)
+                const uint bits = perPixel ? asuint(1.0 / ((ea / a.z + eb / b.z + ec / c.z) * invArea)) : depthBits;
                 uint prev;
-                InterlockedMin(g_OccDepth[y * g_OccWidth + x], depthBits, prev);
+                InterlockedMin(g_OccDepth[y * g_OccWidth + x], bits, prev);
             }
         }
+}
+
+groupshared uint gs_OccMaxBits;
+
+// The shadow-mesh test (g_OccFlags 1): whether the chunk's nearest corner lies more than g_OccMargin behind the mesh's
+// farthest depth over its footprint (grown by a pixel). A footprint pixel with no mesh, or a box crossing the near plane,
+// never hides it. Every thread of the group must call it.
+bool ShadowMeshHides(MeshletChunk chunk, uint threadId)
+{
+    float3 bMin = chunk.aabbMin;
+    float3 bMax = chunk.aabbMin + chunk.aabbExtents;
+    float nearW = 1e30;
+    float2 lo = float2(1e30, 1e30), hi = float2(-1e30, -1e30);
+    bool crossesNear = false;
+    [unroll]
+    for (int i = 0; i < 8; i++)
+    {
+        float3 p = OccProject(float3((i & 1) ? bMax.x : bMin.x, (i & 2) ? bMax.y : bMin.y, (i & 4) ? bMax.z : bMin.z));
+        if (p.z <= OCC_NEAR) crossesNear = true;
+        nearW = min(nearW, p.z);
+        lo = min(lo, p.xy);
+        hi = max(hi, p.xy);
+    }
+    int x0 = max(0, (int)floor(lo.x) - 1), y0 = max(0, (int)floor(lo.y) - 1);
+    int x1 = min((int)g_OccWidth - 1, (int)floor(hi.x) + 1), y1 = min((int)g_OccHeight - 1, (int)floor(hi.y) + 1);
+    uint w = (uint)max(0, x1 - x0 + 1), h = (uint)max(0, y1 - y0 + 1);
+    bool candidate = !crossesNear && w > 0 && h > 0 && w * h <= OCC_MAX_CHUNK_PIXELS_FINE;
+
+    if (threadId == 0) gs_OccMaxBits = 0;
+    GroupMemoryBarrierWithGroupSync();
+    if (candidate)
+    {
+        uint farthest = 0;
+        for (uint k = threadId; k < w * h; k += 64)
+            farthest = max(farthest, g_OccDepth[(uint)(y0 + (int)(k / w)) * g_OccWidth + (uint)(x0 + (int)(k % w))]);
+        InterlockedMax(gs_OccMaxBits, farthest);
+    }
+    GroupMemoryBarrierWithGroupSync();
+    return candidate && nearW > asfloat(gs_OccMaxBits) + g_OccMargin; // OCC_EMPTY (FLT_MAX) where a pixel has no mesh: never hidden
 }
 
 groupshared uint gs_OccSeen;
@@ -220,7 +274,10 @@ void ExpandCS(uint3 groupId : SV_GroupID, uint threadId : SV_GroupThreadID)
     // The condition is uniform across the group, as ChunkOccluded's barriers need.
     bool occluded = false;
     if (g_OcclusionCull == 1 && inFrustum)
-        occluded = ChunkOccluded(chunk, threadId);
+    {
+        if ((g_OccFlags & 1u) != 0) occluded = ShadowMeshHides(chunk, threadId);
+        else occluded = ChunkOccluded(chunk, threadId);
+    }
     if (occluded && threadId == 0)
     {
         InterlockedAdd(g_OccCulled[0], 1u);

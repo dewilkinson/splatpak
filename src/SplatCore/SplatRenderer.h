@@ -134,6 +134,13 @@ namespace Splat
             uint32_t                 shadowMeshIndexCount = 0;
             uint32_t                 shadowMeshVersion = 0; // Bumped whenever the mesh changes, so it re-uploads
             bool                     showShadowMesh = false;
+            // The sort's occlusion test, which chunks it drops before sorting: 0 = behind the occluder mesh (inset inside the
+            // splats, at each triangle's farthest depth, on a coarse grid); 1 = more than occlusionMargin behind the shadow mesh
+            // (the splat surface, at its own depth at each pixel, on a finer grid; experimental). Close up on Cthulhu the second drops
+            // 46% of the splats against 33%, but visible ones too: the shadow mesh bridges the gaps in the thin wings, and a margin
+            // wide enough to keep them (8 mesh edges) drops fewer than the occluder. The draw's per-pixel test stays the occluder's.
+            uint32_t                 occlusionTest = 0;
+            float                    occlusionMargin = 0.0f; // Metres (the shadow mesh's median edge)
             bool                     showGrid = true;       // The editor grid on the y = 0 plane (Grid.hlsl)
             // Occluder mesh (format 13): the occlusion volume as a mesh, drawn in its place (same vertex layout)
             const void*              pOccluderMeshVertices = nullptr;
@@ -424,12 +431,15 @@ namespace Splat
         ID3D12PipelineState*       m_pOccClearPSO = nullptr;
         ID3D12PipelineState*       m_pOccRasterPSO = nullptr;
         ID3D12Resource*            m_pOccDepthBuffer = nullptr;      // uint per grid pixel, kOccGridMaxPixels
-        ID3D12Resource*            m_pOccCountBuffer = nullptr;      // [0] chunks, [1] splats dropped by occlusion
+        ID3D12Resource*            m_pOccCountBuffer = nullptr;      // kOccCounters counters (see SplatSortCS.hlsl g_OccCulled)
         ID3D12Resource*            m_pOccCountReadback = nullptr;    // kOccReadbackSlots copies of the counters, read a few frames later
         const uint32_t*            m_pOccCountMapped = nullptr;
-        static constexpr uint32_t  kOccGridWidth = 256;
-        static constexpr uint32_t  kOccGridMaxPixels = 256 * 256;
+        static constexpr uint32_t  kOccGridWidth = 256;              // The occluder test's grid
+        static constexpr uint32_t  kOccShadowGridWidth = 512;        // The shadow-mesh test's (per-pixel depth: worth the finer grid)
+        static constexpr uint32_t  kOccGridMaxPixels = 512 * 512;
+        bool                       m_occShadowTestActive = false;    // The last sort culled with the shadow-mesh test
         static constexpr uint32_t  kOccReadbackSlots = 4;
+        static constexpr uint32_t  kOccCounters = 2;                 // [0] chunks, [1] splats culled
         uint64_t                   m_occSortSerial = 0;              // Sorts run (the readback slot is serial % kOccReadbackSlots)
         uint64_t                   m_occSlotSerial[kOccReadbackSlots] = {};
         uint64_t                   m_occFrame = 0;
