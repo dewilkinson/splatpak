@@ -454,6 +454,9 @@ namespace Splat
         std::chrono::steady_clock::time_point m_rdoStart;
         std::unique_ptr<RdoProfile> m_pendingRdoProfile; // A profile waiting for its scan to finish opening
         bool   RdoStale() const { return !m_rdo.Valid() || m_rdoHash == 0 || m_rdoHash != m_sourceHash || m_rdoParams.maxLODs != m_bakedParams.maxLODs || m_rdoParams.deadbandMM != m_bakedParams.deadbandMM; }
+        // The analysis an opened package carries (PackageRdoFooter): its scan is not loaded, so RdoStale cannot match the hash,
+        // but it is the curve this package was encoded from
+        bool   RdoFromPackage() const { return m_rdo.Valid() && !m_rdoPackagePath.empty() && m_rdoParams.maxLODs == m_bakedParams.maxLODs; }
         void   DrawRdoMenu();
         void   DrawRdoPlot();
         void   StartRdoAnalysis(bool quiet = false);
@@ -539,7 +542,7 @@ namespace Splat
         bool   TargetUnmet() const;                     // A target governs the harmonics but the curve is not measured for this scan and bake
         void   StartAutoRdo(const std::string& savePath);
         void   StepAutoRdo();
-        void   DrawRdoPlaceholder(bool canAnalyse, bool analysing);
+        void   DrawRdoPlaceholder(bool canAnalyse, bool analysing, bool scanLoaded);
         void   FailReencode(const std::string& why);
         static uint8_t SHBitsFor(int precision) { return kSHPrecisionBits[std::clamp(precision, 0, 3)]; }
         // The bake keeps the SH Quality degree, but never more bands than the source carries: extra bands would

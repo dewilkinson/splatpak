@@ -1303,6 +1303,13 @@ namespace Splat
                 SetNavMode(m_navMode == NavOrbit ? NavFly : NavOrbit);
                 return true;
             }
+            // R toggles the Refinement Visualizer (the Renderer tab's checkbox)
+            if (msg.wParam == 'R' && !ctrlPressed && (msg.lParam & (1 << 30)) == 0 && !ImGui::GetIO().WantCaptureKeyboard)
+            {
+                m_showChunkStream = !m_showChunkStream;
+                m_stream.m_streamStateDirty = true;
+                return true;
+            }
             if (msg.wParam == 'L' && !ctrlPressed && (msg.lParam & (1 << 30)) == 0 && !ImGui::GetIO().WantCaptureKeyboard)
             {
                 m_loupeEnabled = !m_loupeEnabled;
@@ -1839,7 +1846,18 @@ namespace Splat
         if (splatPkg)
         {
             m_splatParams = m_loadedPackage.splatParams;
-            m_sourceSHDegree = m_splatParams.shDegree; // SH Quality keeps the user's choice; a re-bake keeps at most this
+            m_sourceSHDegree = m_splatParams.shDegree; // A re-bake keeps at most this
+            // SH Quality and Precision show the package's own encoding: they are the baked settings it is recorded under
+            // (m_bakedParams below), and keeping the previous choice showed degree 3 for a degree 1 package
+            if (m_splatParams.shDegree > 0)
+            {
+                m_splatSHQuality = (int)std::clamp(m_splatParams.shDegree, 1u, 3u) - 1;
+                uint8_t bits[3] = { 8, 8, 8 };
+                if (m_loadedPackage.header.payloadTransforms & PAYLOAD_TRANSFORM_SH_RESIDUAL) SHCoding::UnpackBits(m_loadedPackage.header.payloadTransforms, bits);
+                memcpy(m_shBandBits, bits, 3);
+                m_shPrecision = 0;
+                for (int p = 0; p < 4; p++) if (kSHPrecisionBits[p] == bits[0]) m_shPrecision = p;
+            }
         }
         SplatPointArray decodedLOD0; // Splat packages: LOD 0 across every chunk, in chunk order
         auto decodeSplatLevel = [&](size_t c, size_t l, SplatPointArray& outSplats)
@@ -2076,7 +2094,11 @@ namespace Splat
         const std::string name = filepath.substr(filepath.find_last_of("/\\") + 1);
         m_statusMessage = "Opening " + name + "...";
         const bool useTunings = !Unattended(); // A scripted run bakes with what it was given
-        return RunOperation("Opening " + name, [this, filepath, splatFile, keep, shQuality, settings, camera, opened, useTunings](Progress& progress)
+        // The first bake's harmonics follow the RDO target (unless set by hand): see below
+        const RdoAnalysis::Target target = m_rdoTarget;
+        const bool byTarget = useTunings && !m_rdoOverride;
+        const std::string profileFolder = RdoProfileFolder();
+        return RunOperation("Opening " + name, [this, filepath, splatFile, keep, shQuality, settings, camera, opened, useTunings, target, byTarget, profileFolder](Progress& progress)
         {
             {
                 std::ifstream in(filepath, std::ios::ate | std::ios::binary);
@@ -2124,6 +2146,37 @@ namespace Splat
                     opened->params.deadbandMM = t.deadbandMM;
                     opened->params.occlusion = t.occlusion;
                     opened->tuned = true;
+                }
+            }
+            // No remembered settings: the harmonics come from the RDO target, not from whatever SH Quality showed for the
+            // model before (a degree 1 package left a new scan baked at degree 1 under a 40 dB target). With a stored
+            // analysis of this scan, the encoding the target picks; without one, a quality target bakes the source's
+            // full degree at 8 bits, the one encoding sure to keep its fidelity (Bake then measures and refines it).
+            if (byTarget && !opened->tuned && opened->sourceSHDegree > 0)
+            {
+                auto apply = [&](uint32_t degree, const uint8_t bits[3])
+                {
+                    opened->params.shQuality = (int)std::clamp(degree, 1u, 3u) - 1;
+                    memcpy(opened->params.shBandBits, bits, 3);
+                    opened->params.shPrecision = 0;
+                    for (int p = 0; p < 4; p++) if (kSHPrecisionBits[p] == bits[0]) opened->params.shPrecision = p;
+                };
+                RdoProfile stored;
+                std::string storedPath;
+                int pick = -1;
+                if (opened->hash != 0 && FindRdoProfile(profileFolder, opened->hash, opened->params.maxLODs, opened->params.deadbandMM, stored, storedPath))
+                    pick = RdoAnalysis::Pick(stored.analysis, target, (double)opened->fileBytes);
+                if (pick >= 0)
+                {
+                    const RdoSettings& s = stored.analysis.points[pick].settings;
+                    apply(s.shDegree, s.shBits);
+                    LogTransitionTrace("Open: the RDO target picks SH degree %u, %u bits (stored analysis %s)", s.shDegree, (unsigned)s.shBits[0], storedPath.c_str());
+                }
+                else if (target.mode == RdoAnalysis::TargetMode::Quality)
+                {
+                    const uint8_t full[3] = { 8, 8, 8 };
+                    apply(opened->sourceSHDegree, full);
+                    LogTransitionTrace("Open: quality target of %.1f dB and no analysis yet: SH degree %u, 8 bits", target.qualityDb, opened->sourceSHDegree);
                 }
             }
             (void)shQuality;
@@ -3344,7 +3397,7 @@ namespace Splat
             }
             // The analysis behind this encoding goes into the package (PackageRdoFooter): a fresh one of this scan, or the one
             // the package it was re-saved from carried
-            if (m_rdo.Valid() && (!RdoStale() || (!m_rdoPackagePath.empty() && m_rdoParams.maxLODs == m_bakedParams.maxLODs)))
+            if (!RdoStale() || RdoFromPackage())
             {
                 RdoProfile p = MakeRdoProfile();
                 p.choice.shDegree = BakeSHDegree();
@@ -5734,7 +5787,7 @@ namespace Splat
 
             // Segments count doubles for each row down (width divides by 2)
             int numSegments = baseSegments * (1 << rowIdx);
-            const float barHeight = 14.0f;
+            const float barHeight = 7.0f;
 
             const auto* pLevelChunks = (lodIdx < (int)m_stream.m_lodStreamChunks.size()) ? &m_stream.m_lodStreamChunks[lodIdx] : nullptr;
             size_t T = pLevelChunks ? pLevelChunks->size() : 0;
@@ -6033,7 +6086,7 @@ namespace Splat
         {
             m_stream.m_streamStateDirty = true;
         }
-        if (ImGui::IsItemHovered()) ShowTooltip("Visualizer for progressive loading: every chunk that arrives is filled with a semi-transparent tint in its level's colour. The newest chunks -- the leading edge of the growing model -- glow bright, then settle to the regular tint and fade out. Press Evict to watch the whole model grow back in the scheduler's order. Named in the top-left banner while it is on.");
+        if (ImGui::IsItemHovered()) ShowTooltip("(R) Visualizer for progressive loading: every chunk that arrives is filled with a semi-transparent tint in its level's colour. The newest chunks -- the leading edge of the growing model -- glow bright, then settle to the regular tint and fade out. Press Evict to watch the whole model grow back in the scheduler's order. Named in the top-left banner while it is on.");
     }
 
 
@@ -7984,6 +8037,7 @@ namespace Splat
             if (f > 0.02f) ImGui::TextDisabled("%s -- %.0f s elapsed, about %.0f s left", m_op.StageName().c_str(), elapsed, elapsed * (1.0 - f) / f);
             else ImGui::TextDisabled("%s -- %.0f s elapsed", m_op.StageName().c_str(), elapsed);
         }
+        else if (!scanLoaded && RdoFromPackage()) ImGui::TextDisabled("Stored in the package: %zu encodings, measured from its scan", m_rdo.points.size());
         else if (!scanLoaded) ImGui::TextDisabled("Open a .ply scan with spherical harmonics to analyse it");
         else if (pyramidPending) ImGui::TextDisabled("Bake the pending level and deadband changes first");
         else if (!m_rdo.Valid()) ImGui::TextDisabled("Analyse draws this scan's size-against-quality curve");
@@ -7991,11 +8045,11 @@ namespace Splat
         else ImGui::TextDisabled("%zu encodings measured in %.0f s", m_rdo.points.size(), m_rdo.seconds);
 
         bool changed = false;
-        const bool fresh = !RdoStale();
+        const bool fresh = !RdoStale() || (!scanLoaded && RdoFromPackage());
         // The curve when it is measured for this scan and bake; otherwise its frame, dimmed, with Analyse over the middle.
         // Analysing is optional: Bake and Save measure it themselves when a target needs it.
         if (fresh) DrawRdoPlot();
-        else DrawRdoPlaceholder(scanLoaded && !pyramidPending && !analysing && m_autoRdo == AutoRdo::Idle, analysing);
+        else DrawRdoPlaceholder(scanLoaded && !pyramidPending && !analysing && m_autoRdo == AutoRdo::Idle, analysing, scanLoaded);
 
         // The target: always shown, so it can be set before anything is measured. A size target starts at the current
         // bake's size rather than 0 MB, which nothing meets.
@@ -8005,7 +8059,7 @@ namespace Splat
             changed |= ImGui::RadioButton("Size##rdo", &mode, 0); ImGui::SameLine();
             changed |= ImGui::RadioButton("Ratio##rdo", &mode, 1); ImGui::SameLine();
             changed |= ImGui::RadioButton("Quality##rdo", &mode, 2); ImGui::SameLine();
-            changed |= ImGui::RadioButton("Streaming time##rdo", &mode, 3);
+            changed |= ImGui::RadioButton("Streaming Delivery##rdo", &mode, 3);
             if (ImGui::IsItemHovered()) ShowTooltip("The only bandwidth setting: how fast a typical close view of the model streams in over a link.\n"
                                                           "A viewer downloads the blocks a view needs, coarse first, not the whole package.");
             m_rdoTarget.mode = (RdoAnalysis::TargetMode)mode;
@@ -8195,7 +8249,7 @@ namespace Splat
 
     // The curve's frame before it is measured (or once it no longer matches the scan or bake): dimmed axes and a faint
     // sketch of the usual shape, with Analyse over the middle until it is pressed
-    void SplatPakApp::DrawRdoPlaceholder(bool canAnalyse, bool analysing)
+    void SplatPakApp::DrawRdoPlaceholder(bool canAnalyse, bool analysing, bool scanLoaded)
     {
         const float width = std::max(200.0f, ImGui::GetContentRegionAvailWidth()), height = 190.0f;
         ImGui::TextDisabled("Colour fidelity (dB)");
@@ -8222,16 +8276,21 @@ namespace Splat
             const ImVec2 ts = ImGui::CalcTextSize(xTitle);
             dl->AddText(ImVec2(0.5f * (a.x + b.x - ts.x), b.y + 17.0f), IM_COL32(150, 155, 170, 110), xTitle);
         }
+        // Analysing needs the scan itself (a package holds only its own encoding): without one the button says so instead
         const ImVec2 size(130.0f, 30.0f);
-        const float buttonWidth = analysing ? 170.0f : size.x;
+        const float buttonWidth = (analysing || !scanLoaded) ? 190.0f : size.x;
         ImGui::SetCursorScreenPos(ImVec2(0.5f * (a.x + b.x - buttonWidth), 0.5f * (a.y + b.y - size.y)));
         if (!canAnalyse) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
         char text[48];
         if (analysing) snprintf(text, sizeof(text), "Analysing... %.0f%%##rdoCentre", m_op.Fraction() * 100.0f);
+        else if (!scanLoaded) snprintf(text, sizeof(text), "Open the .ply scan##rdoCentre");
         else snprintf(text, sizeof(text), "Analyse##rdoCentre");
-        if (ImGui::Button(text, ImVec2(analysing ? 170.0f : size.x, size.y)) && canAnalyse) StartRdoAnalysis();
+        if (ImGui::Button(text, ImVec2(buttonWidth, size.y)) && canAnalyse) StartRdoAnalysis();
         if (!canAnalyse) ImGui::PopStyleVar();
-        if (ImGui::IsItemHovered())
+        if (ImGui::IsItemHovered() && !scanLoaded && !analysing)
+            ShowTooltip("The analysis encodes the original scan every way it can be encoded, so it needs the .ply scan open (File > Open).\n"
+                        "A package holds only its own encoding; one saved after an analysis carries that analysis and shows its curve.");
+        else if (ImGui::IsItemHovered())
             ShowTooltip("Measures every spherical-harmonics encoding of this scan (degree, and bits per band): its package size, exactly as Save\n"
                         "would compress it, its colour fidelity against the source, and what a typical view downloads. About a minute, once per\n"
                         "scan (it is stored). Optional: Bake and Save measure it themselves when the target needs it.");
