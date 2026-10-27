@@ -778,9 +778,10 @@ namespace Splat
     // like the occluder. A failure only loses the debug view.
     void SplatRenderer::CreateShadowMeshPipelines(SwapChain* pSwapChain)
     {
-        D3D12_SHADER_BYTECODE vs = {}, ps = {};
+        D3D12_SHADER_BYTECODE vs = {}, ps = {}, flatPs = {};
         const bool ok = CompileShaderFromFile("ShadowMesh.hlsl", NULL, "shadowMeshVS", "-T vs_6_0", &vs) && vs.pShaderBytecode != nullptr &&
-                        CompileShaderFromFile("ShadowMesh.hlsl", NULL, "shadowMeshPS", "-T ps_6_0", &ps) && ps.pShaderBytecode != nullptr;
+                        CompileShaderFromFile("ShadowMesh.hlsl", NULL, "shadowMeshPS", "-T ps_6_0", &ps) && ps.pShaderBytecode != nullptr &&
+                        CompileShaderFromFile("ShadowMesh.hlsl", NULL, "shadowMeshFlatPS", "-T ps_6_0", &flatPs) && flatPs.pShaderBytecode != nullptr;
         if (!ok)
         {
             LogTransitionTrace("SplatRenderer::CreateShadowMeshPipelines ERROR: ShadowMesh.hlsl failed to compile -- View Shadow Mesh will draw nothing.");
@@ -796,23 +797,26 @@ namespace Splat
         depthTest.DepthEnable = TRUE;
         depthTest.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
         depthTest.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
-        for (int k = 0; k < 4; k++)
+        // 0/1 View Shadow Mesh (lit, writes depth); 2/3 the gap fill (unlit, tests depth); 4/5 the occluder mesh under the
+        // splats (unlit, writes depth). Each in the swapchain format and the UNORM one.
+        for (int k = 0; k < 6; k++)
         {
             D3D12_GRAPHICS_PIPELINE_STATE_DESC d = {};
             d.pRootSignature = m_pRootSignature;
             d.VS = vs;
-            d.PS = ps;
+            d.PS = k < 2 ? ps : flatPs;
             d.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
             d.SampleMask = UINT_MAX;
             d.RasterizerState = rasterizer;
-            d.DepthStencilState = k < 2 ? depthWrite : depthTest;
+            d.DepthStencilState = (k < 2 || k >= 4) ? depthWrite : depthTest;
             d.InputLayout = { nullptr, 0 };
             d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
             d.NumRenderTargets = 1;
             d.RTVFormats[0] = (k % 2) == 0 ? pSwapChain->GetFormat() : m_unormFormat;
             d.DSVFormat = DXGI_FORMAT_D32_FLOAT;
             d.SampleDesc = DXGI_SAMPLE_DESC{ 1, 0 };
-            ID3D12PipelineState** out = k == 0 ? &m_pShadowMeshPSO : k == 1 ? &m_pShadowMeshPSOUnorm : k == 2 ? &m_pShadowMeshFillPSO : &m_pShadowMeshFillPSOUnorm;
+            ID3D12PipelineState** out = k == 0 ? &m_pShadowMeshPSO : k == 1 ? &m_pShadowMeshPSOUnorm : k == 2 ? &m_pShadowMeshFillPSO : k == 3 ? &m_pShadowMeshFillPSOUnorm
+                                      : k == 4 ? &m_pOccluderMeshPSO : &m_pOccluderMeshPSOUnorm;
             const HRESULT hr = m_pDevice->GetDevice()->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(out));
             if (FAILED(hr)) LogTransitionTrace("SplatRenderer::CreateShadowMeshPipelines ERROR: PSO %d failed hr=0x%08X", k, (unsigned int)hr);
         }
@@ -1260,6 +1264,8 @@ namespace Splat
         if (m_pShadowMeshPSOUnorm) { m_pShadowMeshPSOUnorm->Release(); m_pShadowMeshPSOUnorm = nullptr; }
         if (m_pShadowMeshFillPSO) { m_pShadowMeshFillPSO->Release(); m_pShadowMeshFillPSO = nullptr; }
         if (m_pShadowMeshFillPSOUnorm) { m_pShadowMeshFillPSOUnorm->Release(); m_pShadowMeshFillPSOUnorm = nullptr; }
+        if (m_pOccluderMeshPSO) { m_pOccluderMeshPSO->Release(); m_pOccluderMeshPSO = nullptr; }
+        if (m_pOccluderMeshPSOUnorm) { m_pOccluderMeshPSOUnorm->Release(); m_pOccluderMeshPSOUnorm = nullptr; }
         if (m_pGridPSO) { m_pGridPSO->Release(); m_pGridPSO = nullptr; }
         if (m_pGridPSOUnorm) { m_pGridPSOUnorm->Release(); m_pGridPSOUnorm = nullptr; }
         if (m_pBackdropPSO) { m_pBackdropPSO->Release(); m_pBackdropPSO = nullptr; }
@@ -1363,11 +1369,28 @@ namespace Splat
         const bool occlusionCull = pState->enableOcclusionCulling && m_occluderMesh.indexCount >= 3 && m_occluderMesh.vertices != nullptr
                                 && m_pOccClearPSO != nullptr && m_pOccRasterPSO != nullptr;
         const uint32_t occKey = occlusionCull ? (m_occluderMesh.version + 1u) : 0u;
-        if (occKey != m_occLastKey || memcmp(&cullViewProj, &m_occLastCullViewProj, sizeof(XMFLOAT4X4)) != 0)
+        // The order is only re-sorted once the view has moved enough to change it: the eye by more than 0.5% of its
+        // distance to the model, or the view turned by more than half a degree. Between sorts the frames draw the last
+        // order; splats that close in depth swap places only after more movement than that. The sort also culls, so
+        // the culling frustum is widened by 4% (more than half a degree at the edge of the 45 degree view) to keep
+        // blocks turning into view from appearing a sort late. Detach Camera culls with the frozen camera, exactly.
+        // Re-sorting on any change at all sorted every frame of a turn (36 degrees a second: 0.14 degrees a frame).
+        const XMFLOAT3 centre(pState->aabbMin.x + pState->aabbExtents.x * 0.5f, pState->aabbMin.y + pState->aabbExtents.y * 0.5f, pState->aabbMin.z + pState->aabbExtents.z * 0.5f);
+        const float eyeDist = sqrtf((eyePos.x - centre.x) * (eyePos.x - centre.x) + (eyePos.y - centre.y) * (eyePos.y - centre.y) + (eyePos.z - centre.z) * (eyePos.z - centre.z));
+        const float moved = sqrtf((eyePos.x - m_sortEye.x) * (eyePos.x - m_sortEye.x) + (eyePos.y - m_sortEye.y) * (eyePos.y - m_sortEye.y) + (eyePos.z - m_sortEye.z) * (eyePos.z - m_sortEye.z));
+        const float turn = forward.x * m_sortForward.x + forward.y * m_sortForward.y + forward.z * m_sortForward.z;
+        const bool viewMoved = moved > 0.005f * std::max(eyeDist, 1e-3f) || turn < 0.99996f;
+        const bool frozenCullChanged = pState->detachCullCamera && memcmp(&cullViewProj, &m_occLastCullViewProj, sizeof(XMFLOAT4X4)) != 0;
+        if (occKey != m_occLastKey || viewMoved || frozenCullChanged) m_splatSortNeedsRun = true;
+        XMFLOAT4X4 sortCullViewProj = cullViewProj;
+        if (!pState->detachCullCamera)
+            for (int r = 0; r < 4; r++) { sortCullViewProj.m[r][0] /= 1.04f; sortCullViewProj.m[r][1] /= 1.04f; } // Clip x and y: a 4% wider frustum
+        if (m_splatSortNeedsRun)
         {
             m_occLastKey = occKey;
             m_occLastCullViewProj = cullViewProj;
-            m_splatSortNeedsRun = true;
+            m_sortEye = eyePos;
+            m_sortForward = forward;
         }
 
         // The counters of the newest sort the GPU has surely finished (written kOccReadbackSlots - 1 frames ago or more)
@@ -1433,7 +1456,7 @@ namespace Splat
             SplatSortCB* pCB = nullptr;
             D3D12_GPU_VIRTUAL_ADDRESS addr = 0;
             if (!m_constantBufferRing.AllocConstantBuffer(sizeof(SplatSortCB), (void**)&pCB, &addr)) return false;
-            pCB->cullViewProj = cullViewProj;
+            pCB->cullViewProj = sortCullViewProj;
             pCB->camPos = eyePos;           pCB->totalChunks = pState->chunkCount;
             pCB->camForward = forward;      pCB->slotCount = slotCount;
             pCB->aabbMin = pState->aabbMin; pCB->pass = pass;
@@ -1859,7 +1882,7 @@ namespace Splat
                 m_needUploadToGpu = true;
             }
             m_splatBufferGPUAddress = m_pSplatGpuBuffer ? m_pSplatGpuBuffer->GetGPUVirtualAddress() : 0;
-            if (SortedGaussians(renderMode) && (needsSort || modelChanged)) m_splatSortNeedsRun = true;
+            if (SortedGaussians(renderMode) && modelChanged) m_splatSortNeedsRun = true; // A moving view re-sorts in RunSplatSort, past a threshold
         }
         else
         {
@@ -2925,7 +2948,9 @@ namespace Splat
             if (pOccluderPSO == nullptr) return;
             bool wantOccluderVisible = pState->enableOcclusionCulling || pState->showOcclusionVolumeOnly;
             // Format 13: the occluder mesh holds the depth the splats are tested against, then the shadow mesh fills the gaps
-            ID3D12PipelineState* pMeshOccluderPSO = splatDisplayBlend ? m_pShadowMeshPSOUnorm : m_pShadowMeshPSO;
+            // Unlit under the splats; Hide Splat Layer shows it on its own, lit, as View Shadow Mesh does
+            ID3D12PipelineState* pMeshOccluderPSO = pState->showOcclusionVolumeOnly ? (splatDisplayBlend ? m_pShadowMeshPSOUnorm : m_pShadowMeshPSO)
+                                                                                   : (splatDisplayBlend ? m_pOccluderMeshPSOUnorm : m_pOccluderMeshPSO);
             if (wantOccluderVisible && m_occluderMesh.indexCount > 0 && pMeshOccluderPSO != nullptr)
             {
                 pCmdLst->SetGraphicsRootSignature(m_pRootSignature);

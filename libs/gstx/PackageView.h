@@ -19,6 +19,8 @@
 //   background solid|gradient <tr> <tg> <tb> <br> <bg> <bb> <basis>   the recommended backdrop: top and bottom colours,
 //                                                   display-space 0..1 (solid: both the same); basis is how the bake chose
 //                                                   it (BackgroundEstimate.h). A viewer applies it unless its user chose their own
+//   navigation orbit|fly                            how the viewer's camera starts: orbiting the model (an object) or flying
+//                                                   through it (an environment)
 //   camera <ex> <ey> <ez> <fx> <fy> <fz> <ux> <uy> <uz> <fovY> <width> <height> <name>   eye, unit view, unit up, radians, photo size
 
 #pragma once
@@ -44,6 +46,7 @@ namespace Splat
         int startCamera = -1;
         DirectX::XMFLOAT3 subjectCentre = { 0, 0, 0 };
         float subjectRadius = 0.0f;               // 0 = not stated
+        std::string navigation;                   // "orbit", "fly", or empty (not stated)
         PackageBackground background;             // The recommended backdrop; mode empty = not stated
         std::vector<TrainingCamera> cameras;
 
@@ -66,6 +69,7 @@ namespace Splat
                 snprintf(line, sizeof(line), "subject %.6g %.6g %.6g %.6g\n", subjectCentre.x, subjectCentre.y, subjectCentre.z, subjectRadius);
                 o << line;
             }
+            if (!navigation.empty()) o << "navigation " << navigation << "\n";
             if (background.Stated())
             {
                 const PackageBackground& b = background;
@@ -99,6 +103,7 @@ namespace Splat
                 else if (key == "grid") l >> grid;
                 else if (key == "start_camera") l >> startCamera;
                 else if (key == "subject") l >> subjectCentre.x >> subjectCentre.y >> subjectCentre.z >> subjectRadius;
+                else if (key == "navigation") { std::string v; l >> v; if (v == "orbit" || v == "fly") navigation = v; }
                 else if (key == "background")
                 {
                     PackageBackground b;

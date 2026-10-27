@@ -87,12 +87,15 @@ namespace Splat
 
         bool Busy() const { return m_job != nullptr && !m_job->doneCalled; }
 
-        // Starts work on the worker thread (waiting first for an abandoned worker to finish).
-        void Start(const std::string& title, Work work, Done done)
+        // Starts work on the worker thread (waiting first for an abandoned worker to finish). A quiet operation shows no
+        // dialog and leaves the UI free, so its work must not read app state the UI can change (the lazy RDO analysis
+        // runs in worker processes from the scan on disk).
+        void Start(const std::string& title, Work work, Done done, bool quiet = false)
         {
             Reap(true);
             m_job = std::make_shared<Job>();
             m_job->title = title;
+            m_job->quiet = quiet;
             m_job->done = std::move(done);
             m_job->start = std::chrono::steady_clock::now();
             std::shared_ptr<Job> job = m_job;
@@ -151,9 +154,11 @@ namespace Splat
             Reap(true);
         }
 
+        bool Quiet() const { return Busy() && m_job->quiet; }
+
         bool DialogVisible() const
         {
-            return Busy() && std::chrono::duration<double>(std::chrono::steady_clock::now() - m_job->start).count() >= kDialogDelaySeconds;
+            return Busy() && !m_job->quiet && std::chrono::duration<double>(std::chrono::steady_clock::now() - m_job->start).count() >= kDialogDelaySeconds;
         }
         std::string Title() const { return m_job ? m_job->title : std::string(); }
         std::string StageName() const { return m_job ? m_job->progress.StageName() : std::string(); }
@@ -172,6 +177,7 @@ namespace Splat
             std::atomic<bool> finished{ false };
             bool ok = false;
             bool doneCalled = false;
+            bool quiet = false;
         };
 
         // Joins an abandoned (cancelled) worker once it has finished, or waits for it.

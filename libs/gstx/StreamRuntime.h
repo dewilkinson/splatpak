@@ -25,6 +25,7 @@ namespace Splat
     {
         int      lodLevel = 0;
         size_t   chunkIndex = 0;
+        uint32_t orderHandle = 0;              // Its index in m_allStreamChunkPtrs: the streaming scheduler's handle for it
         XMFLOAT3 center = { 0, 0, 0 };
         float    radius = 0.0f;
         // The block's point spacing over its level's typical one (the level's median block): about 1 in a dense
@@ -262,6 +263,21 @@ namespace Splat
         uint32_t m_lastActiveTransitions = 0, m_edgeRefineStartsThisFrame = 0;
         uint32_t m_refineStartsThisFrame = 0, m_refineStartBudget = 0, m_refineStartsDeferred = 0, m_refineAdmitSeqLimit = 0;
         uint32_t m_frameChunkCount = 0;
+        // Bumped wherever a block's residency changes (the idle skip's test). The per-face resident and total blocks
+        // and m_lodResidentSplats are kept exact as single blocks land and leave (CountResidency); a bulk change (load,
+        // reset, clear) marks them invalid and the next update recounts once. Recounting every frame cost two passes
+        // over every block, about 1.5 ms on Cthulhu (137,104 blocks).
+        uint32_t m_residencySerial = 0;
+        bool     m_residencyCountsValid = false;
+        uint32_t m_faceResident[kOctahedronFaces] = {}, m_faceTotal[kOctahedronFaces] = {};
+        bool     m_waveTimersRunning = false; // Some block's arrival glow is counting down (the countdown pass is skipped otherwise)
+        // Idle skip: full updates in a row that changed nothing, and the camera and settings they saw. Once two have,
+        // an update with the same inputs and the stream not marked dirty returns at once and the host keeps the last
+        // render list (m_frameProduced false); m_skippedUpdates counts those for the host's statistics
+        uint32_t m_quietUpdates = 0, m_skippedUpdates = 0;
+        uint64_t m_quietPendingHash = 0; // The requests left pending by the last full update
+        StreamSettings m_quietSettings;
+        StreamCamera   m_quietCamera;
         bool     m_frameProduced = false;   // The last UpdateStreamingSimulation built a render list (it returns early while streaming is off)
         float    m_refinePacingTraceTimer = 0.0f, m_equalizerUpdateTimer = 0.0f, m_priorityUpdateTimer = 0.0f, m_morphTestDebounceTimer = 0.0f;
         float    m_streamSettleTimer = 0.0f, m_finishBatchTimer = 0.0f, m_frameTraversalMs = 0.0f;
@@ -272,5 +288,7 @@ namespace Splat
 
     private:
         static void Trace(const char* fmt, ...);
+        void CountResidency(const StreamChunk& c, int delta); // One block landed (+1) or left (-1): the face and level counts follow
+        void RecountResidency();                              // The face and level counts from scratch
     };
 }

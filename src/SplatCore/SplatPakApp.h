@@ -78,6 +78,14 @@ namespace Splat
         // centre, and every movement turns the view about the eye, all the way round; WASD/QE fly where it looks
         bool m_mouseLook = false;
         void SetMouseLook(bool on);
+        // Navigation (the viewport's Orbit / Fly switch, or O): Orbit turns the view about a pivot on the model (left-drag,
+        // A/D/Q/E circle it, W/S and the wheel move in and out, right-drag pans); Fly moves the eye (W/S/A/D/Q/E, drags look,
+        // the wheel sets the speed). A package's view settings (navigation) choose the mode it opens in; without them an
+        // object orbits and an environment flies. Mouse-look (Tab) is Fly with the mouse captured.
+        enum NavMode { NavOrbit = 0, NavFly = 1 };
+        int  m_navMode = NavOrbit;
+        void SetNavMode(int mode);
+        void DrawNavSwitch();
         // Mouse-look's movement: the mouse's own relative motion (raw input, WM_INPUT in CloseGuardProc), summed until the
         // camera takes it each frame. Warping the cursor back to the centre and reading its offset spun the view without
         // end whenever the warp did not take.
@@ -233,6 +241,7 @@ namespace Splat
         std::shared_ptr<const ShadowMesh> m_shadowMesh;  // Empty: no mesh (an older package, a point-format bake)
         std::shared_ptr<const ShadowMesh> m_occluderMesh; // Format 13: the occlusion volume as a mesh, used in place of the cubes
         ShadowMeshDisplay m_occluderMeshGpu; // Smooth normals, not subdivided: it must stay inside the cubes
+        float m_occluderInsetEdges = 1.0f; // How far inside the splats the occluder is drawn and tested, in its median edges (SetOccluderMesh; config occluder_inset_edges)
         uint32_t m_occluderMeshVersion = 0;
         bool HasOccluderMesh() const { return m_occluderMesh && !m_occluderMesh->Empty(); }
         void SetOccluderMesh(std::shared_ptr<const ShadowMesh> mesh);
@@ -379,7 +388,7 @@ namespace Splat
         void        BuildHeatmapClusterCubes(const SplatPointArray& points, const XMFLOAT3& aabbMin, const XMFLOAT3& aabbMax,
                                              const DetailGrid& detail, std::vector<HeatmapClusterCube>& out) const;
         bool        UseBackgroundOps() const;                      // False for scripted runs and before the first frames: those run inline
-        bool        RunOperation(const std::string& title, BackgroundOp::Work work, BackgroundOp::Done done);
+        bool        RunOperation(const std::string& title, BackgroundOp::Work work, BackgroundOp::Done done, bool quiet = false);
         void        DrawOperationDialog();
         BackgroundOp m_op;
         BakeParams   m_bakedParams;
@@ -447,7 +456,20 @@ namespace Splat
         bool   RdoStale() const { return !m_rdo.Valid() || m_rdoHash == 0 || m_rdoHash != m_sourceHash || m_rdoParams.maxLODs != m_bakedParams.maxLODs || m_rdoParams.deadbandMM != m_bakedParams.deadbandMM; }
         void   DrawRdoMenu();
         void   DrawRdoPlot();
-        void   StartRdoAnalysis();
+        void   StartRdoAnalysis(bool quiet = false);
+        // A target no encoding meets: Pick's closest (the fastest or smallest), or the best fidelity within half as much
+        // again (RdoAnalysis::PickKeepQuality). -1 = not chosen yet: the menu warns, and Bake or Save asks before going on.
+        int    m_rdoUnreachablePolicy = -1;
+        bool   m_rdoAskUnreachable = false;             // Bake or Save is waiting on that choice (DrawRdoUnreachablePopup)
+        int    PickFor(const RdoAnalysis::Target& t) const;
+        int    PickForTarget() const { return PickFor(m_rdoTarget); }
+        bool   TargetReachable() const { return RdoAnalysis::Reachable(m_rdo, m_rdoTarget, (double)m_sourceFileBytes); }
+        std::string DescribeRdoPoint(int index) const; // "degree 1, 4 bits: full detail 7.6 s, 16.3 dB" for the target's mode
+        void   DrawRdoUnreachableChoice();
+        void   DrawRdoUnreachablePopup();
+        // (An analysis started by itself on load was tried and dropped, 2026-10-27: it loads every core for about a
+        // minute. Analyse, Bake and Save start it; a quiet analysis, StartRdoAnalysis(true), is kept for later use.)
+        bool   PyramidPending() const;                   // Levels, deadband or chunk size changed since the bake (what the analysis measures)
         void   ApplyRdoChoice(int choice);   // The chosen candidate's SH settings become the bake's
         void   SaveRdoProfile();
         // Every analysis is kept in <root>/rdo-profiles: one identical to what would be measured (the scan's hash, the levels
@@ -492,7 +514,11 @@ namespace Splat
             float    recChunk = 0.0f;
             bool     recOcclusion = false;
             int      rdoPick = -1;             // Index into m_rdo.points: the RDO choice for this network (analysis available)
+            bool     needsAnalysis = false;    // No RDO analysis yet, and a warning that one would settle
             bool     Any() const { for (const auto& w : warn) if (!w.empty()) return true; return false; }
+            // Whether a re-encode would write a different package. A warning no encoding of the scan can clear (the RDO
+            // choice for this network is already the one on screen) is information only: re-encoding writes the same bits.
+            bool     Actionable() const { return needsAnalysis || rdoPick >= 0 || recMaxLODs > 0 || recChunk > 0.0f || recOcclusion; }
         };
         EncodingReport AssessEncoding() const;
         void   DrawEncodingPanel();
@@ -505,6 +531,15 @@ namespace Splat
         std::string m_reencodeSource, m_reencodeOutput; // The scan it bakes from, and the package it writes (without .gstx)
         bool        m_reencodeReload = false;       // A package was on screen: open the new one when written
         void   StepReencode();
+        // Bake or Save with a target (Compression (RDO)) and no current analysis: bake, analyse, apply the target's pick,
+        // bake again if that changed the harmonics, then write the package when Save started it. Analyse is never required.
+        enum class AutoRdo { Idle, Bake, Analyse, Apply, Save };
+        AutoRdo     m_autoRdo = AutoRdo::Idle;
+        std::string m_autoRdoSavePath;                  // The package to write at the end; empty for a Bake
+        bool   TargetUnmet() const;                     // A target governs the harmonics but the curve is not measured for this scan and bake
+        void   StartAutoRdo(const std::string& savePath);
+        void   StepAutoRdo();
+        void   DrawRdoPlaceholder(bool canAnalyse, bool analysing);
         void   FailReencode(const std::string& why);
         static uint8_t SHBitsFor(int precision) { return kSHPrecisionBits[std::clamp(precision, 0, 3)]; }
         // The bake keeps the SH Quality degree, but never more bands than the source carries: extra bands would
@@ -595,7 +630,6 @@ namespace Splat
         bool   m_enableVarianceClamping     = true;   // 3x3 YCoCg neighborhood variance color box clamping (anti-ghosting)
 
         // Streaming tab: the streaming order's bounding octahedron (libs/gstx/StreamOrder.h, owned by m_stream)
-        void  DrawOctahedronGlyph();                                   // Streaming tab: the octahedron's upper and lower faces, visible ones lit, each with its fill progress
         DetailGrid                            m_detailGrid;         // Detail grid for the loaded model: from the package (v7+) or built from LOD 0 on load / preprocess; written into exported packages
 
         // Throttling for frustum priority re-sorting & UI indicator stabilization
@@ -738,7 +772,7 @@ namespace Splat
         // The loading veil (State::loadingBlurPx): armed by a load, an Evict or a jump to a training camera; while armed,
         // the scene is blurred by up to 0.8% of the window height, easing out as the fill (an environment: its residency
         // ring at its levels; an object: the drawn blocks at theirs) goes from 40% to 75%, then disarmed until the next.
-        bool        m_loadingBlurEnabled = true;   // Renderer tab, Loading Blur
+        bool        m_loadingBlurEnabled = true;   // Renderer tab, Loading Blur (config loading_blur)
         bool        m_loadingBlurArmed = false;
         float       m_loadFill = 1.0f;              // 0..1, refreshed four times a second while armed
         double      m_loadFillTimer = 0.0;
@@ -763,6 +797,8 @@ namespace Splat
         uint64_t m_camCapLastSplats = 0;
         RgbaImage m_camCapImage;
         int      m_cliStartCamera = -1;             // --camera N: start at training camera N
+        float    m_cliSpinDegPerSec = 0.0f;         // --spin D: the orbit turns D degrees a second on its own (motion benchmark)
+        double   m_streamDtAccumMs = 0.0;           // Time since the stream's last update (it runs at most kStreamUpdateHz a second)
         bool     m_camCapLevel0 = false;            // --level0: the capture draws level 0 everywhere
         void   StepCameraCapture();
         // A level's refinement-visualizer tint (Splat.hlsl kArrivalGlowLevelHue, rotated by Glow Hue) at the given HSV

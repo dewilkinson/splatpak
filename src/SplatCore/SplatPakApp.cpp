@@ -248,6 +248,9 @@ namespace Splat
             "--size <W>x<H>\n"
             "  The window's client size, e.g. 1237x822 to compare with a reference render pixel for pixel.\n"
             "\n"
+            "--spin <degrees a second>\n"
+            "  The orbit camera turns on its own at that rate once the model shows: a repeatable motion benchmark (fps in the log).\n"
+            "\n"
             "--cameras <cameras.json>   --camera <n>\n"
             "  The scan's training cameras (a 3DGS cameras.json; found beside the file by default), and one to start at.\n"
             "\n"
@@ -374,6 +377,11 @@ namespace Splat
             else if (a == "--no-taa")
             {
                 m_enableTemporalFiltering = false; // This run only: the setting is not saved
+            }
+            else if (a == "--spin" && i + 1 < args.size())
+            {
+                m_cliSpinDegPerSec = (float)atof(args[++i].c_str());
+                LogTransitionTrace("Command line: --spin %.1f deg/s", m_cliSpinDegPerSec);
             }
             else if (a == "--camera-list" && i + 1 < args.size())
             {
@@ -630,6 +638,9 @@ namespace Splat
                             return true;
                         };
                         float w = 0.0f, h = 0.0f;
+                        if (line.find("\"occluder_inset_edges\":") != std::string::npos)
+                            m_occluderInsetEdges = std::clamp((float)atof(line.c_str() + line.find(':', line.find("\"occluder_inset_edges\":")) + 1), 0.0f, 8.0f);
+                        if (line.find("\"loading_blur\":") != std::string::npos) m_loadingBlurEnabled = line.find("true") != std::string::npos;
                         if (line.find("\"loupe_enabled\":") != std::string::npos) m_loupeEnabled = line.find("true") != std::string::npos;
                         if (readPair("\"loupe_size\":", "loupe_size=", w, h) && w >= 160.0f && h >= 120.0f)
                             m_loupeSize = ImVec2(w, h);
@@ -938,6 +949,8 @@ namespace Splat
             out << "  \"splat_disc_match_level0\": " << (m_splatDiscMatchLevel0 ? "true" : "false") << ",\n";
             out << "  \"splat_coarse_as_gaussians\": " << (m_splatCoarseAsGaussians ? "true" : "false") << ",\n";
             out << "  \"splat_coarse_gaussian_cap\": " << m_splatCoarseGaussianCap << ",\n";
+            out << "  \"occluder_inset_edges\": " << m_occluderInsetEdges << ",\n";
+            out << "  \"loading_blur\": " << (m_loadingBlurEnabled ? "true" : "false") << ",\n";
             out << "  \"loupe_enabled\": " << (m_loupeEnabled ? "true" : "false") << ",\n";
             out << "  \"loupe_size\": \"" << (int)m_loupeSize.x << "," << (int)m_loupeSize.y << "\",\n";
             if (m_loupePos.x >= 0.0f) out << "  \"loupe_pos\": \"" << (int)m_loupePos.x << "," << (int)m_loupePos.y << "\",\n";
@@ -1131,6 +1144,7 @@ namespace Splat
         m_mouseLook = on;
         if (on)
         {
+            m_navMode = NavFly; // Mouse-look is Fly with the mouse captured
             // A walker's camera: the eye stays, the orbit target sits 1 m ahead of it (the orbit no longer pins the
             // view to a point it can only approach)
             const XMFLOAT3 eye(m_target.x + m_distance * cosf(m_pitch) * sinf(m_yaw), m_target.y + m_distance * sinf(m_pitch),
@@ -1160,6 +1174,45 @@ namespace Splat
             ClipCursor(nullptr);
             while (ShowCursor(TRUE) < 0) {}
             m_statusMessage = "Mouse released (Tab to look round again).";
+        }
+        m_statusIsSuccess = true;
+    }
+
+    // Orbit <-> Fly. The eye stays where it is. Fly puts the target 1 m ahead of it (a walker's camera: the view no longer
+    // pivots on a point it can only approach). Orbit pivots on the model: an object's centre, turning to face it; in an
+    // environment, the point straight ahead at the subject's (or core's) distance, so the view does not jump.
+    void SplatPakApp::SetNavMode(int mode)
+    {
+        if (mode == m_navMode) return;
+        const XMFLOAT3 eye(m_target.x + m_distance * cosf(m_pitch) * sinf(m_yaw), m_target.y + m_distance * sinf(m_pitch),
+                           m_target.z + m_distance * cosf(m_pitch) * cosf(m_yaw));
+        const XMFLOAT3 view(-cosf(m_pitch) * sinf(m_yaw), -sinf(m_pitch), -cosf(m_pitch) * cosf(m_yaw)); // Eye to target
+        m_navMode = mode;
+        if (mode == NavFly)
+        {
+            m_distance = 1.0f;
+            m_target = XMFLOAT3(eye.x + view.x, eye.y + view.y, eye.z + view.z);
+            m_statusMessage = "Fly: W/S/A/D/Q/E move (Shift x4), drag to look, the wheel sets the speed. O or the switch to orbit.";
+        }
+        else
+        {
+            if (m_mouseLook) SetMouseLook(false);
+            if (m_sceneIsEnvironment)
+            {
+                const XMFLOAT3 c = m_subjectRadius > 0.0f ? m_subjectCentre : m_coreCentre;
+                const float ahead = (c.x - eye.x) * view.x + (c.y - eye.y) * view.y + (c.z - eye.z) * view.z;
+                m_distance = std::max(1.0f, ahead);
+                m_target = XMFLOAT3(eye.x + view.x * m_distance, eye.y + view.y * m_distance, eye.z + view.z * m_distance);
+            }
+            else
+            {
+                const float dx = eye.x - m_center.x, dy = eye.y - m_center.y, dz = eye.z - m_center.z;
+                m_distance = std::max(0.1f, sqrtf(dx * dx + dy * dy + dz * dz));
+                m_target = m_center;
+                m_yaw = atan2f(dx, dz);
+                m_pitch = std::clamp(asinf(std::clamp(dy / m_distance, -1.0f, 1.0f)), -1.55f, 1.55f);
+            }
+            m_statusMessage = "Orbit: drag to turn round the model, A/D/Q/E circle it, W/S or the wheel move in and out, right-drag pans. O or the switch to fly.";
         }
         m_statusIsSuccess = true;
     }
@@ -1244,6 +1297,12 @@ namespace Splat
             }
             // L toggles the loupe. Taken from the message, not polled per frame: at a low frame rate a quick
             // tap starts and ends between two frames. Bit 30 set = auto-repeat while held.
+            // O switches Orbit / Fly (the viewport's switch does the same)
+            if (msg.wParam == 'O' && !ctrlPressed && (msg.lParam & (1 << 30)) == 0 && !ImGui::GetIO().WantCaptureKeyboard)
+            {
+                SetNavMode(m_navMode == NavOrbit ? NavFly : NavOrbit);
+                return true;
+            }
             if (msg.wParam == 'L' && !ctrlPressed && (msg.lParam & (1 << 30)) == 0 && !ImGui::GetIO().WantCaptureKeyboard)
             {
                 m_loupeEnabled = !m_loupeEnabled;
@@ -2807,7 +2866,11 @@ namespace Splat
         m_occluderMeshGpu = ShadowMeshDisplay{};
         if (HasOccluderMesh())
         {
-            BuildShadowMeshDisplay(m_occluderMesh->levels[0], 0, m_occluderMeshGpu);
+            // Drawn and tested inset by a fraction of its cell (its median edge): built from voxels, it reaches the splat
+            // surface in places and showed through it (Venus's front); inside it still hides the far side
+            const float inset = m_occluderInsetEdges * MedianEdgeLength(m_occluderMesh->levels[0]);
+            BuildShadowMeshDisplay(m_occluderMesh->levels[0], 0, m_occluderMeshGpu, inset);
+            LogTransitionTrace("Occluder mesh: drawn inset %.4f m (%.2f x its median edge)", inset, m_occluderInsetEdges);
             if (m_hasBakedParams ? m_bakedParams.occlusion : true) m_enableOcclusionCulling = m_showOcclusionSetting && !m_sceneIsEnvironment;
         }
         m_occluderMeshVersion++;
@@ -2829,11 +2892,23 @@ namespace Splat
         return m_framesRendered > 1 && m_lodCalFolder.empty() && m_lodTestFolder.empty() && !m_streamTest && m_cliBakeOutput.empty() && m_viewCapFolder.empty() && m_camCapFolder.empty();
     }
 
-    bool SplatPakApp::RunOperation(const std::string& title, BackgroundOp::Work work, BackgroundOp::Done done)
+    bool SplatPakApp::RunOperation(const std::string& title, BackgroundOp::Work work, BackgroundOp::Done done, bool quiet)
     {
-        if (!UseBackgroundOps()) return BackgroundOp::RunNow(std::move(work), std::move(done));
-        m_op.Start(title, std::move(work), std::move(done));
+        if (m_op.Quiet()) m_op.RequestCancel(); // A lazy analysis gives way to whatever the user starts
+        if (!UseBackgroundOps())
+        {
+            if (quiet) return false; // Never block a scripted run on a background nicety
+            return BackgroundOp::RunNow(std::move(work), std::move(done));
+        }
+        m_op.Start(title, std::move(work), std::move(done), quiet);
         return true;
+    }
+
+    bool SplatPakApp::PyramidPending() const
+    {
+        if (!m_hasBakedParams) return false;
+        const BakeParams current = CurrentBakeParams();
+        return current.maxLODs != m_bakedParams.maxLODs || current.deadbandMM != m_bakedParams.deadbandMM || current.chunkSize != m_bakedParams.chunkSize;
     }
 
     // The modal progress dialog. It opens as soon as an operation starts so it blocks the UI at once, but stays
@@ -2841,9 +2916,12 @@ namespace Splat
     void SplatPakApp::DrawOperationDialog()
     {
         static const char* kPopup = "##Operation";
-        if (!m_op.Busy() && !ImGui::IsPopupOpen(kPopup)) return;
+        // A quiet operation shows its progress where it belongs, never here: it counts as idle, so a dialog still open
+        // from the operation before it (a bake that hands straight over to the lazy analysis) closes
+        const bool busy = m_op.Busy() && !m_op.Quiet();
+        if (!busy && !ImGui::IsPopupOpen(kPopup)) return;
         const bool visible = m_op.DialogVisible();
-        if (m_op.Busy() && !ImGui::IsPopupOpen(kPopup)) ImGui::OpenPopup(kPopup);
+        if (busy && !ImGui::IsPopupOpen(kPopup)) ImGui::OpenPopup(kPopup);
         ImGui::PushStyleColor(ImGuiCol_ModalWindowDarkening, visible ? ImVec4(0.0f, 0.0f, 0.0f, 0.45f) : ImVec4(0.0f, 0.0f, 0.0f, 0.0f));
         if (visible)
             ImGui::SetNextWindowPos(ImVec2((float)m_Width * 0.5f, (float)m_Height * 0.5f), ImGuiCond_Always, ImVec2(0.5f, 0.5f));
@@ -2851,7 +2929,7 @@ namespace Splat
             ImGui::SetNextWindowPos(ImVec2(-10000.0f, -10000.0f), ImGuiCond_Always);
         if (ImGui::BeginPopupModal(kPopup, nullptr, ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoSavedSettings))
         {
-            if (!m_op.Busy())
+            if (!busy)
             {
                 ImGui::CloseCurrentPopup();
             }
@@ -3294,6 +3372,7 @@ namespace Splat
                 v.subjectCentre = m_subjectCentre;
                 v.subjectRadius = m_subjectRadius;
                 if (m_sceneClassFor == m_loadedFilePath) v.background = m_recommendedBackground;
+                if (m_sceneClassFor == m_loadedFilePath) v.navigation = !m_packageView.navigation.empty() ? m_packageView.navigation : (m_sceneIsEnvironment ? "fly" : "orbit");
                 const bool written = v.Append(finalPath);
                 LogTransitionTrace("Save: view settings (scene %s, %zu cameras, start camera %d) %s the package", v.scene.empty() ? "-" : v.scene.c_str(),
                     v.cameras.size(), v.startCamera, written ? "embedded in" : "could not be embedded in");
@@ -3363,7 +3442,8 @@ namespace Splat
                 {
                     savePath = savePath.substr(0, savePath.size() - 5);
                 }
-                ProcessAndExport(savePath);
+                if (TargetUnmet()) StartAutoRdo(savePath); // Measured and baked to the target first
+                else ProcessAndExport(savePath);
             }
             break;
         }
@@ -3608,8 +3688,9 @@ namespace Splat
                 // Left/Right without Shift: Rotate Yaw (Smooth dtSeconds scaling)
                 float keyRotSpeed = 1.8f * dtSeconds;
                 // Left turns the model left, Right turns it right (the user, 2026-10-26: "left and right arrow keys need inverted")
-                const float turn = m_mouseLook ? 0.0f : ((GetKeyState(VK_LEFT) & 0x8000) ? keyRotSpeed : 0.0f) - ((GetKeyState(VK_RIGHT) & 0x8000) ? keyRotSpeed : 0.0f); // Mouse-look: the arrows fly instead
-                const float tilt = m_mouseLook ? 0.0f : ((GetKeyState(VK_UP) & 0x8000) ? keyRotSpeed : 0.0f) - ((GetKeyState(VK_DOWN) & 0x8000) ? keyRotSpeed : 0.0f);
+                const bool flying = m_navMode == NavFly; // Fly: the arrows fly instead
+                const float turn = flying ? 0.0f : ((GetKeyState(VK_LEFT) & 0x8000) ? keyRotSpeed : 0.0f) - ((GetKeyState(VK_RIGHT) & 0x8000) ? keyRotSpeed : 0.0f);
+                const float tilt = flying ? 0.0f : ((GetKeyState(VK_UP) & 0x8000) ? keyRotSpeed : 0.0f) - ((GetKeyState(VK_DOWN) & 0x8000) ? keyRotSpeed : 0.0f);
                 // Detach Camera (culling view): the arrow keys turn the model only, never the scene view. Left/Right turn it
                 // about the vertical axis through its centre, Up/Down tilt it about the observer's horizontal axis through
                 // its centre. Turning the model is done as the opposite turn of both cameras about that centre, so on screen
@@ -3659,33 +3740,50 @@ namespace Splat
                     m_loupeZoom = std::max(kLoupeZoomMin, std::min(kLoupeZoomMax, m_loupeZoom));
                 }
 
-                // Fly, as in Unreal's viewport: W/S forward and back along the view, A/D sideways, Q/E down and up. The
-                // eye and the orbit target move together, so the view only translates. The speed is the scene's own
-                // (FlySpeed, metres a second; Shift 4x), not the orbit distance: tied to that, the walk slowed to a crawl
-                // nearing a subject and never got past it.
-                if (!((GetKeyState(VK_CONTROL) & 0x8000) != 0) && !m_detachCamera) // Ctrl+D, Ctrl+E and the like are commands, not moves
+                // Up/Down, PageUp/PageDown, +/-: Smooth Frame-Rate Independent Exponential Zoom
+                float zoomRate = 2.2f; // Exponential zoom rate per second
+                if (((GetKeyState(VK_UP) & 0x8000) && !m_detachCamera && !flying) || (GetKeyState(VK_PRIOR) & 0x8000) || (GetKeyState(VK_ADD) & 0x8000) || (GetKeyState(VK_OEM_PLUS) & 0x8000))
                 {
-                    const float fly = FlySpeed() * (shiftDown ? 4.0f : 1.0f) * dtSeconds;
-                    const bool arrows = m_mouseLook; // Mouse-look: the arrows fly as W/S/A/D do
-                    const float fwd = ((GetKeyState('W') & 0x8000) || (arrows && (GetKeyState(VK_UP) & 0x8000)) ? fly : 0.0f) - ((GetKeyState('S') & 0x8000) || (arrows && (GetKeyState(VK_DOWN) & 0x8000)) ? fly : 0.0f);
-                    const float side = ((GetKeyState('D') & 0x8000) || (arrows && (GetKeyState(VK_RIGHT) & 0x8000)) ? fly : 0.0f) - ((GetKeyState('A') & 0x8000) || (arrows && (GetKeyState(VK_LEFT) & 0x8000)) ? fly : 0.0f);
-                    const float rise = ((GetKeyState('E') & 0x8000) ? fly : 0.0f) - ((GetKeyState('Q') & 0x8000) ? fly : 0.0f);
+                    m_distance *= expf(-zoomRate * dtSeconds); // Smooth fast Zoom In
+                }
+                if (((GetKeyState(VK_DOWN) & 0x8000) && !m_detachCamera && !flying) || (GetKeyState(VK_NEXT) & 0x8000) || (GetKeyState(VK_SUBTRACT) & 0x8000) || (GetKeyState(VK_OEM_MINUS) & 0x8000))
+                {
+                    m_distance *= expf(+zoomRate * dtSeconds); // Smooth fast Zoom Out
+                }
+            }
+
+            // W/S/A/D/Q/E (Shift 4x). Fly, as in Unreal's viewport: W/S forward and back along the view, A/D sideways, Q/E
+            // down and up; the eye and the target move together, so the view only translates, at the scene's own speed
+            // (FlySpeed, metres a second), not the orbit distance's: tied to that, the walk slowed to a crawl nearing a
+            // subject and never got past it. Orbit: W/S in and out, A/D round the model, Q/E over and under it; the pivot
+            // stays on the model.
+            if (!((GetKeyState(VK_CONTROL) & 0x8000) != 0) && !m_detachCamera) // Ctrl+D, Ctrl+E and the like are commands, not moves
+            {
+                const float boost = shiftDown ? 4.0f : 1.0f;
+                const float w = (GetKeyState('W') & 0x8000) ? 1.0f : 0.0f, sKey = (GetKeyState('S') & 0x8000) ? 1.0f : 0.0f;
+                const float a = (GetKeyState('A') & 0x8000) ? 1.0f : 0.0f, d = (GetKeyState('D') & 0x8000) ? 1.0f : 0.0f;
+                const float q = (GetKeyState('Q') & 0x8000) ? 1.0f : 0.0f, e = (GetKeyState('E') & 0x8000) ? 1.0f : 0.0f;
+                if (m_navMode == NavFly)
+                {
+                    const float fly = FlySpeed() * boost * dtSeconds;
+                    const bool arrows = !shiftDown; // Fly: the arrows fly as W/S/A/D do (Shift + arrows still pan)
+                    const float up = arrows && (GetKeyState(VK_UP) & 0x8000) ? 1.0f : 0.0f, down = arrows && (GetKeyState(VK_DOWN) & 0x8000) ? 1.0f : 0.0f;
+                    const float right = arrows && (GetKeyState(VK_RIGHT) & 0x8000) ? 1.0f : 0.0f, left = arrows && (GetKeyState(VK_LEFT) & 0x8000) ? 1.0f : 0.0f;
+                    const float fwd = (std::min(1.0f, w + up) - std::min(1.0f, sKey + down)) * fly;
+                    const float side = (std::min(1.0f, d + right) - std::min(1.0f, a + left)) * fly;
+                    const float rise = (e - q) * fly;
                     const XMFLOAT3 view(-cosf(m_pitch) * sinf(m_yaw), -sinf(m_pitch), -cosf(m_pitch) * cosf(m_yaw)); // Eye to target
                     // rightDir points to the viewer's left: D (side > 0) moves against it
                     m_target.x += view.x * fwd - rightDir.x * side;
                     m_target.y += view.y * fwd - rightDir.y * side + rise;
                     m_target.z += view.z * fwd - rightDir.z * side;
                 }
-
-                // Up/Down, PageUp/PageDown, +/-: Smooth Frame-Rate Independent Exponential Zoom
-                float zoomRate = 2.2f; // Exponential zoom rate per second
-                if (((GetKeyState(VK_UP) & 0x8000) && !m_detachCamera && !m_mouseLook) || (GetKeyState(VK_PRIOR) & 0x8000) || (GetKeyState(VK_ADD) & 0x8000) || (GetKeyState(VK_OEM_PLUS) & 0x8000))
+                else
                 {
-                    m_distance *= expf(-zoomRate * dtSeconds); // Smooth fast Zoom In
-                }
-                if (((GetKeyState(VK_DOWN) & 0x8000) && !m_detachCamera && !m_mouseLook) || (GetKeyState(VK_NEXT) & 0x8000) || (GetKeyState(VK_SUBTRACT) & 0x8000) || (GetKeyState(VK_OEM_MINUS) & 0x8000))
-                {
-                    m_distance *= expf(+zoomRate * dtSeconds); // Smooth fast Zoom Out
+                    const float rot = 1.8f * boost * dtSeconds;
+                    m_yaw += (a - d) * rot; // A circles left round the model, D right
+                    m_pitch = std::clamp(m_pitch + (e - q) * rot, -1.55f, 1.55f);
+                    m_distance *= expf((sKey - w) * 2.2f * boost * dtSeconds);
                 }
             }
 
@@ -3731,19 +3829,27 @@ namespace Splat
                     m_target.z += (rightDir.z * io.MouseDelta.x + upDir.z * io.MouseDelta.y) * panSpeed;
                 }
             }
+            else if (m_navMode == NavOrbit && io.MouseDown[1])
+            {
+                // Orbit: right-drag pans, as in SuperSplat (the pivot moves with the view)
+                const float panSpeed = m_distance * 0.0015f;
+                m_target.x += (rightDir.x * io.MouseDelta.x + upDir.x * io.MouseDelta.y) * panSpeed;
+                m_target.y += (rightDir.y * io.MouseDelta.x + upDir.y * io.MouseDelta.y) * panSpeed;
+                m_target.z += (rightDir.z * io.MouseDelta.x + upDir.z * io.MouseDelta.y) * panSpeed;
+            }
             else
             {
                 // NO SHIFT = ROTATE OR ZOOM ONLY (ZERO PANNING)
-                if (io.MouseDown[0])
+                if (io.MouseDown[0] && m_navMode == NavOrbit)
                 {
                     // Left Mouse Drag: Orbit Camera (Yaw / Pitch). The model follows the drag on both axes:
                     // dragging right moves the eye left (yaw down), so the model turns to the right.
                     m_yaw -= io.MouseDelta.x * 0.006f;
                     m_pitch = std::max(-1.55f, std::min(1.55f, m_pitch + io.MouseDelta.y * 0.006f));
                 }
-                else if (io.MouseDown[1])
+                else if (io.MouseDown[0] || io.MouseDown[1])
                 {
-                    // Right Mouse Drag: look around, as in Unreal's viewport. The eye stays put and the view turns
+                    // Fly: either drag looks around, as in Unreal's viewport. The eye stays put and the view turns
                     // about it (the orbit target swings round the eye at the same distance); with W/S/A/D/Q/E, a fly camera.
                     auto eyeOffset = [](float yaw, float pitch) { return XMFLOAT3(cosf(pitch) * sinf(yaw), sinf(pitch), cosf(pitch) * cosf(yaw)); };
                     const XMFLOAT3 o0 = eyeOffset(m_yaw, m_pitch);
@@ -3755,7 +3861,16 @@ namespace Splat
                 }
             }
 
-            if (io.MouseWheel != 0.0f)
+            if (io.MouseWheel != 0.0f && m_navMode == NavFly)
+            {
+                // Fly: the wheel sets the speed, as in mouse-look
+                m_flySpeedScale = std::clamp(m_flySpeedScale * powf(1.25f, io.MouseWheel), 0.05f, 50.0f);
+                char text[96];
+                snprintf(text, sizeof(text), "Fly speed %.2f m/s (Shift x4).", FlySpeed());
+                m_statusMessage = text;
+                m_statusIsSuccess = true;
+            }
+            else if (io.MouseWheel != 0.0f)
             {
                 float wheelZoomFactor = powf(0.85f, io.MouseWheel);
                 m_distance *= wheelZoomFactor;
@@ -3872,13 +3987,30 @@ namespace Splat
         m_state.totalDatasetSplats = totalBasePoints;
         m_state.totalDatasetChunks = totalBaseChunks;
 
+        // --spin: the orbit turns at a steady rate on its own (a repeatable motion benchmark), from the moment a model is shown
+        if (m_cliSpinDegPerSec != 0.0f && m_state.chunkCount > 0)
+            m_yaw += XMConvertToRadians(m_cliSpinDegPerSec) * (float)(m_deltaTime / 1000.0);
+
         if (!m_freezeRenderingAndMemory)
         {
             if (m_enableStreamingSimulation)
             {
-                const auto tSim = std::chrono::high_resolution_clock::now();
-                UpdateStreamingSimulation(m_deltaTime / 1000.0);
-                m_frameSimMs = std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - tSim).count();
+                // The stream (levels, requests, deliveries, fades) updates at most kStreamUpdateHz times a second, with
+                // the time since its last update; the frames between draw the same render list from the live camera
+                // (sorted and culled on the GPU every frame). Every frame was 150-500 updates a second at 3-5 ms each
+                // on Cthulhu in motion: most of the frame, and the drop from about 500 fps to 150 while turning.
+                constexpr double kStreamUpdateHz = 60.0;
+                m_streamDtAccumMs += m_deltaTime;
+                m_frameSimMs = 0.0f;
+                m_frameTraversalMs = 0.0f;
+                if (m_streamDtAccumMs >= 1000.0 / kStreamUpdateHz)
+                {
+                    const auto tSim = std::chrono::high_resolution_clock::now();
+                    UpdateStreamingSimulation(m_streamDtAccumMs / 1000.0);
+                    m_streamDtAccumMs = 0.0;
+                    m_frameSimMs = std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - tSim).count();
+                    if (!m_stream.m_frameProduced) m_frameTraversalMs = 0.0f; // Skipped: nothing invalidated the last render list
+                }
             }
             else
             {
@@ -4181,43 +4313,45 @@ namespace Splat
                 ImGui::Separator();
                 {
                     const bool pending = BakePending();
-                    // The theme's button blue, a little brighter so Bake stands out; with changes waiting it is taller
-                    // and pulses slowly (every 2.5 s) out to a pastel blue until it is pressed
+                    const bool chaining = m_autoRdo != AutoRdo::Idle;
+                    // The theme's button blue, a little brighter so Bake stands out. With changes waiting it turns red (the
+                    // blue's complement), taller, breathing every 2 s towards a brighter red, with a red glow around its
+                    // edges, until it is pressed
                     auto brighter = [](ImVec4 c, float k) { return ImVec4(std::min(1.0f, c.x * k), std::min(1.0f, c.y * k), std::min(1.0f, c.z * k), 1.0f); };
                     const ImVec4 base = brighter(ImGui::GetStyle().Colors[ImGuiCol_Button], 1.25f);
+                    const ImVec4 red(0.66f, 0.17f, 0.15f, 1.0f), hot(0.90f, 0.30f, 0.24f, 1.0f), glow(1.0f, 0.36f, 0.30f, 1.0f);
                     ImVec4 face = base;
-                    const ImVec4 pastel(0.58f, 0.72f, 0.95f, 1.0f);
-                    // A slow breath (every 6 s) a third of the way to pastel, with a soft glow around the button
-                    const float pulse = pending ? 0.5f - 0.5f * cosf((float)ImGui::GetTime() * 6.2832f / 6.0f) : 0.0f;
-                    if (pending)
-                    {
-                        const float k = 0.35f * pulse;
-                        face = ImVec4(base.x + (pastel.x - base.x) * k, base.y + (pastel.y - base.y) * k, base.z + (pastel.z - base.z) * k, 1.0f);
-                    }
+                    const float pulse = (pending && !chaining) ? 0.5f - 0.5f * cosf((float)ImGui::GetTime() * 6.2832f / 2.0f) : 0.0f;
+                    if (pending) face = ImVec4(red.x + (hot.x - red.x) * pulse, red.y + (hot.y - red.y) * pulse, red.z + (hot.z - red.z) * pulse, 1.0f);
                     ImGui::PushStyleColor(ImGuiCol_Button, face);
                     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, brighter(face, 1.15f));
-                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, brighter(base, 0.85f));
-                    if (ImGui::Button(pending ? "Bake Changes" : "Bake", ImVec2(-1, pending ? 44.0f : 32.0f)) && pending)
-                        StartBake(false);
+                    ImGui::PushStyleColor(ImGuiCol_ButtonActive, brighter(pending ? red : base, 0.85f));
+                    const bool waitingForAnalysis = chaining && m_op.Busy() && m_op.Title() == "Analysing the compression";
+                    const char* label = !chaining ? (pending ? "Bake Changes" : "Bake")
+                                      : waitingForAnalysis ? "Finishing the analysis, then baking...###bake" : "Baking...###bake";
+                    if (ImGui::Button(label, ImVec2(-1, pending ? 44.0f : 32.0f)) && (pending || TargetUnmet()) && !chaining)
+                        StartAutoRdo(std::string()); // Waits for an analysis under way, measures the curve if the target needs it, bakes
+                    if (ImGui::IsItemHovered() && TargetUnmet() && !chaining)
+                        ShowTooltip("Bakes to the Compression (RDO) target. This scan's size-against-quality curve is not measured yet, so the bake finishes measuring it first (about a minute, once per scan: it is stored), then applies the target's choice.");
                     if (pending)
                     {
-                        // Glow: rings of pastel fading outward, always faintly there and brightest at the top of the breath
+                        // Glow: rings of red fading outward, always there and brightest at the top of the breath
                         ImDrawList* dl = ImGui::GetWindowDrawList();
                         const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
                         const float rounding = ImGui::GetStyle().FrameRounding;
                         dl->PushClipRectFullScreen();
-                        for (int i = 1; i <= 7; i++)
+                        for (int i = 1; i <= 9; i++)
                         {
-                            const float fade = 1.0f - (float)(i - 1) / 7.0f;
-                            const float alpha = (0.05f + 0.13f * pulse) * fade * fade;
-                            dl->AddRect(ImVec2(a.x - i, a.y - i), ImVec2(b.x + i, b.y + i), ImGui::GetColorU32(ImVec4(pastel.x, pastel.y, pastel.z, alpha)), rounding + i, ~0, 1.0f);
+                            const float fade = 1.0f - (float)(i - 1) / 9.0f;
+                            const float alpha = (0.14f + 0.30f * pulse) * fade * fade;
+                            dl->AddRect(ImVec2(a.x - i, a.y - i), ImVec2(b.x + i, b.y + i), ImGui::GetColorU32(ImVec4(glow.x, glow.y, glow.z, alpha)), rounding + i, ~0, 1.5f);
                         }
                         dl->PopClipRect();
                     }
                     ImGui::PopStyleColor(3);
                     if (ImGui::IsItemHovered()) ShowTooltip(pending ? "Rebuilds the model with the parameters above. Until then the displayed model and Save use the last bake."
                                                                           : "Nothing to bake: the displayed model matches the parameters above.");
-                    if (pending) ImGui::TextColored(ImVec4(0.65f, 0.78f, 1.0f, 1.0f), "Changed, not yet baked: %s", PendingBakeChanges().c_str());
+                    if (pending) ImGui::TextColored(ImVec4(1.0f, 0.62f, 0.55f, 1.0f), "Changed, not yet baked: %s", PendingBakeChanges().c_str());
                 }
                 ImGui::Spacing();
                 if (HasOccluderMesh())
@@ -4533,7 +4667,7 @@ namespace Splat
                     }
                     if (ImGui::Checkbox("Show Grid##Viewport", &m_showGrid) && !m_sceneIsEnvironment) { m_showGridSetting = m_showGrid; SaveConfigFile(); } // In an environment, this scene only
                     if (ImGui::IsItemHovered()) ShowTooltip("An editor grid on the ground plane through the origin (y = 0), as in Unreal's viewport: lines at every power of ten, the finer ones fading in as you move closer, the X axis red and the Z axis green. The model draws over it.");
-                    ImGui::Checkbox("Loading Blur##Viewport", &m_loadingBlurEnabled);
+                    if (ImGui::Checkbox("Loading Blur##Viewport", &m_loadingBlurEnabled)) SaveConfigFile(); // Remembered (loading_blur)
                     if (ImGui::IsItemHovered()) ShowTooltip("Blurs the scene while it first loads (and after Evict or a jump to a training camera), easing out as the area around you fills in from 40%% to 75%%, so the coarsest levels read as soft rather than as specks and blobs. Moving around normally never blurs.");
 
                     // Background: Recommended (the package's, or estimated from the scan), a preset, a colour, a gradient or an image
@@ -4929,6 +5063,7 @@ namespace Splat
                         {
                             m_stream.m_simulatedBytesDelivered = m_stream.m_totalStreamBytes;
                             m_stream.m_streamRefinementProgress = 1.0f;
+                            m_stream.m_streamStateDirty = true;
                             UpdateStreamingSimulation(1.0);
                         }
                     }
@@ -4941,12 +5076,10 @@ namespace Splat
 
                     // ---- Scheduler ----
                     heading("Scheduler");
-                    ImGui::Checkbox("Prioritize View Frustum & Proximity", &m_prioritizeFrustumAndProximity);
-                    if (ImGui::IsItemHovered()) ShowTooltip("On: blocks inside the view frustum are delivered before those outside it (then the neighbour band, then the rest). Off: the scheduler's model-wide order, regardless of the camera.");
-                    dimWrapped("Order: base envelope > edge chunks > visible octahedron faces > rest");
-                    if (ImGui::IsItemHovered()) ShowTooltip("The two coarsest levels always land first so there is a solid envelope. Silhouette edge chunks come next. Then the streaming scheduler serves the faces of the bounding octahedron the camera can see, together, while faces out of view wait their turn; the remaining view requests follow.");
-                    ImGui::Spacing();
-                    DrawOctahedronGlyph();
+                    // (Prioritize View Frustum & Proximity is gone: screen-space order weighs the view itself, and the
+                    // switch only ever steered the retired octahedron order)
+                    dimWrapped("Order: base envelope > edge chunks > largest on-screen error first");
+                    if (ImGui::IsItemHovered()) ShowTooltip("The two coarsest levels always land first so there is a solid envelope. Silhouette edge chunks come next. Then blocks in view are delivered in order of their screen-space error (level spacing over distance), largest first, so what is near the camera and coarsest on screen sharpens first; in a scene, the subject the training cameras converge on is boosted.");
                     ImGui::Spacing();
                     dimWrapped("Re-deliveries since reset: %u blocks streamed more than once (%u extra deliveries)", m_stream.m_redeliveredBlocks, m_stream.m_extraDeliveries);
                     if (ImGui::IsItemHovered()) ShowTooltip("Diagnostic. A block counts here when it is delivered, later evicted, and delivered again. With a still camera this should stay at zero; it rises only when something evicts blocks the view still wants (decay, or a demotion that used to evict).");
@@ -5481,6 +5614,7 @@ namespace Splat
 
         // 4c. Camera control hints at the bottom-right of the viewport
         DrawControlHints(leftPanelWidth, rightPanelWidth);
+        DrawNavSwitch();
 
         // 4d. Reset View button at the bottom-left of the viewport
         DrawResetViewButton(leftPanelWidth);
@@ -5884,7 +6018,7 @@ namespace Splat
         if (ImGui::IsItemHovered()) ShowTooltip("Loads only what the view needs: the blocks in view (plus a small margin), each down to its own level. Nothing streams in the background.");
         ImGui::SameLine();
         if (ImGui::RadioButton("Greedy", m_streamingPolicy == 1)) { m_streamingPolicy = 1; if (!m_sceneIsEnvironment) m_objectStreamingPolicy = 1; m_stream.m_streamStateDirty = true; }
-        if (ImGui::IsItemHovered()) ShowTooltip("Keeps loading in the background regardless of the view, faces in view first. With Release Unused LOD Segments it loads every block of every level down to the finest level a visible block renders at (now level %d), model-wide, and releases only what lies finer.", m_stream.GreedyFloor());
+        if (ImGui::IsItemHovered()) ShowTooltip("Keeps loading in the background regardless of the view, what is in view first. With Release Unused LOD Segments it loads every block of every level down to the finest level a visible block renders at (now level %d), model-wide, and releases only what lies finer.", m_stream.GreedyFloor());
 
         ImGui::Spacing();
     }
@@ -5941,108 +6075,6 @@ namespace Splat
         m_splatSoftnessRatio = (spacing0 > 0.0f) ? m_splatLevel0Footprint / spacing0 : 0.0f;
         m_splatDiscMatchFactor = std::clamp(sqrtf(8.0f) * m_splatSoftnessRatio, 1.5f, 4.0f);
         LogTransitionTrace("SplatSoftness: level 0 median footprint %.5f, spacing %.5f, ratio %.2f, disc radius factor %.2f", m_splatLevel0Footprint, spacing0, m_splatSoftnessRatio, m_splatDiscMatchFactor);
-    }
-
-
-
-    // Streaming tab: the bounding octahedron as two diamonds. Seen from above, an octahedron projects to
-    // a square standing on a corner whose diagonals split it into its four upper faces; the left diamond
-    // (green) shows those, the right one (pastel blue) the four lower faces, both with +X right and +Z
-    // down. Faces the camera sees are lit, brighter the more directly they face it; faces streamed with them as the
-    // margin (turned just away, StreamOrder::VisibleFaceMask) are half lit; hidden faces dim. A yellow dot marks the
-    // camera's direction on whichever half it lies in (a dim dot on the other).
-    void SplatPakApp::DrawOctahedronGlyph()
-    {
-        const uint8_t frontMask = m_stream.m_streamOrder.FrontFaceMask(), streamMask = m_stream.m_streamOrder.VisibleFaceMask();
-        uint32_t visible = 0, margin = 0;
-        for (int f = 0; f < kOctahedronFaces; f++)
-        {
-            if (frontMask & (1u << f)) visible++;
-            else if (streamMask & (1u << f)) margin++;
-        }
-        ImGui::PushStyleColor(ImGuiCol_Text, ImGui::GetStyle().Colors[ImGuiCol_TextDisabled]);
-        if (margin > 0)
-            ImGui::TextWrapped("Bounding octahedron: %u of %d faces visible, %u more streamed with them at the edge; %zu blocks in this frame's load list", visible, kOctahedronFaces, margin, m_stream.m_scratchLoadList.size());
-        else
-            ImGui::TextWrapped("Bounding octahedron: %u of %d faces visible; %zu blocks in this frame's load list", visible, kOctahedronFaces, m_stream.m_scratchLoadList.size());
-        ImGui::PopStyleColor();
-        if (ImGui::IsItemHovered()) ShowTooltip("Faces of the octahedron around the model that the camera can currently see (lit). Each owns the part of the model behind it; the scheduler streams the visible faces together and the hidden ones afterwards, so the model completes in the background. Faces turned just away from the camera are streamed with the visible ones (half lit), so a face is already loading as it turns into view. The inner triangles show each face's fill progress.");
-
-        const float R = 30.0f;
-        ImDrawList* dl = ImGui::GetWindowDrawList();
-        ImVec2 origin = ImGui::GetCursorScreenPos();
-        const float cell = 2.0f * R + 12.0f;
-        auto drawHalf = [&](const ImVec2& c, bool upper)
-        {
-            // The four faces of this half: octants with the matching Y sign. Each is the triangle from the
-            // centre (the +Y or -Y apex, seen end-on) to the two equatorial vertices of its X and Z signs.
-            // Two passes: every fill first, then every outline, so the outline and cross bars are always
-            // drawn on top at full opacity whatever the fills are doing.
-            for (int pass = 0; pass < 2; pass++)
-            for (int f = 0; f < kOctahedronFaces; f++)
-            {
-                if (((f & 2) != 0) != upper) continue;
-                const float sx = (f & 1) ? 1.0f : -1.0f, sz = (f & 4) ? 1.0f : -1.0f;
-                ImVec2 px(c.x + sx * R, c.y), pz(c.x, c.y + sz * R);
-                // Lit by how squarely a front face faces the camera; a margin face half lit at the low end
-                const bool front = (frontMask & (1u << f)) != 0, edge = !front && (streamMask & (1u << f)) != 0;
-                const float t = front ? std::max(0.0f, std::min(1.0f, m_stream.m_streamOrder.FaceFacing(f))) : 0.0f;
-                // Bevelled look: each face is shaded as one side of a low pyramid seen from above, lit from
-                // the upper left (both halves are drawn that way so they read alike); its two ridge edges
-                // (centre to rim) are light on the lit side and dark on the shaded side, its rim edge dark.
-                const float lx = -0.55f, ly = 0.65f, lz = -0.52f;           // Light direction: from the upper left, above
-                const float nx = sx * 0.577f, ny = 0.577f, nz = sz * 0.577f;  // Face normal of the pyramid side
-                const float ndotl = nx * lx + ny * ly + nz * lz;
-                const float shade = 0.55f + 0.45f * std::max(0.0f, std::min(1.0f, ndotl + 0.2f)); // 0.55 .. 1.0
-                float br, bg, bb;                                            // Base colour of this face
-                if (upper) { br = front ? 55.0f + 30.0f * t : 60.0f;  bg = front ? 170.0f + 70.0f * t : 66.0f; bb = front ? 85.0f + 35.0f * t : 74.0f; }
-                else       { br = front ? 100.0f + 30.0f * t : 60.0f; bg = front ? 150.0f + 45.0f * t : 64.0f; bb = front ? 225.0f + 30.0f * t : 78.0f; }
-                if (edge) // Half way between hidden and a front face at its dimmest
-                {
-                    if (upper) { br = 58.0f; bg = 118.0f; bb = 80.0f; }
-                    else       { br = 80.0f; bg = 107.0f; bb = 152.0f; }
-                }
-                auto shaded = [&](float k, int alpha) { return IM_COL32((int)std::min(255.0f, br * k), (int)std::min(255.0f, bg * k), (int)std::min(255.0f, bb * k), alpha); };
-                // Fill opacity is the face's residency: 0% with nothing loaded, 80% with every block loaded,
-                // every grade between. The outline and cross bars below are always fully opaque.
-                float done = 0.0f;
-                if (m_stream.m_streamOrder.FaceTotal(f) > 0) done = 1.0f - (float)std::min(m_stream.m_streamOrder.FaceRemaining(f), m_stream.m_streamOrder.FaceTotal(f)) / (float)m_stream.m_streamOrder.FaceTotal(f);
-                const ImU32 fill = shaded(shade, (int)(204.0f * std::max(0.0f, std::min(1.0f, done))));
-                if (pass == 1)
-                {
-                    const bool lit = ndotl > 0.05f;
-                    const ImU32 ridge = lit ? shaded(1.35f, 255) : shaded(0.45f, 255);
-                    const ImU32 rim = shaded(0.40f, 255);
-                    const float w = front ? 2.0f : edge ? 1.5f : 1.0f;
-                    dl->AddLine(c, px, ridge, w);
-                    dl->AddLine(c, pz, ridge, w);
-                    dl->AddLine(px, pz, rim, w);
-                    continue;
-                }
-                dl->AddTriangleFilled(c, px, pz, fill);
-            }
-            // Camera marker: its horizontal direction, on this half if the camera is on this side of the equator.
-            const bool camHere = (m_stream.m_streamOrder.CameraDirection()[1] >= 0.0f) == upper;
-            const float h = sqrtf(m_stream.m_streamOrder.CameraDirection()[0] * m_stream.m_streamOrder.CameraDirection()[0] + m_stream.m_streamOrder.CameraDirection()[2] * m_stream.m_streamOrder.CameraDirection()[2]);
-            const float mx = (h > 1e-4f) ? m_stream.m_streamOrder.CameraDirection()[0] / h : 0.0f, mz = (h > 1e-4f) ? m_stream.m_streamOrder.CameraDirection()[2] / h : 0.0f;
-            const float reach = std::min(1.0f, h + 0.15f) * (R + 6.0f); // Toward the centre as the camera goes overhead
-            dl->AddCircleFilled(ImVec2(c.x + mx * reach, c.y + mz * reach), camHere ? 3.5f : 2.0f, camHere ? IM_COL32(255, 220, 90, 255) : IM_COL32(255, 220, 90, 90));
-        };
-        drawHalf(ImVec2(origin.x + R + 6.0f, origin.y + R + 6.0f), true);
-        drawHalf(ImVec2(origin.x + cell + 14.0f + R + 6.0f, origin.y + R + 6.0f), false);
-        ImGui::Dummy(ImVec2(2.0f * cell + 14.0f, cell));
-        if (ImGui::IsItemHovered())
-        {
-            std::string tip = "Left (green): the four upper faces (+Y), right (blue): the four lower faces (-Y), both seen from above with +X right and +Z down.\nYellow dot = camera direction; inner triangle = share of the face's blocks resident. Pending / total blocks per face, and queued edge requests (bits: 1 = +X, 2 = +Y, 4 = +Z):";
-            for (int f = 0; f < kOctahedronFaces; f++)
-            {
-                char b[160];
-                snprintf(b, sizeof(b), "\n  face %d (%c%c%c): %u / %u, %zu edge requests %s", f, (f & 1) ? '+' : '-', (f & 2) ? '+' : '-', (f & 4) ? '+' : '-',
-                    m_stream.m_streamOrder.FaceRemaining(f), m_stream.m_streamOrder.FaceTotal(f), m_stream.m_faceEdgeQueue[f].size() - m_stream.m_faceEdgeHead[f], (frontMask & (1u << f)) ? "(visible)" : (streamMask & (1u << f)) ? "(edge, streamed with the visible faces)" : "");
-                tip += b;
-            }
-            ShowTooltip("%s", tip.c_str());
-        }
     }
 
     // Overlay listing every toggle that currently alters what the viewport shows -- debug views, isolation
@@ -6528,10 +6560,11 @@ namespace Splat
             const ImVec4 keys (0.90f, 0.90f, 0.94f, 1.00f); // Light grey for the bindings
             struct Hint { const char* verb; const char* binding; };
             const Hint hints[] = {                         // "\xC2\xB7" = middle dot (U+00B7), in the default Latin glyph range
-                { "Rotate", "left-drag \xC2\xB7 Left/Right arrows" },
-                { "Zoom",   "wheel \xC2\xB7 Up/Down \xC2\xB7 PageUp/PageDown" },
-                { "Fly",    m_mouseLook ? "W/S/A/D or arrows \xC2\xB7 Q/E down/up \xC2\xB7 Tab/Esc release mouse" : "W/S/A/D \xC2\xB7 Q/E down/up \xC2\xB7 right-drag look \xC2\xB7 Tab mouse look" },
-                { "Pan",    "Shift + drag \xC2\xB7 Shift + arrows" },
+                { "Mode",   m_navMode == NavFly ? "Fly \xC2\xB7 O to orbit" : "Orbit \xC2\xB7 O to fly" },
+                { "Rotate", m_navMode == NavFly ? "drag to look \xC2\xB7 Tab mouse look" : "left-drag \xC2\xB7 arrows \xC2\xB7 A/D/Q/E" },
+                { "Move",   m_navMode == NavFly ? (m_mouseLook ? "W/S/A/D or arrows \xC2\xB7 Q/E down/up \xC2\xB7 Tab/Esc release mouse" : "W/S/A/D or arrows \xC2\xB7 Q/E down/up \xC2\xB7 Shift x4 \xC2\xB7 wheel speed")
+                                                : "W/S \xC2\xB7 wheel \xC2\xB7 PageUp/PageDown" },
+                { "Pan",    m_navMode == NavFly ? "Shift + drag \xC2\xB7 Shift + arrows" : "right-drag \xC2\xB7 Shift + drag \xC2\xB7 Shift + arrows" },
                 { "Splats", "V display" },
                 { "Loupe",  m_loupeEnabled ? "L off \xC2\xB7 [/] magnify \xC2\xB7 Shift+V display \xC2\xB7 click box/Space pin" : "L" },
             };
@@ -6547,6 +6580,77 @@ namespace Splat
         ImGui::PopStyleVar(2);
         ImGui::PopStyleColor();
         ImGui::PopFont();
+    }
+
+    // The Orbit / Fly switch: two icon buttons at the bottom centre of the viewport (clear of the status overlay at its
+    // top left, Reset View at its bottom left and the hints at its bottom right), the active one lit, with the fly speed
+    // beside them while flying. Kept outside the side panels so it shows with them folded.
+    void SplatPakApp::DrawNavSwitch()
+    {
+        if (m_residentLODs.empty() && m_rawSplats.empty()) return; // Nothing loaded: nothing to move round
+        const float left = m_leftPanelRect.z > m_leftPanelRect.x ? m_leftPanelRect.z : 0.0f;
+        const float right = m_rightPanelRect.z > m_rightPanelRect.x ? m_rightPanelRect.x : (float)m_Width;
+        ImGui::SetNextWindowPos(ImVec2(0.5f * (left + right), (float)m_Height - 44.0f), ImGuiCond_Always, ImVec2(0.5f, 1.0f));
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.02f, 0.02f, 0.03f, 0.80f));
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
+        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(4.0f, 4.0f));
+        ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2.0f, 2.0f));
+        const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+            ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoCollapse;
+        if (ImGui::Begin("##NavSwitch", nullptr, flags))
+        {
+            const float h = ImGui::GetFrameHeight() + 6.0f * m_uiScale;
+            const ImU32 ink = IM_COL32(235, 235, 240, 255);
+            auto modeButton = [&](int mode, const char* id, const char* label, const char* tip)
+            {
+                const bool active = m_navMode == mode;
+                ImGui::PushStyleColor(ImGuiCol_Button, active ? ImVec4(0.26f, 0.45f, 0.85f, 1.0f) : ImVec4(0.16f, 0.16f, 0.19f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, active ? ImVec4(0.32f, 0.52f, 0.92f, 1.0f) : ImVec4(0.24f, 0.24f, 0.29f, 1.0f));
+                const ImVec2 p = ImGui::GetCursorScreenPos();
+                const float w = ImGui::CalcTextSize(label).x + h + 10.0f * m_uiScale;
+                char text[64];
+                snprintf(text, sizeof(text), "%s##%s", "", id);
+                if (ImGui::Button(text, ImVec2(w, h))) SetNavMode(mode);
+                ImGui::PopStyleColor(2);
+                if (ImGui::IsItemHovered()) ShowTooltip("%s", tip);
+                // The icon in a square at the left, the label after it
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                const ImVec2 c(p.x + h * 0.5f + 2.0f, p.y + h * 0.5f);
+                const float r = h * 0.28f;
+                if (mode == NavOrbit)
+                {
+                    // A ring round a dot, an arrowhead on its open end
+                    dl->PathArcTo(c, r, 0.35f * 3.14159f, 1.85f * 3.14159f, 20);
+                    dl->PathStroke(ink, false, 1.6f);
+                    const float a = 1.85f * 3.14159f;
+                    const ImVec2 tip(c.x + r * cosf(a), c.y + r * sinf(a));
+                    dl->AddTriangleFilled(ImVec2(tip.x - 3.5f, tip.y - 2.5f), ImVec2(tip.x + 3.5f, tip.y - 2.0f), ImVec2(tip.x + 0.5f, tip.y + 3.5f), ink);
+                    dl->AddCircleFilled(c, 2.2f, ink, 10);
+                }
+                else
+                {
+                    // An eye: two arcs and a pupil
+                    dl->PathArcTo(ImVec2(c.x, c.y + r * 1.1f), r * 1.55f, 1.18f * 3.14159f, 1.82f * 3.14159f, 14);
+                    dl->PathStroke(ink, false, 1.6f);
+                    dl->PathArcTo(ImVec2(c.x, c.y - r * 1.1f), r * 1.55f, 0.18f * 3.14159f, 0.82f * 3.14159f, 14);
+                    dl->PathStroke(ink, false, 1.6f);
+                    dl->AddCircleFilled(c, r * 0.45f, ink, 12);
+                }
+                dl->AddText(ImVec2(p.x + h + 2.0f, p.y + (h - ImGui::GetTextLineHeight()) * 0.5f), ink, label);
+            };
+            modeButton(NavOrbit, "orbit", "Orbit", "Orbit (O): turn round the model. Left-drag or the arrows turn, A/D/Q/E circle it, W/S, the wheel or PageUp/PageDown move in and out, right-drag pans.");
+            ImGui::SameLine();
+            modeButton(NavFly, "fly", "Fly", "Fly (O): move through the scene. W/S/A/D or the arrows move, Q/E down and up, Shift 4x; drag to look, the wheel sets the speed; Tab captures the mouse for looking all the way round.");
+            if (m_navMode == NavFly)
+            {
+                ImGui::SameLine();
+                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (h - ImGui::GetTextLineHeight()) * 0.5f);
+                ImGui::TextColored(ImVec4(0.75f, 0.80f, 0.90f, 1.0f), " %.1f m/s ", FlySpeed());
+            }
+        }
+        ImGui::End();
+        ImGui::PopStyleVar(3);
+        ImGui::PopStyleColor();
     }
 
     // Shared enable/view-only controls for the baked occlusion volume, drawn identically from both the
@@ -7432,6 +7536,7 @@ namespace Splat
         PollShadowMeshBuild();
         m_framesRendered++;
         // Safely execute any modal/file operations before beginning the ImGui frame (never during an operation)
+        if (m_op.Quiet() && m_pendingAction != PendingAction::None && m_pendingAction != PendingAction::ExportStream) m_op.RequestCancel();
         if (!m_op.Busy()) ExecutePendingAction();
 
         BeginFrame();
@@ -7455,12 +7560,14 @@ namespace Splat
         StepPresentationShot();
         StepPendingRdoProfile();
         StepReencode();
+        StepAutoRdo();
         // A scripted run waits for the whole model to stream in, which Release Unused LOD Segments (on by default) never allows.
         // The ring test runs as a user does: Conservative with Release Unused, as an environment loads.
         if (Unattended() && !m_ringTest) { m_releaseUnusedSegments = false; m_streamingPolicy = 1; } // Scripted runs wait for the whole model
         const auto tUi = std::chrono::high_resolution_clock::now();
         BuildUI();
         DrawOperationDialog();
+        DrawRdoUnreachablePopup();
         m_frameUiMs = std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - tUi).count();
         m_state.time += (float)(m_deltaTime / 1000.0);
         m_state.enableDithering = m_enableDitheredTransitions;
@@ -7586,9 +7693,19 @@ namespace Splat
             m_budgetAccumFrames++;
             if (m_budgetAccumWallMs >= 250.0f && m_budgetAccumFrames > 0)
             {
+                const float frameMs = m_budgetAccumWallMs / (float)m_budgetAccumFrames;
                 for (int k = 0; k < kBudgetCount; k++) { m_budgetShown[k] = m_budgetAccum[k] / (float)m_budgetAccumFrames; m_budgetAccum[k] = 0.0f; }
                 m_budgetAccumWallMs = 0.0f;
                 m_budgetAccumFrames = 0;
+                // The same budget in the log once a second, for runs measured without the panel open (--spin)
+                static int s_budgetLogCount = 0;
+                if (++s_budgetLogCount % 4 == 0)
+                {
+                    const float* b = m_budgetShown;
+                    const float other = frameMs - (b[kBudgetSim] + b[kBudgetUi] + b[kBudgetGpuWait] + b[kBudgetRecord] + b[kBudgetPresent]);
+                    LogTransitionTrace("Frame budget: frame %.2f ms = streaming %.2f (traversal %.2f), UI %.2f, GPU wait %.2f, record %.2f, present %.2f, other %.2f",
+                        frameMs, b[kBudgetSim], b[kBudgetTraversal], b[kBudgetUi], b[kBudgetGpuWait], b[kBudgetRecord], b[kBudgetPresent], other);
+                }
             }
         }
         catch (const std::exception& e)
@@ -7874,9 +7991,16 @@ namespace Splat
         else ImGui::TextDisabled("%zu encodings measured in %.0f s", m_rdo.points.size(), m_rdo.seconds);
 
         bool changed = false;
-        if (m_rdo.Valid())
+        const bool fresh = !RdoStale();
+        // The curve when it is measured for this scan and bake; otherwise its frame, dimmed, with Analyse over the middle.
+        // Analysing is optional: Bake and Save measure it themselves when a target needs it.
+        if (fresh) DrawRdoPlot();
+        else DrawRdoPlaceholder(scanLoaded && !pyramidPending && !analysing && m_autoRdo == AutoRdo::Idle, analysing);
+
+        // The target: always shown, so it can be set before anything is measured. A size target starts at the current
+        // bake's size rather than 0 MB, which nothing meets.
+        if (m_rdoTarget.sizeMB <= 0.0 && m_compressedSizeMB > 0.0f) m_rdoTarget.sizeMB = std::ceil(m_compressedSizeMB * 10.0) / 10.0;
         {
-            DrawRdoPlot();
             int mode = (int)m_rdoTarget.mode;
             changed |= ImGui::RadioButton("Size##rdo", &mode, 0); ImGui::SameLine();
             changed |= ImGui::RadioButton("Ratio##rdo", &mode, 1); ImGui::SameLine();
@@ -7885,19 +8009,7 @@ namespace Splat
             if (ImGui::IsItemHovered()) ShowTooltip("The only bandwidth setting: how fast a typical close view of the model streams in over a link.\n"
                                                           "A viewer downloads the blocks a view needs, coarse first, not the whole package.");
             m_rdoTarget.mode = (RdoAnalysis::TargetMode)mode;
-        }
-        // Analyse: at the bottom right of the graph, under the Streaming time toggle
-        {
-            const float buttonWidth = 110.0f;
-            ImGui::SetCursorPosX(ImGui::GetCursorPosX() + std::max(0.0f, ImGui::GetContentRegionAvailWidth() - buttonWidth));
-            if (ImGui::Button("Analyse", ImVec2(buttonWidth, 0.0f)) && scanLoaded && !pyramidPending && !analysing) StartRdoAnalysis();
-            if (ImGui::IsItemHovered())
-                ShowTooltip("Measures every spherical-harmonics encoding of this scan (degree, and bits per band): its package size, exactly as Save\n"
-                                  "would compress it, its colour fidelity against the source, and what a typical view downloads. About a minute.");
-        }
 
-        if (m_rdo.Valid())
-        {
             ImGui::PushItemWidth(120.0f);
             auto inputD = [&](const char* label, double& v, float step, float fast, int decimals, const char* tip)
             {
@@ -7926,30 +8038,37 @@ namespace Splat
                 }
             }
             ImGui::PopItemWidth();
-            if (changed && !m_rdoOverride) ApplyRdoChoice(RdoAnalysis::Pick(m_rdo, m_rdoTarget, (double)m_sourceFileBytes));
+        }
+        if (changed) m_rdoUnreachablePolicy = -1; // A new target: an unreachable one is asked about again
+        if (changed && !m_rdoOverride && fresh) ApplyRdoChoice(PickForTarget());
+        if (fresh && !m_rdoOverride && !TargetReachable()) DrawRdoUnreachableChoice();
 
-            if (m_rdoChoice >= 0 && m_rdoChoice < (int)m_rdo.points.size())
+        if (fresh && m_rdoChoice >= 0 && m_rdoChoice < (int)m_rdo.points.size())
+        {
+            const RdoPoint& p = m_rdo.points[m_rdoChoice];
+            const double ratio = p.bytes > 0.0 ? (double)m_sourceFileBytes / p.bytes : 0.0;
+            ImGui::Text("-> %.1f MB (%.1fx), colour fidelity %.1f dB", p.bytes / mib, ratio, p.psnr);
+            ImGui::TextDisabled("   %s%s", p.settings.Describe().c_str(), m_rdoOverride ? "" : "  (chosen by the target)");
+            if (p.viewBytes > 0.0)
             {
-                const RdoPoint& p = m_rdo.points[m_rdoChoice];
-                const double ratio = p.bytes > 0.0 ? (double)m_sourceFileBytes / p.bytes : 0.0;
-                ImGui::Text("-> %.1f MB (%.1fx), colour fidelity %.1f dB", p.bytes / mib, ratio, p.psnr);
-                ImGui::TextDisabled("   %s%s", p.settings.Describe().c_str(), m_rdoOverride ? "" : "  (chosen by the target)");
-                if (p.viewBytes > 0.0)
-                {
-                    const double bw = std::max(0.01, m_rdoTarget.bandwidthMBps) * mib;
-                    ImGui::TextDisabled("   A typical view: first picture %.1f MB (%.1f s), full detail %.1f MB (%.1f s) at %.1f MB/s",
-                        p.viewFirstBytes / mib, p.viewFirstBytes / bw, p.viewBytes / mib, p.viewBytes / bw, m_rdoTarget.bandwidthMBps);
-                }
-                if (p.regionSaving > 0.005)
-                    ImGui::TextDisabled("   Per-region settings (format 15) would save about %.1f%% here", 100.0 * p.regionSaving);
+                const double bw = std::max(0.01, m_rdoTarget.bandwidthMBps) * mib;
+                ImGui::TextDisabled("   A typical view: first picture %.1f MB (%.1f s), full detail %.1f MB (%.1f s) at %.1f MB/s",
+                    p.viewFirstBytes / mib, p.viewFirstBytes / bw, p.viewBytes / mib, p.viewBytes / bw, m_rdoTarget.bandwidthMBps);
             }
-            if (ImGui::Checkbox("Override settings##rdo", &m_rdoOverride) && !m_rdoOverride)
-                ApplyRdoChoice(RdoAnalysis::Pick(m_rdo, m_rdoTarget, (double)m_sourceFileBytes));
-            if (ImGui::IsItemHovered()) ShowTooltip("Set the harmonics by hand; the curve marks where that lands.");
+            if (p.regionSaving > 0.005)
+                ImGui::TextDisabled("   Per-region settings (format 15) would save about %.1f%% here", 100.0 * p.regionSaving);
+        }
+        else if (scanLoaded && !m_rdoOverride)
+            ImGui::TextDisabled("-> chosen when you Bake or Save (measured first, about a minute once per scan)");
+        if (scanLoaded)
+        {
+            if (ImGui::Checkbox("Override settings##rdo", &m_rdoOverride) && !m_rdoOverride && fresh)
+                ApplyRdoChoice(PickForTarget());
+            if (ImGui::IsItemHovered()) ShowTooltip("Set the harmonics by hand instead of by the target; the curve marks where that lands.");
         }
 
-        // By hand: before an analysis, or with Override on
-        if (!m_rdo.Valid() || m_rdoOverride)
+        // By hand: with Override on, or for a scan with no harmonics to choose
+        if (m_rdoOverride || !scanLoaded)
         {
             static const char* s_shNames[] = { "Low (degree 1, 9 bytes per splat)", "Medium (degree 2, 24 bytes per splat)", "High (degree 3, 45 bytes per splat)" };
             ImGui::Combo("SH Quality", &m_splatSHQuality, s_shNames, IM_ARRAYSIZE(s_shNames));
@@ -7973,6 +8092,219 @@ namespace Splat
         if (ImGui::Button("Load Profile...", ImVec2(110.0f, 0.0f)) && !m_op.Busy()) LoadRdoProfile();
         if (ImGui::IsItemHovered()) ShowTooltip("Loads a .rdoprofile: for the scan open now, or by opening the .ply it names when that file is unchanged.");
         ImGui::Unindent();
+    }
+
+    int SplatPakApp::PickFor(const RdoAnalysis::Target& t) const
+    {
+        const double src = (double)m_sourceFileBytes;
+        if (!m_rdo.Valid()) return -1;
+        if (!RdoAnalysis::Reachable(m_rdo, t, src) && m_rdoUnreachablePolicy == 1)
+        {
+            const int q = RdoAnalysis::PickKeepQuality(m_rdo, t, src);
+            if (q >= 0) return q;
+        }
+        return RdoAnalysis::Pick(m_rdo, t, src);
+    }
+
+    std::string SplatPakApp::DescribeRdoPoint(int index) const
+    {
+        if (index < 0 || index >= (int)m_rdo.points.size()) return "none";
+        const RdoPoint& p = m_rdo.points[index];
+        const double mib = 1024.0 * 1024.0;
+        char buf[200];
+        if (m_rdoTarget.mode == RdoAnalysis::TargetMode::Streaming)
+        {
+            const double bw = std::max(0.01, m_rdoTarget.bandwidthMBps) * mib;
+            snprintf(buf, sizeof(buf), "%s: first picture %.1f s, full detail %.1f s, %.1f dB", p.settings.Describe().c_str(), p.viewFirstBytes / bw, p.viewBytes / bw, p.psnr);
+        }
+        else snprintf(buf, sizeof(buf), "%s: %.1f MB (%.1fx), %.1f dB", p.settings.Describe().c_str(), p.bytes / mib, p.bytes > 0.0 ? (double)m_sourceFileBytes / p.bytes : 0.0, p.psnr);
+        return buf;
+    }
+
+    // In the menu, under the target: it cannot be met, the two ways to miss it with their estimates, and which is used
+    void SplatPakApp::DrawRdoUnreachableChoice()
+    {
+        const RdoAnalysis::Target& t = m_rdoTarget;
+        char what[160];
+        switch (t.mode)
+        {
+            case RdoAnalysis::TargetMode::Streaming: snprintf(what, sizeof(what), "No encoding reaches a first picture in %.1f s and full detail in %.1f s at %.1f MB/s.", t.firstViewSeconds, t.fullDetailSeconds, t.bandwidthMBps); break;
+            case RdoAnalysis::TargetMode::Size:      snprintf(what, sizeof(what), "No encoding fits in %.1f MB.", t.sizeMB); break;
+            case RdoAnalysis::TargetMode::Ratio:     snprintf(what, sizeof(what), "No encoding is %.2fx smaller than the source.", t.ratio); break;
+            case RdoAnalysis::TargetMode::Quality:   snprintf(what, sizeof(what), "No encoding keeps %.1f dB.", t.qualityDb); break;
+        }
+        ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(1.0f, 0.78f, 0.35f, 1.0f));
+        ImGui::PushTextWrapPos(0.0f);
+        ImGui::TextUnformatted(what);
+        ImGui::PopTextWrapPos();
+        ImGui::PopStyleColor();
+        const double src = (double)m_sourceFileBytes;
+        const int fastest = RdoAnalysis::Pick(m_rdo, t, src), quality = RdoAnalysis::PickKeepQuality(m_rdo, t, src);
+        int policy = m_rdoUnreachablePolicy;
+        const std::string a = "Closest: " + DescribeRdoPoint(fastest) + "##rdoUnreach0";
+        if (ImGui::RadioButton(a.c_str(), policy == 0)) policy = 0;
+        if (ImGui::IsItemHovered()) ShowTooltip("The encoding that comes nearest the target, whatever it costs in colour fidelity.");
+        if (quality >= 0 && quality != fastest)
+        {
+            const std::string b = "Keep quality: " + DescribeRdoPoint(quality) + "##rdoUnreach1";
+            if (ImGui::RadioButton(b.c_str(), policy == 1)) policy = 1;
+            if (ImGui::IsItemHovered()) ShowTooltip("The best colour fidelity within half as much again as the target allows: misses it by more, looks much better.");
+        }
+        if (policy != m_rdoUnreachablePolicy)
+        {
+            m_rdoUnreachablePolicy = policy;
+            ApplyRdoChoice(PickForTarget());
+        }
+        if (m_rdoUnreachablePolicy < 0) ImGui::TextDisabled("Bake and Save ask which, if not chosen here.");
+    }
+
+    // Bake or Save reached an unreachable target with no choice made: ask, with both estimates; Cancel stops the bake
+    void SplatPakApp::DrawRdoUnreachablePopup()
+    {
+        static const char* kPopup = "Target out of reach##rdo";
+        if (m_rdoAskUnreachable && !ImGui::IsPopupOpen(kPopup)) ImGui::OpenPopup(kPopup);
+        if (!ImGui::BeginPopupModal(kPopup, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) return;
+        const double src = (double)m_sourceFileBytes;
+        const int fastest = RdoAnalysis::Pick(m_rdo, m_rdoTarget, src), quality = RdoAnalysis::PickKeepQuality(m_rdo, m_rdoTarget, src);
+        ImGui::TextUnformatted("No encoding of this scan meets the Compression (RDO) target.");
+        ImGui::Spacing();
+        ImGui::Text("Closest:       %s", DescribeRdoPoint(fastest).c_str());
+        if (quality >= 0 && quality != fastest) ImGui::Text("Keep quality:  %s", DescribeRdoPoint(quality).c_str());
+        ImGui::Spacing();
+        auto done = [&](int policy)
+        {
+            m_rdoAskUnreachable = false;
+            ImGui::CloseCurrentPopup();
+            if (policy < 0)
+            {
+                m_autoRdo = AutoRdo::Idle;
+                m_autoRdoSavePath.clear();
+                m_quitAfterSave = false;
+                m_statusMessage = "Bake cancelled: relax the target, or pick a point on the curve with Override.";
+                m_statusIsSuccess = false;
+                return;
+            }
+            m_rdoUnreachablePolicy = policy; // StepAutoRdo applies it and carries on
+        };
+        if (ImGui::Button("Use the closest", ImVec2(150.0f, 0.0f))) done(0);
+        if (quality >= 0 && quality != fastest) { ImGui::SameLine(); if (ImGui::Button("Keep quality", ImVec2(150.0f, 0.0f))) done(1); }
+        ImGui::SameLine();
+        if (ImGui::Button("Cancel", ImVec2(100.0f, 0.0f))) done(-1);
+        ImGui::EndPopup();
+    }
+
+    // The curve's frame before it is measured (or once it no longer matches the scan or bake): dimmed axes and a faint
+    // sketch of the usual shape, with Analyse over the middle until it is pressed
+    void SplatPakApp::DrawRdoPlaceholder(bool canAnalyse, bool analysing)
+    {
+        const float width = std::max(200.0f, ImGui::GetContentRegionAvailWidth()), height = 190.0f;
+        ImGui::TextDisabled("Colour fidelity (dB)");
+        const ImVec2 origin = ImGui::GetCursorScreenPos();
+        const float left = 30.0f, bottom = 34.0f, top = 4.0f, right = 10.0f;
+        const ImVec2 a(origin.x + left, origin.y + top), b(origin.x + width - right, origin.y + height - bottom);
+        ImDrawList* dl = ImGui::GetWindowDrawList();
+        dl->AddRectFilled(a, b, IM_COL32(18, 20, 26, 150));
+        dl->AddRect(a, b, IM_COL32(70, 75, 90, 110));
+        for (int i = 1; i < 4; i++)
+        {
+            const float x = a.x + (b.x - a.x) * i / 4.0f, y = a.y + (b.y - a.y) * i / 4.0f;
+            dl->AddLine(ImVec2(x, a.y), ImVec2(x, b.y), IM_COL32(40, 44, 54, 150));
+            dl->AddLine(ImVec2(a.x, y), ImVec2(b.x, y), IM_COL32(40, 44, 54, 150));
+        }
+        for (int i = 0; i < 24; i++) // Rising and levelling off, as fidelity does with size
+        {
+            const float t0 = i / 24.0f, t1 = (i + 1) / 24.0f;
+            auto at = [&](float t) { return ImVec2(a.x + (b.x - a.x) * (0.05f + 0.9f * t), b.y - (b.y - a.y) * (0.1f + 0.75f * (1.0f - expf(-3.0f * t)))); };
+            dl->AddLine(at(t0), at(t1), IM_COL32(110, 150, 220, 70), 2.0f);
+        }
+        {
+            const char* xTitle = "Package size (MB)";
+            const ImVec2 ts = ImGui::CalcTextSize(xTitle);
+            dl->AddText(ImVec2(0.5f * (a.x + b.x - ts.x), b.y + 17.0f), IM_COL32(150, 155, 170, 110), xTitle);
+        }
+        const ImVec2 size(130.0f, 30.0f);
+        const float buttonWidth = analysing ? 170.0f : size.x;
+        ImGui::SetCursorScreenPos(ImVec2(0.5f * (a.x + b.x - buttonWidth), 0.5f * (a.y + b.y - size.y)));
+        if (!canAnalyse) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
+        char text[48];
+        if (analysing) snprintf(text, sizeof(text), "Analysing... %.0f%%##rdoCentre", m_op.Fraction() * 100.0f);
+        else snprintf(text, sizeof(text), "Analyse##rdoCentre");
+        if (ImGui::Button(text, ImVec2(analysing ? 170.0f : size.x, size.y)) && canAnalyse) StartRdoAnalysis();
+        if (!canAnalyse) ImGui::PopStyleVar();
+        if (ImGui::IsItemHovered())
+            ShowTooltip("Measures every spherical-harmonics encoding of this scan (degree, and bits per band): its package size, exactly as Save\n"
+                        "would compress it, its colour fidelity against the source, and what a typical view downloads. About a minute, once per\n"
+                        "scan (it is stored). Optional: Bake and Save measure it themselves when the target needs it.");
+        ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + height));
+        ImGui::Dummy(ImVec2(width, 1.0f));
+    }
+
+    bool SplatPakApp::TargetUnmet() const
+    {
+        const bool scanHasHarmonics = !m_rawSplats.empty() && !m_isLoadedFromSFLW && m_sourceSHDegree > 0;
+        return scanHasHarmonics && !m_rdoOverride && !IsViewerOnly() && RdoStale();
+    }
+
+    void SplatPakApp::StartAutoRdo(const std::string& savePath)
+    {
+        m_autoRdoSavePath = savePath;
+        m_autoRdo = AutoRdo::Bake;
+        LogTransitionTrace("Auto RDO: bake to the target%s%s", savePath.empty() ? "" : ", then save ", savePath.c_str());
+    }
+
+    // One step per idle frame (each starts a background operation and waits for it): see AutoRdo
+    void SplatPakApp::StepAutoRdo()
+    {
+        if (m_autoRdo == AutoRdo::Idle || m_op.Busy()) return;
+        auto fail = [&](const char* why)
+        {
+            m_autoRdo = AutoRdo::Idle;
+            m_autoRdoSavePath.clear();
+            m_quitAfterSave = false;
+            m_statusMessage = std::string("Baking to the target stopped: ") + why;
+            m_statusIsSuccess = false;
+        };
+        switch (m_autoRdo)
+        {
+            case AutoRdo::Bake: // Waits (above) for a lazy analysis under way to finish
+                if (PyramidPending()) StartBake(false); // The analysis measures the baked pyramid: that first
+                m_autoRdo = AutoRdo::Analyse;
+                return;
+            case AutoRdo::Analyse:
+                if (PyramidPending()) { fail("the bake did not finish."); return; }
+                if (TargetUnmet()) StartRdoAnalysis();
+                m_autoRdo = AutoRdo::Apply;
+                return;
+            case AutoRdo::Apply:
+                if (TargetUnmet()) { fail("the compression analysis did not finish."); return; }
+                if (!m_rdoOverride && !TargetReachable() && m_rdoUnreachablePolicy < 0)
+                {
+                    m_rdoAskUnreachable = true; // DrawRdoUnreachablePopup: the choice, or Cancel, moves the chain on
+                    return;
+                }
+                if (!m_rdoOverride && !RdoStale()) ApplyRdoChoice(PickForTarget());
+                if (BakePending()) StartBake(false);
+                m_autoRdo = AutoRdo::Save;
+                return;
+            case AutoRdo::Save:
+            {
+                if (BakePending()) { fail("the bake did not finish."); return; }
+                const std::string path = m_autoRdoSavePath;
+                m_autoRdo = AutoRdo::Idle;
+                m_autoRdoSavePath.clear();
+                if (!path.empty()) { ProcessAndExport(path); return; }
+                if (m_rdoChoice >= 0 && m_rdoChoice < (int)m_rdo.points.size())
+                {
+                    const RdoPoint& p = m_rdo.points[m_rdoChoice];
+                    char msg[256];
+                    snprintf(msg, sizeof(msg), "Baked%s: %s, %.1f MB, colour fidelity %.1f dB. Save writes it.", m_rdoOverride ? "" : " to the target", p.settings.Describe().c_str(), p.bytes / (1024.0 * 1024.0), p.psnr);
+                    m_statusMessage = msg;
+                    m_statusIsSuccess = true;
+                }
+                return;
+            }
+            default: return;
+        }
     }
 
     // The curve: package size (MB) across, colour fidelity (dB) up; every candidate a dot, the frontier (no candidate smaller
@@ -8079,7 +8411,7 @@ namespace Splat
         for (int p = 0; p < 4; p++) if (kSHPrecisionBits[p] == s.shBits[0]) m_shPrecision = p;
     }
 
-    void SplatPakApp::StartRdoAnalysis()
+    void SplatPakApp::StartRdoAnalysis(bool quiet)
     {
         auto result = std::make_shared<RdoAnalysisResult>();
         auto hash = std::make_shared<uint64_t>(m_sourceHash);
@@ -8088,9 +8420,10 @@ namespace Splat
         const std::string folder = RdoProfileFolder();
         const int maxLODs = m_bakedParams.maxLODs;
         const float deadbandMM = m_bakedParams.deadbandMM;
+        const uint32_t sourceSHDegree = m_sourceSHDegree;
         m_rdoStart = std::chrono::steady_clock::now();
-        LogTransitionTrace("RDO: analysing %s", path.c_str());
-        RunOperation("Analysing the compression", [this, result, hash, reused, path, folder, maxLODs, deadbandMM](Progress& progress)
+        LogTransitionTrace("RDO: analysing %s%s", path.c_str(), quiet ? " (in the background)" : "");
+        RunOperation("Analysing the compression", [this, result, hash, reused, path, folder, maxLODs, deadbandMM, sourceSHDegree, quiet](Progress& progress)
         {
             if (*hash == 0)
             {
@@ -8122,8 +8455,8 @@ namespace Splat
                 RdoJob base;
                 base.scan = path;
                 base.scanHash = *hash;
-                base.levels = m_bakedParams.maxLODs;
-                base.deadbandMM = m_bakedParams.deadbandMM;
+                base.levels = maxLODs;
+                base.deadbandMM = deadbandMM;
                 char temp[MAX_PATH] = {};
                 GetTempPathA(MAX_PATH, temp);
                 char sub[32];
@@ -8131,25 +8464,29 @@ namespace Splat
                 const std::string folder = std::string(temp) + "SplatPak RDO\\" + sub;
                 CreateDirectoryA((std::string(temp) + "SplatPak RDO").c_str(), nullptr);
                 std::string error;
-                const bool ok = RdoDispatcher::Analyse(base, m_sourceSHDegree, worker, folder, report, *result, error);
+                const bool ok = RdoDispatcher::Analyse(base, sourceSHDegree, worker, folder, report, *result, error);
                 LogTransitionTrace("RDO: %s through %s%s%s", ok ? "analysed" : "failed", worker.c_str(), ok ? "" : ": ", ok ? "" : error.c_str());
                 if (ok || error == "cancelled") return ok;
+                if (quiet) return false; // In this process it would read the scan the UI is free to change
                 LogTransitionTrace("RDO: falling back to this process");
             }
+            else if (quiet) return false;
             std::vector<const SplatPointArray*> levels;
             levels.push_back(&m_rawSplats);
             for (size_t l = 1; l < m_waveletResult.lodLevels.size(); l++) levels.push_back(&m_waveletResult.lodLevels[l].splats);
             return RdoAnalysis::Analyse(levels, m_splatAttributes, &m_waveletResult.mergedAttributes, m_splatParams, m_sourceSHDegree,
                 report, *result);
         },
-        [this, result, hash, reused, path](bool ok, bool cancelled)
+        [this, result, hash, reused, path, quiet](bool ok, bool cancelled)
         {
             if (!ok)
             {
+                if (quiet) { LogTransitionTrace("RDO: background analysis %s", cancelled ? "cancelled" : "failed"); return; } // Never a surprise message
                 m_statusMessage = cancelled ? "Analysis cancelled." : "The analysis failed: see the trace log.";
                 m_statusIsSuccess = false;
                 return;
             }
+            if (m_loadedFilePath != path) return; // Another scan opened meanwhile
             result->unitBytes.clear(); result->unitError.clear(); // Summed into each point's regionSaving
             m_rdo = std::move(*result);
             m_rdoHash = *hash;
@@ -8165,7 +8502,7 @@ namespace Splat
                         m_rdoTarget.sizeMB = std::ceil(p.bytes / (1024.0 * 1024.0) * 10.0) / 10.0;
                 if (m_rdoTarget.sizeMB <= 0.0) m_rdoTarget.sizeMB = std::ceil(m_rdo.points[0].bytes / (1024.0 * 1024.0));
             }
-            ApplyRdoChoice(RdoAnalysis::Pick(m_rdo, m_rdoTarget, (double)m_sourceFileBytes));
+            ApplyRdoChoice(PickForTarget());
             char msg[512];
             if (!reused->empty())
             {
@@ -8179,8 +8516,11 @@ namespace Splat
                 StoreRdoProfile();
                 snprintf(msg, sizeof(msg), "Analysed %zu encodings in %.0f s: pick a point on the curve or set a target, then Bake.", m_rdo.points.size(), m_rdo.seconds);
             }
-            m_statusMessage = msg;
-            m_statusIsSuccess = true;
+            if (!quiet || m_autoRdo == AutoRdo::Idle)
+            {
+                m_statusMessage = msg;
+                m_statusIsSuccess = true;
+            }
             for (const RdoPoint& p : m_rdo.points)
                 LogTransitionTrace("RDO: %-24s %8.1f MB  first view %6.1f MB  %6.2f dB%s  region %.1f%%", p.settings.Describe().c_str(), p.bytes / (1024.0 * 1024.0),
                     p.coarseBytes / (1024.0 * 1024.0), p.psnr, p.frontier ? " *" : "  ", 100.0 * p.regionSaving);
@@ -8321,7 +8661,7 @@ namespace Splat
             memcpy(m_shBandBits, p.choice.shBits, 3);
             for (size_t i = 0; i < m_rdo.points.size(); i++) if (m_rdo.points[i].settings == p.choice) m_rdoChoice = (int)i;
         }
-        else ApplyRdoChoice(RdoAnalysis::Pick(m_rdo, m_rdoTarget, (double)m_sourceFileBytes));
+        else ApplyRdoChoice(PickForTarget());
         m_statusMessage = std::string("RDO profile loaded") + (p.ConstantsMatch() ? "" : " (measured by a build with other analysis settings: analyse again to refresh it)") +
                           (BakePending() ? "; baking with it." : ".");
         m_statusIsSuccess = true;
@@ -8503,7 +8843,7 @@ namespace Splat
             RdoAnalysis::Target t = m_rdoTarget;
             t.mode = RdoAnalysis::TargetMode::Streaming;
             t.bandwidthMBps = r.bandwidthMBps > 0.0 ? r.bandwidthMBps : 1000.0;
-            const int pick = RdoAnalysis::Pick(m_rdo, t, (double)m_sourceFileBytes);
+            const int pick = PickFor(t);
             if (pick >= 0 && pick != current)
             {
                 r.rdoPick = pick;
@@ -8535,7 +8875,10 @@ namespace Splat
                 r.warn[kEncLevels] = buf;
             }
             if (!analysed && r.shDegree > 0)
+            {
                 r.warn[kEncBits] = "No RDO analysis of this scan yet: Re-encode analyses the compression and picks the spherical-harmonics bits that arrive in time.";
+                r.needsAnalysis = true;
+            }
         }
         if (r.viewBased && bw > 0.0 && fullSeconds > m_rdoTarget.fullDetailSeconds)
         {
@@ -8543,7 +8886,10 @@ namespace Splat
             r.warn[kEncFullDetail] = buf;
         }
         if (bw <= 0.0 && !analysed && r.shDegree > 0 && (r.shBits[0] < 8 || r.shBits[1] < 8 || r.shBits[2] < 8))
+        {
             r.warn[kEncBits] = "Full bandwidth does not need the reduced spherical-harmonics precision: Re-encode analyses the compression and picks the best that streams in time.";
+            r.needsAnalysis = true;
+        }
         if (r.levels < 3)
         {
             snprintf(buf, sizeof(buf), "Only %d level%s: the first picture is nearly the whole model. At least 3 levels give the stream a coarse envelope to send first.", r.levels, r.levels == 1 ? "" : "s");
@@ -8561,6 +8907,12 @@ namespace Splat
             r.warn[kEncOcclusion] = "No occlusion volume: blocks hidden behind the model are streamed and sorted anyway. Re-encode bakes one.";
             r.recOcclusion = true;
         }
+        // A time warning the encoding already does its best on: say so, so the row is not read as a re-encode away
+        if (!r.Actionable())
+            for (int k : { (int)kEncFirstView, (int)kEncFullDetail })
+                if (!r.warn[k].empty())
+                    r.warn[k] += analysed ? " This is already the RDO choice for this network: no encoding of the scan arrives sooner, so re-encoding would write the same package. Relax the time target, or stream fewer splats (a coarser deadband or fewer levels)."
+                                          : " Re-encoding would write the same package.";
         return r;
     }
 
@@ -8644,7 +8996,7 @@ namespace Splat
 
         if (IsViewerOnly()) return;
         const bool idle = m_reencode == Reencode::Idle && !m_op.Busy();
-        const bool any = rep.Any();
+        const bool any = rep.Any() && rep.Actionable(); // Lit only when a re-encode would write something different
         if (!any || !idle) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.45f);
         if (any)
         {
@@ -8660,7 +9012,8 @@ namespace Splat
         if (!any || !idle) ImGui::PopStyleVar();
         if (ImGui::IsItemHovered())
             ShowTooltip(any ? "Bakes the package again from its source scan with what the warnings recommend, analysing the compression\nfor this network first when it has not been, then saves it and opens it. Asks before replacing anything."
-                                  : "Nothing to fix for this network profile.");
+                            : rep.Any() ? "Already encoded for this network: the RDO choice is the encoding on screen, so a re-encode would write the same package.\nThe flagged rows are as close as this scan gets; their tooltips say what else would help."
+                                        : "Nothing to fix for this network profile.");
         if (pressed && any && idle)
         {
             m_reencodeReport = rep;
@@ -8810,7 +9163,7 @@ namespace Splat
                 return;
             case Reencode::Bake:
                 if (RdoStale()) { FailReencode("the compression analysis did not finish."); return; }
-                ApplyRdoChoice(RdoAnalysis::Pick(m_rdo, m_rdoTarget, (double)m_sourceFileBytes));
+                ApplyRdoChoice(PickForTarget());
                 if (BakePending()) StartBake(false);
                 m_reencode = Reencode::Save;
                 return;
@@ -9344,6 +9697,7 @@ namespace Splat
             m_showGrid = pv.grid >= 0 ? pv.grid == 1 : m_showGridSetting;
             m_streamingPolicy = m_objectStreamingPolicy;
             if (m_poseCameraIndex < 0 && startCamera >= 0) ViewTrainingCamera(startCamera);
+            SetNavMode(pv.navigation == "fly" ? NavFly : NavOrbit);
             return;
         }
         m_enableOcclusionCulling = pv.occlusion == 1 && hasVolume;
@@ -9364,8 +9718,9 @@ namespace Splat
             m_distance = std::max(0.5f, m_coreRadius50 * 0.5f);
             opened = ", opened inside its core";
         }
+        SetNavMode(pv.navigation == "orbit" ? NavOrbit : NavFly);
         m_statusMessage = "Environment scene (half within " + std::to_string((int)std::lround(m_coreRadius50)) + " m, 99% within " +
-                          std::to_string((int)std::lround(m_coreRadius99)) + " m): occlusion volume and grid off, Conservative streaming" + opened + ". W/S/A/D/Q/E fly, right-drag looks.";
+                          std::to_string((int)std::lround(m_coreRadius99)) + " m): occlusion volume and grid off, Conservative streaming" + opened + ". Fly: W/S/A/D/Q/E move, drag to look; O to orbit.";
         m_statusIsSuccess = true;
     }
 

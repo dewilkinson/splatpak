@@ -351,6 +351,8 @@ namespace Splat
         // (they lie inside it) and the splats blend over the model's own colour where they leave gaps
         ID3D12PipelineState* m_pShadowMeshFillPSO = nullptr;
         ID3D12PipelineState* m_pShadowMeshFillPSOUnorm = nullptr;
+        ID3D12PipelineState* m_pOccluderMeshPSO = nullptr;      // The occluder mesh under the splats: unlit, writes depth
+        ID3D12PipelineState* m_pOccluderMeshPSOUnorm = nullptr;
         // The editor grid (Grid.hlsl): alpha-blended, depth-tested, no depth write; one PSO per render-target format
         void CreateGridPipelines(CAULDRON_DX12::SwapChain* pSwapChain);
         ID3D12PipelineState* m_pGridPSO = nullptr;
@@ -436,6 +438,8 @@ namespace Splat
         uint32_t                   m_occCulledSplats = 0;
         uint32_t                   m_occLastKey = 0;                 // Occlusion settings the last sort ran with: a change re-runs it
         XMFLOAT4X4                 m_occLastCullViewProj = {};
+        XMFLOAT3                   m_sortEye = { 1e30f, 1e30f, 1e30f }; // The view the last splat sort ran for: it re-runs once
+        XMFLOAT3                   m_sortForward = { 0.0f, 0.0f, 0.0f }; // the view has moved enough to change the order (RunSplatSort)
         ID3D12Resource*            m_pSlotInfoBuffer = nullptr;      // uint2 per padded slot
         ID3D12Resource*            m_pSplatPairsA = nullptr;         // uint2 (key, slot) per padded slot; the sorted result after four passes
         ID3D12Resource*            m_pSplatPairsB = nullptr;

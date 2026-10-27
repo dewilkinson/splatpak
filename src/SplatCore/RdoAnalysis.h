@@ -579,6 +579,35 @@ namespace Splat
             double firstViewSeconds = 1.0;   //   a typical view's first, coarse picture in this time
             double fullDetailSeconds = 10.0; //   and its full detail in this
         };
+        // Whether one encoding meets the target
+        inline bool Meets(const RdoPoint& p, const Target& t, double sourceBytes)
+        {
+            const double mb = 1024.0 * 1024.0;
+            switch (t.mode)
+            {
+                case TargetMode::Size:      return p.bytes <= t.sizeMB * mb;
+                case TargetMode::Ratio:     return t.ratio > 0.0 && p.bytes <= sourceBytes / t.ratio;
+                case TargetMode::Quality:   return p.psnr >= t.qualityDb;
+                case TargetMode::Streaming: return p.viewFirstBytes <= t.bandwidthMBps * mb * t.firstViewSeconds && p.viewBytes <= t.bandwidthMBps * mb * t.fullDetailSeconds;
+            }
+            return false;
+        }
+        inline bool Reachable(const RdoAnalysisResult& r, const Target& t, double sourceBytes)
+        {
+            for (const RdoPoint& p : r.points) if (Meets(p, t, sourceBytes)) return true;
+            return false;
+        }
+        // For a target nothing meets, the other way to miss it: the best colour fidelity within half as much again as the
+        // target allows (time, size, or the ratio's size). Pick's fallback is the closest (the smallest).
+        inline int PickKeepQuality(const RdoAnalysisResult& r, const Target& t, double sourceBytes)
+        {
+            Target loose = t;
+            loose.sizeMB *= 1.5; loose.ratio /= 1.5; loose.firstViewSeconds *= 1.5; loose.fullDetailSeconds *= 1.5;
+            int best = -1;
+            for (size_t i = 0; i < r.points.size(); i++)
+                if (Meets(r.points[i], loose, sourceBytes) && (best < 0 || r.points[i].psnr > r.points[best].psnr)) best = (int)i;
+            return best;
+        }
         inline int Pick(const RdoAnalysisResult& r, const Target& t, double sourceBytes)
         {
             int best = -1;

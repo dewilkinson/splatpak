@@ -128,8 +128,26 @@ namespace Splat
         }
     }
 
-    // The level as drawn: subdivided `passes` times (each quadruples the triangles), with smooth normals
-    inline void BuildShadowMeshDisplay(const ShadowMeshLevel& level, int passes, ShadowMeshDisplay& out)
+    // The level's median edge length: about the voxel cell it was built from
+    inline float MedianEdgeLength(const ShadowMeshLevel& level)
+    {
+        std::vector<float> e;
+        e.reserve(level.indices.size());
+        for (size_t t = 0; t + 2 < level.indices.size(); t += 3)
+            for (int k = 0; k < 3; k++)
+            {
+                const auto& a = level.positions[level.indices[t + k]];
+                const auto& b = level.positions[level.indices[t + (k + 1) % 3]];
+                e.push_back(std::sqrt((a.x - b.x) * (a.x - b.x) + (a.y - b.y) * (a.y - b.y) + (a.z - b.z) * (a.z - b.z)));
+            }
+        if (e.empty()) return 0.0f;
+        std::nth_element(e.begin(), e.begin() + e.size() / 2, e.end());
+        return e[e.size() / 2];
+    }
+
+    // The level as drawn: subdivided `passes` times (each quadruples the triangles), with smooth normals. inset moves
+    // every vertex that far inward along its normal (an occluder drawn inside the splat surface, not through it).
+    inline void BuildShadowMeshDisplay(const ShadowMeshLevel& level, int passes, ShadowMeshDisplay& out, float inset = 0.0f)
     {
         using namespace ShadowMeshDisplayDetail;
         std::vector<V> pos(level.positions.size()), col(level.positions.size());
@@ -147,6 +165,22 @@ namespace Splat
         {
             const V f = Cross(Sub(pos[idx[t + 1]], pos[idx[t]]), Sub(pos[idx[t + 2]], pos[idx[t]]));
             for (int k = 0; k < 3; k++) nrm[idx[t + k]] = Add(nrm[idx[t + k]], f);
+        }
+        if (inset > 0.0f)
+        {
+            // Inward is against the outward normal; the signed volume says which way the winding faces
+            double volume = 0.0;
+            for (size_t t = 0; t + 2 < idx.size(); t += 3)
+            {
+                const V a = pos[idx[t]], c = Cross(pos[idx[t + 1]], pos[idx[t + 2]]);
+                volume += (double)a.x * c.x + (double)a.y * c.y + (double)a.z * c.z;
+            }
+            const float inward = volume >= 0.0 ? -inset : inset;
+            for (size_t i = 0; i < pos.size(); i++)
+            {
+                const float len = std::sqrt(nrm[i].x * nrm[i].x + nrm[i].y * nrm[i].y + nrm[i].z * nrm[i].z);
+                if (len > 0.0f) pos[i] = Add(pos[i], Mul(nrm[i], inward / len));
+            }
         }
         out.vertices.resize(pos.size() * ShadowMeshDisplay::kVertexWords);
         for (size_t i = 0; i < pos.size(); i++)

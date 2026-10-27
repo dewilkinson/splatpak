@@ -65,3 +65,11 @@ float4 shadowMeshPS(ShadowMeshVSOut i) : SV_Target0
     const float lighting = 0.35 + 0.65 * abs(dot(n, lightDir));
     return float4(i.color * lighting, 1.0);
 }
+
+// The occluder and the gap fill under the splats: the splats' base colour, unlit. Where the front splats leave some
+// transmittance, this shows through in place of the far side (the same surface colour); shaded, it read as dark
+// patches with the mesh's triangles in them.
+float4 shadowMeshFlatPS(ShadowMeshVSOut i) : SV_Target0
+{
+    return float4(i.color, 1.0);
+}
