@@ -143,11 +143,11 @@ int Splat::RunSplatPakApp(HINSTANCE hInstance, LPSTR lpCmdLine, int nCmdShow, co
                 forwarded += a + " \"" + args[++i] + "\" ";
                 continue;
             }
-            if (a == "--camera-capture" || a == "--cameras" || a == "--camera" || a == "--camera-list" || a == "--size" || a == "--scene" || a == "--spin" || a == "--occlusion" || a == "--policy")
+            if (a == "--camera-capture" || a == "--cameras" || a == "--camera" || a == "--camera-list" || a == "--size" || a == "--scene" || a == "--spin" || a == "--occlusion" || a == "--policy" || a == "--zoom")
             {
                 if (i + 1 >= args.size())
                 {
-                    ShowUsage(windowName, a + (a == "--size" ? " needs <W>x<H>" : a == "--spin" ? " needs degrees a second" : a == "--occlusion" ? " needs on or off"
+                    ShowUsage(windowName, a + (a == "--size" ? " needs <W>x<H>" : a == "--spin" ? " needs degrees a second" : a == "--zoom" ? " needs a period in seconds" : a == "--occlusion" ? " needs on or off"
                                                 : a == "--policy" ? " needs conservative or greedy" : a == "--camera" ? " needs a camera number" : a == "--camera-list" ? " needs camera numbers"
                                                 : a == "--cameras" ? " needs a cameras.json" : " needs a folder"));
                     return 2;

@@ -391,6 +391,11 @@ namespace Splat
                 m_cliSpinDegPerSec = (float)atof(args[++i].c_str());
                 LogTransitionTrace("Command line: --spin %.1f deg/s", m_cliSpinDegPerSec);
             }
+            else if (a == "--zoom" && i + 1 < args.size())
+            {
+                m_cliZoomPeriodSec = (float)atof(args[++i].c_str());
+                LogTransitionTrace("Command line: --zoom, a %.1f s period", m_cliZoomPeriodSec);
+            }
             else if (a == "--camera-list" && i + 1 < args.size())
             {
                 std::stringstream list(args[++i]);
@@ -4205,6 +4210,13 @@ namespace Splat
         // --spin: the orbit turns at a steady rate on its own (a repeatable motion benchmark), from the moment a model is shown
         if (m_cliSpinDegPerSec != 0.0f && m_state.chunkCount > 0)
             m_yaw += XMConvertToRadians(m_cliSpinDegPerSec) * (float)(m_deltaTime / 1000.0);
+        // --zoom: the orbit distance swings from the framing distance in to a third of it and back, once a period
+        if (m_cliZoomPeriodSec > 0.0f && m_state.chunkCount > 0)
+        {
+            if (m_cliZoomBaseDistance <= 0.0f) m_cliZoomBaseDistance = m_distance;
+            m_cliZoomPhase += (float)(m_deltaTime / 1000.0) / m_cliZoomPeriodSec;
+            m_distance = m_cliZoomBaseDistance * (0.67f + 0.33f * cosf(m_cliZoomPhase * XM_2PI));
+        }
 
         if (!m_freezeRenderingAndMemory)
         {
@@ -7783,6 +7795,11 @@ namespace Splat
     // Per-frame entry point: builds the UI, advances the streaming simulation and camera, then hands off to SplatRenderer
     void SplatPakApp::OnRender()
     {
+        const auto tFrame = std::chrono::high_resolution_clock::now();
+        // Time outside OnRender since the last frame (the message loop, and whatever holds the thread there)
+        static std::chrono::high_resolution_clock::time_point s_lastFrameEnd = tFrame;
+        m_budgetWorstGapMs = std::max(m_budgetWorstGapMs, std::chrono::duration<float, std::milli>(tFrame - s_lastFrameEnd).count());
+        struct FrameEndStamp { std::chrono::high_resolution_clock::time_point& t; ~FrameEndStamp() { t = std::chrono::high_resolution_clock::now(); } } frameEnd{ s_lastFrameEnd };
         // A finished background operation swaps its result in before anything reads the model this frame
         m_op.Tick();
         PollShadowMeshBuild();
@@ -7817,6 +7834,7 @@ namespace Splat
         // The ring test runs as a user does: Conservative with Release Unused, as an environment loads.
         if (Unattended() && !m_ringTest) { m_releaseUnusedSegments = false; m_streamingPolicy = 1; } // Scripted runs wait for the whole model
         const auto tUi = std::chrono::high_resolution_clock::now();
+        const float preUiMs = std::chrono::duration<float, std::milli>(tUi - tFrame).count();
         BuildUI();
         DrawOperationDialog();
         DrawRdoUnreachablePopup();
@@ -7943,6 +7961,21 @@ namespace Splat
             m_budgetAccum[kBudgetPresent] += m_framePresentMs;
             m_budgetAccumWallMs += (float)m_deltaTime;
             m_budgetAccumFrames++;
+            // The worst frame by its own time, start of OnRender to after Present (m_deltaTime runs BeginFrame to BeginFrame,
+            // so a long one is mostly the frame before)
+            const float ownMs = std::chrono::duration<float, std::milli>(tDone - tFrame).count();
+            if (ownMs > m_budgetWorstMs)
+            {
+                m_budgetWorstMs = ownMs;
+                m_budgetWorst[kBudgetSim] = m_frameSimMs; m_budgetWorst[kBudgetTraversal] = m_frameTraversalMs; m_budgetWorst[kBudgetUi] = m_frameUiMs;
+                m_budgetWorst[kBudgetGpuWait] = m_pRenderer->GetLastGpuWaitMs(); m_budgetWorst[kBudgetRecord] = m_pRenderer->GetLastCommandRecordMs();
+                m_budgetWorst[kBudgetPresent] = m_framePresentMs;
+                m_budgetWorstPreUiMs = preUiMs;
+                m_budgetWorstRenderMs = m_frameRenderMs;
+                m_budgetWorstOwnMs = std::chrono::duration<float, std::milli>(tDone - tFrame).count();
+            }
+            if (ownMs > 8.0f) m_budgetSlowFrames++;
+            if (ownMs > 16.0f) m_budgetVerySlowFrames++;
             if (m_budgetAccumWallMs >= 250.0f && m_budgetAccumFrames > 0)
             {
                 const float frameMs = m_budgetAccumWallMs / (float)m_budgetAccumFrames;
@@ -7957,6 +7990,13 @@ namespace Splat
                     const float other = frameMs - (b[kBudgetSim] + b[kBudgetUi] + b[kBudgetGpuWait] + b[kBudgetRecord] + b[kBudgetPresent]);
                     LogTransitionTrace("Frame budget: frame %.2f ms = streaming %.2f (traversal %.2f), UI %.2f, GPU wait %.2f, record %.2f, present %.2f, other %.2f",
                         frameMs, b[kBudgetSim], b[kBudgetTraversal], b[kBudgetUi], b[kBudgetGpuWait], b[kBudgetRecord], b[kBudgetPresent], other);
+                    const float* w = m_budgetWorst;
+                    LogTransitionTrace("Frame spikes: worst %.2f ms (OnRender %.2f: before the UI %.2f incl. streaming %.2f (traversal %.2f), UI %.2f, renderer %.2f incl. GPU wait %.2f, record %.2f; present %.2f); %u frames over 8 ms, %u over 16 ms; longest gap between frames %.2f ms",
+                        m_budgetWorstMs, m_budgetWorstOwnMs, m_budgetWorstPreUiMs, w[kBudgetSim], w[kBudgetTraversal], w[kBudgetUi], m_budgetWorstRenderMs,
+                        w[kBudgetGpuWait], w[kBudgetRecord], w[kBudgetPresent], m_budgetSlowFrames, m_budgetVerySlowFrames, m_budgetWorstGapMs);
+                    m_budgetWorstGapMs = 0.0f;
+                    m_budgetWorstMs = 0.0f;
+                    m_budgetSlowFrames = m_budgetVerySlowFrames = 0;
                 }
             }
         }

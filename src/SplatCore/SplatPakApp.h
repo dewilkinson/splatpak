@@ -606,6 +606,12 @@ namespace Splat
         enum { kBudgetSim = 0, kBudgetTraversal, kBudgetUi, kBudgetGpuWait, kBudgetRecord, kBudgetPresent, kBudgetCount };
         float  m_budgetAccum[kBudgetCount] = {};
         float  m_budgetShown[kBudgetCount] = {};
+        // The slowest frame of each logged second (wall clock, and its stages), and how many frames ran over 8 and 16 ms:
+        // hitches the means hide
+        float  m_budgetWorstMs = 0.0f, m_budgetWorst[kBudgetCount] = {};
+        float  m_budgetWorstPreUiMs = 0.0f, m_budgetWorstRenderMs = 0.0f, m_budgetWorstOwnMs = 0.0f; // Its time before the UI, in the renderer, in OnRender
+        float  m_budgetWorstGapMs = 0.0f; // The longest time outside OnRender between two frames this second
+        uint32_t m_budgetSlowFrames = 0, m_budgetVerySlowFrames = 0;
         float  m_budgetAccumWallMs = 0.0f;
         uint32_t m_budgetAccumFrames = 0;
         float  m_ditherTransitionDurationSec= 0.75f;  // Transition dissolve duration in seconds (slider 0.05..5 s)
@@ -824,6 +830,8 @@ namespace Splat
         RgbaImage m_camCapImage;
         int      m_cliStartCamera = -1;             // --camera N: start at training camera N
         float    m_cliSpinDegPerSec = 0.0f;         // --spin D: the orbit turns D degrees a second on its own (motion benchmark)
+        float    m_cliZoomPeriodSec = 0.0f;         // --zoom P: the orbit distance swings in and out once every P seconds (motion benchmark)
+        float    m_cliZoomBaseDistance = 0.0f, m_cliZoomPhase = 0.0f;
         bool     m_modelClickArmed = false;         // A left press began over the viewport: its release, if not a drag, may be a click on the model
         bool     ClickHitsModel(float x, float y) const;
         double   m_streamDtAccumMs = 0.0;           // Time since the stream's last update (it runs at most kStreamUpdateHz a second)

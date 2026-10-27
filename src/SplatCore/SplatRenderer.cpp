@@ -1403,11 +1403,11 @@ namespace Splat
             if (bestSlot >= 0)
             {
                 const uint32_t* c = m_pOccCountMapped + bestSlot * 4;
-                m_occCulledChunks = c[0]; m_occCulledSplats = c[1]; m_occHiddenChunks = c[2]; m_occHiddenSplats = c[3];
+                m_occCulledChunks = c[0]; m_occCulledSplats = c[1];
             }
         }
         m_occActive = occlusionCull;
-        if (!occlusionCull) m_occCulledChunks = m_occCulledSplats = m_occHiddenChunks = m_occHiddenSplats = 0;
+        if (!occlusionCull) m_occCulledChunks = m_occCulledSplats = 0;
         m_cullStats.occlusionCulledChunks = m_occCulledChunks;
         m_cullStats.occlusionCulledSplats = m_occCulledSplats;
         m_cullStats.asPassedChunks -= std::min(m_cullStats.asPassedChunks, m_occCulledChunks);
@@ -2526,10 +2526,10 @@ namespace Splat
         s_frameCounter++;
         if (s_frameCounter % 60 == 0)
         {
-            LogTransitionTrace("Renderer Heartbeat: frame=%u, chunkCount=%u, splatCount=%u, fps=%.1f, gpuWait=%.1fms, record=%.1fms, upload=%.1fms, mode=%u, sorts=%u, listUploads=%u, listCopiesInFlight=%u, occOn=%d, occTris=%u, occChunks=%u, occSplats=%u, hidChunks=%u, hidSplats=%u",
+            LogTransitionTrace("Renderer Heartbeat: frame=%u, chunkCount=%u, splatCount=%u, fps=%.1f, gpuWait=%.1fms, record=%.1fms, upload=%.1fms, mode=%u, sorts=%u, listUploads=%u, listCopiesInFlight=%u, occOn=%d, occTris=%u, occChunks=%u, occSplats=%u",
                 s_frameCounter, pState->chunkCount, pState->splatCount, m_metrics.frameRate,
                 m_smoothGpuWaitMs, m_smoothCommandRecordMs, m_smoothUploadMs, pState->renderMode, m_heartbeatSorts, m_heartbeatListUploads, m_heartbeatCopiesInFlight,
-                (int)m_occActive, m_occluderMesh.indexCount / 3u, m_occCulledChunks, m_occCulledSplats, m_occHiddenChunks, m_occHiddenSplats);
+                (int)m_occActive, m_occluderMesh.indexCount / 3u, m_occCulledChunks, m_occCulledSplats);
             m_heartbeatCopiesInFlight = 0;
             m_heartbeatSorts = 0;
             m_heartbeatListUploads = 0;
