@@ -344,8 +344,8 @@ namespace Splat
         // merged: the coarse levels' merged Gaussians (WaveletDecompositionResult::mergedAttributes); baseParams: the
         // bake's encoding frame (bounds, scale range). progress(fraction, stage) returns false to cancel. only: the
         // candidates to measure (a worker's share); null = every one, finished (Finish). A share is left unfinished.
-        inline bool Analyse(const std::vector<const std::vector<SplatPoint>*>& levels, const std::vector<SplatAttributes>& attributes,
-                            const std::vector<SplatAttributes>* merged, const SplatEncodeParams& baseParams, uint32_t sourceDegree,
+        inline bool Analyse(const std::vector<const SplatPointArray*>& levels, const SplatAttributeArray& attributes,
+                            const SplatAttributeArray* merged, const SplatEncodeParams& baseParams, uint32_t sourceDegree,
                             const std::function<bool(float, const char*)>& progress, RdoAnalysisResult& out,
                             const std::vector<RdoSettings>* only = nullptr)
         {
@@ -361,7 +361,7 @@ namespace Splat
             const uint32_t recordBytes = (uint32_t)sizeof(PackedSplatGPU);
 
             // Level 0 in Morton order, so the windows are compact patches
-            std::vector<SplatPoint> level0(*levels[0]);
+            SplatPointArray level0(*levels[0]);
             {
                 const XMFLOAT3 mn = baseParams.aabbMin, mx = baseParams.aabbMax;
                 auto key = [&](const SplatPoint& p)
@@ -371,7 +371,7 @@ namespace Splat
                 };
                 std::stable_sort(level0.begin(), level0.end(), [&](const SplatPoint& a, const SplatPoint& b) { return key(a) < key(b); });
             }
-            std::vector<const std::vector<SplatPoint>*> lv(levels);
+            std::vector<const SplatPointArray*> lv(levels);
             lv[0] = &level0;
             const size_t coarseFrom = numLevels >= 2 ? numLevels - 2 : 0;
 

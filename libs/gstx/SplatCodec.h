@@ -10,7 +10,7 @@
 #pragma once
 #include <vector>
 #include <cstdint>
-#include "../../src/SplatCore/WaveletTypes.h"
+#include "GstxTypes.h"
 #include "LiftingWavelet.h"
 
 namespace Splat
@@ -40,7 +40,7 @@ namespace Splat
         // The log2 scale range the package's 8-bit scale fields span, from the source attributes.
         // Widened for the coarser levels the bake derives (their footprints grow with the level) and
         // padded so no source scale lands on the clamp.
-        static void ComputeScaleRange(const std::vector<SplatAttributes>& attributes, uint32_t maxLODLevels,
+        static void ComputeScaleRange(const SplatAttributeArray& attributes, uint32_t maxLODLevels,
                                       float& outLog2Min, float& outLog2Max);
 
         // The attributes a point takes at a given level of the pyramid: the source Gaussian's rotation,
@@ -58,24 +58,24 @@ namespace Splat
         // grown and made more opaque. Fills result.mergedAttributes and points every coarse point at its entry
         // (sourceIndex = sourceAttributes.size() + entry), with the merged position and colour. Level 0 points take
         // their Gaussian from sourceAttributes. The open stand-in library leaves the pyramid as it is.
-        static void MergeLevels(WaveletDecompositionResult& result, const std::vector<SplatAttributes>& sourceAttributes);
+        static void MergeLevels(WaveletDecompositionResult& result, const SplatAttributeArray& sourceAttributes);
 
         // Encodes one level. splats[i].sourceIndex selects the entry of sourceAttributes the point's
         // Gaussian comes from (kNoSplatSource -> DefaultAttributes), grown to the level; an index past
         // the end of sourceAttributes selects merged[index - sourceAttributes.size()] (MergeLevels), used as
         // it is. outRecords gets one PackedSplatGPU per splat; outSH gets splats.size() *
         // SHRecordBytes(params.shDegree) bytes (empty for degree 0).
-        static void Encode(const std::vector<SplatPoint>& splats, const std::vector<SplatAttributes>& sourceAttributes,
+        static void Encode(const SplatPointArray& splats, const SplatAttributeArray& sourceAttributes,
                            uint32_t level, const SplatEncodeParams& params,
                            std::vector<PackedSplatGPU>& outRecords, std::vector<uint8_t>& outSH,
-                           const std::vector<SplatAttributes>* merged = nullptr);
+                           const SplatAttributeArray* merged = nullptr);
 
         // Decodes one level back to splats plus attributes. sh may be null (no SH stream). Every decoded
         // splat gets sourceIndex = sourceIndexBase + i, so a caller appending outAttributes to its
         // attribute array keeps the links valid; bakedLevel is written into every attribute.
         static void Decode(const std::vector<PackedSplatGPU>& records, const uint8_t* sh, size_t shBytes,
                            const SplatEncodeParams& params, uint32_t bakedLevel, uint32_t sourceIndexBase,
-                           std::vector<SplatPoint>& outSplats, std::vector<SplatAttributes>& outAttributes);
+                           SplatPointArray& outSplats, SplatAttributeArray& outAttributes);
 
         // The import's axis change (3DGS +Y down / +Z forward to +Y up) is a half turn about X. These
         // apply that turn to the pieces of a Gaussian that are not plain positions: the rotation

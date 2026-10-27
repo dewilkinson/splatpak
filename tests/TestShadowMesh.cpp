@@ -140,12 +140,12 @@ int main(int argc, char** argv)
         if (!StreamPackager::LoadPackage(path, pkg, &reason)) { printf("  FAIL: %s\n", reason.c_str()); g_failures++; continue; }
 
         // Level 0 splats and their attributes, decoded
-        std::vector<SplatPoint> points;
-        std::vector<SplatAttributes> attrs;
+        SplatPointArray points;
+        SplatAttributeArray attrs;
         for (size_t c = 0; c < pkg.chunkManifests.size(); c++)
         {
             if (!pkg.IsSplatPackage() || pkg.chunkLODSplats[c].empty()) continue;
-            std::vector<SplatPoint> pts; std::vector<SplatAttributes> at;
+            SplatPointArray pts; SplatAttributeArray at;
             const auto& sh = pkg.chunkLODSH[c][0];
             SplatCodec::Decode(pkg.chunkLODSplats[c][0], sh.empty() ? nullptr : sh.data(), sh.size(), pkg.splatParams, 0, 0, pts, at);
             for (size_t i = 0; i < pts.size(); i++) { pts[i].sourceIndex = (uint32_t)(attrs.size() + i); }

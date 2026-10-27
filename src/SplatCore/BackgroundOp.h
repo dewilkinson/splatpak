@@ -41,6 +41,17 @@ namespace Splat
         void Cancel() { m_cancel = true; }
         std::string StageName() const { std::lock_guard<std::mutex> lock(m_mutex); return m_stage; }
         float GetFraction() const { return m_fraction.load(); }
+        // Two lines of figures under the stage name, kept across stages: line 0 what is being worked on, line 1 on how
+        // many threads. DetailText joins those that are set.
+        void Detail(int line, const std::string& text) { std::lock_guard<std::mutex> lock(m_mutex); m_detail[line & 1] = text; }
+        std::string DetailText() const
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            return m_detail[0].empty() ? m_detail[1] : m_detail[1].empty() ? m_detail[0] : m_detail[0] + "\n" + m_detail[1];
+        }
+        // How many threads the current stage runs on (0 = not stated): the dialog's segmented core bar
+        void Threads(unsigned n) { m_threads = n; }
+        unsigned ThreadsUsed() const { return m_threads.load(); }
         // "stage 1.23 s, ..." for every stage so far: what the stage fractions are weighted from
         std::string Timings() { std::lock_guard<std::mutex> lock(m_mutex); CloseStage(); m_stage.clear(); return m_timings; }
 
@@ -57,10 +68,11 @@ namespace Splat
             m_stageStart = now;
         }
         mutable std::mutex m_mutex;
-        std::string        m_stage, m_timings;
+        std::string        m_stage, m_timings, m_detail[2];
         std::chrono::steady_clock::time_point m_stageStart = std::chrono::steady_clock::now();
         std::atomic<float> m_fraction{ 0.0f };
         std::atomic<bool>  m_cancel{ false };
+        std::atomic<unsigned> m_threads{ 0 };
     };
 
     class BackgroundOp
@@ -145,6 +157,8 @@ namespace Splat
         }
         std::string Title() const { return m_job ? m_job->title : std::string(); }
         std::string StageName() const { return m_job ? m_job->progress.StageName() : std::string(); }
+        std::string Detail() const { return m_job ? m_job->progress.DetailText() : std::string(); }
+        unsigned Threads() const { return m_job ? m_job->progress.ThreadsUsed() : 0u; }
         float Fraction() const { return m_job ? m_job->progress.GetFraction() : 0.0f; }
 
     private:

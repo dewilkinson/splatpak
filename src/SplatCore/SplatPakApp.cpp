@@ -109,6 +109,37 @@ namespace Splat
         }
     }
 
+    // An open's or a bake's stage: shown in the progress dialog, with the threads it runs on, and logged as it starts, so
+    // a stall shows where it is
+    // The close guard (CloseGuardProc, installed in OnCreate): the app it asks, and the window procedure it wraps
+    static SplatPakApp* s_closeGuardApp = nullptr;
+    static WNDPROC s_closeGuardBase = nullptr;
+    static LRESULT CALLBACK CloseGuardProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
+
+    // The threads the current stage runs on, for the dialog's segmented core bar (one square per core, filled when in use)
+    static void BakeThreads(Progress& progress, unsigned threads)
+    {
+        const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
+        progress.Threads(std::max(1u, std::min(threads, cores)));
+    }
+
+    static void BakeStage(Progress& progress, const char* name, float fraction, unsigned threads = 1)
+    {
+        progress.Stage(name, fraction);
+        BakeThreads(progress, threads);
+        LogTransitionTrace("Stage: %s", name);
+    }
+
+    // "5.28 M Gaussians", "206,722 Gaussians": the dialog's count of what is being worked on
+    static std::string CountText(size_t n, const char* what)
+    {
+        char buf[64];
+        if (n >= 1000000) snprintf(buf, sizeof(buf), "%.2f M %s", n / 1e6, what);
+        else snprintf(buf, sizeof(buf), "%zu,%03zu %s", n / 1000, n % 1000, what);
+        if (n < 1000) snprintf(buf, sizeof(buf), "%zu %s", n, what);
+        return buf;
+    }
+
     static Microsoft::WRL::ComPtr<ID3D12InfoQueue> g_pInfoQueue;
 
     // Drains the D3D12 debug-layer message queue into the trace log
@@ -214,10 +245,24 @@ namespace Splat
             "  write view_<n>.rgba to the folder, and quit. With --reference, also compare each view with the same view in that folder\n"
             "  (another package's capture) and write report.txt: PSNR over RGB and SSIM over luma, inside the model's bounds.\n"
             "\n"
+            "--size <W>x<H>\n"
+            "  The window's client size, e.g. 1237x822 to compare with a reference render pixel for pixel.\n"
+            "\n"
+            "--cameras <cameras.json>   --camera <n>\n"
+            "  The scan's training cameras (a 3DGS cameras.json; found beside the file by default), and one to start at.\n"
+            "\n"
+            "--camera-capture <folder> [--camera-list <i,j,...>]\n"
+            "  Once the model has fully streamed in, render it from each training camera (or those listed) at its own field of\n"
+            "  view, write camera_<n>.png to the folder, and quit.\n"
+            "\n"
             "--bake-to <out.gstx> [--sh-degree <1-3>] [--sh-bits <8|6|5|4>] [--remember-settings]\n"
             "  (--remember-settings also remembers the settings for the scan in bake_tunings.json, as a bake from the Package Bake tab does.)\n"
             "  Bake the scan given on the command line with its default parameters (SH Quality degree and SH Precision bits as given;\n"
             "  degree 3 and 8 bits otherwise), save the package to <out.gstx> with its shadow mesh, and quit. The trace log records the size.\n"
+            "\n"
+            "--set-background <package.gstx> solid <r,g,b> | gradient <top r,g,b> <bottom r,g,b> | none\n"
+            "  Write the package's recommended background (colours 0..1, display space) into its view settings, in place, and quit.\n"
+            "  A viewer opens it on that background unless its user has chosen their own.\n"
             "\n"
             "--help, -h, /?\n"
             "  Show this text.\n";
@@ -248,6 +293,11 @@ namespace Splat
             {
                 m_lodTestFolder = args[++i];
                 LogTransitionTrace("Command line: --lod-quality-test %s", m_lodTestFolder.c_str());
+            }
+            else if (a == "--ring-test")
+            {
+                m_ringTest = true;
+                LogTransitionTrace("Command line: --ring-test");
             }
             else if (a == "--stream-test")
             {
@@ -289,6 +339,47 @@ namespace Splat
             {
                 m_lodCalFolder = args[++i];
                 LogTransitionTrace("Command line: --lod-calibration %s", m_lodCalFolder.c_str());
+            }
+            else if (a == "--size" && i + 1 < args.size())
+            {
+                // The window's client size, e.g. 1237x822 to match a reference render pixel for pixel
+                unsigned w = 0, h = 0;
+                if (sscanf_s(args[++i].c_str(), "%ux%u", &w, &h) == 2 && w >= 64 && h >= 64) { *pWidth = w; *pHeight = h; }
+            }
+            else if (a == "--cameras" && i + 1 < args.size())
+            {
+                m_camerasOverride = args[++i];
+            }
+            else if (a == "--camera" && i + 1 < args.size())
+            {
+                m_cliStartCamera = atoi(args[++i].c_str());
+            }
+            else if (a == "--camera-capture" && i + 1 < args.size())
+            {
+                m_camCapFolder = args[++i];
+                LogTransitionTrace("Command line: --camera-capture %s", m_camCapFolder.c_str());
+            }
+            else if (a == "--level0")
+            {
+                m_camCapLevel0 = true;
+            }
+            else if (a == "--scene" && i + 1 < args.size())
+            {
+                m_sceneOverride = args[++i]; // "environment" or "object": overrides the detection and the package
+            }
+            else if (a == "--no-subject")
+            {
+                m_noSubject = true; // No subject boost (the measurement's baseline); the trace still measures the subject
+            }
+            else if (a == "--no-taa")
+            {
+                m_enableTemporalFiltering = false; // This run only: the setting is not saved
+            }
+            else if (a == "--camera-list" && i + 1 < args.size())
+            {
+                std::stringstream list(args[++i]);
+                std::string item;
+                while (std::getline(list, item, ',')) if (!item.empty()) m_camCapList.push_back(atoi(item.c_str()));
             }
             else if (!a.empty() && a[0] != '-' && a[0] != '/')
             {
@@ -539,6 +630,7 @@ namespace Splat
                             return true;
                         };
                         float w = 0.0f, h = 0.0f;
+                        if (line.find("\"loupe_enabled\":") != std::string::npos) m_loupeEnabled = line.find("true") != std::string::npos;
                         if (readPair("\"loupe_size\":", "loupe_size=", w, h) && w >= 160.0f && h >= 120.0f)
                             m_loupeSize = ImVec2(w, h);
                         float x = 0.0f, y = 0.0f;
@@ -614,6 +706,46 @@ namespace Splat
                             else if (toggle == 1) m_showChunkStream = on;
                             else m_showShadowMesh = on;
                         }
+                    }
+
+                    // Editor grid on/off (JSON or INI); see Grid.hlsl
+                    {
+                        size_t gPos = line.find("\"show_grid\":");
+                        size_t eqPos = std::string::npos;
+                        if (gPos != std::string::npos) eqPos = line.find(':', gPos);
+                        else if (line.find("show_grid=") != std::string::npos) eqPos = line.find('=');
+                        if (eqPos != std::string::npos)
+                        {
+                            std::string val = line.substr(eqPos + 1);
+                            m_showGrid = m_showGridSetting = !(val.find("false") != std::string::npos || val.find('0') != std::string::npos);
+                        }
+                    }
+
+                    // The background (Renderer tab, Background): background_choice, background_custom / _top / _bottom
+                    // as [r, g, b], background_image
+                    {
+                        auto valueAfter = [&](const char* key) -> std::string
+                        {
+                            const size_t k = line.find(std::string("\"") + key + "\":");
+                            return k == std::string::npos ? std::string("\x01") : line.substr(line.find(':', k) + 1);
+                        };
+                        auto readColour = [&](const char* key, XMFLOAT3& c)
+                        {
+                            std::string v = valueAfter(key);
+                            if (v == "\x01") return;
+                            for (char& ch : v) if (ch == '[' || ch == ']' || ch == ',') ch = ' ';
+                            float r, g, b;
+                            if (sscanf_s(v.c_str(), "%f %f %f", &r, &g, &b) == 3)
+                                c = XMFLOAT3(std::clamp(r, 0.0f, 1.0f), std::clamp(g, 0.0f, 1.0f), std::clamp(b, 0.0f, 1.0f));
+                        };
+                        const std::string choice = valueAfter("background_choice");
+                        if (choice != "\x01") m_backgroundChoice = std::clamp(atoi(choice.c_str()), 0, (int)BgChoiceCount - 1);
+                        readColour("background_custom", m_bgCustom);
+                        readColour("background_top", m_bgGradientTop);
+                        readColour("background_bottom", m_bgGradientBottom);
+                        const std::string image = valueAfter("background_image");
+                        const size_t q0 = image.find('"'), q1 = image.rfind('"');
+                        if (image != "\x01" && q0 != std::string::npos && q1 > q0) m_bgImagePath = image.substr(q0 + 1, q1 - q0 - 1);
                     }
 
                     // Camera control hints overlay on/off (JSON or INI); see DrawControlHints.
@@ -788,6 +920,15 @@ namespace Splat
             out << "  \"default_deadband_mm\": 3.0,\n";
             out << "  \"occlusion_shave_bias\": " << m_occlusionShaveBiasCells << ",\n";
             out << "  \"show_control_hints\": " << (m_showControlHints ? "true" : "false") << ",\n";
+            out << "  \"show_grid\": " << (m_showGridSetting ? "true" : "false") << ",\n";
+            {
+                char colours[256];
+                snprintf(colours, sizeof(colours), "  \"background_custom\": [%.4g, %.4g, %.4g],\n  \"background_top\": [%.4g, %.4g, %.4g],\n  \"background_bottom\": [%.4g, %.4g, %.4g],\n",
+                    m_bgCustom.x, m_bgCustom.y, m_bgCustom.z, m_bgGradientTop.x, m_bgGradientTop.y, m_bgGradientTop.z, m_bgGradientBottom.x, m_bgGradientBottom.y, m_bgGradientBottom.z);
+                std::string image = m_bgImagePath;
+                std::replace(image.begin(), image.end(), '\\', '/'); // Kept valid JSON without escapes; Windows takes either
+                out << "  \"background_choice\": " << m_backgroundChoice << ",\n" << colours << "  \"background_image\": \"" << image << "\",\n";
+            }
             out << "  \"show_occlusion_volume\": " << (m_showOcclusionSetting ? "true" : "false") << ",\n";
             out << "  \"left_panel_collapsed\": " << (m_leftPanelCollapsed ? "true" : "false") << ",\n";
             out << "  \"right_panel_collapsed\": " << (m_rightPanelCollapsed ? "true" : "false") << ",\n";
@@ -797,6 +938,7 @@ namespace Splat
             out << "  \"splat_disc_match_level0\": " << (m_splatDiscMatchLevel0 ? "true" : "false") << ",\n";
             out << "  \"splat_coarse_as_gaussians\": " << (m_splatCoarseAsGaussians ? "true" : "false") << ",\n";
             out << "  \"splat_coarse_gaussian_cap\": " << m_splatCoarseGaussianCap << ",\n";
+            out << "  \"loupe_enabled\": " << (m_loupeEnabled ? "true" : "false") << ",\n";
             out << "  \"loupe_size\": \"" << (int)m_loupeSize.x << "," << (int)m_loupeSize.y << "\",\n";
             if (m_loupePos.x >= 0.0f) out << "  \"loupe_pos\": \"" << (int)m_loupePos.x << "," << (int)m_loupePos.y << "\",\n";
             {
@@ -890,6 +1032,14 @@ namespace Splat
         }
 
         ImGUI_Init((void*)m_windowHwnd);
+        // The side panels: near-opaque, so the model behind them does not show through the text (user, 2026-10-26)
+        {
+            ImVec4& bg = ImGui::GetStyle().Colors[ImGuiCol_WindowBg];
+            bg = ImVec4(bg.x * 0.6f, bg.y * 0.6f, bg.z * 0.6f, 0.94f);
+        }
+        // Close and Esc ask about unsaved work first (CloseGuardProc, OnCloseRequested)
+        s_closeGuardApp = this;
+        s_closeGuardBase = (WNDPROC)SetWindowLongPtr(m_windowHwnd, GWLP_WNDPROC, (LONG_PTR)CloseGuardProc);
 
         // Load initial scene: command line argument takes priority, otherwise auto-load
         // m_startupDatasetPath (default: the built-in assets/cthulu/ demo package, but configurable
@@ -947,6 +1097,107 @@ namespace Splat
     }
 
     // Saves the config file and tears down the renderer
+    // The window's own procedure (Cauldron's) quits on WM_CLOSE and on Esc at once. SplatPak subclasses it (OnCreate) so
+    // both go through OnCloseRequested first; Cauldron is linked prebuilt, so its framework is left as it is.
+    static LRESULT CALLBACK CloseGuardProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam)
+    {
+        // Mouse-look's motion: the mouse's raw relative movement, summed for the next frame
+        if (message == WM_INPUT && s_closeGuardApp && s_closeGuardApp->m_mouseLook)
+        {
+            RAWINPUT raw;
+            UINT size = sizeof(raw);
+            if (GetRawInputData((HRAWINPUT)lParam, RID_INPUT, &raw, &size, sizeof(RAWINPUTHEADER)) != (UINT)-1 &&
+                raw.header.dwType == RIM_TYPEMOUSE && (raw.data.mouse.usFlags & MOUSE_MOVE_ABSOLUTE) == 0)
+            {
+                s_closeGuardApp->m_lookDX += raw.data.mouse.lLastX;
+                s_closeGuardApp->m_lookDY += raw.data.mouse.lLastY;
+            }
+        }
+        // Esc leaves mouse-look before it means quit; losing the window's focus leaves it too
+        if (s_closeGuardApp && s_closeGuardApp->m_mouseLook &&
+            ((message == WM_KEYDOWN && wParam == VK_ESCAPE) || (message == WM_ACTIVATE && LOWORD(wParam) == WA_INACTIVE)))
+        {
+            s_closeGuardApp->SetMouseLook(false);
+            if (message == WM_KEYDOWN) return 0;
+        }
+        const bool closing = message == WM_CLOSE || (message == WM_KEYDOWN && wParam == VK_ESCAPE);
+        if (closing && s_closeGuardApp && !s_closeGuardApp->OnCloseRequested()) return 0;
+        return CallWindowProc(s_closeGuardBase, hWnd, message, wParam, lParam);
+    }
+
+    void SplatPakApp::SetMouseLook(bool on)
+    {
+        if (on == m_mouseLook) return;
+        m_mouseLook = on;
+        if (on)
+        {
+            // A walker's camera: the eye stays, the orbit target sits 1 m ahead of it (the orbit no longer pins the
+            // view to a point it can only approach)
+            const XMFLOAT3 eye(m_target.x + m_distance * cosf(m_pitch) * sinf(m_yaw), m_target.y + m_distance * sinf(m_pitch),
+                               m_target.z + m_distance * cosf(m_pitch) * cosf(m_yaw));
+            m_distance = 1.0f;
+            m_target = XMFLOAT3(eye.x - cosf(m_pitch) * sinf(m_yaw), eye.y - sinf(m_pitch), eye.z - cosf(m_pitch) * cosf(m_yaw));
+            // The mouse's raw motion to this window (WM_INPUT, read in CloseGuardProc)
+            m_lookDX = m_lookDY = 0;
+            const RAWINPUTDEVICE mouse = { 0x01, 0x02, 0, m_windowHwnd }; // Generic desktop, mouse
+            RegisterRawInputDevices(&mouse, 1, sizeof(mouse));
+            while (ShowCursor(FALSE) >= 0) {}
+            RECT client;
+            GetClientRect(m_windowHwnd, &client);
+            POINT tl = { client.left, client.top }, br = { client.right, client.bottom };
+            ClientToScreen(m_windowHwnd, &tl);
+            ClientToScreen(m_windowHwnd, &br);
+            const RECT clip = { tl.x, tl.y, br.x, br.y };
+            ClipCursor(&clip);
+            SetCursorPos((tl.x + br.x) / 2, (tl.y + br.y) / 2);
+            m_statusMessage = "Mouse look: move the mouse to look round, W/S/A/D/Q/E to fly. Tab or Esc to release the mouse.";
+        }
+        else
+        {
+            const RAWINPUTDEVICE mouse = { 0x01, 0x02, RIDEV_REMOVE, nullptr };
+            RegisterRawInputDevices(&mouse, 1, sizeof(mouse));
+            m_lookDX = m_lookDY = 0;
+            ClipCursor(nullptr);
+            while (ShowCursor(TRUE) < 0) {}
+            m_statusMessage = "Mouse released (Tab to look round again).";
+        }
+        m_statusIsSuccess = true;
+    }
+
+    // The window's close button, Alt+F4 or Esc. A save under way finishes first (the app closes when it has written the
+    // package); a bake no package holds yet asks "<name>.gstx is not saved. Save and quit?": Yes opens the save dialog and
+    // closes once that save is written, No closes, Cancel stays.
+    bool SplatPakApp::OnCloseRequested()
+    {
+        if (Unattended()) return true;
+        if (m_op.Busy() && m_op.Title().rfind("Saving", 0) == 0)
+        {
+            m_quitAfterSave = true;
+            m_statusMessage = m_op.Title() + ": SplatPak closes when the package is written.";
+            m_statusIsSuccess = true;
+            return false;
+        }
+        if (!m_bakeUnsaved || m_rawSplats.empty()) return true;
+        std::string stem = m_loadedFilePath.substr(m_loadedFilePath.find_last_of("/\\") + 1);
+        stem = stem.substr(0, stem.find_last_of('.'));
+        const std::string question = stem + ".gstx is not saved.\n\nSave and quit?";
+        const int answer = MessageBoxA(m_windowHwnd, question.c_str(), "SplatPak", MB_YESNOCANCEL | MB_ICONQUESTION | MB_DEFBUTTON1);
+        if (answer == IDNO) return true;
+        if (answer != IDYES) return false;
+        std::string savePath = SaveFileDialog("GSTx Package (*.gstx)\0*.gstx\0", "gstx", "Save Compressed Package (.gstx)");
+        if (savePath.empty()) return false;
+        if (savePath.size() > 5 && savePath.substr(savePath.size() - 5) == ".gstx") savePath = savePath.substr(0, savePath.size() - 5);
+        ProcessAndExport(savePath);
+        if (!m_op.Busy())
+        {
+            // The save did not start (the bake is out of date with the tab's settings, say): stay, and say why
+            MessageBoxA(m_windowHwnd, ("Could not save: " + m_statusMessage).c_str(), "SplatPak", MB_OK | MB_ICONWARNING);
+            return false;
+        }
+        m_quitAfterSave = true;
+        return false;
+    }
+
     void SplatPakApp::OnDestroy()
     {
         m_op.Abandon(); // Cancel and wait for a background operation before anything it reads goes away
@@ -985,11 +1236,18 @@ namespace Splat
         if (msg.message == WM_KEYDOWN)
         {
             bool ctrlPressed = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+            // Tab toggles mouse-look (SetMouseLook): the hidden mouse turns the view all the way round, WASD flies
+            if (msg.wParam == VK_TAB && (msg.lParam & (1 << 30)) == 0 && !ImGui::GetIO().WantCaptureKeyboard)
+            {
+                SetMouseLook(!m_mouseLook);
+                return true;
+            }
             // L toggles the loupe. Taken from the message, not polled per frame: at a low frame rate a quick
             // tap starts and ends between two frames. Bit 30 set = auto-repeat while held.
             if (msg.wParam == 'L' && !ctrlPressed && (msg.lParam & (1 << 30)) == 0 && !ImGui::GetIO().WantCaptureKeyboard)
             {
                 m_loupeEnabled = !m_loupeEnabled;
+                SaveConfigFile(); // Remembered (loupe_enabled)
                 return true;
             }
             // Space pins the loupe's box where it is, or lets it follow the mouse again.
@@ -1524,10 +1782,10 @@ namespace Splat
             m_splatParams = m_loadedPackage.splatParams;
             m_sourceSHDegree = m_splatParams.shDegree; // SH Quality keeps the user's choice; a re-bake keeps at most this
         }
-        std::vector<SplatPoint> decodedLOD0; // Splat packages: LOD 0 across every chunk, in chunk order
-        auto decodeSplatLevel = [&](size_t c, size_t l, std::vector<SplatPoint>& outSplats)
+        SplatPointArray decodedLOD0; // Splat packages: LOD 0 across every chunk, in chunk order
+        auto decodeSplatLevel = [&](size_t c, size_t l, SplatPointArray& outSplats)
         {
-            std::vector<SplatAttributes> attrs;
+            SplatAttributeArray attrs;
             const std::vector<uint8_t>& sh = m_loadedPackage.chunkLODSH[c][l];
             SplatCodec::Decode(m_loadedPackage.chunkLODSplats[c][l], sh.empty() ? nullptr : sh.data(), sh.size(),
                                m_loadedPackage.splatParams, (uint32_t)l, (uint32_t)m_splatAttributes.size(), outSplats, attrs);
@@ -1538,7 +1796,7 @@ namespace Splat
         {
             const auto& cm = m_loadedPackage.chunkManifests[c];
 
-            std::vector<SplatPoint> chunkDecoded;
+            SplatPointArray chunkDecoded;
             if (!m_loadedPackage.chunkLODSplats[c].empty()) decodeSplatLevel(c, 0, chunkDecoded);
             decodedLOD0.insert(decodedLOD0.end(), chunkDecoded.begin(), chunkDecoded.end());
 
@@ -1614,7 +1872,7 @@ namespace Splat
 
         for (size_t lvl = 0; lvl < numLODs; lvl++)
         {
-            std::vector<SplatPoint> levelDecoded;
+            SplatPointArray levelDecoded;
             float errorSum = 0.0f;
             size_t errorCount = 0;
 
@@ -1624,7 +1882,7 @@ namespace Splat
                 if (lvl >= cm.lods.size() || lvl >= m_loadedPackage.chunkLODSplats[c].size()) continue;
                 if (lvl > 0)
                 {
-                    std::vector<SplatPoint> tmp;
+                    SplatPointArray tmp;
                     decodeSplatLevel(c, lvl, tmp);
                     levelDecoded.insert(levelDecoded.end(), tmp.begin(), tmp.end());
                 }
@@ -1708,6 +1966,7 @@ namespace Splat
         }
         m_bakedParams = CurrentBakeParams(); // A package is the baked state of the tab's settings
         m_packagePath = ResolvePackagePath(filepath);
+        m_bakeUnsaved = false; // The package on screen is the file
         {
             // The RDO analysis the package was encoded with, when it carries one (PackageRdoFooter)
             std::string text, error;
@@ -1740,8 +1999,8 @@ namespace Splat
     {
         struct Opened
         {
-            std::vector<SplatPoint> points;
-            std::vector<SplatAttributes> attributes;
+            SplatPointArray points;
+            SplatAttributeArray attributes;
             uint64_t fileBytes = 0;
             uint32_t sourceSHDegree = 0;
             BakeParams params;
@@ -1760,18 +2019,28 @@ namespace Splat
         const bool useTunings = !Unattended(); // A scripted run bakes with what it was given
         return RunOperation("Opening " + name, [this, filepath, splatFile, keep, shQuality, settings, camera, opened, useTunings](Progress& progress)
         {
-            progress.Stage(splatFile ? "Reading the .splat file" : "Reading the .ply file", 0.0f);
+            {
+                std::ifstream in(filepath, std::ios::ate | std::ios::binary);
+                opened->fileBytes = in.is_open() ? (uint64_t)in.tellg() : 0;
+            }
+            char facts[96];
+            snprintf(facts, sizeof(facts), "%.2f GB file", opened->fileBytes / 1e9);
+            progress.Detail(0, facts);
+            // The .ply reader splits the file over the cores (PLYLoader::ThreadsFor; the count is estimated from the
+            // file at 3DGS's 248 bytes per Gaussian until the header is read); the .splat reader is serial
+            BakeStage(progress, splatFile ? "Reading the .splat file" : "Reading the .ply file", 0.0f,
+                splatFile ? 1u : PLYLoader::ThreadsFor((uint32_t)std::min<uint64_t>(opened->fileBytes / 248, UINT32_MAX)));
             double origin[3] = { 0, 0, 0 };
             const bool read = splatFile ? SPLATLoader::LoadSPLAT(filepath, opened->points, origin, &opened->attributes)
                                         : PLYLoader::LoadPLY(filepath, opened->points, origin, &opened->attributes);
             if (!read || opened->points.empty() || progress.Cancelled()) return false;
-            std::ifstream in(filepath, std::ios::ate | std::ios::binary);
-            opened->fileBytes = in.is_open() ? (uint64_t)in.tellg() : 0;
+            snprintf(facts, sizeof(facts), "%.2f GB file, %s", opened->fileBytes / 1e9, CountText(opened->points.size(), "Gaussians").c_str());
+            progress.Detail(0, facts);
             // Everything is 3D Gaussians: a plain point cloud gets an isotropic Gaussian at every point, sized from
             // its point spacing (PointCloudGaussians.h), before it is cut into chunks
             if (opened->attributes.empty())
             {
-                progress.Stage("Gaussians for the point cloud", 0.0f);
+                BakeStage(progress, "Gaussians for the point cloud", 0.0f);
                 const float sigma = PointCloudGaussians::Build(opened->points, opened->attributes);
                 LogTransitionTrace("Point cloud: %zu points shown as Gaussians of sigma %.5f (half the median point spacing)", opened->points.size(), sigma);
             }
@@ -1780,7 +2049,7 @@ namespace Splat
             // The settings last baked from this very file, when there are any
             if (useTunings)
             {
-                progress.Stage("Checking for remembered bake settings", 0.0f);
+                BakeStage(progress, "Checking for remembered bake settings", 0.0f);
                 opened->hash = BakeTuningCache::HashFile(filepath);
                 const auto tunings = BakeTuningCache::Load();
                 const auto it = tunings.find(opened->hash);
@@ -1968,9 +2237,60 @@ namespace Splat
         return s;
     }
 
+    // A scan's core (docs/design/environment-scenes.md): the per-axis median of a sample of its points, and the radii
+    // about it holding half and 99% of them. An environment when the second is more than three times the first.
+    void SplatPakApp::MeasureCore(const SplatPointArray& pts, XMFLOAT3& centre, float& r50, float& r99)
+    {
+        centre = XMFLOAT3(0.0f, 0.0f, 0.0f);
+        r50 = r99 = 0.0f;
+        if (pts.empty()) return;
+        const size_t step = std::max<size_t>(1, pts.size() / 200000); // A sample of up to 200k is plenty for medians
+        std::vector<float> xs, ys, zs;
+        for (size_t i = 0; i < pts.size(); i += step) { xs.push_back(pts[i].position.x); ys.push_back(pts[i].position.y); zs.push_back(pts[i].position.z); }
+        auto median = [](std::vector<float>& v) { std::nth_element(v.begin(), v.begin() + v.size() / 2, v.end()); return v[v.size() / 2]; };
+        centre = XMFLOAT3(median(xs), median(ys), median(zs));
+        std::vector<float> r;
+        r.reserve(xs.size());
+        for (size_t i = 0; i < pts.size(); i += step)
+        {
+            const XMFLOAT3& p = pts[i].position;
+            r.push_back(sqrtf((p.x - centre.x) * (p.x - centre.x) + (p.y - centre.y) * (p.y - centre.y) + (p.z - centre.z) * (p.z - centre.z)));
+        }
+        std::sort(r.begin(), r.end());
+        r50 = r[r.size() / 2];
+        r99 = r[std::min(r.size() - 1, r.size() * 99 / 100)];
+    }
+
+    // How far the subject reaches from its centre: the radius at which the density of points (per unit volume, in thin
+    // shells about the centre) first falls below a tenth of the density within the innermost shells. Capped at maxRadius.
+    float SplatPakApp::SubjectRadius(const SplatPointArray& points, const XMFLOAT3& centre, float maxRadius)
+    {
+        if (points.empty() || maxRadius <= 0.0f) return 0.0f;
+        constexpr int kShells = 64;
+        const float shell = maxRadius / kShells;
+        std::vector<double> count(kShells, 0.0);
+        const size_t step = std::max<size_t>(1, points.size() / 400000);
+        for (size_t i = 0; i < points.size(); i += step)
+        {
+            const XMFLOAT3& p = points[i].position;
+            const float r = sqrtf((p.x - centre.x) * (p.x - centre.x) + (p.y - centre.y) * (p.y - centre.y) + (p.z - centre.z) * (p.z - centre.z));
+            const int k = (int)(r / shell);
+            if (k < kShells) count[k] += 1.0;
+        }
+        auto density = [&](int k) { const double r0 = k * shell, r1 = r0 + shell; return count[k] / (r1 * r1 * r1 - r0 * r0 * r0); };
+        double inner = 0.0;
+        for (int k = 0; k < 4; k++) inner = std::max(inner, density(k));
+        if (inner <= 0.0) return 0.0f;
+        for (int k = 4; k < kShells; k++)
+            if (density(k) < 0.1 * inner) return (k + 0.5f) * shell;
+        return maxRadius;
+    }
+
     // Per scan, when it is loaded: about 4 x 4 x 4 octree chunks, a level count from the point count and a
-    // deadband in proportion to the model's size. A bake then uses whatever the tab holds.
-    SplatPakApp::BakeParams SplatPakApp::DefaultBakeParams(const std::vector<SplatPoint>& points, BakeParams keep)
+    // deadband in proportion to the model's size. A bake then uses whatever the tab holds. An environment's scale comes
+    // from its core rather than its bounds (the bicycle's bounds are 169 m, its subject 2 m): chunks of the core's half
+    // radius, a deadband of 1.5 mm per metre of it, and no occlusion volume (mostly air; it starts off anyway).
+    SplatPakApp::BakeParams SplatPakApp::DefaultBakeParams(const SplatPointArray& points, BakeParams keep)
     {
         XMFLOAT3 mn(1e9f, 1e9f, 1e9f), mx(-1e9f, -1e9f, -1e9f);
         for (const auto& s : points)
@@ -1983,6 +2303,17 @@ namespace Splat
         keep.chunkSize = std::max(0.10f, maxDim / 4.0f);
         keep.maxLODs = n > 2000000 ? 5 : n > 500000 ? 4 : n > 100000 ? 3 : 2;
         keep.deadbandMM = std::max(0.5f, maxDim * 1.5f);
+        XMFLOAT3 centre;
+        float r50 = 0.0f, r99 = 0.0f;
+        MeasureCore(points, centre, r50, r99);
+        if (r50 > 0.0f && r99 > 3.0f * r50)
+        {
+            keep.chunkSize = std::max(0.10f, r50);
+            keep.deadbandMM = std::max(0.5f, r50 * 1.5f);
+            keep.occlusion = false;
+            LogTransitionTrace("Bake defaults: environment (core %.2f m, 99%% within %.2f m): chunk %.2f m, deadband %.1f mm, no occlusion volume (bounds would give %.1f m and %.1f mm)",
+                r50, r99, keep.chunkSize, keep.deadbandMM, std::max(0.10f, maxDim / 4.0f), std::max(0.5f, maxDim * 1.5f));
+        }
         return keep;
     }
 
@@ -2050,7 +2381,7 @@ namespace Splat
         const auto tBake = std::chrono::high_resolution_clock::now();
 
         // Stage fractions follow the stage times on Cthulhu (3.3 M Gaussians, the "Bake stages" trace line)
-        progress.Stage("Measuring the model", 0.0f);
+        BakeStage(progress, "Measuring the model", 0.0f);
         out.aabbMin = XMFLOAT3(1e9f, 1e9f, 1e9f);
         out.aabbMax = XMFLOAT3(-1e9f, -1e9f, -1e9f);
         for (const auto& s : points)
@@ -2062,17 +2393,23 @@ namespace Splat
         out.extents = XMFLOAT3(out.aabbMax.x - out.aabbMin.x, out.aabbMax.y - out.aabbMin.y, out.aabbMax.z - out.aabbMin.z);
 
         // Detail grid over the raw cloud: an input to the streaming order (see StreamOrder.h) that ships inside the package
-        progress.Stage("Detail grid", 0.005f);
+        BakeStage(progress, "Detail grid", 0.005f);
         out.detailGrid = DetailGrid::Build(points, out.aabbMin, out.aabbMax);
         LogTransitionTrace("DetailHeatmap: %ux%ux%u cells (%.4f m), %u occupied, built from %zu raw points",
             out.detailGrid.nx, out.detailGrid.ny, out.detailGrid.nz, out.detailGrid.cellSize, out.detailGrid.occupiedCells, points.size());
         if (progress.Cancelled()) return false;
 
-        progress.Stage("Octree chunks", 0.01f);
+        BakeStage(progress, "Octree chunks", 0.01f);
         out.chunks = SpatialOctree::PartitionIntoChunks(points, params.chunkSize);
         if (progress.Cancelled()) return false;
+        {
+            char facts[128];
+            snprintf(facts, sizeof(facts), "%s, %zu chunks of %.1f m, %d levels", CountText(points.size(), "Gaussians").c_str(), out.chunks.size(),
+                params.chunkSize, params.maxLODs + 1);
+            progress.Detail(0, facts);
+        }
 
-        progress.Stage("Wavelet levels", 0.02f);
+        BakeStage(progress, "Wavelet levels", 0.02f);
         out.waveletResult = LiftingWavelet::DecomposeChunk(points, params.maxLODs, params.deadbandMM / 1000.0f);
         // Splat mode: every coarse point takes the Gaussian merged from its two children (as the package will)
         if (source.splatMode && source.attributes) SplatCodec::MergeLevels(out.waveletResult, *source.attributes);
@@ -2088,7 +2425,7 @@ namespace Splat
         if (source.splatMode)
             SplatCodec::ComputeScaleRange(*source.attributes, (uint32_t)params.maxLODs, out.splatParams.scaleLog2Min, out.splatParams.scaleLog2Max);
 
-        progress.Stage("Estimating the package size", 0.04f);
+        BakeStage(progress, "Estimating the package size", 0.04f);
         // Compression estimates
         // Package size as the bake would write it: every level ships in full inside the .gstx, so every
         // level's records (plus the SH stream in splat mode) are byte-plane shuffled and put through the
@@ -2111,7 +2448,7 @@ namespace Splat
         constexpr int kWindowsPerClass = 6;
         struct LevelRecords { std::vector<PackedSplatGPU> splats; std::vector<PackedPointGPU> points; std::vector<uint8_t> sh; };
         std::vector<LevelRecords> levels;
-        auto encodeLevel = [&](const std::vector<SplatPoint>& splats, uint32_t level)
+        auto encodeLevel = [&](const SplatPointArray& splats, uint32_t level)
         {
             LevelRecords lr;
             if (source.splatMode)
@@ -2208,7 +2545,9 @@ namespace Splat
             std::vector<std::vector<uint8_t>*> jobs;
             for (auto& s : samples) jobs.push_back(&s);
             for (auto& s : plainSamples) jobs.push_back(&s);
+            BakeThreads(progress, std::min<unsigned>(PayloadCodec::kMaxThreads, (unsigned)jobs.size()));
             PayloadCodec::CompressInPlace(jobs);
+            BakeThreads(progress, 1);
             size_t compressed = 0, compressedPlain = 0, compressedPaired = 0;
             for (const auto& s : samples) compressed += s.size();
             for (const auto& s : plainSamples) compressedPlain += s.size();
@@ -2286,12 +2625,12 @@ namespace Splat
             std::chrono::duration<float>(std::chrono::high_resolution_clock::now() - tEstimateStart).count(), encodeSeconds);
         if (progress.Cancelled()) return false;
 
-        progress.Stage("Preparing the levels", 0.48f);
+        BakeStage(progress, "Preparing the levels", 0.48f);
         BuildResidentLODs(source, out.waveletResult, out.aabbMin, out.aabbMax, out.splatParams, out.residentLODs);
         if (progress.Cancelled()) return false;
 
         // A new streaming runtime, built here and swapped in whole by ApplyBake (see InitStreamingSimulation)
-        progress.Stage("Building the stream", 0.78f);
+        BakeStage(progress, "Building the stream", 0.78f);
         StreamRuntime& rt = out.stream;
         rt.settings = streamSettings;
         rt.camera = streamCamera;
@@ -2310,7 +2649,7 @@ namespace Splat
 
         if (params.occlusion)
         {
-            progress.Stage("Occlusion volume", 0.92f);
+            BakeStage(progress, "Occlusion volume", 0.92f);
             std::string trace;
             OcclusionVolume::BuildGrid(points, out.aabbMin, out.aabbMax, out.occlusionGrid, trace, 0, m_occlusionShaveBiasCells);
             if (!trace.empty()) LogTransitionTrace("%s", trace.c_str());
@@ -2320,7 +2659,7 @@ namespace Splat
             if (!trace.empty()) LogTransitionTrace("%s", trace.c_str());
         }
 
-        progress.Stage("Heatmap", 0.99f);
+        BakeStage(progress, "Heatmap", 0.99f);
         BuildHeatmapClusterCubes(points, out.aabbMin, out.aabbMax, out.detailGrid, out.heatmapCubes);
         progress.Fraction(1.0f);
         LogTransitionTrace("Bake stages: %s", progress.Timings().c_str());
@@ -2334,6 +2673,7 @@ namespace Splat
     // Swaps a finished bake into the app and the renderer (UI thread).
     void SplatPakApp::ApplyBake(BakeResult& r, const BakeParams& params, bool fitCamera)
     {
+        m_bakeUnsaved = true; // Until a save writes it (OnCloseRequested asks before quitting)
         m_aabbMin = r.aabbMin; m_aabbMax = r.aabbMax; m_center = r.center; m_extents = r.extents;
         if (fitCamera)
         {
@@ -2367,7 +2707,7 @@ namespace Splat
         m_occlusionGrid = std::move(r.occlusionGrid);
         m_occlusionVoxels = std::move(r.occlusionVoxels);
         m_occlusionMips = r.occlusionMips;
-        m_enableOcclusionCulling = (params.occlusion && !m_occlusionVoxels.empty()) ? m_showOcclusionSetting : false;
+        m_enableOcclusionCulling = (params.occlusion && !m_occlusionVoxels.empty()) ? (m_showOcclusionSetting && !m_sceneIsEnvironment) : false;
         m_occlusionVoxelsVersion++;
         m_bakedParams = params;
         m_hasBakedParams = true;
@@ -2406,7 +2746,7 @@ namespace Splat
         }
         auto job = std::make_shared<ShadowMeshJob>();
         const XMFLOAT3 mn = m_aabbMin, mx = m_aabbMax;
-        const std::vector<SplatAttributes>* attributes = m_splatAttributes.empty() ? nullptr : &m_splatAttributes;
+        const SplatAttributeArray* attributes = m_splatAttributes.empty() ? nullptr : &m_splatAttributes;
         SetOccluderMesh(nullptr); // The bake's cubes cull until the new occluder mesh is ready
         auto voxels = std::make_shared<std::vector<OcclusionVoxelGPU>>(m_occlusionVoxels);
         const OcclusionMipTable mips = m_occlusionMips;
@@ -2468,7 +2808,7 @@ namespace Splat
         if (HasOccluderMesh())
         {
             BuildShadowMeshDisplay(m_occluderMesh->levels[0], 0, m_occluderMeshGpu);
-            if (m_hasBakedParams ? m_bakedParams.occlusion : true) m_enableOcclusionCulling = m_showOcclusionSetting;
+            if (m_hasBakedParams ? m_bakedParams.occlusion : true) m_enableOcclusionCulling = m_showOcclusionSetting && !m_sceneIsEnvironment;
         }
         m_occluderMeshVersion++;
     }
@@ -2486,7 +2826,7 @@ namespace Splat
 
     bool SplatPakApp::UseBackgroundOps() const
     {
-        return m_framesRendered > 1 && m_lodCalFolder.empty() && m_lodTestFolder.empty() && !m_streamTest && m_cliBakeOutput.empty() && m_viewCapFolder.empty();
+        return m_framesRendered > 1 && m_lodCalFolder.empty() && m_lodTestFolder.empty() && !m_streamTest && m_cliBakeOutput.empty() && m_viewCapFolder.empty() && m_camCapFolder.empty();
     }
 
     bool SplatPakApp::RunOperation(const std::string& title, BackgroundOp::Work work, BackgroundOp::Done done)
@@ -2520,6 +2860,40 @@ namespace Splat
                 ImGui::Text("%s", m_op.Title().c_str());
                 ImGui::TextDisabled("%s", m_op.StageName().c_str());
                 const float barWidth = 380.0f * m_uiScale;
+                // What the stage is working on and on how many cores (Progress::Detail): feedback during a long wait
+                const std::string detail = m_op.Detail();
+                if (!detail.empty())
+                {
+                    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + barWidth);
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.75f, 0.95f, 1.0f));
+                    ImGui::TextUnformatted(detail.c_str());
+                    ImGui::PopStyleColor();
+                    ImGui::PopTextWrapPos();
+                }
+                // The cores the stage runs on: a square per core across the bar's width, filled for each one in use
+                if (const unsigned used = m_op.Threads())
+                {
+                    const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
+                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.75f, 0.95f, 1.0f));
+                    ImGui::TextUnformatted("Running on");
+                    ImGui::PopStyleColor();
+                    ImGui::SameLine();
+                    const ImVec2 at = ImGui::GetCursorScreenPos();
+                    const float labelWidth = ImGui::CalcTextSize("Running on").x + ImGui::GetStyle().ItemSpacing.x;
+                    const float gap = 2.0f * m_uiScale;
+                    const float pitch = std::max(4.0f * m_uiScale, std::min(12.0f * m_uiScale, (barWidth - labelWidth) / (float)cores));
+                    const float side = std::max(2.0f, pitch - gap);
+                    const float y = at.y + (ImGui::GetTextLineHeight() - side) * 0.5f;
+                    ImDrawList* dl = ImGui::GetWindowDrawList();
+                    for (unsigned k = 0; k < cores; k++)
+                    {
+                        const ImVec2 a(at.x + k * pitch, y), b(at.x + k * pitch + side, y + side);
+                        if (k < used) dl->AddRectFilled(a, b, IM_COL32(90, 190, 245, 255));
+                        else dl->AddRect(a, b, IM_COL32(80, 90, 110, 255));
+                    }
+                    ImGui::Dummy(ImVec2(cores * pitch, ImGui::GetTextLineHeight()));
+                    if (ImGui::IsItemHovered()) ShowTooltip("%u of %u cores in use for this stage", used, cores);
+                }
                 {
                     char pct[16];
                     snprintf(pct, sizeof(pct), "%.0f%%", m_op.Fraction() * 100.0f);
@@ -2564,7 +2938,7 @@ namespace Splat
 
             for (int lodIdx = 0; lodIdx < numLODs; lodIdx++)
             {
-                std::vector<SplatPoint> lodPoints;
+                SplatPointArray lodPoints;
 
                 if (m_cascadeLOD)
                 {
@@ -2634,6 +3008,13 @@ namespace Splat
         s.enableSilhouetteLOD0 = m_enableSilhouetteLOD0; s.highlightSilhouetteChunks = m_highlightSilhouetteChunks;
         s.silhouetteLODBias = m_silhouetteLODBias; s.silhouetteThreshold = m_silhouetteThreshold; s.dilationMorphAmount = m_dilationMorphAmount;
         s.showChunkStream = m_showChunkStream; s.chunkStreamDuration = m_chunkStreamDuration; s.splatDrawAsDiscs = m_splatDrawAsDiscs;
+        // An environment streams by screen-space error with a residency ring around the eye: the core's half radius,
+        // between 3 and 30 m (the bicycle: 8 m, about 150 MB of its levels)
+        s.environmentScene = m_sceneIsEnvironment;
+        s.residencyRingRadius = m_sceneIsEnvironment ? std::clamp(m_coreRadius50, 3.0f, 30.0f) : 0.0f;
+        s.subjectCentre = m_subjectCentre;
+        s.subjectRadius = m_subjectRadius;
+        s.subjectBoost = !m_noSubject;
         StreamCamera& c = m_stream.camera;
         c.pitch = m_pitch; c.yaw = m_yaw; c.distance = m_distance; c.target = m_target;
         c.detachCamera = m_detachCamera; c.detachedPitch = m_detachedPitch; c.detachedYaw = m_detachedYaw;
@@ -2674,7 +3055,7 @@ namespace Splat
     }
 
     void SplatPakApp::ResetStreamingSimulation() { SyncStreamInputs(); m_stream.ResetStreamingSimulation(); ApplyStreamFrame(); }
-    void SplatPakApp::ClearResidentStream() { SyncStreamInputs(); m_stream.ClearResidentStream(); ApplyStreamFrame(); }
+    void SplatPakApp::ClearResidentStream() { SyncStreamInputs(); m_stream.ClearResidentStream(); ApplyStreamFrame(); ArmLoadingBlur(); }
     void SplatPakApp::UpdateStreamingSimulation(double dtSeconds) { SyncStreamInputs(); m_stream.UpdateStreamingSimulation(dtSeconds); ApplyStreamFrame(); }
     void SplatPakApp::TriggerSilhouetteEdgeMorphTest() { SyncStreamInputs(); m_stream.TriggerSilhouetteEdgeMorphTest(); }
     void SplatPakApp::CalibrateDecay() { SyncStreamInputs(); m_stream.CalibrateDecay(); }
@@ -2682,7 +3063,7 @@ namespace Splat
     // Highest spherical-harmonics band with a non-zero coefficient in any source Gaussian (bands 1, 2, 3 are
     // coefficients 0-2, 3-7 and 8-14, three channels each), over a sample of up to 200k of them: a 3DGS file
     // without f_rest carries none, a degree-1 export only band 1.
-    uint32_t SplatPakApp::SourceSHDegreeOf(const std::vector<SplatAttributes>& attributes)
+    uint32_t SplatPakApp::SourceSHDegreeOf(const SplatAttributeArray& attributes)
     {
         uint32_t degree = 0;
         const size_t n = attributes.size();
@@ -2709,7 +3090,7 @@ namespace Splat
     }
 
     // Splat mode: one level's records and SH stream from its points and the source Gaussians.
-    void SplatPakApp::EncodeSplatLevel(const std::vector<SplatPoint>& splats, uint32_t level, std::vector<PackedSplatGPU>& outRecords, std::vector<uint8_t>& outSH) const
+    void SplatPakApp::EncodeSplatLevel(const SplatPointArray& splats, uint32_t level, std::vector<PackedSplatGPU>& outRecords, std::vector<uint8_t>& outSH) const
     {
         SplatCodec::Encode(splats, m_splatAttributes, level, m_splatParams, outRecords, outSH, &m_waveletResult.mergedAttributes);
     }
@@ -2815,10 +3196,18 @@ namespace Splat
         auto occluderHeld = std::make_shared<std::shared_ptr<const ShadowMesh>>(m_occluderMesh);
         RunOperation("Saving " + name, [this, partial, splatInput, transformStats, meshJob, meshHeld, occluderHeld](Progress& progress)
         {
+            // One payload per chunk and level, compressed on up to PayloadCodec::kMaxThreads threads
+            const size_t payloads = m_chunks.size() * (size_t)(m_maxLODLevels + 1);
+            const unsigned compressThreads = (unsigned)std::min<size_t>(PayloadCodec::kMaxThreads, std::max<size_t>(1, payloads));
+            {
+                char facts[96];
+                snprintf(facts, sizeof(facts), "%zu chunks x %d levels: %zu payloads", m_chunks.size(), m_maxLODLevels + 1, payloads);
+                progress.Detail(0, facts);
+            }
             // A shadow mesh still being built after the bake goes into this package too: wait for it
             if (meshJob)
             {
-                progress.Stage("Finishing the shadow mesh", 0.0f);
+                BakeStage(progress, "Finishing the shadow mesh", 0.0f);
                 while (!meshJob->done.load())
                 {
                     if (progress.Cancelled()) return false;
@@ -2831,10 +3220,10 @@ namespace Splat
             const bool occluderMesh = *occluderHeld && !(*occluderHeld)->Empty();
             const std::vector<OcclusionVoxelGPU> noVoxels;
             const OcclusionMipTable noMips;
-            progress.Stage("Encoding the levels", 0.0f);
+            BakeStage(progress, "Encoding the levels", 0.0f);
             return StreamPackager::PackageDataset(partial, m_chunks, m_maxLODLevels, m_deadbandThresholdMM / 1000.0f, m_state.splatRadius,
                 occluderMesh ? noVoxels : m_occlusionVoxels, m_sourceFileBytes, occluderMesh ? &noMips : &m_occlusionMips, &m_detailGrid, m_splatMode ? splatInput.get() : nullptr, PayloadCodec::kDefault,
-                [&progress, transformStats](float fraction)
+                [&progress, transformStats, compressThreads](float fraction)
                 {
                     // The packager's stages by their share of the bar (StreamPackager.h): encoding, Brotli, writing.
                     // The transform figures are complete once encoding is (the packager fills them before compressing).
@@ -2845,7 +3234,8 @@ namespace Splat
                         snprintf(buf, sizeof(buf), " (YCoCg: entropy %+.1f%%)", transformStats->TotalChangePercent());
                         stage += buf;
                     }
-                    if (progress.StageName() != stage) progress.Stage(stage, fraction);
+                    if (progress.StageName() != stage)
+                        BakeStage(progress, stage.c_str(), fraction, fraction >= 0.03f && fraction < 0.97f ? compressThreads : 1u);
                     progress.Fraction(fraction);
                     return !progress.Cancelled();
                 }, PAYLOAD_TRANSFORMS_DEFAULT, transformStats.get(), meshHeld->get(), occluderHeld->get());
@@ -2862,6 +3252,7 @@ namespace Splat
                 if (!cancelled) std::remove(partialPath.c_str()); // A cancelled writer deletes its own file when it stops
                 m_statusMessage = cancelled ? "Save cancelled: no package was written." : "Error: Failed to export stream package.";
                 m_statusIsSuccess = false;
+                m_quitAfterSave = false; // Nothing was saved: stay open
                 return;
             }
             std::remove(finalPath.c_str());
@@ -2870,6 +3261,7 @@ namespace Splat
                 std::remove(partialPath.c_str());
                 m_statusMessage = "Error: could not write " + finalPath + ".";
                 m_statusIsSuccess = false;
+                m_quitAfterSave = false; // Nothing was saved: stay open
                 return;
             }
             // The analysis behind this encoding goes into the package (PackageRdoFooter): a fresh one of this scan, or the one
@@ -2882,6 +3274,30 @@ namespace Splat
                 const bool embedded = PackageRdoFooter::Append(finalPath, p.Text());
                 LogTransitionTrace("Save: RDO profile %s the package", embedded ? "embedded in" : "could not be embedded in");
             }
+            // How a viewing app should open it (PackageView, GSTXVEW1): the scene type and core, the occlusion volume's
+            // starting state, the training cameras and the one on screen (or camera 0 for an environment)
+            {
+                // A bake from the command line can reach here before the first frame has looked the scan over
+                if (m_trainingCamerasFor != m_loadedFilePath) UpdatePoseCamera();
+                if (m_sceneClassFor != m_loadedFilePath) ApplySceneDefaults();
+                PackageView v;
+                if (m_sceneClassFor == m_loadedFilePath && m_coreRadius50 > 0.0f)
+                {
+                    v.scene = m_sceneIsEnvironment ? "environment" : "object";
+                    v.coreCentre = m_coreCentre;
+                    v.coreRadius50 = m_coreRadius50;
+                    v.coreRadius99 = m_coreRadius99;
+                    if (m_sceneIsEnvironment) { v.occlusion = 0; v.grid = 0; }
+                }
+                v.cameras = m_trainingCameras;
+                v.startCamera = m_poseCameraIndex >= 0 ? m_poseCameraIndex : (m_sceneIsEnvironment && !v.cameras.empty() ? 0 : -1);
+                v.subjectCentre = m_subjectCentre;
+                v.subjectRadius = m_subjectRadius;
+                if (m_sceneClassFor == m_loadedFilePath) v.background = m_recommendedBackground;
+                const bool written = v.Append(finalPath);
+                LogTransitionTrace("Save: view settings (scene %s, %zu cameras, start camera %d) %s the package", v.scene.empty() ? "-" : v.scene.c_str(),
+                    v.cameras.size(), v.startCamera, written ? "embedded in" : "could not be embedded in");
+            }
             std::ifstream pkg(finalPath, std::ios::ate | std::ios::binary);
             if (pkg.is_open())
             {
@@ -2889,6 +3305,8 @@ namespace Splat
                 m_compressionRatio = (m_rawFileSizeMB > 0.0f && m_compressedSizeMB > 0.0f) ? (m_rawFileSizeMB / std::max(0.001f, m_compressedSizeMB)) : 0.0f;
             }
             m_packagePath = finalPath;
+            m_bakeUnsaved = false;
+            if (m_quitAfterSave) PostQuitMessage(0); // Save and quit (OnCloseRequested): written, so close
             m_statusMessage = "Success! Created " + finalPath + " (" + std::to_string(m_compressedSizeMB) + " MB, " + std::to_string(m_compressionRatio) + "x vs source";
             if (*meshHeld && !(*meshHeld)->Empty())
             {
@@ -3152,24 +3570,25 @@ namespace Splat
         // the window from someone working beside it moved the camera mid-measurement and spoiled the run
         const bool scriptedCamera = !m_lodCalFolder.empty() || m_streamTest;
 
-        // Keyboard Controls: Arrow Keys (Shift=Pan, No Shift=Rotate), W/S/PageUp/PageDown Zoom
+        // Keyboard Controls: Arrow Keys (Shift=Pan, No Shift=Rotate), PageUp/PageDown Zoom, W/A/S/D/Q/E Fly, [/] Loupe
         if (!io.WantCaptureKeyboard && !scriptedCamera)
         {
             if (shiftDown)
             {
-                // Shift + Arrow Keys: PAN Camera along View Plane
+                // Shift + Arrow Keys: PAN Camera along View Plane. rightDir points to the viewer's left (the mouse pan drags
+                // the scene with it), so Left moves the camera along it and Right against it.
                 float keyPanSpeed = m_distance * 1.5f * dtSeconds;
                 if (GetKeyState(VK_LEFT) & 0x8000)
-                {
-                    m_target.x -= rightDir.x * keyPanSpeed;
-                    m_target.y -= rightDir.y * keyPanSpeed;
-                    m_target.z -= rightDir.z * keyPanSpeed;
-                }
-                if (GetKeyState(VK_RIGHT) & 0x8000)
                 {
                     m_target.x += rightDir.x * keyPanSpeed;
                     m_target.y += rightDir.y * keyPanSpeed;
                     m_target.z += rightDir.z * keyPanSpeed;
+                }
+                if (GetKeyState(VK_RIGHT) & 0x8000)
+                {
+                    m_target.x -= rightDir.x * keyPanSpeed;
+                    m_target.y -= rightDir.y * keyPanSpeed;
+                    m_target.z -= rightDir.z * keyPanSpeed;
                 }
                 if (GetKeyState(VK_UP) & 0x8000)
                 {
@@ -3188,8 +3607,9 @@ namespace Splat
             {
                 // Left/Right without Shift: Rotate Yaw (Smooth dtSeconds scaling)
                 float keyRotSpeed = 1.8f * dtSeconds;
-                const float turn = ((GetKeyState(VK_RIGHT) & 0x8000) ? keyRotSpeed : 0.0f) - ((GetKeyState(VK_LEFT) & 0x8000) ? keyRotSpeed : 0.0f);
-                const float tilt = ((GetKeyState(VK_UP) & 0x8000) ? keyRotSpeed : 0.0f) - ((GetKeyState(VK_DOWN) & 0x8000) ? keyRotSpeed : 0.0f);
+                // Left turns the model left, Right turns it right (the user, 2026-10-26: "left and right arrow keys need inverted")
+                const float turn = m_mouseLook ? 0.0f : ((GetKeyState(VK_LEFT) & 0x8000) ? keyRotSpeed : 0.0f) - ((GetKeyState(VK_RIGHT) & 0x8000) ? keyRotSpeed : 0.0f); // Mouse-look: the arrows fly instead
+                const float tilt = m_mouseLook ? 0.0f : ((GetKeyState(VK_UP) & 0x8000) ? keyRotSpeed : 0.0f) - ((GetKeyState(VK_DOWN) & 0x8000) ? keyRotSpeed : 0.0f);
                 // Detach Camera (culling view): the arrow keys turn the model only, never the scene view. Left/Right turn it
                 // about the vertical axis through its centre, Up/Down tilt it about the observer's horizontal axis through
                 // its centre. Turning the model is done as the opposite turn of both cameras about that centre, so on screen
@@ -3225,27 +3645,45 @@ namespace Splat
                     m_yaw += turn;
                 }
 
-                // Up/Down / W/S: Smooth Frame-Rate Independent Exponential Zoom. With the loupe on, W/S
-                // change its magnification instead and only the other keys move the camera.
-                float zoomRate = 2.2f; // Exponential zoom rate per second
-                const bool wDown = (GetKeyState('W') & 0x8000) != 0, sDown = (GetKeyState('S') & 0x8000) != 0;
+                // The loupe's magnification: ] in, [ out (W/S fly the camera)
+                const bool inDown = (GetKeyState(VK_OEM_6) & 0x8000) != 0, outDown = (GetKeyState(VK_OEM_4) & 0x8000) != 0;
                 if (m_loupeEnabled)
                 {
                     // The real frame time (capped), not the 0.016 s fallback above: at a few frames a second that
                     // fallback would make the zoom crawl.
                     const float dtZoom = std::min(0.5f, std::max(0.0f, (float)(m_deltaTime / 1000.0)));
-                    m_loupeZoomHoldSec = (wDown != sDown) ? m_loupeZoomHoldSec + dtZoom : 0.0f;
+                    m_loupeZoomHoldSec = (inDown != outDown) ? m_loupeZoomHoldSec + dtZoom : 0.0f;
                     const float rate = std::min(kLoupeZoomRateMax, kLoupeZoomRate * (1.0f + kLoupeZoomAccel * m_loupeZoomHoldSec));
-                    if (wDown && !sDown) m_loupeZoom *= expf(+rate * dtZoom);
-                    if (sDown && !wDown) m_loupeZoom *= expf(-rate * dtZoom);
+                    if (inDown && !outDown) m_loupeZoom *= expf(+rate * dtZoom);
+                    if (outDown && !inDown) m_loupeZoom *= expf(-rate * dtZoom);
                     m_loupeZoom = std::max(kLoupeZoomMin, std::min(kLoupeZoomMax, m_loupeZoom));
                 }
-                const bool wZooms = wDown && !m_loupeEnabled, sZooms = sDown && !m_loupeEnabled;
-                if (((GetKeyState(VK_UP) & 0x8000) && !m_detachCamera) || wZooms || (GetKeyState(VK_PRIOR) & 0x8000) || (GetKeyState(VK_ADD) & 0x8000) || (GetKeyState(VK_OEM_PLUS) & 0x8000))
+
+                // Fly, as in Unreal's viewport: W/S forward and back along the view, A/D sideways, Q/E down and up. The
+                // eye and the orbit target move together, so the view only translates. The speed is the scene's own
+                // (FlySpeed, metres a second; Shift 4x), not the orbit distance: tied to that, the walk slowed to a crawl
+                // nearing a subject and never got past it.
+                if (!((GetKeyState(VK_CONTROL) & 0x8000) != 0) && !m_detachCamera) // Ctrl+D, Ctrl+E and the like are commands, not moves
+                {
+                    const float fly = FlySpeed() * (shiftDown ? 4.0f : 1.0f) * dtSeconds;
+                    const bool arrows = m_mouseLook; // Mouse-look: the arrows fly as W/S/A/D do
+                    const float fwd = ((GetKeyState('W') & 0x8000) || (arrows && (GetKeyState(VK_UP) & 0x8000)) ? fly : 0.0f) - ((GetKeyState('S') & 0x8000) || (arrows && (GetKeyState(VK_DOWN) & 0x8000)) ? fly : 0.0f);
+                    const float side = ((GetKeyState('D') & 0x8000) || (arrows && (GetKeyState(VK_RIGHT) & 0x8000)) ? fly : 0.0f) - ((GetKeyState('A') & 0x8000) || (arrows && (GetKeyState(VK_LEFT) & 0x8000)) ? fly : 0.0f);
+                    const float rise = ((GetKeyState('E') & 0x8000) ? fly : 0.0f) - ((GetKeyState('Q') & 0x8000) ? fly : 0.0f);
+                    const XMFLOAT3 view(-cosf(m_pitch) * sinf(m_yaw), -sinf(m_pitch), -cosf(m_pitch) * cosf(m_yaw)); // Eye to target
+                    // rightDir points to the viewer's left: D (side > 0) moves against it
+                    m_target.x += view.x * fwd - rightDir.x * side;
+                    m_target.y += view.y * fwd - rightDir.y * side + rise;
+                    m_target.z += view.z * fwd - rightDir.z * side;
+                }
+
+                // Up/Down, PageUp/PageDown, +/-: Smooth Frame-Rate Independent Exponential Zoom
+                float zoomRate = 2.2f; // Exponential zoom rate per second
+                if (((GetKeyState(VK_UP) & 0x8000) && !m_detachCamera && !m_mouseLook) || (GetKeyState(VK_PRIOR) & 0x8000) || (GetKeyState(VK_ADD) & 0x8000) || (GetKeyState(VK_OEM_PLUS) & 0x8000))
                 {
                     m_distance *= expf(-zoomRate * dtSeconds); // Smooth fast Zoom In
                 }
-                if (((GetKeyState(VK_DOWN) & 0x8000) && !m_detachCamera) || sZooms || (GetKeyState(VK_NEXT) & 0x8000) || (GetKeyState(VK_SUBTRACT) & 0x8000) || (GetKeyState(VK_OEM_MINUS) & 0x8000))
+                if (((GetKeyState(VK_DOWN) & 0x8000) && !m_detachCamera && !m_mouseLook) || (GetKeyState(VK_NEXT) & 0x8000) || (GetKeyState(VK_SUBTRACT) & 0x8000) || (GetKeyState(VK_OEM_MINUS) & 0x8000))
                 {
                     m_distance *= expf(+zoomRate * dtSeconds); // Smooth fast Zoom Out
                 }
@@ -3254,7 +3692,33 @@ namespace Splat
             m_distance = std::max(0.1f, std::min(1000.0f, m_distance));
         }
 
-        if (!io.WantCaptureMouse && m_loupeDrag == 0 && !scriptedCamera)
+        // Mouse-look (Tab): the mouse's raw movement since the last frame (m_lookDX, m_lookDY) turns the view about the eye
+        if (m_mouseLook && !scriptedCamera)
+        {
+            const float dx = (float)m_lookDX, dy = (float)m_lookDY;
+            m_lookDX = m_lookDY = 0;
+            if (dx != 0.0f || dy != 0.0f)
+            {
+                const XMFLOAT3 eye(m_target.x + m_distance * cosf(m_pitch) * sinf(m_yaw), m_target.y + m_distance * sinf(m_pitch),
+                                   m_target.z + m_distance * cosf(m_pitch) * cosf(m_yaw));
+                m_yaw += dx * 0.0015f; // Radians per raw mouse count
+                m_pitch = std::max(-1.55f, std::min(1.55f, m_pitch + dy * 0.0015f));
+                m_target = XMFLOAT3(eye.x - m_distance * cosf(m_pitch) * sinf(m_yaw), eye.y - m_distance * sinf(m_pitch),
+                                    eye.z - m_distance * cosf(m_pitch) * cosf(m_yaw));
+                m_poseCameraIndex = -1; // Looking round leaves a training camera's pose
+            }
+            // The wheel sets the fly speed, as in Unreal's viewport (x1.25 a notch), instead of zooming
+            if (io.MouseWheel != 0.0f)
+            {
+                m_flySpeedScale = std::clamp(m_flySpeedScale * powf(1.25f, io.MouseWheel), 0.05f, 50.0f);
+                char text[96];
+                snprintf(text, sizeof(text), "Fly speed %.2f m/s (Shift x4). Tab or Esc to release the mouse.", FlySpeed());
+                m_statusMessage = text;
+                m_statusIsSuccess = true;
+            }
+        }
+
+        if (!io.WantCaptureMouse && m_loupeDrag == 0 && !scriptedCamera && !m_mouseLook)
         {
             if (shiftDown)
             {
@@ -3279,10 +3743,15 @@ namespace Splat
                 }
                 else if (io.MouseDown[1])
                 {
-                    // Right Mouse Drag: Zoom In / Out
-                    float zoomFactor = 1.0f + io.MouseDelta.y * 0.005f;
-                    m_distance *= std::max(0.5f, std::min(1.5f, zoomFactor));
-                    m_distance = std::max(0.1f, std::min(1000.0f, m_distance));
+                    // Right Mouse Drag: look around, as in Unreal's viewport. The eye stays put and the view turns
+                    // about it (the orbit target swings round the eye at the same distance); with W/S/A/D/Q/E, a fly camera.
+                    auto eyeOffset = [](float yaw, float pitch) { return XMFLOAT3(cosf(pitch) * sinf(yaw), sinf(pitch), cosf(pitch) * cosf(yaw)); };
+                    const XMFLOAT3 o0 = eyeOffset(m_yaw, m_pitch);
+                    const XMFLOAT3 eye(m_target.x + m_distance * o0.x, m_target.y + m_distance * o0.y, m_target.z + m_distance * o0.z);
+                    m_yaw += io.MouseDelta.x * 0.004f;
+                    m_pitch = std::max(-1.55f, std::min(1.55f, m_pitch + io.MouseDelta.y * 0.004f));
+                    const XMFLOAT3 o1 = eyeOffset(m_yaw, m_pitch);
+                    m_target = XMFLOAT3(eye.x - m_distance * o1.x, eye.y - m_distance * o1.y, eye.z - m_distance * o1.z);
                 }
             }
 
@@ -3313,7 +3782,12 @@ namespace Splat
             if (m_autoLODCooldownTimer <= 0.0f)
             {
                 // Detach Camera: the level follows the frozen camera's distance, not the observer's.
-                const float lodDistance = m_detachCamera ? m_detachedDistance : m_distance;
+                // The eye's distance from the model's centre (the orbit distance only while orbiting the centre: flying and
+                // mouse-look move the eye with a short target ahead)
+                const XMFLOAT3 lodEye(m_target.x + m_distance * cosf(m_pitch) * sinf(m_yaw), m_target.y + m_distance * sinf(m_pitch),
+                                      m_target.z + m_distance * cosf(m_pitch) * cosf(m_yaw));
+                const float lodDistance = m_detachCamera ? m_detachedDistance
+                    : sqrtf((lodEye.x - m_center.x) * (lodEye.x - m_center.x) + (lodEye.y - m_center.y) * (lodEye.y - m_center.y) + (lodEye.z - m_center.z) * (lodEye.z - m_center.z));
                 int maxLODIndex = (int)m_waveletResult.lodLevels.size() - 1;
                 const bool screenSpace = m_lodScreenSpace && (int)m_stream.m_lodSpacing.size() > maxLODIndex && maxLODIndex > 0 && m_stream.m_lodSpacing[0] > 0.0f;
                 const float targetFloatLOD = m_stream.ContinuousLodAtDistance(lodDistance, screenSpace);
@@ -3370,6 +3844,9 @@ namespace Splat
 
         m_state.autoRotate = m_autoRotate;
 
+        UpdatePoseCamera(); // A training camera, if one is on screen: before the orbit is handed over
+        ApplySceneDefaults(); // Environment or object, once per file loaded
+        ApplyBackground();
         m_state.camYaw = m_yaw;
         m_state.camPitch = m_pitch;
         m_state.camDistance = m_distance;
@@ -4030,6 +4507,108 @@ namespace Splat
                     ImGui::PopItemWidth();
                     if (ImGui::IsItemHovered()) ShowTooltip("How every splat of the whole model is drawn. Normal: as rendered, blending into one smooth surface. Splat outlines: each splat's ellipse at half its peak, over a faint fill -- its true size, shape and orientation. Random colour per splat: every splat filled flat out to that same contour in its own colour, so coverage and overlap show. Splat centres: a mark at every centre, the sampling density. V cycles it; Shift+V cycles the loupe's own (L).");
 
+                    if (!m_trainingCameras.empty())
+                    {
+                        // The scan's training cameras (cameras.json beside it): the views its published renders come from
+                        // A dropdown of the cameras by number and photo name; choosing one goes there
+                        auto cameraName = [](void* data, int i, const char** out) -> bool
+                        {
+                            static char buf[96];
+                            const auto& cams = *static_cast<const std::vector<TrainingCamera>*>(data);
+                            if (i < 0 || i >= (int)cams.size()) return false;
+                            snprintf(buf, sizeof(buf), "%d: %s", i, cams[i].name.c_str());
+                            *out = buf;
+                            return true;
+                        };
+                        ImGui::PushItemWidth(170.0f * m_uiScale);
+                        if (ImGui::Combo("##TrainingCamera", &m_trainingCameraPick, cameraName, &m_trainingCameras, (int)m_trainingCameras.size(), 16))
+                            ViewTrainingCamera(m_trainingCameraPick);
+                        ImGui::PopItemWidth();
+                        ImGui::SameLine();
+                        if (ImGui::Button(m_poseCameraIndex == m_trainingCameraPick ? "Viewing##TrainingCamera" : "View Camera##TrainingCamera"))
+                            ViewTrainingCamera(m_trainingCameraPick);
+                        if (ImGui::IsItemHovered())
+                            ShowTooltip("Views the scan from one of the %zu cameras it was trained from (%s, %.0f deg field of view): the views its published renders are made from. Drag or zoom to orbit on from there.",
+                                m_trainingCameras.size(), m_trainingCameras[m_trainingCameraPick].name.c_str(), m_trainingCameras[m_trainingCameraPick].fovY * 57.29578f);
+                    }
+                    if (ImGui::Checkbox("Show Grid##Viewport", &m_showGrid) && !m_sceneIsEnvironment) { m_showGridSetting = m_showGrid; SaveConfigFile(); } // In an environment, this scene only
+                    if (ImGui::IsItemHovered()) ShowTooltip("An editor grid on the ground plane through the origin (y = 0), as in Unreal's viewport: lines at every power of ten, the finer ones fading in as you move closer, the X axis red and the Z axis green. The model draws over it.");
+                    ImGui::Checkbox("Loading Blur##Viewport", &m_loadingBlurEnabled);
+                    if (ImGui::IsItemHovered()) ShowTooltip("Blurs the scene while it first loads (and after Evict or a jump to a training camera), easing out as the area around you fills in from 40%% to 75%%, so the coarsest levels read as soft rather than as specks and blobs. Moving around normally never blurs.");
+
+                    // Background: Recommended (the package's, or estimated from the scan), a preset, a colour, a gradient or an image
+                    {
+                        static const char* kChoices[] = { "Recommended", "Black", "Studio White", "Light Grey", "Dark Grey", "Custom Colour", "Gradient", "Image" };
+                        bool changed = false;
+                        ImGui::PushItemWidth(150.0f * m_uiScale);
+                        changed = ImGui::Combo("Background##Viewport", &m_backgroundChoice, kChoices, (int)BgChoiceCount);
+                        ImGui::PopItemWidth();
+                        if (ImGui::IsItemHovered())
+                        {
+                            const PackageBackground& r = m_recommendedBackground;
+                            static const char* kBasis[][2] = { { "training", "the background it was trained against (cfg_args)" }, { "shell", "the colours of the scene's own far edges, above and below the horizon" },
+                                                               { "fringe", "its outer edges, which drift toward the colour it was trained against" }, { "contrast", "a neutral grey against the subject's brightness" },
+                                                               { "chosen", "the one chosen for it (Use for This Package, or --set-background)" } };
+                            const char* why = "nothing yet: black";
+                            for (const auto& b : kBasis) if (r.basis == b[0]) why = b[1];
+                            ShowTooltip("What the model is shown on. Recommended is the package's own choice or, for a scan, one the bake works out and writes into the package: here, %s%s. Any other choice is yours, remembered across sessions, and wins over the package's.",
+                                why, m_packageView.background.Stated() ? " (as the package states)" : "");
+                        }
+                        if (m_backgroundChoice == BgCustom)
+                            changed = ImGui::ColorEdit3("Colour##Background", &m_bgCustom.x, ImGuiColorEditFlags_NoInputs) || changed;
+                        else if (m_backgroundChoice == BgGradient)
+                        {
+                            changed = ImGui::ColorEdit3("Top##Background", &m_bgGradientTop.x, ImGuiColorEditFlags_NoInputs) || changed;
+                            ImGui::SameLine();
+                            changed = ImGui::ColorEdit3("Bottom##Background", &m_bgGradientBottom.x, ImGuiColorEditFlags_NoInputs) || changed;
+                        }
+                        else if (m_backgroundChoice == BgImage)
+                        {
+                            const size_t slash = m_bgImagePath.find_last_of("/\\");
+                            const std::string name = m_bgImagePath.empty() ? std::string("(none)") : m_bgImagePath.substr(slash == std::string::npos ? 0 : slash + 1);
+                            if (ImGui::Button("Choose Image...##Background"))
+                            {
+                                const std::string file = OpenFileDialog("Images (*.png; *.jpg; *.jpeg; *.bmp; *.dds)\0*.png;*.jpg;*.jpeg;*.bmp;*.dds\0All Files (*.*)\0*.*\0", "Choose a Backdrop Image", "png");
+                                if (!file.empty()) { m_bgImagePath = file; changed = true; }
+                            }
+                            ImGui::SameLine();
+                            ImGui::TextDisabled("%s", name.c_str());
+                            if (ImGui::IsItemHovered() && !m_bgImagePath.empty()) ShowTooltip("%s\nScaled to cover the view behind the model, centred.", m_bgImagePath.c_str());
+                        }
+                        // A colour or gradient on screen can become the open package's own recommendation (its view section,
+                        // rewritten in place); the choice then goes back to Recommended, so each package shows its own
+                        const bool openPackage = !m_packagePath.empty() && m_loadedFilePath.size() >= 5 &&
+                                                 _stricmp(m_loadedFilePath.c_str() + m_loadedFilePath.size() - 5, ".gstx") == 0;
+                        if (openPackage && m_backgroundChoice != BgRecommended && m_backgroundChoice != BgImage)
+                        {
+                            if (ImGui::Button("Use for This Package##Background"))
+                            {
+                                PackageView view;
+                                view.Read(m_packagePath);
+                                view.background.mode = m_state.backdropMode == 1 ? "gradient" : "solid";
+                                view.background.top = m_state.bgTop;
+                                view.background.bottom = m_state.bgBottom;
+                                view.background.basis = "chosen";
+                                const size_t slash = m_packagePath.find_last_of("/\\");
+                                const std::string name = m_packagePath.substr(slash == std::string::npos ? 0 : slash + 1);
+                                if (view.Write(m_packagePath))
+                                {
+                                    m_packageView.background = m_recommendedBackground = view.background;
+                                    m_backgroundChoice = BgRecommended;
+                                    SaveConfigFile();
+                                    m_statusMessage = name + " now recommends this background.";
+                                    m_statusIsSuccess = true;
+                                }
+                                else
+                                {
+                                    m_statusMessage = "Could not write the background into " + name + " (is it read-only or open elsewhere?).";
+                                    m_statusIsSuccess = false;
+                                }
+                            }
+                            if (ImGui::IsItemHovered()) ShowTooltip("Writes this background into the package's view settings, so it opens on it here and in other viewers (unless their user has chosen their own). Your Background choice goes back to Recommended.");
+                        }
+                    }
+
                     if (ImGui::Checkbox("Show Camera Control Hints##Viewport", &m_showControlHints))
                     {
                         SaveConfigFile();
@@ -4506,10 +5085,16 @@ namespace Splat
                         va_end(args);
                         return std::string(text);
                     };
-                    auto ratioText = [&](double before, double after) { return (before > 0.0 && after > 0.0) ? format("%.0f%%", 100.0 * before / after) : std::string("-"); };
+                    // The tier before over this one as a factor: "3x", "1.4x" (a whole number shows without decimals)
+                    auto ratioText = [&](double before, double after)
+                    {
+                        if (before <= 0.0 || after <= 0.0) return std::string("-");
+                        const double r = before / after;
+                        return (r >= 10.0 || std::fabs(r - std::round(r)) < 0.05) ? format("%.0fx", r) : format("%.1fx", r);
+                    };
                     auto ratioTip = [&](const char* before, const char* after, double b, double a, const char* unit)
                     {
-                        return (b > 0.0 && a > 0.0) ? format("%s over %s: %.2f / %.2f %s = %.2fx, %.0f%%.", before, after, b, a, unit, b / a, 100.0 * b / a) : std::string();
+                        return (b > 0.0 && a > 0.0) ? format("%s over %s: %.2f / %.2f %s = %.2fx.", before, after, b, a, unit, b / a) : std::string();
                     };
 
                     ImDrawList* tableDl = ImGui::GetWindowDrawList();
@@ -4532,24 +5117,28 @@ namespace Splat
                         tableDl->PopClipRect();
                         if (!header) rowIndex++;
                     };
-                    auto cell = [](const ImVec4* colour, const std::string& text, const std::string& tip)
+                    // A cell; bold draws the text again a pixel to the right (the font has no bold face)
+                    auto cell = [](const ImVec4* colour, const std::string& text, const std::string& tip, bool bold = false)
                     {
+                        const ImVec2 at = ImGui::GetCursorScreenPos();
                         if (colour) ImGui::TextColored(*colour, "%s", text.c_str()); else ImGui::TextUnformatted(text.c_str());
+                        if (bold)
+                            ImGui::GetWindowDrawList()->AddText(ImVec2(at.x + 1.0f, at.y), colour ? ImGui::GetColorU32(*colour) : ImGui::GetColorU32(ImGuiCol_Text), text.c_str());
                         if (ImGui::IsItemHovered() && !tip.empty()) ShowTooltip("%s", tip.c_str());
                         ImGui::NextColumn();
                     };
                     auto row = [&](const char* name, const ImVec4* colour, const std::string& nameTip, const std::string& value, const std::string& valueTip,
-                                   const std::string& ratio, const std::string& rTip)
+                                   const std::string& ratio, const std::string& rTip, bool bold = false)
                     {
                         rowBackground(false);
-                        cell(colour, name, nameTip);
-                        cell(colour, value, valueTip);
-                        cell(colour, ratio, rTip);
+                        cell(colour, name, nameTip, bold);
+                        cell(colour, value, valueTip, bold);
+                        cell(colour, ratio, rTip, bold);
                     };
 
                     ImGui::Columns(3, "CompressionTiers", true);
                     const float pad = 2.0f * ImGui::GetStyle().ItemSpacing.x;
-                    const float ratioWidth = ImGui::CalcTextSize("0000%").x + pad;
+                    const float ratioWidth = ImGui::CalcTextSize("00.0x").x + pad;
                     ImGui::SetColumnOffset(1, ImGui::CalcTextSize(tier3Name).x + pad);
                     ImGui::SetColumnOffset(2, ImGui::GetWindowContentRegionWidth() - ratioWidth);
                     {
@@ -4557,7 +5146,7 @@ namespace Splat
                         rowBackground(true);
                         cell(&head, "Tier", "");
                         cell(&head, "Value", "Sizes in MB; the layout and transform tiers in bits per byte (entropy), as they only rearrange or recode bytes.");
-                        cell(&head, "Ratio", "The tier before over this one, as a percentage: 200% is half the size (or entropy) of the tier before.");
+                        cell(&head, "Ratio", "The tier before over this one, as a factor: 2x is half the size (or entropy) of the tier before.");
                     }
 
                     row("Raw point cloud", nullptr, "The input scan, uncompressed (a 3D Gaussian Splatting .ply: 248 bytes per splat).",
@@ -4623,7 +5212,7 @@ namespace Splat
                     row("Total compression", &green, "Pinned to the Tier 2 (GPU quantization) ratio: the reduction every splat gets from the fixed-size packed format, independent of how well the codec compresses a given model's bytes.",
                         format("%.2f MB", tier2MB),
                         format("The raw point cloud, %.2f MB, against Tier 2, %.2f MB.", m_rawFileSizeMB, tier2MB),
-                        ratioText(m_rawFileSizeMB, tier2MB), ratioTip("The raw point cloud", "Tier 2", m_rawFileSizeMB, tier2MB, "MB"));
+                        ratioText(m_rawFileSizeMB, tier2MB), ratioTip("The raw point cloud", "Tier 2", m_rawFileSizeMB, tier2MB, "MB"), true);
                     ImGui::Columns(1);
                     {
                         // The outer border
@@ -5015,6 +5604,9 @@ namespace Splat
 
             const auto* pLevelChunks = (lodIdx < (int)m_stream.m_lodStreamChunks.size()) ? &m_stream.m_lodStreamChunks[lodIdx] : nullptr;
             size_t T = pLevelChunks ? pLevelChunks->size() : 0;
+            // Totals in the same unit as the resident count: the stream's blocks (cut at chunk boundaries, so more than the
+            // render meshlets on a many-chunk scan; the bicycle showed 103,725 resident of 82,494)
+            if (T > 0) totalBlocks = (uint32_t)T;
 
             // Lower level mip for child refinement calculation
             int childLodIdx = lodIdx - 1;
@@ -5288,18 +5880,18 @@ namespace Splat
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Policy:");
         ImGui::SameLine();
-        if (ImGui::RadioButton("Conservative", m_streamingPolicy == 0)) { m_streamingPolicy = 0; m_stream.m_streamStateDirty = true; }
+        if (ImGui::RadioButton("Conservative", m_streamingPolicy == 0)) { m_streamingPolicy = 0; if (!m_sceneIsEnvironment) m_objectStreamingPolicy = 0; m_stream.m_streamStateDirty = true; }
         if (ImGui::IsItemHovered()) ShowTooltip("Loads only what the view needs: the blocks in view (plus a small margin), each down to its own level. Nothing streams in the background.");
         ImGui::SameLine();
-        if (ImGui::RadioButton("Greedy", m_streamingPolicy == 1)) { m_streamingPolicy = 1; m_stream.m_streamStateDirty = true; }
+        if (ImGui::RadioButton("Greedy", m_streamingPolicy == 1)) { m_streamingPolicy = 1; if (!m_sceneIsEnvironment) m_objectStreamingPolicy = 1; m_stream.m_streamStateDirty = true; }
         if (ImGui::IsItemHovered()) ShowTooltip("Keeps loading in the background regardless of the view, faces in view first. With Release Unused LOD Segments it loads every block of every level down to the finest level a visible block renders at (now level %d), model-wide, and releases only what lies finer.", m_stream.GreedyFloor());
 
         ImGui::Spacing();
     }
 
-    // Refinement visualizer controls on the Renderer tab (idSuffix keeps the widget IDs distinct should the
-    // block ever be drawn in a second place): the arrival-glow checkbox, and when it is on, the fade
-    // duration, glow intensity and hue sliders.
+    // Refinement visualizer control on the Renderer tab (idSuffix keeps the widget ID distinct should the block ever be
+    // drawn in a second place): the arrival-glow checkbox alone. Its fade duration, intensity and hue are no longer
+    // shown (the user, 2026-10-26: "hide the options for the refinement visualizer"); they keep their config values.
     void SplatPakApp::DrawRefinementVisualizerControls(const char* idSuffix)
     {
         std::string label = std::string("Refinement Visualizer") + idSuffix;
@@ -5307,29 +5899,7 @@ namespace Splat
         {
             m_stream.m_streamStateDirty = true;
         }
-        if (ImGui::IsItemHovered()) ShowTooltip("Visualizer for progressive loading: every chunk that arrives is filled with a semi-transparent tint. The newest chunks -- the leading edge of the growing model -- glow bright, then settle to the regular tint and fade out over the duration below. Press Evict to watch the whole model grow back in the scheduler's order. Named in the top-left banner while it is on.");
-        if (!m_showChunkStream) return;
-        ImGui::Indent(12.0f);
-        ImGui::PushItemWidth(150.0f);
-        ImGui::SliderFloat((std::string("Fade Duration") + idSuffix).c_str(), &m_chunkStreamDuration, 0.5f, 10.0f, "%.1f s");
-        if (ImGui::IsItemHovered()) ShowTooltip("How long a delivered chunk glows. It arrives a bright white-gold, cools to gold and fades out smoothly over this time.");
-        ImGui::SliderFloat((std::string("Glow Intensity") + idSuffix).c_str(), &m_arrivalGlowIntensity, 0.0f, 2.0f, "%.2fx");
-        if (ImGui::IsItemHovered()) ShowTooltip("Strength of the tint and of the bright leading-edge bloom. 0.25 = default; 0 hides the effect without turning the visualizer off.");
-        ImGui::SliderFloat((std::string("Glow Hue") + idSuffix).c_str(), &m_arrivalGlowHue, -180.0f, 180.0f, "%.0f deg");
-        if (ImGui::IsItemHovered()) ShowTooltip("Rotates every level's glow colour together around the colour wheel. At 0, level 0 is gold and level 1 its complement, azure.");
-        ImGui::PopItemWidth();
-        // Legend: each level's tint (Splat.hlsl kArrivalGlowLevelHue), coarsest first, as they stream in
-        {
-            const int levels = std::clamp((int)m_waveletResult.lodLevels.size(), 1, 8);
-            ImGui::TextDisabled("Level tint:");
-            for (int l = levels - 1; l >= 0; l--)
-            {
-                ImGui::SameLine();
-                ImGui::TextColored(LevelTint(l, 0.85f, 1.0f), "L%d", l);
-            }
-            if (ImGui::IsItemHovered()) ShowTooltip("Each level of detail arrives in its own tint, consecutive levels across the colour wheel from one another, so you can see which level a chunk brings.");
-        }
-        ImGui::Unindent(12.0f);
+        if (ImGui::IsItemHovered()) ShowTooltip("Visualizer for progressive loading: every chunk that arrives is filled with a semi-transparent tint in its level's colour. The newest chunks -- the leading edge of the growing model -- glow bright, then settle to the regular tint and fade out. Press Evict to watch the whole model grow back in the scheduler's order. Named in the top-left banner while it is on.");
     }
 
 
@@ -5553,7 +6123,7 @@ namespace Splat
         if (x > (float)m_Width - rightPanelWidth - 40.0f) return; // No viewport strip to draw into at this window size
 
         ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always);
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.45f)); // Dark backing so the text stays readable over any model colour
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.0f, 0.0f, 0.0f, 0.75f)); // Dark backing so the text stays readable over any model or background colour
         ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
         ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, 6.0f));
         const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
@@ -5621,7 +6191,7 @@ namespace Splat
         const float cy = cosf(m_pitch), sy = sinf(m_pitch), sx = sinf(m_yaw), cx = cosf(m_yaw);
         const XMVECTOR at = XMLoadFloat3(&m_center);
         const XMVECTOR worldUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
-        const XMMATRIX proj = XMMatrixPerspectiveFovRH(XM_PIDIV4, width / height, 0.1f, 500.0f);
+        const XMMATRIX proj = XMMatrixPerspectiveFovRH(XM_PIDIV4, width / height, m_state.nearZ, m_state.farZ);
         auto fits = [&](float dist) -> bool
         {
             XMVECTOR eye = XMVectorSet(m_center.x + dist * cy * sx, m_center.y + dist * sy, m_center.z + dist * cy * cx, 1.0f);
@@ -5754,20 +6324,20 @@ namespace Splat
     // enters a side panel: where one would, it is pushed out the shorter way (sideways off the full-height left
     // panel; sideways or below the right panel, whose height follows its open sections).
     // The live camera's eye, view direction and view-projection (the same as the frame's, see OnRender)
-    static void LiveCamera(const XMFLOAT3& target, float distance, float pitch, float yaw, float aspect, XMFLOAT3& eye, XMFLOAT3& forward, XMMATRIX& viewProj)
+    static void LiveCamera(const XMFLOAT3& target, float distance, float pitch, float yaw, float aspect, float nearZ, float farZ, XMFLOAT3& eye, XMFLOAT3& forward, XMMATRIX& viewProj)
     {
         const float cy = cosf(pitch), sy = sinf(pitch), sx = sinf(yaw), cx = cosf(yaw);
         eye = XMFLOAT3(target.x + distance * cy * sx, target.y + distance * sy, target.z + distance * cy * cx);
         const XMVECTOR e = XMLoadFloat3(&eye), at = XMLoadFloat3(&target);
         XMStoreFloat3(&forward, XMVector3Normalize(XMVectorSubtract(at, e)));
-        viewProj = XMMatrixMultiply(XMMatrixLookAtRH(e, at, XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f)), XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect, 0.1f, 500.0f));
+        viewProj = XMMatrixMultiply(XMMatrixLookAtRH(e, at, XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f)), XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect, nearZ, farZ));
     }
 
     bool SplatPakApp::ProjectLiveCamera(const XMFLOAT3& world, ImVec2& screen, float& viewDepth) const
     {
         if (m_Width == 0 || m_Height == 0) return false;
         XMFLOAT3 eye, fwd; XMMATRIX viewProj;
-        LiveCamera(m_target, m_distance, m_pitch, m_yaw, (float)m_Width / (float)m_Height, eye, fwd, viewProj);
+        LiveCamera(m_target, m_distance, m_pitch, m_yaw, (float)m_Width / (float)m_Height, m_state.nearZ, m_state.farZ, eye, fwd, viewProj);
         viewDepth = (world.x - eye.x) * fwd.x + (world.y - eye.y) * fwd.y + (world.z - eye.z) * fwd.z;
         XMFLOAT4 clip;
         XMStoreFloat4(&clip, XMVector4Transform(XMVectorSet(world.x, world.y, world.z, 1.0f), viewProj));
@@ -5786,10 +6356,10 @@ namespace Splat
         m_loupeAnchorValid = false;
         if (!pinned || m_Width == 0 || m_Height == 0) return;
         XMFLOAT3 eye, fwd; XMMATRIX viewProj;
-        LiveCamera(m_target, m_distance, m_pitch, m_yaw, (float)m_Width / (float)m_Height, eye, fwd, viewProj);
+        LiveCamera(m_target, m_distance, m_pitch, m_yaw, (float)m_Width / (float)m_Height, m_state.nearZ, m_state.farZ, eye, fwd, viewProj);
         const float zoom = std::max(1.0f, m_loupeEffectiveZoom);
         const ImVec2 half(0.5f * m_loupeSize.x / zoom, 0.5f * m_loupeSize.y / zoom);
-        const std::vector<SplatPoint>& pts = !m_rendererRawSplats.empty() ? m_rendererRawSplats : m_rawSplats;
+        const SplatPointArray& pts = !m_rendererRawSplats.empty() ? m_rendererRawSplats : m_rawSplats;
         const size_t stride = std::max<size_t>(1, pts.size() / 1000000);
         std::vector<float> depths;
         for (size_t i = 0; i < pts.size(); i += stride)
@@ -5817,7 +6387,7 @@ namespace Splat
         const float along = depth / std::max(1e-4f, dir.x * fwd.x + dir.y * fwd.y + dir.z * fwd.z);
         m_loupeAnchorWorld = XMFLOAT3(eye.x + dir.x * along, eye.y + dir.y * along, eye.z + dir.z * along);
         m_loupeAnchorHalfWorld = half.y * 2.0f * depth * tanf(0.5f * XM_PIDIV4) / (float)m_Height;
-        m_loupeAnchorZoom = m_loupeZoom; // W/S afterwards scales the patch by m_loupeAnchorZoom / m_loupeZoom
+        m_loupeAnchorZoom = m_loupeZoom; // [ and ] afterwards scale the patch by m_loupeAnchorZoom / m_loupeZoom
         m_loupeAnchorValid = true;
     }
 
@@ -5846,7 +6416,7 @@ namespace Splat
         // A pinned box holds onto the patch of surface it was pinned over (CaptureLoupeAnchor): its centre is
         // that point projected with the live camera, and its size the patch's world size at the point's
         // depth, so zooming or orbiting the model keeps the same subregion in the inset. The magnification
-        // follows (W/S still scales the patch); it bottoms out at 1x, where the box is the inset's size.
+        // follows ([ and ] still scale the patch); it bottoms out at 1x, where the box is the inset's size.
         float zoom = m_loupeZoom;
         if (m_loupePinned && m_loupeAnchorValid)
         {
@@ -5921,7 +6491,7 @@ namespace Splat
         if (grabbed & kLoupeDragBottom) dl->AddLine(ImVec2(x0, y1), ImVec2(x1, y1), grip, 4.0f);
         static const char* s_vizNames[] = { "normal", "outlines", "colours", "centres" };
         char label[64];
-        snprintf(label, sizeof(label), "Loupe %.1fx (W/S)  %s (Shift+V)", zoom, s_vizNames[std::clamp(m_loupeViz, 0, 3)]);
+        snprintf(label, sizeof(label), "Loupe %.1fx ([/])  %s (Shift+V)", zoom, s_vizNames[std::clamp(m_loupeViz, 0, 3)]);
         dl->AddRectFilled(ImVec2(destX, destY + inset.y - 20.0f), ImVec2(destX + ImGui::CalcTextSize(label).x + 12.0f, destY + inset.y), IM_COL32(0, 0, 0, 170));
         dl->AddText(ImVec2(destX + 6.0f, destY + inset.y - 17.0f), frame, label);
     }
@@ -5930,8 +6500,8 @@ namespace Splat
     // viewport just above the status bar and left of the right panel. Deliberately understated (dim
     // text on a barely-there backing, no interaction) so it reads as part of the canvas rather than a
     // control. The bindings listed must match UpdateCamera: left-drag or Left/Right arrows orbit; the
-    // wheel, right-drag, W/S, Up/Down, PageUp/PageDown and +/- zoom; Shift with any drag or with the
-    // arrow keys pans.
+    // wheel, Up/Down, PageUp/PageDown and +/- zoom; W/S/A/D/Q/E fly and right-drag looks; Shift with any
+    // drag or with the arrow keys pans.
     void SplatPakApp::DrawControlHints(float leftPanelWidth, float rightPanelWidth)
     {
         if (!m_showControlHints) return; // "Show Camera Control Hints" unchecked on the Renderer tab's viewport section
@@ -5959,10 +6529,11 @@ namespace Splat
             struct Hint { const char* verb; const char* binding; };
             const Hint hints[] = {                         // "\xC2\xB7" = middle dot (U+00B7), in the default Latin glyph range
                 { "Rotate", "left-drag \xC2\xB7 Left/Right arrows" },
-                { "Zoom",   m_loupeEnabled ? "wheel \xC2\xB7 right-drag \xC2\xB7 Up/Down" : "wheel \xC2\xB7 right-drag \xC2\xB7 W/S \xC2\xB7 Up/Down" },
+                { "Zoom",   "wheel \xC2\xB7 Up/Down \xC2\xB7 PageUp/PageDown" },
+                { "Fly",    m_mouseLook ? "W/S/A/D or arrows \xC2\xB7 Q/E down/up \xC2\xB7 Tab/Esc release mouse" : "W/S/A/D \xC2\xB7 Q/E down/up \xC2\xB7 right-drag look \xC2\xB7 Tab mouse look" },
                 { "Pan",    "Shift + drag \xC2\xB7 Shift + arrows" },
                 { "Splats", "V display" },
-                { "Loupe",  m_loupeEnabled ? "L off \xC2\xB7 W/S magnify \xC2\xB7 Shift+V display \xC2\xB7 click box/Space pin" : "L" },
+                { "Loupe",  m_loupeEnabled ? "L off \xC2\xB7 [/] magnify \xC2\xB7 Shift+V display \xC2\xB7 click box/Space pin" : "L" },
             };
             const float bindingColumn = ImGui::CalcTextSize("Rotate").x + 14.0f; // Fixed verb column so the proportional font still lines up
             for (const Hint& h : hints)
@@ -5986,10 +6557,22 @@ namespace Splat
     // just look at the volume shouldn't require also turning on splat culling against it.
     void SplatPakApp::DrawOcclusionVolumeControls()
     {
+        if (m_sceneIsEnvironment)
+        {
+            ImGui::TextColored(ImVec4(0.55f, 0.75f, 0.95f, 1.0f), "Environment scene: occlusion off on load");
+            if (ImGui::IsItemHovered())
+                ShowTooltip("Decided from the model when it loaded: half its Gaussians lie within %.1f m of its core and 99%% within %.1f m, a capture of a place rather than an object. An occlusion volume of a mostly open scene is solid blobs that hide the splats, so it starts off; ticking it below applies to this scene only, and objects keep your saved choice.",
+                    m_coreRadius50, m_coreRadius99);
+        }
         if (ImGui::Checkbox("Show Occlusion Volume", &m_enableOcclusionCulling))
         {
-            m_showOcclusionSetting = m_enableOcclusionCulling;
-            SaveConfigFile(); // Remembered (show_occlusion_volume): the next load or bake follows it
+            // Remembered (show_occlusion_volume) for objects: the next load or bake follows it. In an environment the
+            // toggle is for this scene only.
+            if (!m_sceneIsEnvironment)
+            {
+                m_showOcclusionSetting = m_enableOcclusionCulling;
+                SaveConfigFile();
+            }
         }
         if (ImGui::IsItemHovered())
         {
@@ -6087,7 +6670,7 @@ namespace Splat
             BuildOcclusionVolume();
             if (!m_occlusionVoxels.empty())
             {
-                m_enableOcclusionCulling = m_showOcclusionSetting;
+                m_enableOcclusionCulling = m_showOcclusionSetting && !m_sceneIsEnvironment; // An environment keeps it off (ApplySceneDefaults)
             }
         }
         else
@@ -6121,7 +6704,7 @@ namespace Splat
         BuildHeatmapClusterCubes(!m_rawSplats.empty() ? m_rawSplats : m_rendererRawSplats, m_aabbMin, m_aabbMax, m_detailGrid, m_heatmapClusterCubes);
     }
 
-    void SplatPakApp::BuildHeatmapClusterCubes(const std::vector<SplatPoint>& points, const XMFLOAT3& aabbMin, const XMFLOAT3& aabbMax,
+    void SplatPakApp::BuildHeatmapClusterCubes(const SplatPointArray& points, const XMFLOAT3& aabbMin, const XMFLOAT3& aabbMax,
                                                const DetailGrid& detail, std::vector<HeatmapClusterCube>& out) const
     {
         out.clear();
@@ -6304,7 +6887,7 @@ namespace Splat
 
         XMMATRIX view = XMMatrixLookAtRH(eye, at, worldUp);
         float aspect = io.DisplaySize.y > 0.0f ? (io.DisplaySize.x / io.DisplaySize.y) : (screenW / screenH);
-        XMMATRIX proj = XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect, 0.1f, 500.0f);
+        XMMATRIX proj = XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect, m_state.nearZ, m_state.farZ);
         XMMATRIX viewProj = XMMatrixMultiply(view, proj);
 
         // 2. Culling Camera (Detached Frozen or Active)
@@ -6332,7 +6915,7 @@ namespace Splat
         XMStoreFloat3(&cullUp, cUpVec);
 
         XMMATRIX cView = XMMatrixLookAtRH(cEye, cAt, worldUp);
-        XMMATRIX cProj = XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect, 0.1f, 500.0f);
+        XMMATRIX cProj = XMMatrixPerspectiveFovRH(XM_PIDIV4, aspect, m_state.nearZ, m_state.farZ);
         XMMATRIX cViewProj = XMMatrixMultiply(cView, cProj);
 
         auto ProjectToScreen = [&](const XMFLOAT3& p, ImVec2& outScreen) -> bool
@@ -6867,11 +7450,14 @@ namespace Splat
         if (m_streamTest) StepStreamTest();
         if (!m_cliBakeOutput.empty()) StepCliBake();
         if (!m_viewCapFolder.empty()) StepViewCapture();
+        if (!m_camCapFolder.empty()) StepCameraCapture();
+        if (m_ringTest) StepRingTest();
         StepPresentationShot();
         StepPendingRdoProfile();
         StepReencode();
-        // A scripted run waits for the whole model to stream in, which Release Unused LOD Segments (on by default) never allows
-        if (Unattended()) { m_releaseUnusedSegments = false; m_streamingPolicy = 1; } // Scripted runs wait for the whole model
+        // A scripted run waits for the whole model to stream in, which Release Unused LOD Segments (on by default) never allows.
+        // The ring test runs as a user does: Conservative with Release Unused, as an environment loads.
+        if (Unattended() && !m_ringTest) { m_releaseUnusedSegments = false; m_streamingPolicy = 1; } // Scripted runs wait for the whole model
         const auto tUi = std::chrono::high_resolution_clock::now();
         BuildUI();
         DrawOperationDialog();
@@ -6923,6 +7509,7 @@ namespace Splat
         {
             const bool hasMesh = m_shadowMesh && !m_shadowMesh->Empty();
             m_state.showShadowMesh = m_showShadowMesh && hasMesh && !m_state.showOcclusionVolumeOnly;
+            m_state.showGrid = m_showGrid;
             if (hasMesh)
             {
                 const int level = std::clamp(m_shadowMeshLevel, 0, (int)m_shadowMesh->levels.size() - 1);
@@ -6982,6 +7569,7 @@ namespace Splat
                 RgbaImage& img = m_viewCapImages[m_viewCapIndex];
                 m_pRenderer->TakeSceneCapture(img.pixels, img.width, img.height);
             }
+            if (m_camCapRequested) m_pRenderer->TakeSceneCapture(m_camCapImage.pixels, m_camCapImage.width, m_camCapImage.height);
             const auto tPresent = std::chrono::high_resolution_clock::now();
             EndFrame();
             const auto tDone = std::chrono::high_resolution_clock::now();
@@ -7506,11 +8094,11 @@ namespace Splat
         {
             if (*hash == 0)
             {
-                progress.Stage("Hashing the scan", 0.0f);
+                BakeStage(progress, "Hashing the scan", 0.0f);
                 *hash = BakeTuningCache::HashFile(path);
             }
             {
-                progress.Stage("Looking for a stored analysis", 0.0f);
+                BakeStage(progress, "Looking for a stored analysis", 0.0f);
                 RdoProfile stored;
                 if (FindRdoProfile(folder, *hash, maxLODs, deadbandMM, stored, *reused))
                 {
@@ -7548,7 +8136,7 @@ namespace Splat
                 if (ok || error == "cancelled") return ok;
                 LogTransitionTrace("RDO: falling back to this process");
             }
-            std::vector<const std::vector<SplatPoint>*> levels;
+            std::vector<const SplatPointArray*> levels;
             levels.push_back(&m_rawSplats);
             for (size_t l = 1; l < m_waveletResult.lodLevels.size(); l++) levels.push_back(&m_waveletResult.lodLevels[l].splats);
             return RdoAnalysis::Analyse(levels, m_splatAttributes, &m_waveletResult.mergedAttributes, m_splatParams, m_sourceSHDegree,
@@ -8576,6 +9164,370 @@ namespace Splat
         {
             m_pRenderer->RequestSceneCapture();
             m_viewCapRequested = true;
+        }
+    }
+
+    // Shows training camera `index` through the pose camera, and sets the orbit to the same eye and direction (without
+    // the roll), so the first orbit input carries on from the pose rather than jumping
+    void SplatPakApp::ViewTrainingCamera(int index)
+    {
+        if (index < 0 || index >= (int)m_trainingCameras.size()) { m_poseCameraIndex = -1; return; }
+        const TrainingCamera& c = m_trainingCameras[index];
+        m_poseCameraIndex = index;
+        ArmLoadingBlur(); // A jump: what it lands on may not be loaded yet
+        m_trainingCameraPick = index;
+        m_autoRotate = false;
+        const XMFLOAT3 f = c.forward;
+        const float toCentre = (m_center.x - c.eye.x) * f.x + (m_center.y - c.eye.y) * f.y + (m_center.z - c.eye.z) * f.z;
+        const float d = std::max(0.5f, toCentre);
+        m_target = XMFLOAT3(c.eye.x + f.x * d, c.eye.y + f.y * d, c.eye.z + f.z * d);
+        m_distance = d;
+        m_yaw = atan2f(-f.x, -f.z);
+        m_pitch = asinf(std::max(-1.0f, std::min(1.0f, -f.y)));
+        m_poseOrbitYaw = m_yaw; m_poseOrbitPitch = m_pitch; m_poseOrbitDistance = m_distance; m_poseOrbitTarget = m_target;
+        m_statusMessage = "Training camera " + std::to_string(index) + " (" + c.name + "); drag or zoom to orbit from here";
+        m_statusIsSuccess = true;
+    }
+
+    void SplatPakApp::UpdatePoseCamera()
+    {
+        if (m_trainingCamerasFor != m_loadedFilePath)
+        {
+            m_trainingCamerasFor = m_loadedFilePath;
+            m_poseCameraIndex = -1;
+            // A package's own view settings (GSTXVEW1), read once here for ApplySceneDefaults too
+            m_packageView = PackageView();
+            const bool isPackage = !m_packagePath.empty() && m_loadedFilePath.size() >= 5 &&
+                                   _stricmp(m_loadedFilePath.c_str() + m_loadedFilePath.size() - 5, ".gstx") == 0;
+            if (isPackage && m_packageView.Read(m_packagePath))
+                LogTransitionTrace("Package view settings: scene %s, %zu cameras, start camera %d, occlusion %d", m_packageView.scene.empty() ? "-" : m_packageView.scene.c_str(),
+                    m_packageView.cameras.size(), m_packageView.startCamera, m_packageView.occlusion);
+            // Cameras: --cameras, then a cameras.json beside the file, then the package's own
+            const std::string path = !m_camerasOverride.empty() ? m_camerasOverride : TrainingCameras::FindFor(m_loadedFilePath);
+            if (!path.empty() && TrainingCameras::Load(path, m_trainingCameras))
+                LogTransitionTrace("Training cameras: %zu from %s", m_trainingCameras.size(), path.c_str());
+            else
+                m_trainingCameras = m_packageView.cameras;
+            m_trainingCameraPick = 0;
+            if (m_cliStartCamera >= 0 && !m_trainingCameras.empty()) ViewTrainingCamera(std::min(m_cliStartCamera, (int)m_trainingCameras.size() - 1));
+        }
+        // The user's camera input (a drag or the wheel over the viewport, a camera key) leaves the pose; any other change
+        // to the orbit (a window resize rescaling the distance, a load re-centring it) is followed, not taken as input
+        if (m_poseCameraIndex >= 0)
+        {
+            const ImGuiIO& io = ImGui::GetIO();
+            const bool mouse = !io.WantCaptureMouse && (io.MouseWheel != 0.0f ||
+                ((io.MouseDown[0] || io.MouseDown[1] || io.MouseDown[2]) && (io.MouseDelta.x != 0.0f || io.MouseDelta.y != 0.0f)));
+            static const int kCameraKeys[] = { VK_LEFT, VK_RIGHT, VK_UP, VK_DOWN, VK_PRIOR, VK_NEXT, VK_ADD, VK_SUBTRACT, VK_OEM_PLUS, VK_OEM_MINUS, 'W', 'A', 'S', 'D', 'Q', 'E' };
+            bool keys = false;
+            if (!io.WantCaptureKeyboard)
+                for (int vk : kCameraKeys)
+                    keys = keys || (GetKeyState(vk) & 0x8000) != 0;
+            const bool moved = m_yaw != m_poseOrbitYaw || m_pitch != m_poseOrbitPitch || m_distance != m_poseOrbitDistance ||
+                               m_target.x != m_poseOrbitTarget.x || m_target.y != m_poseOrbitTarget.y || m_target.z != m_poseOrbitTarget.z;
+            if (moved && (mouse || keys)) m_poseCameraIndex = -1;
+            else { m_poseOrbitYaw = m_yaw; m_poseOrbitPitch = m_pitch; m_poseOrbitDistance = m_distance; m_poseOrbitTarget = m_target; }
+        }
+        const bool pose = m_poseCameraIndex >= 0 && m_poseCameraIndex < (int)m_trainingCameras.size();
+        // The depth range (State::nearZ, farZ) from the eye: far to the model's farthest corner plus a tenth (at least
+        // 500 m), near a hundred-thousandth of that held to 5 mm .. 10 cm
+        {
+            const XMFLOAT3 eye = pose ? m_trainingCameras[m_poseCameraIndex].eye
+                : XMFLOAT3(m_target.x + m_distance * cosf(m_pitch) * sinf(m_yaw), m_target.y + m_distance * sinf(m_pitch), m_target.z + m_distance * cosf(m_pitch) * cosf(m_yaw));
+            float farthest = 0.0f;
+            for (int k = 0; k < 8; k++)
+            {
+                const float x = (k & 1) ? m_aabbMax.x : m_aabbMin.x, y = (k & 2) ? m_aabbMax.y : m_aabbMin.y, z = (k & 4) ? m_aabbMax.z : m_aabbMin.z;
+                farthest = std::max(farthest, sqrtf((x - eye.x) * (x - eye.x) + (y - eye.y) * (y - eye.y) + (z - eye.z) * (z - eye.z)));
+            }
+            m_state.farZ = std::max(500.0f, farthest * 1.1f);
+            m_state.nearZ = std::clamp(m_state.farZ * 1e-5f, 0.005f, 0.1f);
+            UpdateLoadingBlur(eye);
+        }
+        m_state.poseCamera = pose;
+        m_state.fovY = pose ? m_trainingCameras[m_poseCameraIndex].fovY : XM_PIDIV4;
+        StreamCamera& sc = m_stream.camera;
+        sc.explicitView = pose;
+        sc.fovY = m_state.fovY;
+        if (!pose) return;
+        const TrainingCamera& c = m_trainingCameras[m_poseCameraIndex];
+        m_state.poseEye = c.eye;
+        m_state.poseForward = c.forward;
+        m_state.poseUp = c.up;
+        // The stream's level choice and culling see the same view (row vectors, clip z over [0, w])
+        const XMVECTOR eye = XMLoadFloat3(&c.eye);
+        const XMMATRIX view = XMMatrixLookToRH(eye, XMLoadFloat3(&c.forward), XMLoadFloat3(&c.up));
+        const float aspect = m_Height > 0 ? (float)m_Width / (float)m_Height : 1.0f;
+        XMStoreFloat4x4(&sc.viewProj, XMMatrixMultiply(view, XMMatrixPerspectiveFovRH(m_state.fovY, aspect, m_state.nearZ, m_state.farZ)));
+        sc.eye = c.eye;
+        sc.forward = c.forward;
+    }
+
+    // The renderer's backdrop from the Background choice: Recommended is the loaded file's (black until one is known)
+    void SplatPakApp::ApplyBackground()
+    {
+        static const XMFLOAT3 kPresets[] = { { 0.0f, 0.0f, 0.0f }, { 1.0f, 1.0f, 1.0f }, { 0.75f, 0.75f, 0.75f }, { 0.16f, 0.16f, 0.16f } };
+        m_state.backdropMode = 0;
+        switch (m_backgroundChoice)
+        {
+        case BgBlack: case BgStudioWhite: case BgLightGrey: case BgDarkGrey:
+            m_state.bgTop = m_state.bgBottom = kPresets[m_backgroundChoice - BgBlack];
+            break;
+        case BgCustom:
+            m_state.bgTop = m_state.bgBottom = m_bgCustom;
+            break;
+        case BgGradient:
+            m_state.backdropMode = 1;
+            m_state.bgTop = m_bgGradientTop;
+            m_state.bgBottom = m_bgGradientBottom;
+            break;
+        case BgImage:
+            m_state.backdropMode = 2;
+            m_state.backdropImage = m_bgImagePath;
+            m_state.bgTop = m_state.bgBottom = XMFLOAT3(0.0f, 0.0f, 0.0f);
+            break;
+        default:
+        {
+            const PackageBackground& r = m_recommendedBackground;
+            const bool known = r.Stated() && m_sceneClassFor == m_loadedFilePath;
+            m_state.backdropMode = known && r.mode == "gradient" ? 1 : 0;
+            m_state.bgTop = known ? r.top : XMFLOAT3(0.0f, 0.0f, 0.0f);
+            m_state.bgBottom = known ? r.bottom : XMFLOAT3(0.0f, 0.0f, 0.0f);
+            break;
+        }
+        }
+    }
+
+    // Decides once per loaded file whether it is an environment or an object, and applies the environment's defaults.
+    // The core centre is the per-axis median of level 0 (robust against a far shell on one side); the scan is an
+    // environment when the radius holding 99% of its Gaussians is more than three times the one holding half (Cthulhu
+    // 1.7, the bicycle 6.0).
+    void SplatPakApp::ApplySceneDefaults()
+    {
+        if (m_sceneClassFor == m_loadedFilePath || m_residentLODs.empty() || m_residentLODs[0].rawSplats.empty()) return;
+        m_sceneClassFor = m_loadedFilePath;
+        MeasureCore(m_residentLODs[0].rawSplats, m_coreCentre, m_coreRadius50, m_coreRadius99);
+        ArmLoadingBlur(); // A new scene: veiled until its first levels and ring are in
+        m_sceneIsEnvironment = m_coreRadius50 > 0.0f && m_coreRadius99 > 3.0f * m_coreRadius50;
+        // A package that states its scene (GSTXVEW1) is taken at its word
+        const PackageView& pv = m_packageView;
+        if (!pv.scene.empty()) m_sceneIsEnvironment = (pv.scene == "environment");
+        if (!m_sceneOverride.empty()) m_sceneIsEnvironment = (m_sceneOverride == "environment");
+        // The recommended background: as the package states it, else estimated from the scan (BackgroundEstimate.h)
+        m_recommendedBackground = pv.background.Stated() ? pv.background
+            : BackgroundEstimate::Estimate(m_residentLODs[0].rawSplats, m_coreCentre, m_sceneIsEnvironment, m_trainingCameras, m_loadedFilePath);
+        if (m_recommendedBackground.Stated())
+            LogTransitionTrace("Background: %s %.2f %.2f %.2f / %.2f %.2f %.2f (%s)%s", m_recommendedBackground.mode.c_str(),
+                m_recommendedBackground.top.x, m_recommendedBackground.top.y, m_recommendedBackground.top.z,
+                m_recommendedBackground.bottom.x, m_recommendedBackground.bottom.y, m_recommendedBackground.bottom.z,
+                m_recommendedBackground.basis.c_str(), pv.background.Stated() ? ", as the package states" : "");
+        LogTransitionTrace("Scene: %s (half the Gaussians within %.2f m of the core, 99%% within %.2f m)%s", m_sceneIsEnvironment ? "environment" : "object",
+            m_coreRadius50, m_coreRadius99, pv.scene.empty() ? "" : ", as the package states");
+        // The subject: as the package states it, else (an environment with training cameras) where the cameras converge
+        m_subjectRadius = 0.0f;
+        if (pv.subjectRadius > 0.0f)
+        {
+            m_subjectCentre = pv.subjectCentre;
+            m_subjectRadius = pv.subjectRadius;
+        }
+        else if (m_sceneIsEnvironment && m_trainingCameras.size() >= 3 && TrainingCameras::Converge(m_trainingCameras, m_subjectCentre))
+            m_subjectRadius = SubjectRadius(m_residentLODs[0].rawSplats, m_subjectCentre, std::max(0.5f, m_coreRadius50));
+        if (m_subjectRadius > 0.0f)
+            LogTransitionTrace("Subject: centre %.2f %.2f %.2f, radius %.2f m%s", m_subjectCentre.x, m_subjectCentre.y, m_subjectCentre.z, m_subjectRadius,
+                pv.subjectRadius > 0.0f ? " (as the package states)" : " (where the training cameras converge)");
+        const bool hasVolume = !m_occlusionVoxels.empty() || HasOccluderMesh();
+        const int startCamera = (pv.startCamera >= 0 && pv.startCamera < (int)m_trainingCameras.size()) ? pv.startCamera : (m_sceneIsEnvironment && !m_trainingCameras.empty() ? 0 : -1);
+        if (!m_sceneIsEnvironment)
+        {
+            if (pv.occlusion >= 0) m_enableOcclusionCulling = pv.occlusion == 1 && hasVolume;
+            else if (m_hasBakedParams ? m_bakedParams.occlusion : true) m_enableOcclusionCulling = m_showOcclusionSetting && hasVolume;
+            m_showGrid = pv.grid >= 0 ? pv.grid == 1 : m_showGridSetting;
+            m_streamingPolicy = m_objectStreamingPolicy;
+            if (m_poseCameraIndex < 0 && startCamera >= 0) ViewTrainingCamera(startCamera);
+            return;
+        }
+        m_enableOcclusionCulling = pv.occlusion == 1 && hasVolume;
+        m_showGrid = pv.grid == 1; // The grid shows through thin foliage and over the sky: off unless the package asks for it
+        m_streamingPolicy = 0; // Conservative: the view and the residency ring around the viewer, not the whole scene in the background
+        m_showOcclusionVolumeOnly = false;
+        m_autoRotate = false;
+        std::string opened;
+        if (m_poseCameraIndex < 0 && startCamera >= 0)
+        {
+            ViewTrainingCamera(startCamera);
+            opened = ", opened at training camera " + std::to_string(startCamera);
+        }
+        else if (m_poseCameraIndex < 0)
+        {
+            // No training cameras: inside the core, looking at its centre from half its radius
+            m_target = m_coreCentre;
+            m_distance = std::max(0.5f, m_coreRadius50 * 0.5f);
+            opened = ", opened inside its core";
+        }
+        m_statusMessage = "Environment scene (half within " + std::to_string((int)std::lround(m_coreRadius50)) + " m, 99% within " +
+                          std::to_string((int)std::lround(m_coreRadius99)) + " m): occlusion volume and grid off, Conservative streaming" + opened + ". W/S/A/D/Q/E fly, right-drag looks.";
+        m_statusIsSuccess = true;
+    }
+
+    // The loading veil's strength this frame (see m_loadingBlurArmed). The fill: an environment's residency ring blocks at
+    // their distance level that are resident; an object's drawn blocks at (or finer than) their own level.
+    void SplatPakApp::UpdateLoadingBlur(const XMFLOAT3& eye)
+    {
+        m_state.loadingBlurPx = 0.0f;
+        if (!m_loadingBlurArmed || Unattended() || m_stream.m_lodStreamChunks.empty()) return;
+        m_loadFillTimer += m_deltaTime / 1000.0;
+        if (m_loadFillTimer >= 0.25)
+        {
+            m_loadFillTimer = 0.0;
+            uint32_t wanted = 0, have = 0;
+            if (m_sceneIsEnvironment && m_stream.settings.residencyRingRadius > 0.0f)
+            {
+                for (const auto& level : m_stream.m_lodStreamChunks)
+                    for (const StreamChunk& c : level)
+                        if (m_stream.InResidencyRing(c, eye) && c.lodLevel == m_stream.BlockTargetLOD(c, eye)) { wanted++; have += c.isResident ? 1 : 0; }
+            }
+            else
+            {
+                for (const StreamChunk* pc : m_stream.m_rendererSourceChunks) { wanted++; have += pc->lodLevel <= m_stream.BlockTargetLOD(*pc, eye) ? 1 : 0; }
+            }
+            m_loadFill = wanted ? (float)have / (float)wanted : 1.0f;
+            if (m_loadFill >= 0.75f) m_loadingBlurArmed = false; // In: no veil until the next load, Evict or jump
+        }
+        if (!m_loadingBlurEnabled || !m_loadingBlurArmed) return;
+        const float t = std::clamp((m_loadFill - 0.40f) / 0.35f, 0.0f, 1.0f);
+        const float strength = 1.0f - t * t * (3.0f - 2.0f * t); // Smoothstep out between 40% and 75%
+        m_state.loadingBlurPx = 0.008f * (float)m_Height * strength;
+    }
+
+    // --ring-test (see m_ringTest): settle, turn a full circle in place, report the residency ring each second, quit
+    void SplatPakApp::StepRingTest()
+    {
+        if (m_stream.m_lodStreamChunks.empty() || m_sceneClassFor != m_loadedFilePath) return;
+        if (m_ringTestSeconds == 0.0)
+        {
+            LogTransitionTrace("Ring test: %s, ring radius %.2f m, policy %s, Release Unused %s", m_sceneIsEnvironment ? "environment" : "object",
+                m_stream.settings.residencyRingRadius, m_streamingPolicy == 0 ? "Conservative" : "Greedy", m_releaseUnusedSegments ? "on" : "off");
+            m_poseCameraIndex = -1; // The orbit (already set to the pose's eye and direction) turns from here
+            // From empty, at 5G, as a user's Evict: the ring has to fill as well as hold
+            m_unthrottledBandwidth = false;
+            m_bandwidthThrottleMBps = 7.5f;
+            ClearResidentStream();
+        }
+        const double dt = std::min(0.1, m_deltaTime / 1000.0);
+        m_ringTestSeconds += dt;
+        const float cy = cosf(m_pitch), sy = sinf(m_pitch);
+        const XMFLOAT3 eye(m_target.x + m_distance * cy * sinf(m_yaw), m_target.y + m_distance * sy, m_target.z + m_distance * cy * cosf(m_yaw));
+        constexpr double kSettle = 30.0, kTurn = 24.0;
+        if (m_ringTestSeconds > kSettle && m_ringTestSeconds <= kSettle + kTurn)
+        {
+            // Turn in place: the eye stays, the target swings round it
+            m_yaw += (float)(dt * XM_2PI / kTurn);
+            const float ny = cosf(m_pitch) * sinf(m_yaw), nz = cosf(m_pitch) * cosf(m_yaw);
+            m_target = XMFLOAT3(eye.x - m_distance * ny, eye.y - m_distance * sy, eye.z - m_distance * nz);
+        }
+        if (m_ringTestSeconds - m_ringTestReport >= 1.0)
+        {
+            m_ringTestReport = m_ringTestSeconds;
+            uint32_t ring = 0, resident = 0, ringAll = 0, residentAll = 0;
+            for (const auto& level : m_stream.m_lodStreamChunks)
+                for (const StreamChunk& c : level)
+                {
+                    if (!m_stream.InResidencyRing(c, eye)) continue;
+                    ringAll++;
+                    if (c.isResident) residentAll++;
+                    if (c.lodLevel != m_stream.BlockTargetLOD(c, eye)) continue;
+                    ring++;
+                    if (c.isResident) resident++;
+                }
+            LogTransitionTrace("Ring test: t=%.0fs %s; ring blocks at their level resident %u of %u (%.1f%%); all ring blocks resident %u of %u",
+                m_ringTestSeconds, m_ringTestSeconds <= kSettle ? "settling" : m_ringTestSeconds <= kSettle + kTurn ? "turning" : "turned",
+                resident, ring, ring ? 100.0 * resident / ring : 0.0, residentAll, ringAll);
+        }
+        if (m_ringTestSeconds > kSettle + kTurn + 4.0)
+        {
+            LogTransitionTrace("Ring test: done");
+            m_ringTest = false;
+            PostQuitMessage(0);
+        }
+    }
+
+    // --camera-capture: once fully resident, each training camera in turn, settled for a second, saved as a PNG
+    void SplatPakApp::StepCameraCapture()
+    {
+        if (!m_camCapRunning)
+        {
+            if (m_rawSplats.empty() && m_rendererSplats.empty() && m_framesRendered > 30 && m_stream.m_lodStreamChunks.empty())
+            {
+                LogTransitionTrace("Camera capture: no model loaded (%s); quitting", m_statusMessage.c_str());
+                m_camCapFolder.clear();
+                PostQuitMessage(0);
+                return;
+            }
+            if (m_stream.m_lodStreamChunks.empty()) return;
+            m_unthrottledBandwidth = true;
+            if (m_stream.m_totalStreamBytes <= 0.0f || m_stream.m_simulatedBytesDelivered < m_stream.m_totalStreamBytes * 0.999f) return;
+            if (m_trainingCameras.empty())
+            {
+                LogTransitionTrace("Camera capture: no cameras.json for %s (use --cameras); quitting", m_loadedFilePath.c_str());
+                m_camCapFolder.clear();
+                PostQuitMessage(0);
+                return;
+            }
+            if (m_camCapList.empty()) for (int i = 0; i < (int)m_trainingCameras.size(); i++) m_camCapList.push_back(i);
+            m_enableStreamDecay = false;
+            m_showChunkStream = false; // No arrival glow
+            m_loupeEnabled = false;
+            if (m_detachCamera) SetDetachCamera(false);
+            if (m_camCapLevel0)
+            {
+                // Level 0 everywhere: the package's full detail, to tell level choice from encoding
+                m_autoLOD = false;
+                m_selectedPreviewLOD = 0;
+                UpdatePreviewSplats();
+            }
+            std::error_code ec;
+            std::filesystem::create_directories(m_camCapFolder, ec);
+            m_camCapIndex = 0;
+            m_camCapStableSeconds = -1.0;
+            m_camCapRunning = true;
+            LogTransitionTrace("Camera capture: %zu cameras at %ux%u", m_camCapList.size(), m_Width, m_Height);
+        }
+        if (m_camCapIndex >= m_camCapList.size())
+        {
+            LogTransitionTrace("Camera capture: written to %s", m_camCapFolder.c_str());
+            m_camCapFolder.clear();
+            PostQuitMessage(0);
+            return;
+        }
+        const int cam = m_camCapList[m_camCapIndex];
+        if (m_camCapRequested)
+        {
+            if (m_camCapImage.Empty()) return; // Taken after this frame's render (see OnRender)
+            char name[32];
+            snprintf(name, sizeof(name), "camera_%03d.png", cam);
+            ImageCompare::WritePng(m_camCapFolder + "\\" + name, m_camCapImage);
+            m_camCapImage = RgbaImage();
+            m_camCapRequested = false;
+            m_camCapStableSeconds = -1.0;
+            m_camCapIndex++;
+            return;
+        }
+        if (m_camCapStableSeconds < 0.0)
+        {
+            ViewTrainingCamera(cam);
+            m_camCapStableSeconds = 0.0;
+            m_camCapLastSplats = ~0ull;
+            return;
+        }
+        uint64_t splats = 0;
+        for (const StreamChunk* pc : m_stream.m_rendererSourceChunks) splats += pc->rawSplats.size();
+        const bool still = (m_stream.m_lastActiveTransitions == 0 && splats == m_camCapLastSplats);
+        m_camCapStableSeconds = still ? m_camCapStableSeconds + m_deltaTime / 1000.0 : 0.0;
+        m_camCapLastSplats = splats;
+        if (m_camCapStableSeconds >= 1.0)
+        {
+            m_pRenderer->RequestSceneCapture();
+            m_camCapRequested = true;
         }
     }
 

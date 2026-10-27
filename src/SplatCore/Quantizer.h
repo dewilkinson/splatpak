@@ -25,7 +25,7 @@ namespace Splat
 
         // Quantizes an array of uncompressed SplatPoint into packed 8-byte PackedPointGPU
         static std::vector<PackedPointGPU> QuantizePoints(
-            const std::vector<SplatPoint>& splats,
+            const SplatPointArray& splats,
             XMFLOAT3 aabbMin,
             XMFLOAT3 aabbMax)
         {
@@ -59,12 +59,12 @@ namespace Splat
         }
 
         // Unquantizes packed 8-byte splats back to SplatPoint
-        static std::vector<SplatPoint> UnquantizePoints(
+        static SplatPointArray UnquantizePoints(
             const std::vector<PackedPointGPU>& packed,
             XMFLOAT3 aabbMin,
             XMFLOAT3 aabbMax)
         {
-            std::vector<SplatPoint> splats(packed.size());
+            SplatPointArray splats(packed.size());
             XMFLOAT3 aabbExtents(
                 aabbMax.x - aabbMin.x + 1e-5f,
                 aabbMax.y - aabbMin.y + 1e-5f,

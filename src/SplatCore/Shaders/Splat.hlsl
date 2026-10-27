@@ -866,7 +866,7 @@ bool DetachedCulledTint(float3 pos, bool frozenCulled, inout float3 color, inout
 // (every chunk outside that hand-over) the paths run exactly as before. wave is the chunk's
 // arrival-glow wave for SplatColor (0 when not chunked or not just delivered: no glow). frozenCulled:
 // Detach Camera mode, the chunk is outside the frozen camera's frustum (see DetachedCulledTint).
-bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, bool frozenCulled, out GaussianSplat gs)
+bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, float capScale, bool frozenCulled, out GaussianSplat gs)
 {
     gs.clipCenter = s_culledClipPos; gs.axis1 = float2(0.0, 0.0); gs.axis2 = float2(0.0, 0.0); gs.uvScale = 0.0; gs.color = float3(0.0, 0.0, 0.0); gs.alpha = 0.0; gs.disc = 0.0; gs.solid = 0.0;
 
@@ -894,7 +894,7 @@ bool BuildGaussianSplat(uint splatIndex, uint lod, float fade, float wave, bool 
     // units): the coarse records' grown scales otherwise bloom far past the model's rim.
     if (discR < 0.0)
     {
-        scale = min(scale, -discR);
+        scale = min(scale, -discR * capScale); // capScale: the block's spacing over its level's typical one (>= 1; StreamChunk::spacingRatio)
         discR = 0.0;
     }
     if (discR > 0.0)
@@ -1003,6 +1003,7 @@ bool SplatFromSlot(uint slot, out GaussianSplat gs, out float blendWeight)
     uint lod = 0;     // The chunk's level (0 when the pipeline is not chunked): coarse levels draw as discs
     float fade = 1.0; // The chunk's opacity weight for the level 1 -> 0 hand-over (1 when not chunked)
     float wave = 0.0; // The chunk's arrival-glow wave (0 when not chunked; see SplatColor)
+    float capScale = 1.0; // The chunk's spacing ratio for the coarse Gaussian cap, carried in coneCutoff as -1 - ratio
     if (g_UseChunkedPipeline == 1 && chunkIdx < g_TotalChunks)
     {
         MeshletChunk chunk = g_ChunkBuffer[chunkIdx];
@@ -1010,10 +1011,11 @@ bool SplatFromSlot(uint slot, out GaussianSplat gs, out float blendWeight)
         lod = chunk.lodLevel;
         fade = chunk.dilationMorph;
         wave = chunk.isSilhouette;
+        capScale = chunk.coneCutoff < -1.0 ? -1.0 - chunk.coneCutoff : 1.0;
         if (g_ShowOnlyLocked == 1 && !ChunkIsLocked(chunk)) return false;
     }
     if (info.x >= g_SplatCount) return false;
-    const bool built = BuildGaussianSplat(info.x, lod, fade, wave, frozenCulled, gs);
+    const bool built = BuildGaussianSplat(info.x, lod, fade, wave, capScale, frozenCulled, gs);
     if (built && g_SplatViz == 2) gs.color = SplatVizColor(info.x);
     return built;
 }

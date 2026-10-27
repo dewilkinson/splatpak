@@ -60,8 +60,8 @@ int main(int argc, char** argv)
     const size_t maxPoints = (argc > 3) ? (size_t)atoll(argv[3]) : 200000;
     const uint32_t shDegree = (argc > 4) ? (uint32_t)atoi(argv[4]) : 1;
 
-    std::vector<SplatPoint> splats;
-    std::vector<SplatAttributes> attrs;
+    SplatPointArray splats;
+    SplatAttributeArray attrs;
     double origin[3] = { 0, 0, 0 };
     if (!PLYLoader::LoadPLY(inputPLY, splats, origin, &attrs))
     {
@@ -76,7 +76,7 @@ int main(int argc, char** argv)
     if (splats.size() > maxPoints)
     {
         // Keep an evenly spaced subset; the attributes stay whole (sourceIndex still refers into them)
-        std::vector<SplatPoint> sub;
+        SplatPointArray sub;
         const size_t step = splats.size() / maxPoints;
         for (size_t i = 0; i < splats.size(); i += step) sub.push_back(splats[i]);
         splats.swap(sub);
@@ -103,8 +103,8 @@ int main(int argc, char** argv)
         SplatCodec::Encode(splats, attrs, 0, params, records, sh);
         Check(records.size() == splats.size(), "record count", (double)records.size(), (double)splats.size());
         Check(sh.size() == splats.size() * SplatCodec::SHRecordBytes(shDegree), "sh stream size", (double)sh.size(), (double)(splats.size() * SplatCodec::SHRecordBytes(shDegree)));
-        std::vector<SplatPoint> back;
-        std::vector<SplatAttributes> backAttrs;
+        SplatPointArray back;
+        SplatAttributeArray backAttrs;
         SplatCodec::Decode(records, sh.data(), sh.size(), params, 0, 0, back, backAttrs);
 
         const float posTol = maxDim / 65535.0f * 1.5f;
@@ -250,8 +250,8 @@ int main(int argc, char** argv)
     {
         levels = std::max(levels, pkg.chunkLODSplats[c].size());
         if (pkg.chunkLODSplats[c].empty()) continue;
-        std::vector<SplatPoint> back;
-        std::vector<SplatAttributes> backAttrs;
+        SplatPointArray back;
+        SplatAttributeArray backAttrs;
         const std::vector<uint8_t>& sh = pkg.chunkLODSH[c][0];
         SplatCodec::Decode(pkg.chunkLODSplats[c][0], sh.empty() ? nullptr : sh.data(), sh.size(), pkg.splatParams, 0, 0, back, backAttrs);
         total0 += back.size();

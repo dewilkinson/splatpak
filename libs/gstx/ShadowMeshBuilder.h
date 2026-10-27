@@ -10,7 +10,7 @@
 #include <string>
 #include <vector>
 #include "ShadowMesh.h"
-#include "../../src/SplatCore/WaveletTypes.h"
+#include "GstxTypes.h"
 
 namespace Splat
 {
@@ -20,7 +20,7 @@ namespace Splat
         // progress, when given, gets the fraction done and may return false to stop (Build then returns false).
         // trace receives a few lines of what was built. Returns false when no mesh could be built; the open
         // stand-in library always returns false.
-        static bool Build(const std::vector<SplatPoint>& points, const std::vector<SplatAttributes>* attributes,
+        static bool Build(const SplatPointArray& points, const SplatAttributeArray* attributes,
                           const XMFLOAT3& aabbMin, const XMFLOAT3& aabbMax, ShadowMesh& out, std::string& trace,
                           const std::function<bool(float)>& progress = nullptr);
 

@@ -62,8 +62,8 @@ int main(int argc, char** argv)
             records.insert(records.end(), pkg.chunkLODSplats[c][lvl].begin(), pkg.chunkLODSplats[c][lvl].end());
             if (lvl < pkg.chunkLODSH[c].size()) sh.insert(sh.end(), pkg.chunkLODSH[c][lvl].begin(), pkg.chunkLODSH[c][lvl].end());
         }
-        std::vector<SplatPoint> points;
-        std::vector<SplatAttributes> attributes;
+        SplatPointArray points;
+        SplatAttributeArray attributes;
         SplatCodec::Decode(records, sh.empty() ? nullptr : sh.data(), sh.size(), pkg.splatParams, (uint32_t)lvl, 0, points, attributes);
         ResidentLOD& out = levels[lvl];
         SpatialOctree::PartitionIntoMeshletChunks(points, out.meshletChunks, 64, true, &bmin, &bmax);

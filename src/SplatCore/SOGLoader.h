@@ -454,7 +454,7 @@ namespace Splat
 
     public:
         // Loads a PlayCanvas .sog (Spatially Ordered Gaussians) ZIP package
-        static bool LoadSOG(const std::string& filepath, std::vector<SplatPoint>& outSplats, double originOut[3])
+        static bool LoadSOG(const std::string& filepath, SplatPointArray& outSplats, double originOut[3])
         {
             originOut[0] = 0.0;
             originOut[1] = 0.0;

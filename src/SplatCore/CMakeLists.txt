@@ -45,6 +45,9 @@ set(shaders
     ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/SilhouetteEdgeExtractCS.hlsl
     ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/TemporalFilterCS.hlsl
     ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/ShadowMesh.hlsl
+    ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Grid.hlsl
+    ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/LoadingBlurCS.hlsl
+    ${CMAKE_CURRENT_SOURCE_DIR}/Shaders/Backdrop.hlsl
 )
 set_source_files_properties(${shaders} PROPERTIES HEADER_FILE_ONLY TRUE)
 

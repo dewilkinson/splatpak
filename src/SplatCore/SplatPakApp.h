@@ -37,6 +37,8 @@
 #include "ShadowMeshDisplay.h"
 #include "RdoProfile.h"
 #include "EntropyProfile.h"
+#include "TrainingCameras.h"
+#include "PackageView.h"
 #include <chrono>
 #include <future>
 #include <memory>
@@ -69,6 +71,26 @@ namespace Splat
         void OnParseCommandLine(LPSTR lpCmdLine, uint32_t* pWidth, uint32_t* pHeight) override;
         void OnCreate() override;
         void OnDestroy() override;
+        bool OnCloseRequested();                    // Asks to save an unsaved bake; waits for a save in progress (the window's close and Esc, through CloseGuardProc)
+        bool m_bakeUnsaved = false;                 // A bake on screen that no .gstx holds yet (cleared by a save or a package open)
+        bool m_quitAfterSave = false;               // Close once the save under way has written its package
+        // Mouse-look (Tab; Esc or Tab again, or losing focus, leaves it): the cursor is hidden and held at the window's
+        // centre, and every movement turns the view about the eye, all the way round; WASD/QE fly where it looks
+        bool m_mouseLook = false;
+        void SetMouseLook(bool on);
+        // Mouse-look's movement: the mouse's own relative motion (raw input, WM_INPUT in CloseGuardProc), summed until the
+        // camera takes it each frame. Warping the cursor back to the centre and reading its offset spun the view without
+        // end whenever the warp did not take.
+        long m_lookDX = 0, m_lookDY = 0;
+        // Fly speed, metres a second: the scene's own (an environment: its core radius x 0.3, 0.5 .. 10 m/s; an object:
+        // half its largest dimension a second), times m_flySpeedScale (the wheel in mouse-look, x1.25 a notch)
+        float m_flySpeedScale = 1.0f;
+        float FlySpeed() const
+        {
+            const float maxDim = std::max(m_extents.x, std::max(m_extents.y, m_extents.z));
+            const float base = m_sceneIsEnvironment ? std::clamp(m_coreRadius50 * 0.3f, 0.5f, 10.0f) : std::max(0.05f, maxDim * 0.5f);
+            return base * m_flySpeedScale;
+        }
         void OnRender() override;
         bool OnEvent(MSG msg) override;
         void OnResize(bool resizeRender) override;
@@ -128,7 +150,7 @@ namespace Splat
 
         // Preprocessor Working Structures (Source Model -> Wavelet Hierarchy)
         std::string               m_loadedFilePath = "No dataset loaded";
-        std::vector<SplatPoint> m_rawSplats;
+        SplatPointArray m_rawSplats;
         std::vector<ChunkData>    m_chunks;
         WaveletDecompositionResult m_waveletResult;
 
@@ -137,7 +159,7 @@ namespace Splat
         std::string               m_rendererSourceDescription = "No model active";
         StreamPackager::SFLWPackageData m_loadedPackage;
         std::vector<PackedPointGPU>    m_rendererSplats;
-        std::vector<SplatPoint>       m_rendererRawSplats;
+        SplatPointArray       m_rendererRawSplats;
         std::vector<ChunkData>          m_rendererOctreeChunks;
 
         // Bounding box & stats
@@ -216,6 +238,8 @@ namespace Splat
         void SetOccluderMesh(std::shared_ptr<const ShadowMesh> mesh);
         std::shared_ptr<ShadowMeshJob>    m_shadowMeshJob;
         bool     m_showShadowMesh = false;   // View Shadow Mesh (config show_shadow_mesh)
+        bool     m_showGrid = true;          // Renderer tab, Show Grid: the editor grid at y = 0, this session (an environment starts with it off)
+        bool     m_showGridSetting = true;   // The saved choice (config show_grid): what objects load with
         int      m_shadowMeshLevel = 0;      // Level drawn by the view
         uint32_t m_shadowMeshVersion = 0;    // Bumped when the mesh or the drawn level changes (renderer re-upload)
         ShadowMeshDisplay m_shadowMeshGpu;   // The drawn level, subdivided and smooth-shaded (ShadowMeshDisplay.h)
@@ -302,8 +326,8 @@ namespace Splat
         // The scan a bake reads: the loaded one, or one just read from disk (an open bakes before it replaces anything)
         struct BakeSource
         {
-            const std::vector<SplatPoint>*      points = nullptr;
-            const std::vector<SplatAttributes>* attributes = nullptr;
+            const SplatPointArray*      points = nullptr;
+            const SplatAttributeArray* attributes = nullptr;
             bool     splatMode = false;
             uint32_t shDegree = 0; // The degree the bake keeps (BakeSHDegree for this source)
             uint8_t  shBits[3] = { 8, 8, 8 }; // Bits per SH coefficient per band (StreamPackager.h RequantiseSH); 8 = as encoded
@@ -342,7 +366,8 @@ namespace Splat
         BakeParams  CurrentBakeParams() const;
         bool        BakePending() const { return m_hasBakedParams && CurrentBakeParams() != m_bakedParams; }
         std::string PendingBakeChanges() const;                    // The changed parameters by name, for the tab
-        static BakeParams DefaultBakeParams(const std::vector<SplatPoint>& points, BakeParams keep); // Chunk size, levels and deadband from the scan's size
+        static BakeParams DefaultBakeParams(const SplatPointArray& points, BakeParams keep); // Chunk size, levels and deadband from the scan's size (an environment's from its core)
+        static void MeasureCore(const SplatPointArray& points, XMFLOAT3& centre, float& radius50, float& radius99);
         BakeSource  LoadedBakeSource() const;
         void        StartBake(bool fitCamera);                     // Bakes the loaded scan with the tab's parameters
         bool        RunBake(const BakeParams& params, const BakeSource& source, const StreamSettings& streamSettings,
@@ -351,7 +376,7 @@ namespace Splat
         bool        StartOpenScan(const std::string& filepath, bool splatFile); // .ply / .splat: read and bake, then replace the model
         void        BuildResidentLODs(const BakeSource& source, const WaveletDecompositionResult& wavelet, const XMFLOAT3& aabbMin,
                                       const XMFLOAT3& aabbMax, const SplatEncodeParams& splatParams, std::vector<ResidentLOD>& out) const;
-        void        BuildHeatmapClusterCubes(const std::vector<SplatPoint>& points, const XMFLOAT3& aabbMin, const XMFLOAT3& aabbMax,
+        void        BuildHeatmapClusterCubes(const SplatPointArray& points, const XMFLOAT3& aabbMin, const XMFLOAT3& aabbMax,
                                              const DetailGrid& detail, std::vector<HeatmapClusterCube>& out) const;
         bool        UseBackgroundOps() const;                      // False for scripted runs and before the first frames: those run inline
         bool        RunOperation(const std::string& title, BackgroundOp::Work work, BackgroundOp::Done done);
@@ -374,7 +399,7 @@ namespace Splat
         bool  m_showGlobalBounds     = false;  // Unchecked by default
         bool  m_cascadeLOD           = false;
         bool  m_showLODTint          = false;
-        std::vector<SplatPoint> m_previewLODSplats;
+        SplatPointArray m_previewLODSplats;
 
         // Pre-cached resident GPU/CPU LOD buffers for zero-hitch instantaneous transitions
         std::vector<ResidentLOD> m_residentLODs;
@@ -389,7 +414,7 @@ namespace Splat
 
         // Splat mode: the imported cloud's full Gaussians (SplatPoint::sourceIndex refers here), the
         // bake settings, and the encode parameters every level shares (see SplatCodec).
-        std::vector<SplatAttributes> m_splatAttributes;
+        SplatAttributeArray m_splatAttributes;
         bool     m_sourceHasSplatAttributes = false; // The loaded source carried scales/rotations/opacities (a 3DGS .ply or .splat)
         bool     m_splatMode                = false; // Bake and draw as 3D Gaussians (splat format 1) instead of 8-byte splats
         int      m_splatSHQuality           = 2;     // Spherical-harmonics degree kept, minus one: 0 = low (degree 1), 1 = medium (degree 2), 2 = high (degree 3, the default); a loaded package sets it to its own degree
@@ -486,10 +511,10 @@ namespace Splat
         // only store zeros (a source without harmonics, or a package baked at a lower degree).
         uint32_t m_sourceSHDegree = 3;               // Highest band the source's Gaussians carry (a package: its own degree)
         uint32_t BakeSHDegree() const { return std::min(SplatSHDegree(), m_sourceSHDegree); }
-        static uint32_t SourceSHDegreeOf(const std::vector<SplatAttributes>& attributes); // Highest band with a non-zero coefficient
+        static uint32_t SourceSHDegreeOf(const SplatAttributeArray& attributes); // Highest band with a non-zero coefficient
         void     DetectSourceSHDegree();            // Sets m_sourceSHDegree from m_splatAttributes (highest band with a non-zero coefficient)
         size_t   BytesPerRenderPoint() const { return m_splatMode ? (sizeof(PackedSplatGPU) + SplatCodec::SHRecordBytes(m_splatParams.shDegree)) : (m_enableQuantization ? sizeof(PackedPointGPU) : sizeof(SplatPoint)); }
-        void     EncodeSplatLevel(const std::vector<SplatPoint>& splats, uint32_t level, std::vector<PackedSplatGPU>& outRecords, std::vector<uint8_t>& outSH) const;
+        void     EncodeSplatLevel(const SplatPointArray& splats, uint32_t level, std::vector<PackedSplatGPU>& outRecords, std::vector<uint8_t>& outSH) const;
         void     ApplySplatRenderState();
 
         // Progressive Network Streaming & Bandwidth Throttle Simulator
@@ -500,6 +525,7 @@ namespace Splat
         float  m_neighborBufferMargin               = 1.35f;  // Frustum margin for pre-fetching local neighbours with Release Unused LOD Segments
         bool   m_enableDitheredTransitions  = true;   // Stochastic screen-space Bayer dithering for smooth LOD transitions
         int    m_streamingPolicy            = 1;      // Streaming policy: 0 Conservative, 1 Greedy (StreamSettings::Policy); radio buttons under Release Unused LOD Segments
+        int    m_objectStreamingPolicy      = 1;      // The policy last chosen while viewing an object: what objects load with (an environment loads Conservative)
         bool   m_releaseUnusedSegments      = true;   // On by default (user, 2026-10-26); scripted runs turn it off (they wait for the whole model). Streaming tab "Release Unused LOD Segments" (StreamRuntime::Settings::releaseUnusedSegments)
         bool   m_demoteChunks               = false;  // Demote Chunks on Zoom Out. Off: detail already shown stays when the view coarsens (decay can still drain it). On: it fades back to the coarser level and is dropped
         bool   m_autoSplatSize       = true;   // Auto Splat Size: disc radius from each level's point spacing (m_lodSpacing x m_autoSplatCoverage), not the size classes
@@ -660,7 +686,7 @@ namespace Splat
         void   StepStreamTest();
         // A scripted run (a test, a calibration, --bake-to, --capture-views): nobody is there to answer a dialog
         uint64_t m_sourceHash = 0;                  // Hash of the scan file loaded (BakeTuningCache): its bakes are remembered against it; 0 = a package, or nothing loaded
-        bool   Unattended() const { return !m_lodTestFolder.empty() || !m_lodCalFolder.empty() || m_streamTest || !m_cliBakeOutput.empty() || !m_viewCapFolder.empty(); }
+        bool   Unattended() const { return !m_lodTestFolder.empty() || !m_lodCalFolder.empty() || m_streamTest || !m_cliBakeOutput.empty() || !m_viewCapFolder.empty() || !m_camCapFolder.empty() || m_ringTest; }
         // --capture-views: level 0 from eight directions (plus the first again: the noise floor), written as .rgba files
         // and, with --reference, compared with another package's capture (StepViewCapture)
         std::string              m_viewCapFolder;
@@ -674,6 +700,71 @@ namespace Splat
         std::vector<RgbaImage>   m_viewCapImages;
         void   StepViewCapture();
         void   FinishViewCapture();
+        // Training cameras (TrainingCameras.h): the scan's cameras.json (beside the file loaded, or --cameras), viewed
+        // through the renderer's pose camera. Any orbit input leaves the pose and orbits on from where it was.
+        std::vector<TrainingCamera> m_trainingCameras;
+        std::string m_trainingCamerasFor;           // The m_loadedFilePath they were looked up for
+        std::string m_camerasOverride;              // --cameras <cameras.json>
+        int      m_poseCameraIndex = -1;            // The training camera on screen; -1 = the orbit camera
+        int      m_trainingCameraPick = 0;          // The Renderer tab's selection
+        float    m_poseOrbitYaw = 0.0f, m_poseOrbitPitch = 0.0f, m_poseOrbitDistance = 0.0f;
+        XMFLOAT3 m_poseOrbitTarget = { 0.0f, 0.0f, 0.0f };
+        void   ViewTrainingCamera(int index);
+        // The kind of scan loaded, decided once per file from level 0 (docs/design/environment-scenes.md): an environment
+        // (a 3DGS capture of a place: a dense core in a far wider shell) or an object. An environment loads with the
+        // occlusion volume off (for the session: show_occlusion_volume stays the choice for objects), opens at training
+        // camera 0 or inside its core, and does not auto-rotate.
+        PackageView m_packageView;                  // The opened package's view settings (GSTXVEW1), when it carries them
+        std::string m_sceneOverride;                // --scene environment|object: overrides the detection and the package
+        bool        m_sceneIsEnvironment = false;
+        std::string m_sceneClassFor;                // The m_loadedFilePath it was decided for
+        XMFLOAT3    m_coreCentre = { 0.0f, 0.0f, 0.0f };
+        float       m_coreRadius50 = 0.0f, m_coreRadius99 = 0.0f; // Radii about the core centre holding half and 99% of level 0
+        // What an environment is of (PackageView's subject): where its training cameras converge, out to where level 0's
+        // density falls to a tenth of the centre's; streamed first. Radius 0 = none.
+        XMFLOAT3    m_subjectCentre = { 0.0f, 0.0f, 0.0f };
+        float       m_subjectRadius = 0.0f;
+        bool        m_noSubject = false;            // --no-subject: no boost (the measurement's baseline)
+        // The background behind the model (Renderer tab, Background; config background_*). Recommended takes the package's
+        // own (PackageView background) or, for a scan, BackgroundEstimate's; the others are the user's own and win over it.
+        enum BackgroundChoice { BgRecommended = 0, BgBlack, BgStudioWhite, BgLightGrey, BgDarkGrey, BgCustom, BgGradient, BgImage, BgChoiceCount };
+        int         m_backgroundChoice = BgRecommended;
+        XMFLOAT3    m_bgCustom = { 0.5f, 0.5f, 0.5f };
+        XMFLOAT3    m_bgGradientTop = { 0.45f, 0.62f, 0.85f };     // Sky
+        XMFLOAT3    m_bgGradientBottom = { 0.85f, 0.88f, 0.92f };
+        std::string m_bgImagePath;
+        PackageBackground m_recommendedBackground;  // For the loaded file (ApplySceneDefaults); written into the package on save
+        void        ApplyBackground();              // m_state's backdrop from the choice, every frame
+        // The loading veil (State::loadingBlurPx): armed by a load, an Evict or a jump to a training camera; while armed,
+        // the scene is blurred by up to 0.8% of the window height, easing out as the fill (an environment: its residency
+        // ring at its levels; an object: the drawn blocks at theirs) goes from 40% to 75%, then disarmed until the next.
+        bool        m_loadingBlurEnabled = true;   // Renderer tab, Loading Blur
+        bool        m_loadingBlurArmed = false;
+        float       m_loadFill = 1.0f;              // 0..1, refreshed four times a second while armed
+        double      m_loadFillTimer = 0.0;
+        void        ArmLoadingBlur() { m_loadingBlurArmed = true; m_loadFill = 0.0f; m_loadFillTimer = 1.0; }
+        void        UpdateLoadingBlur(const XMFLOAT3& eye);
+        // --ring-test: an environment is evicted and refills at 5G for 30 s at its view, then the view turns a full circle in place over 24 s
+        // (the eye still, as a right-drag look); every second the trace gives the residency ring's blocks resident at
+        // their distance level, of all of them. Conservative with Release Unused, as an environment loads. Quits after.
+        bool        m_ringTest = false;
+        double      m_ringTestSeconds = 0.0;
+        double      m_ringTestReport = 0.0;
+        void        StepRingTest();
+        static float SubjectRadius(const SplatPointArray& points, const XMFLOAT3& centre, float maxRadius);
+        void   ApplySceneDefaults();                // Once per frame, after UpdatePoseCamera
+        void   UpdatePoseCamera();                  // Once per frame, before the camera reaches the renderer and the stream
+        // --camera-capture <folder> [--camera-list i,j,...]: once fully resident, each training camera as camera_NNN.png
+        std::string      m_camCapFolder;
+        std::vector<int> m_camCapList;
+        size_t   m_camCapIndex = 0;
+        bool     m_camCapRunning = false, m_camCapRequested = false;
+        double   m_camCapStableSeconds = -1.0;
+        uint64_t m_camCapLastSplats = 0;
+        RgbaImage m_camCapImage;
+        int      m_cliStartCamera = -1;             // --camera N: start at training camera N
+        bool     m_camCapLevel0 = false;            // --level0: the capture draws level 0 everywhere
+        void   StepCameraCapture();
         // A level's refinement-visualizer tint (Splat.hlsl kArrivalGlowLevelHue, rotated by Glow Hue) at the given HSV
         // saturation and value: the Level tint legend and the residency graph share it
         ImVec4 LevelTint(int lod, float saturation, float value) const;
@@ -698,7 +789,7 @@ namespace Splat
         ImVec4 m_loupeRect = ImVec4(0.0f, 0.0f, 0.0f, 0.0f); // Inset x0, y0, x1, y1 last frame (for grabbing it)
         int    m_loupeDrag = 0;                      // The drag in progress (kLoupeDrag* bits); 0 = none
         int    m_loupeHover = 0;                     // What a drag would do from where the mouse is (highlighted)
-        bool   m_loupeEnabled = true;                // Shown by default (user, 2026-10-26)
+        bool   m_loupeEnabled = false;               // Off by default (user, 2026-10-26); L toggles it, remembered in config (loupe_enabled)
         float  m_loupeZoom = 8.0f;
         int    m_loupeViz = 0;                       // Inset display: 0 normal, 1 splat outlines, 2 random colour per splat, 3 centres (Shift+V cycles it)
         int    m_splatViz = 0;                       // The same display for the whole model (Renderer tab "Splat Display"; V cycles it)

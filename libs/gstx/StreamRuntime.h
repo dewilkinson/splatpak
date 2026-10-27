@@ -17,7 +17,7 @@
 #include "StreamOrder.h"
 #include "DetailHeatmap.h"
 #include "SplatCodec.h"
-#include "../../src/SplatCore/WaveletTypes.h"
+#include "GstxTypes.h"
 
 namespace Splat
 {
@@ -27,11 +27,15 @@ namespace Splat
         size_t   chunkIndex = 0;
         XMFLOAT3 center = { 0, 0, 0 };
         float    radius = 0.0f;
+        // The block's point spacing over its level's typical one (the level's median block): about 1 in a dense
+        // region, larger where the level thins out (an environment's background). Scales the coarse levels' Gaussian
+        // cap per block, so a sparse block's Gaussians are not shrunk to specks by a spacing measured in the core.
+        float    spacingRatio = 1.0f;
         XMFLOAT3 avgNormal = { 0, 1, 0 };      // Representative surface normal for silhouette edge testing
         float    normalSpread = 0.0f;          // Normal angular variation
         float    detailScore = 0.0f;           // 0..1 from the package's detail grid over this block's bounds (DetailGrid::SampleBox); an input to the streaming order
         uint8_t  octahedronFace = 0;           // Face (0..7) of the bounding octahedron this block was assigned by StreamOrder::Build
-        std::vector<SplatPoint>   rawSplats;
+        SplatPointArray   rawSplats;
         std::vector<PackedPointGPU> packedPoints;
         size_t   byteSize = 0;
         float    currentPriority = 0.0f;
@@ -74,7 +78,7 @@ namespace Splat
 
     struct ResidentLOD
     {
-        std::vector<SplatPoint> rawSplats;
+        SplatPointArray rawSplats;
         std::vector<PackedPointGPU> packedPoints;
         std::vector<PackedSplatGPU> splats;   // Splat mode: the level's 20-byte Gaussian records
         std::vector<uint8_t>        splatSH;  // Splat mode: the level's spherical-harmonics stream
@@ -124,6 +128,25 @@ namespace Splat
         bool            showChunkStream = true;              // Arrival glow on delivered blocks
         float           chunkStreamDuration = 2.5f;
         bool            splatDrawAsDiscs = false;
+        // An environment scene (docs/design/environment-scenes.md): a capture of a place, viewed from inside. Requests rank
+        // by screen-space error (a block's level spacing over its distance, weighted by whether it is in view) and are
+        // delivered strictly in that order; nothing is dealt out across the bounding octahedron's faces, which mean nothing
+        // from inside. "Needed" is in the frustum (plus the neighbour buffer) or inside the residency ring: every block
+        // within residencyRingRadius of the eye (a flattened disc: half as far up and down) is requested at the level its
+        // distance alone asks for, behind everything in view, so turning round finds it loaded.
+        bool            environmentScene = false;
+        float           residencyRingRadius = 0.0f;          // Metres; 0 = no ring
+        // The view's requests ranked by screen-space error and delivered strictly in that order, for every model (an
+        // environment always): measured 2026-10-26 at 5G, 2.4-2.6x as much level 0 on screen at each second on the bicycle
+        // and about 2.6x the view's requests delivered per second on Cthulhu, against the octahedron's face-balanced
+        // order. Objects keep the face test as the filter for their hidden side until visibility feedback replaces it.
+        bool            screenSpaceOrder = true;
+        // What the scan is of (PackageView's subject: where the training cameras converge, out to where the density falls
+        // away): blocks touching it rank kSubjectBoost times higher, for delivery and for the cross-fade admission alike,
+        // so the subject reaches its level before the scenery around it. Radius 0 = none.
+        XMFLOAT3        subjectCentre = { 0.0f, 0.0f, 0.0f };
+        float           subjectRadius = 0.0f;
+        bool            subjectBoost = true;             // Off: the subject is only measured (the render-list trace), not ranked higher
     };
 
     // The camera the stream follows (the frozen one, when detached), and the viewport
@@ -135,6 +158,15 @@ namespace Splat
         float    detachedPitch = 0.35f, detachedYaw = 0.6f, detachedDistance = 25.0f;
         XMFLOAT3 detachedTarget = { 0.0f, 0.0f, 0.0f };
         uint32_t width = 1440, height = 900;
+        // A host with its own camera (the UE5 plugin) sets explicitView and gives the view directly, in model space:
+        // the eye, the view direction, the view-projection (row vectors, clip = p * viewProj, clip z over [0, w] in
+        // either direction, so reversed and infinite depth work) and the vertical field of view. The orbit fields
+        // above are then ignored.
+        bool       explicitView = false;
+        XMFLOAT3   eye = { 0.0f, 0.0f, 0.0f };
+        XMFLOAT3   forward = { 0.0f, 0.0f, -1.0f };
+        XMFLOAT4X4 viewProj = {};
+        float      fovY = 0.78539816f;
     };
 
     class StreamRuntime
@@ -177,6 +209,17 @@ namespace Splat
         float ContinuousLodAtDepth(float viewDepth) const;
         bool PerBlockLodActive() const;
         int BlockTargetLOD(const StreamChunk& c, const XMFLOAT3& eye) const;
+        // Environment scenes: whether a block lies in the residency ring around the eye (settings.residencyRingRadius;
+        // a flattened disc, its height half its radius)
+        bool InResidencyRing(const StreamChunk& c, const XMFLOAT3& eye) const
+        {
+            const float r = settings.residencyRingRadius;
+            if (!settings.environmentScene || r <= 0.0f) return false;
+            const float dx = c.center.x - eye.x, dy = (c.center.y - eye.y) * 2.0f, dz = c.center.z - eye.z;
+            const float reach = r + c.radius;
+            return dx * dx + dy * dy + dz * dz <= reach * reach;
+        }
+        float m_ringRequestTimer = 0.0f;           // The residency ring's requests are refreshed four times a second
         bool Greedy() const { return settings.streamingPolicy == StreamSettings::Policy::Greedy; }
         int  GreedyFloor() const { return m_greedyFloor; } // Greedy with releaseUnusedSegments: the finest level a visible block renders at (this frame)
         float LodSwitchDistance(int level, bool screenSpace) const;
@@ -198,7 +241,7 @@ namespace Splat
         std::vector<MeshletChunkGPU>          m_rendererMeshletChunks;
         std::vector<StreamChunk*>             m_rendererSourceChunks;
         std::vector<PackedPointGPU>          m_unifiedPackedSplats;
-        std::vector<SplatPoint>             m_unifiedRawSplats;
+        SplatPointArray             m_unifiedRawSplats;
         std::vector<PackedSplatGPU>           m_unifiedSplats;
         std::vector<uint8_t>                  m_unifiedSH;
         StreamOrder               m_streamOrder;
@@ -225,6 +268,7 @@ namespace Splat
         bool     m_streamReorderPending = false, m_finishBatchPending = false, m_orderEyeValid = false, m_streamStateDirty = true;
         XMFLOAT3 m_orderEye = { 0, 0, 0 }, m_pendingOrderEye = { 0, 0, 0 }, m_lastStreamCamPos = { 1e9f, 1e9f, 1e9f };
         float    m_lastStreamPitch = 1e9f, m_lastStreamYaw = 1e9f;
+        XMFLOAT3 m_lastStreamForward = { 0, 0, 0 };   // Explicit view: the direction at the last camera move
 
     private:
         static void Trace(const char* fmt, ...);

@@ -15,6 +15,7 @@
 #include <iostream>
 #include <algorithm>
 #include <cmath>
+#include <thread>
 #include "WaveletTypes.h"
 #include "../../libs/gstx/SplatCodec.h"
 
@@ -39,8 +40,15 @@ namespace Splat
         // opacity), every kept point's Gaussian is appended here and the point's sourceIndex refers to
         // it -- the input of a splat-mode bake. With outSplat given the floater cull is skipped, so the
         // large soft Gaussians that fill smooth surfaces survive. Left empty for plain point clouds.
-        static bool LoadPLY(const std::string& filepath, std::vector<SplatPoint>& outSplats, double originOut[3],
-                            std::vector<SplatAttributes>* outSplat = nullptr)
+        // Threads for a file of this many vertices: one per core, none below 64k vertices each
+        static unsigned ThreadsFor(uint32_t vertexCount)
+        {
+            const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
+            return std::max(1u, std::min(cores, vertexCount / 65536u));
+        }
+
+        static bool LoadPLY(const std::string& filepath, SplatPointArray& outSplats, double originOut[3],
+                            SplatAttributeArray* outSplat = nullptr)
         {
             originOut[0] = 0.0;
             originOut[1] = 0.0;
@@ -108,7 +116,6 @@ namespace Splat
             }
 
             outSplats.clear();
-            outSplats.resize(vertexCount);
 
             if (isBinary)
             {
@@ -182,13 +189,35 @@ namespace Splat
                 int vertexStride = currentByte;
                 if (vertexStride <= 0) return false;
 
+                // The vertex block, read on several threads at once (each opens the file and reads its own byte range): a
+                // multi-gigabyte scan reads at the drive's speed rather than one stream's
                 std::vector<uint8_t> rawData((size_t)vertexCount * vertexStride);
-                in.read(reinterpret_cast<char*>(rawData.data()), rawData.size());
-                if (!in && in.gcount() < (std::streamsize)rawData.size())
                 {
-                    // Partial read fallback
-                    vertexCount = (uint32_t)(in.gcount() / vertexStride);
-                    outSplats.resize(vertexCount);
+                    const std::streamoff dataStart = in.tellg();
+                    const unsigned threads = ThreadsFor(vertexCount);
+                    std::vector<std::thread> pool;
+                    std::vector<size_t> got(threads, 0);
+                    for (unsigned t = 0; t < threads; t++)
+                    {
+                        pool.emplace_back([&, t]()
+                        {
+                            const size_t first = (size_t)vertexCount * t / threads, last = (size_t)vertexCount * (t + 1) / threads;
+                            std::ifstream part(filepath, std::ios::binary);
+                            part.seekg(dataStart + (std::streamoff)(first * vertexStride));
+                            part.read(reinterpret_cast<char*>(rawData.data() + first * vertexStride), (std::streamsize)((last - first) * vertexStride));
+                            got[t] = (size_t)part.gcount();
+                        });
+                    }
+                    for (auto& th : pool) th.join();
+                    // A short file: keep the whole vertices that were read before the first gap
+                    size_t complete = 0;
+                    for (unsigned t = 0; t < threads; t++)
+                    {
+                        const size_t first = (size_t)vertexCount * t / threads, last = (size_t)vertexCount * (t + 1) / threads;
+                        if (got[t] < (last - first) * vertexStride) { complete = first + got[t] / vertexStride; break; }
+                        complete = last;
+                    }
+                    if (complete < vertexCount) vertexCount = (uint32_t)complete;
                 }
 
                 // Check for large geospatial offset on first vertex
@@ -215,19 +244,67 @@ namespace Splat
                 }
 
                 outSplats.clear();
-                outSplats.reserve(vertexCount);
 
                 // Splat mode input: the full Gaussian per point, when asked for and the file has one.
                 const bool keepSplat = outSplat != nullptr && fdc0Offset >= 0 && scale0Offset >= 0 && scale1Offset >= 0 && scale2Offset >= 0
                                        && rot0Offset >= 0 && rot1Offset >= 0 && rot2Offset >= 0 && rot3Offset >= 0;
-                if (outSplat != nullptr) { outSplat->clear(); if (keepSplat) outSplat->reserve(vertexCount); }
+                if (outSplat != nullptr) outSplat->clear();
                 int frestCount = 0;
                 while (frestCount < (int)kSplatSHMaxCoefficients && frestOffset[frestCount] >= 0) frestCount++;
                 const int shPerChannel = frestCount / 3; // 3DGS lays f_rest out channel-major: all of R, then all of G, then all of B
 
-                for (uint32_t i = 0; i < vertexCount; i++)
+                // Every vertex on several threads, in two passes over the same ranges: each range first counts the vertices it
+                // keeps (the culls below, alone), then converts them straight into place in the output. The result is exactly
+                // the single-threaded one, and nothing is copied twice (a large scan's Gaussians run to gigabytes).
+                const unsigned threads = ThreadsFor(vertexCount);
+                auto rangeFirst = [&](unsigned t) { return (uint32_t)((uint64_t)vertexCount * t / threads); };
+                auto kept = [&](const uint8_t* ptr) -> bool
                 {
-                    const uint8_t* ptr = &rawData[i * vertexStride];
+                    float opacity = 1.0f;
+                    if (opacityOffset >= 0)
+                    {
+                        float opLogit = *reinterpret_cast<const float*>(ptr + opacityOffset);
+                        opacity = 1.0f / (1.0f + std::exp(-opLogit));
+                        if (opacity < kMinOpacityToKeep) return false;
+                    }
+                    if (!keepSplat && opacity < kFloaterOpacityThreshold && scale0Offset >= 0 && scale1Offset >= 0 && scale2Offset >= 0)
+                    {
+                        float sortedS[3] = { std::exp(*reinterpret_cast<const float*>(ptr + scale0Offset)), std::exp(*reinterpret_cast<const float*>(ptr + scale1Offset)),
+                                             std::exp(*reinterpret_cast<const float*>(ptr + scale2Offset)) };
+                        std::sort(sortedS, sortedS + 3);
+                        if (sortedS[1] > kFloaterScaleThreshold) return false;
+                    }
+                    return true;
+                };
+                std::vector<size_t> base(threads + 1, 0);
+                {
+                    std::vector<std::thread> pool;
+                    for (unsigned t = 0; t < threads; t++)
+                        pool.emplace_back([&, t]()
+                        {
+                            size_t n = 0;
+                            for (uint32_t i = rangeFirst(t); i < rangeFirst(t + 1); i++) n += kept(&rawData[(size_t)i * vertexStride]) ? 1 : 0;
+                            base[t + 1] = n;
+                        });
+                    for (auto& th : pool) th.join();
+                }
+                for (unsigned t = 0; t < threads; t++) base[t + 1] += base[t];
+                // Sized without constructing anything (BulkAllocator::Uninitialized): each thread constructs its own range below,
+                // so the gigabytes of a large scan are written once, in parallel, into pages the OS hands over zeroed
+                {
+                    BulkAllocator<SplatPoint>::Uninitialized pointsUninitialized;
+                    outSplats.resize(base[threads]);
+                }
+                if (keepSplat)
+                {
+                    BulkAllocator<SplatAttributes>::Uninitialized attributesUninitialized;
+                    outSplat->resize(base[threads]);
+                }
+                auto convertRange = [&](size_t write, uint32_t first, uint32_t last)
+                {
+                for (uint32_t i = first; i < last; i++)
+                {
+                    const uint8_t* ptr = &rawData[(size_t)i * vertexStride];
                     SplatPoint v;
 
                     // 3DGS Opacity filter: only cull true zero opacities
@@ -382,16 +459,24 @@ namespace Splat
                                 a.sh[3 * k + c] = (k < shPerChannel && idx < frestCount) ? *reinterpret_cast<const float*>(ptr + frestOffset[idx]) : 0.0f;
                             }
                         SplatCodec::ApplyAxisFlipToSH(a.sh);
-                        v.sourceIndex = (uint32_t)outSplat->size();
-                        outSplat->push_back(a);
+                        v.sourceIndex = (uint32_t)write;
+                        ::new (&(*outSplat)[write]) SplatAttributes(a);
                     }
 
-                    outSplats.push_back(v);
+                    ::new (&outSplats[write++]) SplatPoint(v);
+                }
+                };
+                {
+                    std::vector<std::thread> pool;
+                    for (unsigned t = 0; t < threads; t++)
+                        pool.emplace_back([&, t]() { convertRange(base[t], rangeFirst(t), rangeFirst(t + 1)); });
+                    for (auto& th : pool) th.join();
                 }
             }
             else
             {
                 // ASCII parsing
+                outSplats.resize(vertexCount);
                 for (uint32_t i = 0; i < vertexCount; i++)
                 {
                     SplatPoint v;

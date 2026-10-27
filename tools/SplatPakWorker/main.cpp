@@ -35,7 +35,7 @@ static std::string BuildIdentity()
     return hex;
 }
 
-static uint32_t SourceDegree(const std::vector<SplatAttributes>& attrs)
+static uint32_t SourceDegree(const SplatAttributeArray& attrs)
 {
     uint32_t degree = 0;
     for (const auto& a : attrs)
@@ -83,8 +83,8 @@ int main(int argc, char** argv)
     }
 
     progress(0.0f, "Reading the scan");
-    std::vector<SplatPoint> points;
-    std::vector<SplatAttributes> attrs;
+    SplatPointArray points;
+    SplatAttributeArray attrs;
     double origin[3] = {};
     if (!PLYLoader::LoadPLY(job.scan, points, origin, &attrs) || attrs.empty())
     {
@@ -106,7 +106,7 @@ int main(int argc, char** argv)
     }
     params.aabbMin = mn; params.aabbMax = mx;
     SplatCodec::ComputeScaleRange(attrs, (uint32_t)job.levels, params.scaleLog2Min, params.scaleLog2Max);
-    std::vector<const std::vector<SplatPoint>*> levels;
+    std::vector<const SplatPointArray*> levels;
     levels.push_back(&points);
     for (size_t l = 1; l < wavelet.lodLevels.size(); l++) levels.push_back(&wavelet.lodLevels[l].splats);
 

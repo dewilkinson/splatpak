@@ -363,6 +363,39 @@ A conforming reader:
 6. shall report a payload the linked codec cannot decode as an error;
 7. shall undo the transforms declared in `payloadTransforms` (Clauses 8.1 and 8.2) exactly, and shall reject a package that declares one it does not know.
 
+## 14. Trailing sections
+
+A package may end with optional text sections after everything the header's offsets reach. Each is written as its
+bytes, then their length (uint64, little-endian), then an 8-byte ASCII marker. Sections chain: a reader that wants one
+starts at the end of the file and steps back over each section whose marker it recognises (length plus 16 bytes) until
+it finds the one it wants, meets a marker it does not recognise, or reaches the package proper. Readers that want none
+never look; adding a section kind is not a format version change. A section is at most 64 MiB. A writer appends
+sections after the package is complete, in any order.
+
+### 14.1 RDO profile (GSTXRDO1)
+
+The rate-distortion analysis the package was encoded with (SplatPak's RDO profile text), so the encoder can show and
+reuse it when the package is opened again. Informative to viewers.
+
+### 14.2 View settings (GSTXVEW1)
+
+How a viewing application should open the package. UTF-8 text, one setting per line: a keyword and its values separated
+by spaces. The first line is `gstx-view 1`. A reader ignores keywords it does not know and uses its own defaults for
+settings that are absent. A writer that changes the settings of an existing package replaces this section rather than
+appending a second: it reads the chain back, cuts the file where the chain starts, and writes the other sections again
+followed by the new one.
+
+| Keyword | Values | Meaning |
+|---|---|---|
+| `scene` | `environment` or `object` | An environment is a capture of a place: a dense core inside a far wider shell (half the Gaussians within r50 of the core, 99% beyond 3 x r50). An object is a model in empty space. |
+| `core` | cx cy cz r50 r99 | The core's centre (the per-axis median of level 0) and the radii about it holding half and 99% of level 0, in model space, metres. |
+| `occlusion` | 0 or 1 | Whether the interior occlusion volume (clause 10) or occluder mesh (clause 12.1) starts enabled. An environment's volume is mostly air, so its writer states 0. |
+| `grid` | 0 or 1 | Whether an editor grid on the ground plane starts shown. |
+| `start_camera` | n | Index into the cameras below to open at. |
+| `subject` | cx cy cz r | What the scan is of: where the training cameras' view axes converge (least squares), out to where level 0's density falls to a tenth of the centre's. Model space, metres. A streaming reader may load it first. |
+| `background` | mode tr tg tb br bg bb basis | The recommended backdrop: `solid` or `gradient`, then the top and bottom colours, display-space (sRGB) 0..1 (both the same for `solid`; a gradient runs top to bottom of the view), then how the writer chose it, one word: `training` (the background the scan was optimised against), `shell` (an environment's own far edges above and below the horizon), `fringe` (an object's outer edges), `contrast` (a neutral against the subject's brightness) or `chosen` (set by hand). A viewer applies it unless its user has chosen a background of their own. |
+| `camera` | ex ey ez fx fy fz ux uy uz fovY width height name | One training camera, in model space (after the import's axis change, clause 9.4): the eye, the unit view direction, the unit up direction, the vertical field of view in radians, the photo's size in pixels, and the photo's name (no spaces). The cameras of a 3DGS scan's cameras.json, in its order. |
+
 ## Annex A (informative): rendering model of format 1
 
 The reference renderer draws a splat package the way the PlayCanvas / SuperSplat viewer draws a 3D Gaussian Splatting scene: the covariance of Clause 7.2 is projected with the perspective Jacobian at the splat's view-space position, dilated by 0.3 pixel on the diagonal, and eigen-decomposed; a quad of half-axes `2 × sqrt(2 × λ)` pixels is emitted, shrunk to where the Gaussian times opacity falls below 1/255; the fragment alpha is `(e^(−4A) − e^(−4)) / (1 − e^(−4)) × opacity` with A the squared distance in quad units; splats are composited far to near with premultiplied alpha, in display space by default.
@@ -371,6 +404,8 @@ The reference renderer draws a splat package the way the PlayCanvas / SuperSplat
 
 | Version | Date | Change |
 |:-:|---|---|
+| 14 | 2026-10-26 | Trailing sections (Clause 14): the RDO profile (GSTXRDO1, written since version 14 but undocumented) and the view settings (GSTXVEW1: scene type, core, occlusion on open, training cameras, start camera), chained from the end of the file. No layout or version change. |
+| 14 | 2026-10-26 | View settings: `grid`, `subject` and `background` documented; a section is replaced in place rather than appended again. No layout or version change. |
 | 14 | 2026-10-26 | SH residuals (Clause 8.2): every level's SH but a chunk's coarsest stored as the difference from a prediction off the next coarser level; the SH precision of each band in `payloadTransforms`. Lossless; Cthulhu's package 22% smaller. Header size unchanged. |
 | 13 | 2026-10-26 | Occluder mesh section (Clause 12.1): the occlusion volume as a mesh, in place of the voxel array; offset and size appended to the header, which grows to 240 bytes. Readers read version 13 only: the header extents of earlier versions, the companion JSON manifest and the defaults for absent fields are removed, and the rendering annex becomes Annex A. |
 | 12 | 2026-10-26 | Shadow mesh section (Clause 12): offset and size appended to the header, which grows to 224 bytes. Conformance moves to Clause 13. |

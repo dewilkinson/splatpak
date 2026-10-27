@@ -21,7 +21,7 @@ namespace Splat
         XMFLOAT3 aabbMax = { 0.0f, 0.0f, 0.0f };
         XMFLOAT3 center  = { 0.0f, 0.0f, 0.0f };
         float    boundingRadius = 0.0f;
-        std::vector<SplatPoint> splats;
+        SplatPointArray splats;
     };
 
     class SpatialOctree
@@ -62,7 +62,7 @@ namespace Splat
 
         // Partitions points into spatial chunks of maximum size chunkSizeMeters
         // Dynamic Spatial Partitioning targeting optimal 30,000 to 60,000 splats per chunk for GPU/CPU culling efficiency
-        static std::vector<ChunkData> PartitionIntoChunks(const std::vector<SplatPoint>& points, float chunkSizeMeters = 16.0f)
+        static std::vector<ChunkData> PartitionIntoChunks(const SplatPointArray& points, float chunkSizeMeters = 16.0f)
         {
             if (points.empty()) return {};
 
@@ -111,7 +111,7 @@ namespace Splat
                 }
             };
 
-            std::unordered_map<VoxelKey, std::vector<SplatPoint>, VoxelKeyHash> voxelMap;
+            std::unordered_map<VoxelKey, SplatPointArray, VoxelKeyHash> voxelMap;
             for (const auto& p : points)
             {
                 VoxelKey k;
@@ -185,7 +185,7 @@ namespace Splat
         // using 64-bit Morton Z-Order spatial curve sorting for maximum GPU L2 cache locality. The curve
         // spans the points' own bounds, or the box given by frameMin/frameMax (see MortonCodeInFrame).
         static void PartitionIntoMeshletChunks(
-            std::vector<SplatPoint>& inOutPoints,
+            SplatPointArray& inOutPoints,
             std::vector<MeshletChunkGPU>& outMeshletChunks,
             uint32_t splatsPerMeshlet = 128,
             bool enableMorton = true,
@@ -245,7 +245,7 @@ namespace Splat
                 });
 
                 // 3. Reorder points in Morton order
-                std::vector<SplatPoint> reorderedPoints(numPoints);
+                SplatPointArray reorderedPoints(numPoints);
                 #pragma omp parallel for
                 for (int i = 0; i < (int)numPoints; i++)
                 {

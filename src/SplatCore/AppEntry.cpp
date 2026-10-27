@@ -128,7 +128,7 @@ int Splat::RunSplatPakApp(HINSTANCE hInstance, LPSTR lpCmdLine, int nCmdShow, co
                 forwarded += "--render-path " + args[++i] + " ";
                 continue;
             }
-            if (a == "--stream-test" || a == "--remember-settings")
+            if (a == "--stream-test" || a == "--remember-settings" || a == "--level0" || a == "--no-taa" || a == "--no-subject" || a == "--ring-test")
             {
                 forwarded += a + " ";
                 continue;
@@ -142,6 +142,44 @@ int Splat::RunSplatPakApp(HINSTANCE hInstance, LPSTR lpCmdLine, int nCmdShow, co
                 }
                 forwarded += a + " \"" + args[++i] + "\" ";
                 continue;
+            }
+            if (a == "--camera-capture" || a == "--cameras" || a == "--camera" || a == "--camera-list" || a == "--size" || a == "--scene")
+            {
+                if (i + 1 >= args.size())
+                {
+                    ShowUsage(windowName, a + (a == "--size" ? " needs <W>x<H>" : a == "--camera" ? " needs a camera number" : a == "--camera-list" ? " needs camera numbers"
+                                                : a == "--cameras" ? " needs a cameras.json" : " needs a folder"));
+                    return 2;
+                }
+                forwarded += a + " \"" + args[++i] + "\" ";
+                continue;
+            }
+            // --set-background <package.gstx> solid <r,g,b> | gradient <top r,g,b> <bottom r,g,b> | none: writes the
+            // package's recommended background (PackageView, GSTXVEW1) in place and exits; no window
+            if (a == "--set-background")
+            {
+                auto colour = [](const std::string& s, DirectX::XMFLOAT3& c)
+                {
+                    return sscanf_s(s.c_str(), "%f,%f,%f", &c.x, &c.y, &c.z) == 3 && c.x >= 0.0f && c.x <= 1.0f && c.y >= 0.0f && c.y <= 1.0f && c.z >= 0.0f && c.z <= 1.0f;
+                };
+                const std::string pkg = i + 1 < args.size() ? args[i + 1] : std::string(), how = i + 2 < args.size() ? args[i + 2] : std::string();
+                Splat::PackageBackground bg;
+                bg.basis = "chosen";
+                bool ok = !pkg.empty();
+                if (how == "solid") { ok = ok && i + 3 < args.size() && colour(args[i + 3], bg.top); bg.bottom = bg.top; bg.mode = how; }
+                else if (how == "gradient") { ok = ok && i + 4 < args.size() && colour(args[i + 3], bg.top) && colour(args[i + 4], bg.bottom); bg.mode = how; }
+                else ok = ok && how == "none";
+                if (!ok)
+                {
+                    ShowUsage(windowName, "--set-background needs <package.gstx> solid <r,g,b> | gradient <r,g,b> <r,g,b> | none (0..1 each)");
+                    return 2;
+                }
+                Splat::PackageView view;
+                view.Read(pkg); // Kept: its other settings, if it has a view section
+                view.background = bg;
+                const bool written = view.Write(pkg);
+                Splat::LogTransitionTrace("--set-background: %s %s %s", pkg.c_str(), how.c_str(), written ? "written" : "FAILED");
+                return written ? 0 : 1;
             }
             if (a == "--sh-degree" || a == "--sh-bits")
             {

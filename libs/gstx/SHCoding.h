@@ -18,6 +18,7 @@
 #include <cmath>
 #include <cstdint>
 #include <cstring>
+#include <thread>
 #include <vector>
 #include "ColourTransform.h"
 
@@ -108,79 +109,87 @@ namespace Splat
 
         // For every record of a level, the index of the nearest record of the next coarser level (squared distance between
         // 16-bit positions, ties to the lowest index): exact, so a reader finds the same parent as the writer. Through a
-        // grid over the coarser level's own extent, about two of its records per cell.
+        // k-d tree over the coarser level (median splits, leaves of up to 8), which stays fast however unevenly the points
+        // are spread: a uniform grid over a large scene with a dense centre put tens of thousands of records in a cell
+        // (the bicycle, 168 m across: minutes per level). Large levels are searched on all cores.
         static void ParentMap(const uint8_t* child, size_t childCount, const uint8_t* parent, size_t parentCount, size_t recordBytes,
                               std::vector<uint32_t>& out)
         {
             out.assign(childCount, 0);
             if (parentCount == 0) return;
-            uint32_t lo[3] = { 0xFFFFu, 0xFFFFu, 0xFFFFu }, hi[3] = { 0, 0, 0 };
-            std::vector<uint32_t> pos(parentCount * 3);
+            std::vector<uint32_t> pos(parentCount * 3), idx(parentCount);
             for (size_t j = 0; j < parentCount; j++)
             {
                 RecordPosition(parent + j * recordBytes, &pos[j * 3]);
-                for (int a = 0; a < 3; a++) { lo[a] = std::min(lo[a], pos[j * 3 + a]); hi[a] = std::max(hi[a], pos[j * 3 + a]); }
+                idx[j] = (uint32_t)j;
             }
-            const uint32_t extent = std::max({ hi[0] - lo[0], hi[1] - lo[1], hi[2] - lo[2] }) + 1;
-            const uint32_t across = std::max(1u, std::min(256u, (uint32_t)std::cbrt((double)parentCount / 2.0)));
-            const uint32_t cell = std::max(1u, (extent + across - 1) / across);
-            int dim[3];
-            for (int a = 0; a < 3; a++) dim[a] = (int)((hi[a] - lo[a]) / cell) + 1;
-            auto cellOfPos = [&](const uint32_t* p, int c[3])
+            // Node n covers idx[begin, end); an inner node splits at its median on its widest axis, children at 2n + 1, 2n + 2
+            // (left: coordinate <= split, right: >= split)
+            struct Node { uint32_t begin, end, split; int axis; };
+            std::vector<Node> nodes;
+            constexpr uint32_t kLeaf = 8;
+            nodes.push_back({ 0, (uint32_t)parentCount, 0, -1 });
+            for (size_t n = 0; n < nodes.size(); n++)
             {
-                for (int a = 0; a < 3; a++)
+                Node node = nodes[n];
+                if (node.end - node.begin <= kLeaf) continue;
+                uint32_t lo[3] = { 0xFFFFu, 0xFFFFu, 0xFFFFu }, hi[3] = { 0, 0, 0 };
+                for (uint32_t k = node.begin; k < node.end; k++)
+                    for (int a = 0; a < 3; a++) { lo[a] = std::min(lo[a], pos[idx[k] * 3 + a]); hi[a] = std::max(hi[a], pos[idx[k] * 3 + a]); }
+                const int axis = hi[0] - lo[0] >= hi[1] - lo[1] && hi[0] - lo[0] >= hi[2] - lo[2] ? 0 : hi[1] - lo[1] >= hi[2] - lo[2] ? 1 : 2;
+                const uint32_t mid = node.begin + (node.end - node.begin) / 2;
+                std::nth_element(idx.begin() + node.begin, idx.begin() + mid, idx.begin() + node.end,
+                    [&](uint32_t a, uint32_t b) { return pos[a * 3 + axis] < pos[b * 3 + axis]; });
+                nodes[n].axis = axis;
+                nodes[n].split = pos[idx[mid] * 3 + axis];
+                if (nodes.size() < 2 * n + 3) nodes.resize(2 * n + 3, { 0, 0, 0, -1 });
+                nodes[2 * n + 1] = { node.begin, mid, 0, -1 };
+                nodes[2 * n + 2] = { mid, node.end, 0, -1 };
+            }
+            auto search = [&](size_t first, size_t last)
+            {
+                // Each entry: a node and the least squared distance any of its records can be at (0 if unknown); it is
+                // skipped when that is beyond the best so far (an equal distance is still searched, for the lowest index)
+                std::vector<std::pair<uint32_t, uint64_t>> stack;
+                for (size_t i = first; i < last; i++)
                 {
-                    const int64_t v = ((int64_t)p[a] - (int64_t)lo[a]) / (int64_t)cell;
-                    c[a] = (int)std::max<int64_t>(0, std::min<int64_t>(dim[a] - 1, p[a] < lo[a] ? -1 : v));
+                    uint32_t p[3];
+                    RecordPosition(child + i * recordBytes, p);
+                    uint64_t best = UINT64_MAX;
+                    uint32_t bestIndex = 0;
+                    stack.assign(1, { 0u, 0ull });
+                    while (!stack.empty())
+                    {
+                        const uint32_t n = stack.back().first;
+                        const uint64_t bound = stack.back().second;
+                        stack.pop_back();
+                        if (bound > best) continue;
+                        const Node& node = nodes[n];
+                        if (node.axis < 0)
+                        {
+                            for (uint32_t k = node.begin; k < node.end; k++)
+                            {
+                                const uint32_t j = idx[k];
+                                const int64_t dx = (int64_t)pos[j * 3] - p[0], dy = (int64_t)pos[j * 3 + 1] - p[1], dz = (int64_t)pos[j * 3 + 2] - p[2];
+                                const uint64_t dd = (uint64_t)(dx * dx + dy * dy + dz * dz);
+                                if (dd < best || (dd == best && j < bestIndex)) { best = dd; bestIndex = j; }
+                            }
+                            continue;
+                        }
+                        // The far side is at least |d| away on the split axis; the near side is searched first
+                        const int64_t d = (int64_t)p[node.axis] - (int64_t)node.split;
+                        const uint32_t nearChild = d < 0 ? 2 * n + 1 : 2 * n + 2, farChild = d < 0 ? 2 * n + 2 : 2 * n + 1;
+                        stack.push_back({ farChild, std::max(bound, (uint64_t)(d * d)) });
+                        stack.push_back({ nearChild, bound });
+                    }
+                    out[i] = bestIndex;
                 }
             };
-            const size_t cells = (size_t)dim[0] * dim[1] * dim[2];
-            std::vector<uint32_t> start(cells + 1, 0), order(parentCount), cellOf(parentCount);
-            for (size_t j = 0; j < parentCount; j++)
-            {
-                int c[3];
-                cellOfPos(&pos[j * 3], c);
-                cellOf[j] = (uint32_t)(((size_t)c[2] * dim[1] + c[1]) * dim[0] + c[0]);
-                start[cellOf[j] + 1]++;
-            }
-            for (size_t c = 1; c < start.size(); c++) start[c] += start[c - 1];
-            std::vector<uint32_t> fill(start.begin(), start.end() - 1);
-            for (size_t j = 0; j < parentCount; j++) order[fill[cellOf[j]]++] = (uint32_t)j; // Ascending index within a cell
-            const int maxRing = std::max({ dim[0], dim[1], dim[2] });
-            for (size_t i = 0; i < childCount; i++)
-            {
-                uint32_t p[3];
-                RecordPosition(child + i * recordBytes, p);
-                int c[3];
-                cellOfPos(p, c);
-                uint64_t best = UINT64_MAX;
-                uint32_t bestIndex = 0;
-                for (int r = 0; r <= maxRing; r++)
-                {
-                    // Every record outside the rings searched so far is at least r - 1 cells away on some axis (also from a
-                    // point outside the grid, which is farther still)
-                    if (r > 0 && best != UINT64_MAX)
-                    {
-                        const uint64_t reach = (uint64_t)(r - 1) * cell;
-                        if (reach * reach > best) break;
-                    }
-                    for (int z = std::max(0, c[2] - r); z <= std::min(dim[2] - 1, c[2] + r); z++)
-                        for (int y = std::max(0, c[1] - r); y <= std::min(dim[1] - 1, c[1] + r); y++)
-                            for (int x = std::max(0, c[0] - r); x <= std::min(dim[0] - 1, c[0] + r); x++)
-                            {
-                                if (std::max({ std::abs(x - c[0]), std::abs(y - c[1]), std::abs(z - c[2]) }) != r) continue;
-                                const size_t cl = ((size_t)z * dim[1] + y) * dim[0] + x;
-                                for (uint32_t k = start[cl]; k < start[cl + 1]; k++)
-                                {
-                                    const uint32_t j = order[k];
-                                    const int64_t dx = (int64_t)pos[j * 3] - p[0], dy = (int64_t)pos[j * 3 + 1] - p[1], dz = (int64_t)pos[j * 3 + 2] - p[2];
-                                    const uint64_t dd = (uint64_t)(dx * dx + dy * dy + dz * dz);
-                                    if (dd < best || (dd == best && j < bestIndex)) { best = dd; bestIndex = j; }
-                                }
-                            }
-                }
-                out[i] = bestIndex;
-            }
+            const unsigned threads = childCount < 131072 ? 1u : std::max(1u, std::min(std::thread::hardware_concurrency(), (unsigned)(childCount / 65536)));
+            if (threads == 1) { search(0, childCount); return; }
+            std::vector<std::thread> pool;
+            for (unsigned t = 0; t < threads; t++) pool.emplace_back(search, childCount * t / threads, childCount * (t + 1) / threads);
+            for (auto& th : pool) th.join();
         }
 
         // The ratio of two f16 scales as a fixed-point factor with 24 fraction bits, rounded half up and held to 2^31 (at

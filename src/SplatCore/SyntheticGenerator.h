@@ -22,9 +22,9 @@ namespace Splat
         static constexpr float k2Pi = 6.28318530718f;
 
         // Generates a synthetic urban city street scene with buildings, roads, sidewalks, and procedural details
-        static std::vector<SplatPoint> GenerateUrbanStreetScene(uint32_t targetPointCount = 500000)
+        static SplatPointArray GenerateUrbanStreetScene(uint32_t targetPointCount = 500000)
         {
-            std::vector<SplatPoint> splats;
+            SplatPointArray splats;
             splats.reserve(targetPointCount);
 
             std::mt19937 rng(42);
@@ -160,7 +160,7 @@ namespace Splat
         }
 
         // Exports a vector of splats to a standard binary PLY file
-        static bool ExportToPLY(const std::string& filepath, const std::vector<SplatPoint>& splats)
+        static bool ExportToPLY(const std::string& filepath, const SplatPointArray& splats)
         {
             std::ofstream out(filepath, std::ios::binary);
             if (!out.is_open()) return false;

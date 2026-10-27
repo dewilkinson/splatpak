@@ -15,6 +15,7 @@
 #include <fstream>
 #include <sstream>
 #include <string>
+#include "PackageFooters.h"
 #include "RdoAnalysis.h"
 
 namespace Splat
@@ -155,41 +156,12 @@ namespace Splat
             return true;
         }
     };
-    // A package's RDO profile, kept in the .gstx itself: the profile text after everything else, then its length (uint64)
-    // and the marker "GSTXRDO1" as the file's last 16 bytes. Readers find every section through the header's offsets,
-    // so the footer is invisible to them (no format version change); SplatPak reads it back when it opens the package.
+    // A package's RDO profile, kept in the .gstx itself as the trailing section GSTXRDO1 (PackageFooters.h): invisible
+    // to readers that do not look for it (no format version change); SplatPak reads it back when it opens the package.
     namespace PackageRdoFooter
     {
         constexpr char kMarker[8] = { 'G', 'S', 'T', 'X', 'R', 'D', 'O', '1' };
-
-        inline bool Append(const std::string& packagePath, const std::string& text)
-        {
-            std::ofstream out(packagePath, std::ios::binary | std::ios::app);
-            if (!out || text.empty()) return false;
-            const uint64_t size = text.size();
-            out.write(text.data(), (std::streamsize)text.size());
-            out.write(reinterpret_cast<const char*>(&size), sizeof(size));
-            out.write(kMarker, sizeof(kMarker));
-            return (bool)out;
-        }
-
-        inline bool Read(const std::string& packagePath, std::string& text)
-        {
-            std::ifstream in(packagePath, std::ios::binary | std::ios::ate);
-            if (!in) return false;
-            const std::streamoff fileSize = in.tellg();
-            if (fileSize < 16) return false;
-            char tail[16];
-            in.seekg(fileSize - 16);
-            in.read(tail, 16);
-            if (!in || memcmp(tail + 8, kMarker, sizeof(kMarker)) != 0) return false;
-            uint64_t size = 0;
-            memcpy(&size, tail, sizeof(size));
-            if (size == 0 || size > (uint64_t)(fileSize - 16) || size > (64u << 20)) return false;
-            text.resize((size_t)size);
-            in.seekg(fileSize - 16 - (std::streamoff)size);
-            in.read(&text[0], (std::streamsize)size);
-            return (bool)in;
-        }
+        inline bool Append(const std::string& packagePath, const std::string& text) { return PackageFooters::Append(packagePath, kMarker, text); }
+        inline bool Read(const std::string& packagePath, std::string& text) { return PackageFooters::Read(packagePath, kMarker, text); }
     }
 }

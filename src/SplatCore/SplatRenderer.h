@@ -32,6 +32,27 @@ namespace Splat
             float    camDistance = 15.0f;
             XMFLOAT3 camTarget   = { 0.0f, 0.0f, 0.0f };
             float    aspectRatio = 16.0f / 9.0f;
+            // A pose camera (a scan's training camera, TrainingCameras.h) in place of the orbit above: eye, unit view
+            // direction and up, in model space. fovY is the vertical field of view of every projection either way.
+            bool     poseCamera  = false;
+            XMFLOAT3 poseEye     = { 0.0f, 0.0f, 0.0f };
+            XMFLOAT3 poseForward = { 0.0f, 0.0f, -1.0f };
+            XMFLOAT3 poseUp      = { 0.0f, 1.0f, 0.0f };
+            float    fovY        = 0.78539816f; // XM_PIDIV4
+            // Depth range of every projection: far reaches the model's farthest corner from the eye (at least 500 m), near
+            // is far / 100000 held to 5 mm .. 10 cm, so a subject a hand's width away and a background 100 m off both show
+            float    nearZ       = 0.1f;
+            float    farZ        = 500.0f;
+            // The loading veil: the finished scene blurred by a Gaussian of this many pixels (sigma) while a scene's first
+            // levels and its residency ring arrive (LoadingBlurCS.hlsl); 0 = none. The app eases it out as the ring fills.
+            float    loadingBlurPx = 0.0f;
+            // The backdrop behind the model (Backdrop.hlsl): 0 a solid colour (bgBottom), 1 a vertical gradient from bgTop to
+            // bgBottom, 2 the image at backdropImage scaled to cover the view (bgBottom while it loads or if it fails).
+            // Colours are display-space (sRGB) 0..1.
+            uint32_t backdropMode = 0;
+            XMFLOAT3 bgTop       = { 0.0f, 0.0f, 0.0f };
+            XMFLOAT3 bgBottom    = { 0.0f, 0.0f, 0.0f };
+            std::string backdropImage;
             bool     autoRotate  = false;
             float    time        = 0.0f;
 
@@ -113,6 +134,7 @@ namespace Splat
             uint32_t                 shadowMeshIndexCount = 0;
             uint32_t                 shadowMeshVersion = 0; // Bumped whenever the mesh changes, so it re-uploads
             bool                     showShadowMesh = false;
+            bool                     showGrid = true;       // The editor grid on the y = 0 plane (Grid.hlsl)
             // Occluder mesh (format 13): the occlusion volume as a mesh, drawn in its place (same vertex layout)
             const void*              pOccluderMeshVertices = nullptr;
             uint32_t                 occluderMeshVertexCount = 0;
@@ -329,6 +351,10 @@ namespace Splat
         // (they lie inside it) and the splats blend over the model's own colour where they leave gaps
         ID3D12PipelineState* m_pShadowMeshFillPSO = nullptr;
         ID3D12PipelineState* m_pShadowMeshFillPSOUnorm = nullptr;
+        // The editor grid (Grid.hlsl): alpha-blended, depth-tested, no depth write; one PSO per render-target format
+        void CreateGridPipelines(CAULDRON_DX12::SwapChain* pSwapChain);
+        ID3D12PipelineState* m_pGridPSO = nullptr;
+        ID3D12PipelineState* m_pGridPSOUnorm = nullptr;
         ID3D12Resource*      m_pShadowMeshVertexBuffer = nullptr;
         ID3D12Resource*      m_pShadowMeshIndexBuffer = nullptr;
         uint32_t             m_shadowMeshUploadedVersion = UINT32_MAX;
@@ -570,6 +596,27 @@ namespace Splat
         CAULDRON_DX12::CBV_SRV_UAV m_depthBufferSRV;
         CAULDRON_DX12::CBV_SRV_UAV m_temporalTableSRVs;
         CAULDRON_DX12::CBV_SRV_UAV m_temporalTableUAVs;
+
+        // The loading veil (State::loadingBlurPx): the scene copied into A, blurred across into B, down back into A, and A
+        // copied back over the scene. Each pass reads one texture's SRV and writes the other's UAV.
+        CAULDRON_DX12::Texture     m_blurA, m_blurB;
+        CAULDRON_DX12::CBV_SRV_UAV m_blurSrvA, m_blurSrvB, m_blurUavA, m_blurUavB;
+        ID3D12RootSignature*       m_pBlurRootSig = nullptr;
+        ID3D12PipelineState*       m_pBlurPSO = nullptr;
+        void ApplyLoadingBlur(ID3D12GraphicsCommandList* pCmdLst, ID3D12Resource* pBackBuffer, float sigmaPx);
+
+        // The backdrop (State::backdropMode): b0 twelve root constants, t0 the image (a null view without one), s0 linear
+        // clamp; a PSO per render-target format. The image is (re)loaded when State::backdropImage changes.
+        ID3D12RootSignature*       m_pBackdropRootSig = nullptr;
+        ID3D12PipelineState*       m_pBackdropPSO = nullptr;
+        ID3D12PipelineState*       m_pBackdropPSOUnorm = nullptr;
+        CAULDRON_DX12::Texture     m_backdropImage;
+        CAULDRON_DX12::CBV_SRV_UAV m_backdropSrv;
+        std::string                m_backdropImagePath;   // What m_backdropImage holds, or tried to
+        bool                       m_backdropImageOk = false;
+        void CreateBackdropPipelines(CAULDRON_DX12::SwapChain* pSwapChain);
+        void UpdateBackdropImage(const std::string& path);
+        void DrawBackdrop(ID3D12GraphicsCommandList* pCmdLst, const State* pState, bool linearOut);
 
         ID3D12RootSignature*       m_pTemporalRootSig = nullptr;
         ID3D12PipelineState*       m_pTemporalPSO = nullptr;

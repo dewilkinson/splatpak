@@ -1,4 +1,4 @@
-﻿// CompressVenus.cpp
+// CompressVenus.cpp
 // SplatPak -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
@@ -48,8 +48,8 @@ int main(int argcIn, char** argvIn)
     const int splatDegree = std::max(0, std::min(3, (argc > 4) ? atoi(argv[4]) : 3));
 
     std::cout << "Loading " << inputPLY << "..." << std::endl;
-    std::vector<Splat::SplatPoint> splats;
-    std::vector<Splat::SplatAttributes> splatAttrs;
+    Splat::SplatPointArray splats;
+    Splat::SplatAttributeArray splatAttrs;
     double origin[3] = {0,0,0};
     if (!Splat::PLYLoader::LoadPLY(inputPLY, splats, origin, &splatAttrs))
     {

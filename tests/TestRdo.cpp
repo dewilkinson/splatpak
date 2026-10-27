@@ -51,8 +51,8 @@ int main(int argc, char** argv)
     const float deadbandMM = argc > 3 ? (float)atof(argv[3]) : 1.353f;
     constexpr double kTolerance = 0.05;
 
-    std::vector<SplatPoint> points;
-    std::vector<SplatAttributes> attrs;
+    SplatPointArray points;
+    SplatAttributeArray attrs;
     double origin[3] = {};
     if (!PLYLoader::LoadPLY(input, points, origin, &attrs) || attrs.empty())
     {
@@ -76,7 +76,7 @@ int main(int argc, char** argv)
     params.aabbMin = mn; params.aabbMax = mx;
     SplatCodec::ComputeScaleRange(attrs, maxLODs, params.scaleLog2Min, params.scaleLog2Max);
 
-    std::vector<const std::vector<SplatPoint>*> levels;
+    std::vector<const SplatPointArray*> levels;
     levels.push_back(&points);
     for (size_t l = 1; l < wavelet.lodLevels.size(); l++) levels.push_back(&wavelet.lodLevels[l].splats);
 

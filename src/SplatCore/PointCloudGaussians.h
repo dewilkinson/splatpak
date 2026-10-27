@@ -23,7 +23,7 @@ namespace Splat
         // Median distance from a point to its nearest neighbour, over a sample of up to 60,000 points, found
         // in a uniform grid sized from the cloud's surface area (three expected spacings per cell). 0 for
         // fewer than two points.
-        inline float MedianSpacing(const std::vector<SplatPoint>& pts)
+        inline float MedianSpacing(const SplatPointArray& pts)
         {
             const size_t n = pts.size();
             if (n < 2) return 0.0f;
@@ -82,7 +82,7 @@ namespace Splat
         // Gives every point a Gaussian: outAttributes[i] for pts[i], and pts[i].sourceIndex = i. The standard
         // deviation is half the median spacing, so neighbouring Gaussians overlap at one sigma and close the
         // surface without blurring it. Returns that sigma.
-        inline float Build(std::vector<SplatPoint>& pts, std::vector<SplatAttributes>& outAttributes)
+        inline float Build(SplatPointArray& pts, SplatAttributeArray& outAttributes)
         {
             outAttributes.clear();
             if (pts.empty()) return 0.0f;

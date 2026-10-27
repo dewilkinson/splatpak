@@ -113,6 +113,35 @@ namespace Splat
         m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(1, &m_depthBufferSRV);
         m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(3, &m_temporalTableSRVs);
         m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(2, &m_temporalTableUAVs);
+        m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(1, &m_blurSrvA);
+        m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(1, &m_blurSrvB);
+        m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(1, &m_blurUavA);
+        m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(1, &m_blurUavB);
+        m_resourceViewHeaps.AllocCBV_SRV_UAVDescriptor(1, &m_backdropSrv);
+
+        // The loading veil's blur (LoadingBlurCS.hlsl): b0 five root constants, t0 the input, u0 the output. A failure
+        // only loses the veil.
+        {
+            CD3DX12_DESCRIPTOR_RANGE srvRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+            CD3DX12_DESCRIPTOR_RANGE uavRange(D3D12_DESCRIPTOR_RANGE_TYPE_UAV, 1, 0);
+            CD3DX12_ROOT_PARAMETER params[3];
+            params[0].InitAsConstants(5, 0);
+            params[1].InitAsDescriptorTable(1, &srvRange);
+            params[2].InitAsDescriptorTable(1, &uavRange);
+            CD3DX12_ROOT_SIGNATURE_DESC desc(3, params, 0, nullptr, D3D12_ROOT_SIGNATURE_FLAG_NONE);
+            Microsoft::WRL::ComPtr<ID3DBlob> blob, err;
+            D3D12_SHADER_BYTECODE cs = {};
+            if (SUCCEEDED(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err)) &&
+                SUCCEEDED(pDevice->GetDevice()->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&m_pBlurRootSig))) &&
+                CompileShaderFromFile("LoadingBlurCS.hlsl", NULL, "main", "-T cs_6_0", &cs) && cs.pShaderBytecode != nullptr)
+            {
+                D3D12_COMPUTE_PIPELINE_STATE_DESC pso = {};
+                pso.pRootSignature = m_pBlurRootSig;
+                pso.CS = cs;
+                if (FAILED(pDevice->GetDevice()->CreateComputePipelineState(&pso, IID_PPV_ARGS(&m_pBlurPSO)))) m_pBlurPSO = nullptr;
+            }
+            if (!m_pBlurPSO) LogTransitionTrace("SplatRenderer: the loading blur (LoadingBlurCS.hlsl) could not be created -- no loading veil.");
+        }
 
         m_uploadHeap.OnCreate(pDevice, 32 * 1024 * 1024);
         m_constantBufferRing.OnCreate(pDevice, BACK_BUFFER_COUNT, 32 * 1024 * 1024, &m_resourceViewHeaps);
@@ -494,6 +523,8 @@ namespace Splat
         }
         }
         CreateShadowMeshPipelines(pSwapChain); // Classic graphics pipeline: the same on every render path
+        CreateGridPipelines(pSwapChain);
+        CreateBackdropPipelines(pSwapChain);
         if (m_renderPath != RenderPath::MeshShaders)
         {
             CreateVertexShaderPipelines(pSwapChain);
@@ -655,8 +686,8 @@ namespace Splat
         const float dist = std::max(0.1f, sqrtf(ddx * ddx + ddy * ddy + ddz * ddz));
 
         // Pixels covered by one metre at that distance: viewport height over the frustum's visible height
-        // there (vertical FOV is XM_PIDIV4 in every projection this renderer builds).
-        const float pixelsPerMetre = (float)std::max(1u, m_height) / (2.0f * dist * tanf(XM_PIDIV4 * 0.5f));
+        // there (State::fovY is the vertical FOV of every projection this renderer builds).
+        const float pixelsPerMetre = (float)std::max(1u, m_height) / (2.0f * dist * tanf(pState->fovY * 0.5f));
         auto cellPixels = [&](uint32_t k) -> float { return mips.cellSize[k] * pixelsPerMetre; };
 
         uint32_t mip = std::min(m_activeOcclusionMip, mips.mipCount - 1);
@@ -785,6 +816,159 @@ namespace Splat
             const HRESULT hr = m_pDevice->GetDevice()->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(out));
             if (FAILED(hr)) LogTransitionTrace("SplatRenderer::CreateShadowMeshPipelines ERROR: PSO %d failed hr=0x%08X", k, (unsigned int)hr);
         }
+    }
+
+    // The editor grid: Grid.hlsl, alpha-blended over what is there, depth-tested against the occluders but writing no
+    // depth (the splats after it test against the same depth), in both render-target formats. A failure loses the grid only.
+    void SplatRenderer::CreateGridPipelines(SwapChain* pSwapChain)
+    {
+        D3D12_SHADER_BYTECODE vs = {}, ps = {};
+        const bool ok = CompileShaderFromFile("Grid.hlsl", NULL, "gridVS", "-T vs_6_0", &vs) && vs.pShaderBytecode != nullptr &&
+                        CompileShaderFromFile("Grid.hlsl", NULL, "gridPS", "-T ps_6_0", &ps) && ps.pShaderBytecode != nullptr;
+        if (!ok)
+        {
+            LogTransitionTrace("SplatRenderer::CreateGridPipelines ERROR: Grid.hlsl failed to compile -- no grid.");
+            return;
+        }
+        CD3DX12_RASTERIZER_DESC rasterizer(D3D12_DEFAULT);
+        rasterizer.CullMode = D3D12_CULL_MODE_NONE;
+        CD3DX12_DEPTH_STENCIL_DESC depthTest(D3D12_DEFAULT);
+        depthTest.DepthEnable = TRUE;
+        depthTest.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+        depthTest.DepthFunc = D3D12_COMPARISON_FUNC_LESS_EQUAL;
+        CD3DX12_BLEND_DESC blend(D3D12_DEFAULT);
+        blend.RenderTarget[0].BlendEnable = TRUE;
+        blend.RenderTarget[0].SrcBlend = D3D12_BLEND_SRC_ALPHA;
+        blend.RenderTarget[0].DestBlend = D3D12_BLEND_INV_SRC_ALPHA;
+        blend.RenderTarget[0].BlendOp = D3D12_BLEND_OP_ADD;
+        blend.RenderTarget[0].SrcBlendAlpha = D3D12_BLEND_ONE;
+        blend.RenderTarget[0].DestBlendAlpha = D3D12_BLEND_INV_SRC_ALPHA;
+        blend.RenderTarget[0].BlendOpAlpha = D3D12_BLEND_OP_ADD;
+        for (int k = 0; k < 2; k++)
+        {
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC d = {};
+            d.pRootSignature = m_pRootSignature;
+            d.VS = vs;
+            d.PS = ps;
+            d.BlendState = blend;
+            d.SampleMask = UINT_MAX;
+            d.RasterizerState = rasterizer;
+            d.DepthStencilState = depthTest;
+            d.InputLayout = { nullptr, 0 };
+            d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            d.NumRenderTargets = 1;
+            d.RTVFormats[0] = k == 0 ? pSwapChain->GetFormat() : m_unormFormat;
+            d.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+            d.SampleDesc = DXGI_SAMPLE_DESC{ 1, 0 };
+            ID3D12PipelineState** out = k == 0 ? &m_pGridPSO : &m_pGridPSOUnorm;
+            const HRESULT hr = m_pDevice->GetDevice()->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(out));
+            if (FAILED(hr)) LogTransitionTrace("SplatRenderer::CreateGridPipelines ERROR: PSO %d failed hr=0x%08X", k, (unsigned int)hr);
+        }
+    }
+
+    // The backdrop: Backdrop.hlsl, a full-screen triangle written straight over the clear with no depth test or write, in
+    // both render-target formats. A failure leaves the solid clear colour only.
+    void SplatRenderer::CreateBackdropPipelines(SwapChain* pSwapChain)
+    {
+        UpdateBackdropImage(std::string()); // The null view until an image is chosen
+        CD3DX12_DESCRIPTOR_RANGE srvRange(D3D12_DESCRIPTOR_RANGE_TYPE_SRV, 1, 0);
+        CD3DX12_ROOT_PARAMETER params[2];
+        params[0].InitAsConstants(12, 0, 0, D3D12_SHADER_VISIBILITY_PIXEL);
+        params[1].InitAsDescriptorTable(1, &srvRange, D3D12_SHADER_VISIBILITY_PIXEL);
+        CD3DX12_STATIC_SAMPLER_DESC sampler(0, D3D12_FILTER_MIN_MAG_MIP_LINEAR, D3D12_TEXTURE_ADDRESS_MODE_CLAMP,
+                                            D3D12_TEXTURE_ADDRESS_MODE_CLAMP, D3D12_TEXTURE_ADDRESS_MODE_CLAMP);
+        sampler.ShaderVisibility = D3D12_SHADER_VISIBILITY_PIXEL;
+        CD3DX12_ROOT_SIGNATURE_DESC desc(2, params, 1, &sampler, D3D12_ROOT_SIGNATURE_FLAG_NONE);
+        Microsoft::WRL::ComPtr<ID3DBlob> blob, err;
+        D3D12_SHADER_BYTECODE vs = {}, ps = {};
+        const bool ok = SUCCEEDED(D3D12SerializeRootSignature(&desc, D3D_ROOT_SIGNATURE_VERSION_1, &blob, &err)) &&
+                        SUCCEEDED(m_pDevice->GetDevice()->CreateRootSignature(0, blob->GetBufferPointer(), blob->GetBufferSize(), IID_PPV_ARGS(&m_pBackdropRootSig))) &&
+                        CompileShaderFromFile("Backdrop.hlsl", NULL, "backdropVS", "-T vs_6_0", &vs) && vs.pShaderBytecode != nullptr &&
+                        CompileShaderFromFile("Backdrop.hlsl", NULL, "backdropPS", "-T ps_6_0", &ps) && ps.pShaderBytecode != nullptr;
+        if (!ok)
+        {
+            LogTransitionTrace("SplatRenderer::CreateBackdropPipelines ERROR: Backdrop.hlsl failed -- solid backgrounds only.");
+            return;
+        }
+        CD3DX12_RASTERIZER_DESC rasterizer(D3D12_DEFAULT);
+        rasterizer.CullMode = D3D12_CULL_MODE_NONE;
+        CD3DX12_DEPTH_STENCIL_DESC depth(D3D12_DEFAULT);
+        depth.DepthEnable = FALSE;
+        depth.DepthWriteMask = D3D12_DEPTH_WRITE_MASK_ZERO;
+        for (int k = 0; k < 2; k++)
+        {
+            D3D12_GRAPHICS_PIPELINE_STATE_DESC d = {};
+            d.pRootSignature = m_pBackdropRootSig;
+            d.VS = vs;
+            d.PS = ps;
+            d.BlendState = CD3DX12_BLEND_DESC(D3D12_DEFAULT);
+            d.SampleMask = UINT_MAX;
+            d.RasterizerState = rasterizer;
+            d.DepthStencilState = depth;
+            d.InputLayout = { nullptr, 0 };
+            d.PrimitiveTopologyType = D3D12_PRIMITIVE_TOPOLOGY_TYPE_TRIANGLE;
+            d.NumRenderTargets = 1;
+            d.RTVFormats[0] = k == 0 ? pSwapChain->GetFormat() : m_unormFormat;
+            d.DSVFormat = DXGI_FORMAT_D32_FLOAT;
+            d.SampleDesc = DXGI_SAMPLE_DESC{ 1, 0 };
+            ID3D12PipelineState** out = k == 0 ? &m_pBackdropPSO : &m_pBackdropPSOUnorm;
+            const HRESULT hr = m_pDevice->GetDevice()->CreateGraphicsPipelineState(&d, IID_PPV_ARGS(out));
+            if (FAILED(hr)) LogTransitionTrace("SplatRenderer::CreateBackdropPipelines ERROR: PSO %d failed hr=0x%08X", k, (unsigned int)hr);
+        }
+    }
+
+    // Loads the backdrop image (PNG, JPG, DDS, ...); OnRender calls it, outside command recording, when the path changes. The texture
+    // is display-space (no sRGB view): Backdrop.hlsl linearises it itself when the target needs that. Without an image
+    // the descriptor is a null view, which the shader never samples.
+    void SplatRenderer::UpdateBackdropImage(const std::string& path)
+    {
+        if (m_backdropImageOk)
+        {
+            m_pDevice->GPUFlush(); // The old image may still be read by frames in flight
+            m_backdropImage.OnDestroy();
+        }
+        m_backdropImagePath = path;
+        m_backdropImageOk = false;
+        if (!path.empty())
+        {
+            m_backdropImageOk = m_backdropImage.InitFromFile(m_pDevice, &m_uploadHeap, path.c_str(), false);
+            if (m_backdropImageOk) m_uploadHeap.FlushAndFinish();
+            else LogTransitionTrace("SplatRenderer: the backdrop image %s could not be loaded.", path.c_str());
+        }
+        if (m_backdropImageOk)
+        {
+            m_backdropImage.CreateSRV(0, &m_backdropSrv);
+        }
+        else
+        {
+            D3D12_SHADER_RESOURCE_VIEW_DESC nullDesc = {};
+            nullDesc.Format = DXGI_FORMAT_R8G8B8A8_UNORM;
+            nullDesc.ViewDimension = D3D12_SRV_DIMENSION_TEXTURE2D;
+            nullDesc.Shader4ComponentMapping = D3D12_DEFAULT_SHADER_4_COMPONENT_MAPPING;
+            nullDesc.Texture2D.MipLevels = 1;
+            m_pDevice->GetDevice()->CreateShaderResourceView(nullptr, &nullDesc, m_backdropSrv.GetCPU());
+        }
+    }
+
+    // A gradient or image over the clear; a solid colour (or an image that did not load) is the clear alone
+    void SplatRenderer::DrawBackdrop(ID3D12GraphicsCommandList* pCmdLst, const State* pState, bool linearOut)
+    {
+        const bool image = pState->backdropMode == 2 && m_backdropImageOk;
+        if (!(pState->backdropMode == 1 || image)) return;
+        ID3D12PipelineState* pso = linearOut ? m_pBackdropPSO : m_pBackdropPSOUnorm;
+        if (pso == nullptr) return;
+        struct { float top[4]; float bottom[4]; uint32_t mode, linearOut; float screenAspect, imageAspect; } c = {
+            { pState->bgTop.x, pState->bgTop.y, pState->bgTop.z, 1.0f },
+            { pState->bgBottom.x, pState->bgBottom.y, pState->bgBottom.z, 1.0f },
+            image ? 2u : 1u, linearOut ? 1u : 0u,
+            (float)m_width / (float)(std::max)(m_height, 1u),
+            image ? (float)m_backdropImage.GetWidth() / (float)(std::max)(m_backdropImage.GetHeight(), 1u) : 1.0f };
+        pCmdLst->SetGraphicsRootSignature(m_pBackdropRootSig);
+        pCmdLst->SetGraphicsRoot32BitConstants(0, 12, &c, 0);
+        pCmdLst->SetGraphicsRootDescriptorTable(1, m_backdropSrv.GetGPU());
+        pCmdLst->SetPipelineState(pso);
+        pCmdLst->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+        pCmdLst->DrawInstanced(3, 1, 0, 0);
     }
 
     void SplatRenderer::ReleaseMesh(MeshBuffers& m)
@@ -1076,6 +1260,12 @@ namespace Splat
         if (m_pShadowMeshPSOUnorm) { m_pShadowMeshPSOUnorm->Release(); m_pShadowMeshPSOUnorm = nullptr; }
         if (m_pShadowMeshFillPSO) { m_pShadowMeshFillPSO->Release(); m_pShadowMeshFillPSO = nullptr; }
         if (m_pShadowMeshFillPSOUnorm) { m_pShadowMeshFillPSOUnorm->Release(); m_pShadowMeshFillPSOUnorm = nullptr; }
+        if (m_pGridPSO) { m_pGridPSO->Release(); m_pGridPSO = nullptr; }
+        if (m_pGridPSOUnorm) { m_pGridPSOUnorm->Release(); m_pGridPSOUnorm = nullptr; }
+        if (m_pBackdropPSO) { m_pBackdropPSO->Release(); m_pBackdropPSO = nullptr; }
+        if (m_pBackdropPSOUnorm) { m_pBackdropPSOUnorm->Release(); m_pBackdropPSOUnorm = nullptr; }
+        if (m_pBackdropRootSig) { m_pBackdropRootSig->Release(); m_pBackdropRootSig = nullptr; }
+        if (m_backdropImageOk) { m_backdropImage.OnDestroy(); m_backdropImageOk = false; }
         if (m_pShadowMeshVertexBuffer) { m_pShadowMeshVertexBuffer->Release(); m_pShadowMeshVertexBuffer = nullptr; }
         if (m_pShadowMeshIndexBuffer) { m_pShadowMeshIndexBuffer->Release(); m_pShadowMeshIndexBuffer = nullptr; }
         m_shadowMeshUploadedVersion = UINT32_MAX;
@@ -1096,8 +1286,12 @@ namespace Splat
         m_sceneColorBuffer.OnDestroy();
         m_historyColorBuffer.OnDestroy();
         m_resolvedColorBuffer.OnDestroy();
+        m_blurA.OnDestroy();
+        m_blurB.OnDestroy();
         if (m_pTemporalPSO) { m_pTemporalPSO->Release(); m_pTemporalPSO = nullptr; }
         if (m_pTemporalRootSig) { m_pTemporalRootSig->Release(); m_pTemporalRootSig = nullptr; }
+        if (m_pBlurPSO) { m_pBlurPSO->Release(); m_pBlurPSO = nullptr; }
+        if (m_pBlurRootSig) { m_pBlurRootSig->Release(); m_pBlurRootSig = nullptr; }
         m_imGui.OnDestroy();
         m_commandListRing.OnDestroy();
         m_constantBufferRing.OnDestroy();
@@ -2206,6 +2400,16 @@ namespace Splat
         m_resolvedColorBuffer.CreateSRV(0, &m_resolvedColorSRV);
         m_resolvedColorBuffer.CreateUAV(0, &m_resolvedColorUAV);
 
+        // The loading veil's two blur textures, in the back buffer's format (the scene is copied in and out)
+        m_blurA.Init(m_pDevice, "SplatRenderer::m_blurA", &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
+            D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, nullptr);
+        m_blurB.Init(m_pDevice, "SplatRenderer::m_blurB", &CD3DX12_RESOURCE_DESC::Tex2D(DXGI_FORMAT_R8G8B8A8_UNORM, width, height, 1, 1, 1, 0, D3D12_RESOURCE_FLAG_ALLOW_UNORDERED_ACCESS),
+            D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, nullptr);
+        m_blurA.CreateSRV(0, &m_blurSrvA);
+        m_blurB.CreateSRV(0, &m_blurSrvB);
+        m_blurA.CreateUAV(0, &m_blurUavA);
+        m_blurB.CreateUAV(0, &m_blurUavB);
+
         m_depthBuffer.CreateSRV(0, &m_depthBufferSRV);
 
         // Populate contiguous 3-descriptor SRV table (t0: sceneColor, t1: depth, t2: historyColor)
@@ -2228,12 +2432,63 @@ namespace Splat
         m_sceneColorBuffer.OnDestroy();
         m_historyColorBuffer.OnDestroy();
         m_resolvedColorBuffer.OnDestroy();
+        m_blurA.OnDestroy();
+        m_blurB.OnDestroy();
         m_itemBuffer.OnDestroy();
         m_itemDepthBuffer.OnDestroy();
         m_depthBuffer.OnDestroy();
     }
 
     void SplatRenderer::OnUpdateDisplayDependentResources(SwapChain* /*pSwapChain*/) {}
+
+    // The loading veil: the finished scene (back buffer, a render target) blurred by a Gaussian of sigmaPx, across then
+    // down, through m_blurA and m_blurB, and copied back; the back buffer is a render target again afterwards.
+    void SplatRenderer::ApplyLoadingBlur(ID3D12GraphicsCommandList* pCmdLst, ID3D12Resource* pBackBuffer, float sigmaPx)
+    {
+        if (!m_pBlurPSO || !m_blurA.GetResource() || !m_blurB.GetResource() || m_width == 0 || m_height == 0) return;
+        ID3D12Resource* a = m_blurA.GetResource();
+        ID3D12Resource* b = m_blurB.GetResource();
+        auto barrier = [&](ID3D12Resource* r, D3D12_RESOURCE_STATES from, D3D12_RESOURCE_STATES to)
+        {
+            D3D12_RESOURCE_BARRIER t = CD3DX12_RESOURCE_BARRIER::Transition(r, from, to);
+            pCmdLst->ResourceBarrier(1, &t);
+        };
+        barrier(pBackBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        barrier(a, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+        pCmdLst->CopyResource(a, pBackBuffer);
+        barrier(a, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        barrier(b, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+
+        ID3D12DescriptorHeap* heaps[] = { m_resourceViewHeaps.GetCBV_SRV_UAVHeap() };
+        pCmdLst->SetDescriptorHeaps(1, heaps);
+        pCmdLst->SetComputeRootSignature(m_pBlurRootSig);
+        pCmdLst->SetPipelineState(m_pBlurPSO);
+        const float sigma = std::clamp(sigmaPx, 0.5f, 32.0f);
+        const uint32_t constants[5] = { m_width, m_height, (uint32_t)std::min(96, (int)std::ceil(sigma * 3.0f)), 1u, 0u };
+        uint32_t c[5];
+        memcpy(c, constants, sizeof(c));
+        memcpy(&c[4], &sigma, sizeof(float));
+        const uint32_t groupsX = (m_width + 7) / 8, groupsY = (m_height + 7) / 8;
+        // Across: A -> B
+        pCmdLst->SetComputeRoot32BitConstants(0, 5, c, 0);
+        pCmdLst->SetComputeRootDescriptorTable(1, m_blurSrvA.GetGPU());
+        pCmdLst->SetComputeRootDescriptorTable(2, m_blurUavB.GetGPU());
+        pCmdLst->Dispatch(groupsX, groupsY, 1);
+        barrier(b, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE);
+        barrier(a, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_UNORDERED_ACCESS);
+        // Down: B -> A
+        c[3] = 0u;
+        pCmdLst->SetComputeRoot32BitConstants(0, 5, c, 0);
+        pCmdLst->SetComputeRootDescriptorTable(1, m_blurSrvB.GetGPU());
+        pCmdLst->SetComputeRootDescriptorTable(2, m_blurUavA.GetGPU());
+        pCmdLst->Dispatch(groupsX, groupsY, 1);
+        barrier(a, D3D12_RESOURCE_STATE_UNORDERED_ACCESS, D3D12_RESOURCE_STATE_COPY_SOURCE);
+        barrier(pBackBuffer, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_COPY_DEST);
+        pCmdLst->CopyResource(pBackBuffer, a);
+        barrier(pBackBuffer, D3D12_RESOURCE_STATE_COPY_DEST, D3D12_RESOURCE_STATE_RENDER_TARGET);
+        barrier(a, D3D12_RESOURCE_STATE_COPY_SOURCE, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+        barrier(b, D3D12_RESOURCE_STATE_NON_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_ALL_SHADER_RESOURCE);
+    }
 
     // The whole frame: upload splat/chunk/occlusion buffers, run the silhouette prepass and GPU sort
     // if needed, draw the occluder + main splat passes, then resolve TAA and draw ImGui on top.
@@ -2255,6 +2510,10 @@ namespace Splat
         const auto tWaitStart = std::chrono::high_resolution_clock::now();
         pSwapChain->WaitForSwapChain();
         const auto tWaitEnd = std::chrono::high_resolution_clock::now();
+
+        // A new backdrop image loads here, before this frame's recording (a one-off stall on the change only)
+        const std::string wantImage = pState->backdropMode == 2 ? pState->backdropImage : m_backdropImagePath;
+        if (wantImage != m_backdropImagePath) UpdateBackdropImage(wantImage);
 
         // Marks the end of everything submitted to the graphics queue before this frame; this frame's copy
         // waits on it (see the copy-queue upload below)
@@ -2315,7 +2574,10 @@ namespace Splat
         D3D12_CPU_DESCRIPTOR_HANDLE dsvHandle = m_depthBufferDSV.GetCPU();
         pCmdLst->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
 
-        const float clearColor[4] = { 0.0f, 0.0f, 0.0f, 1.0f }; // Pure pitch black (SuperSplat reference)
+        // The background (State::bgBottom, black by default as in the SuperSplat reference) is display-space; the sRGB view
+        // encodes what it is given, so it gets the linear value that encodes back to that colour
+        auto toTarget = [&](float c) { return splatDisplayBlend ? c : (c <= 0.04045f ? c / 12.92f : powf((c + 0.055f) / 1.055f, 2.4f)); };
+        const float clearColor[4] = { toTarget(pState->bgBottom.x), toTarget(pState->bgBottom.y), toTarget(pState->bgBottom.z), 1.0f };
         pCmdLst->ClearRenderTargetView(rtvHandle, clearColor, 0, nullptr);
         pCmdLst->ClearDepthStencilView(dsvHandle, D3D12_CLEAR_FLAG_DEPTH, 1.0f, 0, 0, nullptr);
 
@@ -2323,6 +2585,7 @@ namespace Splat
         CD3DX12_RECT scissor(0, 0, m_width, m_height);
         pCmdLst->RSSetViewports(1, &viewport);
         pCmdLst->RSSetScissorRects(1, &scissor);
+        DrawBackdrop(pCmdLst, pState, !splatDisplayBlend);
 
         // Active viewing camera
         const float cy = cosf(pState->camPitch), sy = sinf(pState->camPitch);
@@ -2335,18 +2598,21 @@ namespace Splat
 
         auto frameStart = std::chrono::high_resolution_clock::now();
 
+        // A pose camera replaces the orbit's eye, direction and up (its roll included)
+        if (pState->poseCamera) eyePos = pState->poseEye;
         XMVECTOR eye = XMLoadFloat3(&eyePos);
-        XMVECTOR at = XMLoadFloat3(&pState->camTarget);
+        XMVECTOR at = pState->poseCamera ? XMVectorAdd(eye, XMLoadFloat3(&pState->poseForward)) : XMLoadFloat3(&pState->camTarget);
         XMVECTOR worldUp = XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f);
+        const XMVECTOR viewUp = pState->poseCamera ? XMLoadFloat3(&pState->poseUp) : worldUp;
 
         XMVECTOR forward = XMVector3Normalize(XMVectorSubtract(at, eye));
         XMFLOAT3 forwardNorm;
         XMStoreFloat3(&forwardNorm, forward);
-        XMVECTOR right = XMVector3Normalize(XMVector3Cross(worldUp, forward));
+        XMVECTOR right = XMVector3Normalize(XMVector3Cross(viewUp, forward));
         XMVECTOR camUp = XMVector3Cross(forward, right);
 
-        XMMATRIX view = XMMatrixLookAtRH(eye, at, worldUp);
-        XMMATRIX proj = XMMatrixPerspectiveFovRH(XM_PIDIV4, pState->aspectRatio, 0.1f, 500.0f);
+        XMMATRIX view = XMMatrixLookAtRH(eye, at, viewUp);
+        XMMATRIX proj = XMMatrixPerspectiveFovRH(pState->fovY, pState->aspectRatio, pState->nearZ, pState->farZ);
         XMMATRIX unjitteredViewProj = XMMatrixMultiply(view, proj);
 
         // 8-Phase Halton (2, 3) Sub-Pixel Camera Jitter
@@ -2392,8 +2658,14 @@ namespace Splat
         XMStoreFloat3(&cullForwardNorm, cForward);
 
         XMMATRIX cView = XMMatrixLookAtRH(cEye, cAt, worldUp);
-        XMMATRIX cProj = XMMatrixPerspectiveFovRH(XM_PIDIV4, pState->aspectRatio, 0.1f, 500.0f);
+        XMMATRIX cProj = XMMatrixPerspectiveFovRH(pState->fovY, pState->aspectRatio, pState->nearZ, pState->farZ);
         XMMATRIX cViewProj = XMMatrixMultiply(cView, cProj);
+        if (pState->poseCamera && !pState->detachCullCamera)
+        {
+            cullEyePos = eyePos;
+            cullForwardNorm = forwardNorm;
+            cViewProj = unjitteredViewProj;
+        }
 
         // Depth sorting is ALWAYS executed from the active viewer's perspective
         UpdateSplatBuffers(pState, eyePos, forwardNorm);
@@ -2719,6 +2991,22 @@ namespace Splat
 
             auto occluderEnd = std::chrono::high_resolution_clock::now();
             m_metrics.occluderPassTimeMs = std::chrono::duration<float, std::milli>(occluderEnd - occluderStart).count();
+        };
+        // The editor grid (Grid.hlsl): after the occluders, whose depth hides it, and before the splats, which blend over
+        // it. Drawn wherever the occluder pass is, and once more after the main passes if no pass drew (nothing loaded).
+        bool gridDrawn = false;
+        auto DrawGridPass = [&]()
+        {
+            ID3D12PipelineState* pGridPSO = splatDisplayBlend ? m_pGridPSOUnorm : m_pGridPSO;
+            if (!pState->showGrid || pGridPSO == nullptr) return;
+            pCmdLst->SetGraphicsRootSignature(m_pRootSignature);
+            pCmdLst->SetPipelineState(pGridPSO);
+            pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
+            pCmdLst->SetGraphicsRootShaderResourceView(1, 0); // Unused by gridVS/PS
+            pCmdLst->SetGraphicsRootShaderResourceView(2, 0);
+            pCmdLst->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+            pCmdLst->DrawInstanced(6, 1, 0, 0);
+            gridDrawn = true;
         };
         ID3D12PipelineState* pMainSplatPSO = (pState->enableOcclusionCulling && m_pPipelineStateOcclusionTest != nullptr)
             ? m_pPipelineStateOcclusionTest
@@ -3126,6 +3414,7 @@ namespace Splat
                 }
 
                 DrawOccluderPass();
+                DrawGridPass();
                 chunkedPassDrawn = true;
 
                 if (!pState->showOcclusionVolumeOnly && !pState->showShadowMesh)
@@ -3510,7 +3799,10 @@ namespace Splat
             // work and, in splat mode, blended the farthest slots a second time over the finished image.
             const bool flatPipeline = !useChunked && !SortedGaussians(pState->renderMode);
             if (flatPipeline)
+            {
                 DrawOccluderPass();
+                DrawGridPass();
+            }
 
             // Draw Main Mesh Shader Pass
             if (flatPipeline && !pState->showOcclusionVolumeOnly && !pState->showShadowMesh)
@@ -3540,6 +3832,13 @@ namespace Splat
                 auto mainDispatchEnd2 = std::chrono::high_resolution_clock::now();
                 m_metrics.mainDispatchTimeMs += std::chrono::duration<float, std::milli>(mainDispatchEnd2 - mainDispatchStart2).count();
             }
+        }
+        if (!gridDrawn && pState->showGrid)
+        {
+            pCmdLst->OMSetRenderTargets(1, &rtvHandle, FALSE, &dsvHandle);
+            pCmdLst->RSSetViewports(1, &viewport);
+            pCmdLst->RSSetScissorRects(1, &scissor);
+            DrawGridPass();
         }
         auto dispatchEnd = std::chrono::high_resolution_clock::now();
         m_metrics.gpuDispatchTimeMs = std::chrono::duration<float, std::milli>(dispatchEnd - dispatchStart).count();
@@ -3671,6 +3970,7 @@ namespace Splat
                 cbAddress = loupeCbAddress;
                 cbCulledAddress = 0;
                 DrawOccluderPass();
+                DrawGridPass();
                 if (!pState->showOcclusionVolumeOnly && !pState->showShadowMesh)
                 {
                     const D3D12_GPU_VIRTUAL_ADDRESS splatAddr = pGpuRes->GetGPUVirtualAddress();
@@ -3712,6 +4012,9 @@ namespace Splat
                 pCmdLst->ResourceBarrier(2, post);
             }
         }
+
+        // The loading veil (State::loadingBlurPx): over the whole scene, loupe inset included, before the panels
+        if (pState->loadingBlurPx > 0.25f) ApplyLoadingBlur(pCmdLst, pBackBuffer, pState->loadingBlurPx);
 
         // Scene capture: copy the finished scene (the back buffer is a render target again on both the
         // TAA and the direct path) before the ImGui overlay lands on it, or after it for a capture with the UI.

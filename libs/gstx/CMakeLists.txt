@@ -15,6 +15,8 @@ file(GLOB BROTLI_SOURCES ${BROTLI_DIR}/c/common/*.c ${BROTLI_DIR}/c/dec/*.c ${BR
 
 add_library(gstx STATIC
     ${BROTLI_SOURCES}
+    GstxTypes.h
+    GstxTypes.cpp
     PayloadDecode.h
     PayloadDecode.cpp
     LiftingWavelet.h

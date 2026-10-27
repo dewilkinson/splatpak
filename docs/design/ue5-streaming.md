@@ -1,7 +1,7 @@
 # Design: Streaming and the refinement visualizer in the UE5 plugin
 
 Requirements: the Goals section below (user, 2026-10-26: "give the unreal engine the refinement visualizer as well, so I can see in the level how it is streamed in"; real streaming first)
-Status: agreed (user, 2026-10-26: "proceed with all as recommended")
+Status: built (2026-10-26), with the differences under "As built"; agreed (user, 2026-10-26: "proceed with all as recommended")
 Date: 2026-10-26
 
 ## Summary

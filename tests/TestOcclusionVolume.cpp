@@ -30,13 +30,13 @@ int main(int argc, char** argv)
 
     std::cout << "Package detail grid " << pkg.detailGrid.nx << "x" << pkg.detailGrid.ny << "x" << pkg.detailGrid.nz
               << " (" << pkg.detailGrid.occupiedCells << " occupied cells)" << std::endl;
-    std::vector<Splat::SplatPoint> points;
+    Splat::SplatPointArray points;
     // Level 0 of each chunk (positions are all the grid needs, so the SH stream is left out)
     for (const auto& c : pkg.chunkLODSplats)
     {
         if (c.empty()) continue;
-        std::vector<Splat::SplatPoint> decoded;
-        std::vector<Splat::SplatAttributes> attributes;
+        Splat::SplatPointArray decoded;
+        Splat::SplatAttributeArray attributes;
         Splat::SplatCodec::Decode(c[0], nullptr, 0, pkg.splatParams, 0, 0, decoded, attributes);
         points.insert(points.end(), decoded.begin(), decoded.end());
     }

@@ -42,8 +42,8 @@ namespace Splat
         // Loads a binary .splat (3D Gaussian Splatting) file into SplatPoint array
         // outSplat (optional): every point's Gaussian (scale, rotation, opacity; the format has no harmonics),
         // the input of a splat-mode bake. Each point's sourceIndex refers to its entry.
-        static bool LoadSPLAT(const std::string& filepath, std::vector<SplatPoint>& outSplats, double originOut[3],
-                              std::vector<SplatAttributes>* outSplat = nullptr)
+        static bool LoadSPLAT(const std::string& filepath, SplatPointArray& outSplats, double originOut[3],
+                              SplatAttributeArray* outSplat = nullptr)
         {
             originOut[0] = 0.0;
             originOut[1] = 0.0;
@@ -158,7 +158,7 @@ namespace Splat
         }
 
         // Exports a vector of splats to the binary 32-byte .splat format
-        static bool ExportToSPLAT(const std::string& filepath, const std::vector<SplatPoint>& splats)
+        static bool ExportToSPLAT(const std::string& filepath, const SplatPointArray& splats)
         {
             std::ofstream out(filepath, std::ios::binary);
             if (!out.is_open()) return false;

@@ -120,3 +120,13 @@ set_target_properties(TestStreamOrder PROPERTIES
     VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_HOME_DIRECTORY}"
     DEBUG_POSTFIX "d"
 )
+
+add_executable(TestSplatPlanes ${CMAKE_CURRENT_SOURCE_DIR}/TestSplatPlanes.cpp)
+target_link_libraries(TestSplatPlanes PRIVATE gstx)
+set_target_properties(TestSplatPlanes PROPERTIES
+    CXX_STANDARD 17
+    CXX_STANDARD_REQUIRED ON
+    FOLDER "Tests"
+    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_HOME_DIRECTORY}"
+    DEBUG_POSTFIX "d"
+)

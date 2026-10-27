@@ -67,8 +67,8 @@ namespace Splat
 
         // Compare raw uncompressed splats against quantized/wavelet splats
         static QualityReport ComputeQuality(
-            const std::vector<SplatPoint>& rawSplats,
-            const std::vector<SplatPoint>& compSplats,
+            const SplatPointArray& rawSplats,
+            const SplatPointArray& compSplats,
             const XMFLOAT3& aabbMin,
             const XMFLOAT3& aabbMax,
             float maxErrorThresholdMM = 1.0f)
@@ -202,14 +202,14 @@ namespace Splat
         }
 
         // Generate a visual Diff Heatmap point cloud with colors mapped via Turbo colormap
-        static std::vector<SplatPoint> GenerateDiffHeatmap(
-            const std::vector<SplatPoint>& rawSplats,
-            const std::vector<SplatPoint>& compSplats,
+        static SplatPointArray GenerateDiffHeatmap(
+            const SplatPointArray& rawSplats,
+            const SplatPointArray& compSplats,
             int diffMode = 0, // 0 = Geometric Error (mm), 1 = Color Delta E, 2 = Normal Angular Error
             float maxErrorThresholdMM = 1.0f)
         {
             size_t n = std::min(rawSplats.size(), compSplats.size());
-            std::vector<SplatPoint> heatmap(n);
+            SplatPointArray heatmap(n);
 
             float thresholdMeters = std::max(0.0001f, maxErrorThresholdMM / 1000.0f);
 

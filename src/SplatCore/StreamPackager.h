@@ -31,7 +31,7 @@ namespace Splat
     // SplatPoint::sourceIndex, and the spherical-harmonics degree to keep (0, 1 or 3).
     struct SplatBakeInput
     {
-        const std::vector<SplatAttributes>* attributes = nullptr;
+        const SplatAttributeArray* attributes = nullptr;
         uint32_t shDegree = 1;
         // Bits per SH coefficient for bands 1, 2 and 3 (8 = as encoded, lossless). See RequantiseSH.
         uint8_t shBits[3] = { 8, 8, 8 };
