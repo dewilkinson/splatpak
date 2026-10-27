@@ -1,0 +1,7 @@
+bicycle.ply: the "bicycle" scene of Mip-NeRF 360, trained with the original 3D Gaussian Splatting code (iteration 30,000).
+Downloaded 2026-10-26 (catalog id 00001, C:\github\ply-catalog\catalog.csv).
+
+Source:     https://huggingface.co/datasets/dylanebert/3dgs/resolve/main/bicycle/point_cloud/iteration_30000/point_cloud.ply
+Page:       https://huggingface.co/datasets/dylanebert/3dgs
+Screenshot: https://repo-sam.inria.fr/fungraph/3d-gaussian-splatting/content/images/comparisons/ours_bicycle.png (bicycle.png, the 3DGS project page's render)
+Licence:    Inria Gaussian-Splatting licence: non-commercial research use; the Hugging Face mirror states none.
