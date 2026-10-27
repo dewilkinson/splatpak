@@ -111,15 +111,18 @@ set_target_properties(TestRdo PROPERTIES
     DEBUG_POSTFIX "d"
 )
 
-add_executable(TestStreamOrder ${CMAKE_CURRENT_SOURCE_DIR}/TestStreamOrder.cpp)
-target_link_libraries(TestStreamOrder PRIVATE gstx)
-set_target_properties(TestStreamOrder PROPERTIES
-    CXX_STANDARD 17
-    CXX_STANDARD_REQUIRED ON
-    FOLDER "Tests"
-    VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_HOME_DIRECTORY}"
-    DEBUG_POSTFIX "d"
-)
+# Private repository only: the public mirror strips this test (it states the scheduler's rules).
+if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/TestStreamOrder.cpp)
+    add_executable(TestStreamOrder ${CMAKE_CURRENT_SOURCE_DIR}/TestStreamOrder.cpp)
+    target_link_libraries(TestStreamOrder PRIVATE gstx)
+    set_target_properties(TestStreamOrder PROPERTIES
+        CXX_STANDARD 17
+        CXX_STANDARD_REQUIRED ON
+        FOLDER "Tests"
+        VS_DEBUGGER_WORKING_DIRECTORY "${CMAKE_HOME_DIRECTORY}"
+        DEBUG_POSTFIX "d"
+    )
+endif()
 
 add_executable(TestSplatPlanes ${CMAKE_CURRENT_SOURCE_DIR}/TestSplatPlanes.cpp)
 target_link_libraries(TestSplatPlanes PRIVATE gstx)
