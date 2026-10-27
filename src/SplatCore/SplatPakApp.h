@@ -32,6 +32,7 @@
 #include "BackgroundOp.h"
 #include "../../libs/gstx/ShadowMeshBuilder.h"
 #include <commdlg.h>
+#include <condition_variable>
 #include <string>
 #include <map>
 #include "ShadowMeshDisplay.h"
@@ -439,6 +440,29 @@ namespace Splat
         StreamRuntime m_stream;
         void SyncStreamInputs();   // The UI settings and the camera, into m_stream (every frame, and before any call into it)
         void ApplyStreamFrame();   // The runtime's render list and buffers, into the renderer state
+        // The streaming update runs on its own thread (UpdateCamera): one at a time, started at most kStreamUpdateHz times a
+        // second with that frame's settings and camera, while the frames go on drawing the last finished render list
+        // (m_drawChunks). On the main thread it took 5-10 ms of one frame in four while moving, which showed as hitches at
+        // 300 fps. The main thread changes the runtime only between updates: everything that does waits for the running one
+        // first (WaitStreamJob, called by SyncStreamInputs and so by every call into the runtime). The UI reads its figures
+        // while one runs: single values, and the blocks, which an update changes but never adds or removes.
+        std::thread             m_streamThread;
+        std::mutex              m_streamMutex;
+        std::condition_variable m_streamCv;
+        bool                    m_streamJobQueued = false, m_streamJobRunning = false, m_streamJobFinished = false, m_streamThreadQuit = false;
+        double                  m_streamJobDt = 0.0;
+        float                   m_streamJobMs = 0.0f;      // How long the last update took on its thread
+        bool                    m_streamDirtyPending = false; // MarkStreamDirty: handed to the runtime with the next update
+        std::vector<MeshletChunkGPU> m_drawChunks, m_drawChunksNext;   // The render list drawn, and the one the running update fills
+        std::vector<StreamChunk*>    m_drawSources, m_drawSourcesNext; // Their blocks (m_rendererSourceChunks), for the UI and the click test
+        void StartStreamJob(double dtSeconds);
+        void StreamThreadMain();
+        bool StreamJobBusy();      // An update is queued or running
+        void CollectStreamJob();   // A finished update's render list, into the renderer state
+        void WaitStreamJob();      // Waits for the running update and collects it
+        void StopStreamThread();
+        void MarkStreamDirty() { m_streamDirtyPending = true; } // The next update rebuilds the render list
+        void SnapshotStreamFrame(std::vector<MeshletChunkGPU>& chunks, std::vector<StreamChunk*>& sources) const;
         XMFLOAT3 m_lodSortFrameMin = { 0, 0, 0 }; // The Morton frame every level is sorted in (PrecacheResidentLODs): the model's bounds
         XMFLOAT3 m_lodSortFrameMax = { 0, 0, 0 };
         void PrecacheResidentLODs();

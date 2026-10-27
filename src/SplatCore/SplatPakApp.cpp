@@ -1267,6 +1267,7 @@ namespace Splat
     void SplatPakApp::OnDestroy()
     {
         m_op.Abandon(); // Cancel and wait for a background operation before anything it reads goes away
+        StopStreamThread();
         CancelShadowMeshBuild();
         ImGUI_Shutdown();
 
@@ -1320,7 +1321,7 @@ namespace Splat
             if (msg.wParam == 'R' && !ctrlPressed && (msg.lParam & (1 << 30)) == 0 && !ImGui::GetIO().WantCaptureKeyboard)
             {
                 m_showChunkStream = !m_showChunkStream;
-                m_stream.m_streamStateDirty = true;
+                MarkStreamDirty();
                 return true;
             }
             if (msg.wParam == 'L' && !ctrlPressed && (msg.lParam & (1 << 30)) == 0 && !ImGui::GetIO().WantCaptureKeyboard)
@@ -1411,7 +1412,7 @@ namespace Splat
 
         ImGuiIO& io = ImGui::GetIO();
         io.DisplaySize = ImVec2((float)m_Width, (float)m_Height);
-        m_stream.m_streamStateDirty = true;
+        MarkStreamDirty();
 
         // Keep the model's relative size when the window is resized: rescale the camera distance by the
         // ratio of the fit distance for the new size to the one for the old size. This preserves any
@@ -1452,7 +1453,7 @@ namespace Splat
         m_waveletResult.lodLevels.clear();
         m_rendererSplats.clear();
         m_rendererRawSplats.clear();
-        m_stream.m_rendererMeshletChunks.clear();
+        WaitStreamJob(); m_stream.m_rendererMeshletChunks.clear(); m_drawChunks.clear(); m_drawSources.clear();
         m_rendererOctreeChunks.clear();
         m_loadedFilePath = "No dataset loaded";
         m_rendererSourceDescription = "No model active";
@@ -2148,6 +2149,7 @@ namespace Splat
         m_residentLODs = std::move(loaded.residentLODs);
         m_lodSortFrameMin = m_aabbMin;
         m_lodSortFrameMax = m_aabbMax;
+        WaitStreamJob();
         m_stream = std::move(loaded.stream);
         m_stream.m_levels = &m_residentLODs; // The runtime was built against the result's copy of the levels
         ComputeSplatSoftness();
@@ -2173,8 +2175,9 @@ namespace Splat
         m_state.pPoints = m_rendererSplats.data();
         m_state.pRawSplats = m_rendererRawSplats.data();
         m_state.splatCount = (uint32_t)m_rendererSplats.size();
-        m_state.pChunks = m_stream.m_rendererMeshletChunks.data();
-        m_state.chunkCount = (uint32_t)m_stream.m_rendererMeshletChunks.size();
+        SnapshotStreamFrame(m_drawChunks, m_drawSources);
+        m_state.pChunks = m_drawChunks.data();
+        m_state.chunkCount = (uint32_t)m_drawChunks.size();
         m_state.aabbMin = m_aabbMin;
         m_state.aabbExtents = m_extents;
         m_state.renderMode = m_splatMode ? SplatRenderMode() : (m_enableQuantization ? 1 : 2);
@@ -2960,6 +2963,7 @@ namespace Splat
         m_residentLODs = std::move(r.residentLODs);
         m_lodSortFrameMin = m_aabbMin;
         m_lodSortFrameMax = m_aabbMax;
+        WaitStreamJob();
         m_stream = std::move(r.stream);
         m_stream.m_levels = &m_residentLODs; // The runtime was built against the result's copy of the levels
         ComputeSplatSoftness();
@@ -3192,6 +3196,7 @@ namespace Splat
     // Pre-quantizes and pre-chunks every LOD level up front, for instant hitch-free LOD switching later
     void SplatPakApp::PrecacheResidentLODs()
     {
+        WaitStreamJob(); // The running update reads the levels
         m_residentLODs.clear();
         if (m_rawSplats.empty() && m_rendererRawSplats.empty()) return;
         // Every level is sorted in one spatial order over the model's bounds, so a region sits at the same place
@@ -3276,6 +3281,8 @@ namespace Splat
 
     void SplatPakApp::SyncStreamInputs()
     {
+        WaitStreamJob(); // Nothing changes the runtime while an update runs
+        if (m_streamDirtyPending) { m_stream.m_streamStateDirty = true; m_streamDirtyPending = false; }
         StreamSettings& s = m_stream.settings;
         s.autoLOD = m_autoLOD; s.selectedPreviewLOD = m_selectedPreviewLOD;
         s.lodScreenSpace = m_lodScreenSpace; s.lodPixelSpacing = m_lodPixelSpacing; s.lodPerBlock = m_lodPerBlock;
@@ -3302,22 +3309,121 @@ namespace Splat
         c.width = m_Width; c.height = m_Height;
     }
 
+    // The runtime's render list as drawn: its first FrameChunkCount() entries and their blocks. The renderer and the UI read
+    // these copies, which an update on the stream thread leaves alone (it rewrites the runtime's own).
+    void SplatPakApp::SnapshotStreamFrame(std::vector<MeshletChunkGPU>& chunks, std::vector<StreamChunk*>& sources) const
+    {
+        const size_t n = std::min<size_t>(m_stream.FrameChunkCount(), m_stream.m_rendererMeshletChunks.size());
+        chunks.assign(m_stream.m_rendererMeshletChunks.begin(), m_stream.m_rendererMeshletChunks.begin() + n);
+        sources.assign(m_stream.m_rendererSourceChunks.begin(), m_stream.m_rendererSourceChunks.begin() + std::min(n, m_stream.m_rendererSourceChunks.size()));
+    }
+
+    // The render list just built (on this thread, with no update running), into the renderer state
     void SplatPakApp::ApplyStreamFrame()
     {
         if (!m_stream.m_frameProduced) return;
+        SnapshotStreamFrame(m_drawChunks, m_drawSources);
         m_frameTraversalMs = m_stream.m_frameTraversalMs;
         m_state.splatCount = (uint32_t)(m_splatMode ? m_stream.m_unifiedSplats.size() : m_enableQuantization ? (!m_stream.m_unifiedPackedSplats.empty() ? m_stream.m_unifiedPackedSplats.size() : m_rendererSplats.size()) : (!m_stream.m_unifiedRawSplats.empty() ? m_stream.m_unifiedRawSplats.size() : m_rendererRawSplats.data() ? m_rendererRawSplats.size() : 0));
-        m_state.chunkCount = m_stream.FrameChunkCount();
+        m_state.chunkCount = (uint32_t)m_drawChunks.size();
         m_state.pPoints = !m_stream.m_unifiedPackedSplats.empty() ? m_stream.m_unifiedPackedSplats.data() : m_rendererSplats.data();
         m_state.pRawSplats = !m_stream.m_unifiedRawSplats.empty() ? m_stream.m_unifiedRawSplats.data() : m_rendererRawSplats.data();
         m_state.pSplats = m_stream.m_unifiedSplats.empty() ? nullptr : m_stream.m_unifiedSplats.data();
         m_state.pSplatSH = m_stream.m_unifiedSH.empty() ? nullptr : m_stream.m_unifiedSH.data();
-        m_state.pChunks = m_stream.m_rendererMeshletChunks.data();
+        m_state.pChunks = m_drawChunks.data();
         m_state.useChunkedPipeline = (m_state.chunkCount > 0);
+    }
+
+    // ---- The stream thread -----------------------------------------------------------------------
+
+    void SplatPakApp::StreamThreadMain()
+    {
+        for (;;)
+        {
+            double dt = 0.0;
+            {
+                std::unique_lock<std::mutex> lock(m_streamMutex);
+                m_streamCv.wait(lock, [this] { return m_streamJobQueued || m_streamThreadQuit; });
+                if (m_streamThreadQuit) return;
+                m_streamJobQueued = false;
+                m_streamJobRunning = true;
+                dt = m_streamJobDt;
+            }
+            const auto t0 = std::chrono::high_resolution_clock::now();
+            m_stream.UpdateStreamingSimulation(dt);
+            if (m_stream.m_frameProduced) SnapshotStreamFrame(m_drawChunksNext, m_drawSourcesNext);
+            const float ms = std::chrono::duration<float, std::milli>(std::chrono::high_resolution_clock::now() - t0).count();
+            {
+                std::lock_guard<std::mutex> lock(m_streamMutex);
+                m_streamJobMs = ms;
+                m_streamJobRunning = false;
+                m_streamJobFinished = true;
+            }
+            m_streamCv.notify_all();
+        }
+    }
+
+    // Starts an update with this frame's settings and camera (the caller has checked that none is running)
+    void SplatPakApp::StartStreamJob(double dtSeconds)
+    {
+        SyncStreamInputs();
+        if (!m_streamThread.joinable()) m_streamThread = std::thread([this] { StreamThreadMain(); });
+        {
+            std::lock_guard<std::mutex> lock(m_streamMutex);
+            m_streamJobDt = dtSeconds;
+            m_streamJobQueued = true;
+        }
+        m_streamCv.notify_all();
+    }
+
+    bool SplatPakApp::StreamJobBusy()
+    {
+        std::lock_guard<std::mutex> lock(m_streamMutex);
+        return m_streamJobQueued || m_streamJobRunning;
+    }
+
+    // A finished update: its render list becomes the drawn one (when it built one; a skipped update keeps the last)
+    void SplatPakApp::CollectStreamJob()
+    {
+        {
+            std::lock_guard<std::mutex> lock(m_streamMutex);
+            if (!m_streamJobFinished) return;
+            m_streamJobFinished = false;
+        }
+        // The update's time is the stream thread's, not this frame's: logged, not counted in the frame budget
+        static int s_jobLogCount = 0;
+        if (++s_jobLogCount % 60 == 0) LogTransitionTrace("Stream thread: last update %.2f ms (traversal %.2f)", m_streamJobMs, m_stream.m_frameTraversalMs);
+        if (!m_stream.m_frameProduced) return;
+        m_drawChunks.swap(m_drawChunksNext);
+        m_drawSources.swap(m_drawSourcesNext);
+        m_state.chunkCount = (uint32_t)m_drawChunks.size();
+        m_state.pChunks = m_drawChunks.data();
+        m_state.useChunkedPipeline = (m_state.chunkCount > 0);
+    }
+
+    void SplatPakApp::WaitStreamJob()
+    {
+        {
+            std::unique_lock<std::mutex> lock(m_streamMutex);
+            m_streamCv.wait(lock, [this] { return !m_streamJobQueued && !m_streamJobRunning; });
+        }
+        CollectStreamJob();
+    }
+
+    void SplatPakApp::StopStreamThread()
+    {
+        if (!m_streamThread.joinable()) return;
+        {
+            std::lock_guard<std::mutex> lock(m_streamMutex);
+            m_streamThreadQuit = true;
+        }
+        m_streamCv.notify_all();
+        m_streamThread.join();
     }
 
     void SplatPakApp::InitStreamingSimulation()
     {
+        WaitStreamJob();
         if (m_residentLODs.empty()) PrecacheResidentLODs();
         m_stream.m_levels = &m_residentLODs;
         m_stream.m_waveletLevels = (int)m_waveletResult.lodLevels.size();
@@ -3388,6 +3494,7 @@ namespace Splat
     // Refreshes the CPU-side preview buffer for the currently selected LOD level
     void SplatPakApp::UpdatePreviewSplats()
     {
+        WaitStreamJob();
         LogTransitionTrace("UpdatePreviewSplats: m_selectedPreviewLOD=%d, m_autoLOD=%d, isStreaming=%d",
             m_selectedPreviewLOD, m_autoLOD ? 1 : 0, m_enableStreamingSimulation ? 1 : 0);
 
@@ -3395,7 +3502,7 @@ namespace Splat
 
         if (m_enableStreamingSimulation)
         {
-            m_stream.m_streamStateDirty = true;
+            MarkStreamDirty();
             return;
         }
 
@@ -3404,8 +3511,9 @@ namespace Splat
             PrecacheResidentLODs();
         }
 
+        WaitStreamJob();
         m_stream.m_lastStreamCamPos = { 1e9f, 1e9f, 1e9f };
-        m_stream.m_streamStateDirty = true;
+        MarkStreamDirty();
 
         m_state.aabbMin = m_aabbMin;
         m_state.aabbExtents = m_extents;
@@ -3698,7 +3806,7 @@ namespace Splat
             m_chunks.clear();
             m_rendererSplats.clear();
             m_rendererRawSplats.clear();
-            m_stream.m_rendererMeshletChunks.clear();
+            WaitStreamJob(); m_stream.m_rendererMeshletChunks.clear(); m_drawChunks.clear(); m_drawSources.clear();
             m_rendererOctreeChunks.clear();
             m_waveletResult = WaveletDecompositionResult();
             m_loadedFilePath = "No dataset loaded";
@@ -3756,7 +3864,10 @@ namespace Splat
 
     void SplatPakApp::UpdateCamera(const ImGuiIO& io)
     {
-        SyncStreamInputs(); // The auto LOD below asks the runtime's LOD rule, which reads the settings and the viewport
+        // The auto LOD below asks the runtime's LOD rule, which reads the settings and the viewport: synced here between
+        // updates; while one runs on the stream thread the rule reads those it started with (waiting for it here put the
+        // update back on this thread)
+        if (!StreamJobBusy()) SyncStreamInputs();
         const float cy = cosf(m_pitch), sy = sinf(m_pitch);
         const float sx = sinf(m_yaw), cx = cosf(m_yaw);
         XMFLOAT3 rightDir(-cx, 0.0f, sx);
@@ -4031,7 +4142,7 @@ namespace Splat
             if (io.MouseDragMaxDistanceSqr[0] < 9.0f && !io.WantCaptureMouse && ClickHitsModel(io.MousePos.x, io.MousePos.y))
             {
                 m_showChunkStream = !m_showChunkStream;
-                m_stream.m_streamStateDirty = true;
+                MarkStreamDirty();
             }
         }
 
@@ -4153,7 +4264,7 @@ namespace Splat
                     }
                     else
                     {
-                        m_stream.m_streamStateDirty = true;
+                        MarkStreamDirty();
                     }
                 }
             }
@@ -4203,7 +4314,7 @@ namespace Splat
         m_state.silhouetteExteriorOnly = m_silhouetteExteriorOnly;
 
         uint32_t totalBasePoints = (uint32_t)(!m_residentLODs.empty() ? m_residentLODs[0].rawSplats.size() : (!m_rawSplats.empty() ? m_rawSplats.size() : m_rendererSplats.size()));
-        uint32_t totalBaseChunks = (uint32_t)(!m_residentLODs.empty() ? m_residentLODs[0].meshletChunks.size() : (!m_chunks.empty() ? m_chunks.size() : m_stream.m_rendererMeshletChunks.size()));
+        uint32_t totalBaseChunks = (uint32_t)(!m_residentLODs.empty() ? m_residentLODs[0].meshletChunks.size() : (!m_chunks.empty() ? m_chunks.size() : m_drawChunks.size()));
         m_state.totalDatasetSplats = totalBasePoints;
         m_state.totalDatasetChunks = totalBaseChunks;
 
@@ -4226,11 +4337,26 @@ namespace Splat
                 // the time since its last update; the frames between draw the same render list from the live camera
                 // (sorted and culled on the GPU every frame). Every frame was 150-500 updates a second at 3-5 ms each
                 // on Cthulhu in motion: most of the frame, and the drop from about 500 fps to 150 while turning.
+                // Each update runs on the stream thread (StreamThreadMain); a frame starts the next once the last has finished
+                // and its render list is drawn. Scripted runs keep it inline, frame for frame, as they measure it so.
                 constexpr double kStreamUpdateHz = 60.0;
                 m_streamDtAccumMs += m_deltaTime;
                 m_frameSimMs = 0.0f;
                 m_frameTraversalMs = 0.0f;
-                if (m_streamDtAccumMs >= 1000.0 / kStreamUpdateHz)
+                const bool onThread = UseBackgroundOps() && !Unattended();
+                if (onThread)
+                {
+                    if (!StreamJobBusy())
+                    {
+                        CollectStreamJob(); // The update's own time on its thread goes to the frame budget's streaming
+                        if (m_streamDtAccumMs >= 1000.0 / kStreamUpdateHz)
+                        {
+                            StartStreamJob(m_streamDtAccumMs / 1000.0);
+                            m_streamDtAccumMs = 0.0;
+                        }
+                    }
+                }
+                else if (m_streamDtAccumMs >= 1000.0 / kStreamUpdateHz)
                 {
                     const auto tSim = std::chrono::high_resolution_clock::now();
                     UpdateStreamingSimulation(m_streamDtAccumMs / 1000.0);
@@ -4272,8 +4398,8 @@ namespace Splat
                 m_state.pPoints = nullptr;
                 m_state.splatCount = (uint32_t)(!m_stream.m_unifiedRawSplats.empty() ? m_stream.m_unifiedRawSplats.size() : m_rendererRawSplats.size());
             }
-            m_state.pChunks = m_stream.m_rendererMeshletChunks.data();
-            m_state.chunkCount = (uint32_t)m_stream.m_rendererMeshletChunks.size();
+            m_state.pChunks = m_drawChunks.data();
+            m_state.chunkCount = (uint32_t)m_drawChunks.size();
         }
         else
         {
@@ -4692,7 +4818,7 @@ namespace Splat
 
                     if (ImGui::Checkbox("Dithered LOD Transitions", &m_enableDitheredTransitions))
                     {
-                        m_stream.m_streamStateDirty = true;
+                        MarkStreamDirty();
                     }
                     if (ImGui::IsItemHovered()) ShowTooltip("Stochastic screen-space Bayer dithering to smoothly blend LOD transitions and eliminate popping.");
 
@@ -4702,13 +4828,13 @@ namespace Splat
                         ImGui::PushItemWidth(100.0f);
                         if (ImGui::SliderFloat("##DitherDurationTab", &m_ditherTransitionDurationSec, 0.05f, 5.0f, "%.2f s"))
                         {
-                            m_stream.m_streamStateDirty = true;
+                            MarkStreamDirty();
                         }
                         ImGui::PopItemWidth();
                     }
                     if (ImGui::Checkbox("Demote Chunks on Zoom Out", &m_demoteChunks))
                     {
-                        m_stream.m_streamStateDirty = true;
+                        MarkStreamDirty();
                     }
                     if (ImGui::IsItemHovered()) ShowTooltip("Off: once a chunk has refined into its children it stays refined when you zoom out or its edge flag drops, so detail never fades back to the coarser level (Decay still reclaims memory). On: children cross-fade back to the parent and are evicted, as in v1.2.0.");
 
@@ -4716,7 +4842,7 @@ namespace Splat
 #if 0 // DYNAMIC SILHOUETTE: GPU silhouette chunk processing switched off for now (re-enable by restoring this block)
                     if (ImGui::Checkbox("Highlight Edge Chunks", &m_highlightSilhouetteChunks))
                     {
-                        m_stream.m_streamStateDirty = true;
+                        MarkStreamDirty();
                     }
                     if (ImGui::IsItemHovered()) ShowTooltip("Visualizer toggle: highlights the active silhouette edge chunks.");
 #endif // DYNAMIC SILHOUETTE
@@ -4725,7 +4851,7 @@ namespace Splat
 
                     if (ImGui::Checkbox("Show ONLY Locked Chunks (Transition / Edge)", &m_showOnlyLockedChunks))
                     {
-                        m_stream.m_streamStateDirty = true;
+                        MarkStreamDirty();
                     }
                     if (ImGui::IsItemHovered()) ShowTooltip("Isolates active dynamic workload: hides static model geometry and renders ONLY chunks that are currently locked in transition or detected on the silhouette edge.");
 
@@ -4734,8 +4860,8 @@ namespace Splat
                     uint32_t totalActiveChunks = 0;
                     if (m_enableStreamingSimulation)
                     {
-                        totalActiveChunks = (uint32_t)m_stream.m_rendererSourceChunks.size();
-                        for (const auto* pChunk : m_stream.m_rendererSourceChunks)
+                        totalActiveChunks = (uint32_t)m_drawSources.size();
+                        for (const auto* pChunk : m_drawSources)
                         {
                             if (pChunk && pChunk->isSilhouette) liveEdgeChunks++;
                         }
@@ -4755,7 +4881,7 @@ namespace Splat
 
                     if (ImGui::Checkbox("GPU Silhouette Edge Refinement (Option 2)", &m_enableSilhouetteLOD0))
                     {
-                        m_stream.m_streamStateDirty = true;
+                        MarkStreamDirty();
                     }
                     if (ImGui::IsItemHovered()) ShowTooltip("Recovers Level 0 fine chunks along 2D outer silhouettes and interior self-occlusion edges detected on GPU.");
 
@@ -4771,13 +4897,13 @@ namespace Splat
                         // dragging, or a value that just happens to stay 0) instead of the real value.
                         if (ImGui::SliderInt("Silhouette LOD Bias", &m_silhouetteLODBias, 0, 4, "Bias: %.0f"))
                         {
-                            m_stream.m_streamStateDirty = true;
+                            MarkStreamDirty();
                         }
                         if (ImGui::IsItemHovered()) ShowTooltip("LOD level bias for silhouette edges: renders fine edges using Level N - Bias (minimum Level 0).");
 
                         if (ImGui::SliderFloat("Silhouette Angle", &m_silhouetteThreshold, 0.10f, 0.70f, "%.2f"))
                         {
-                            m_stream.m_streamStateDirty = true;
+                            MarkStreamDirty();
                         }
                         if (ImGui::IsItemHovered()) ShowTooltip("Grazing angle dot product threshold |N . V| to classify boundary chunks as silhouette.");
 
@@ -5030,7 +5156,7 @@ namespace Splat
                 {
                     if (ImGui::Checkbox("Enable Temporal Dither Resolver (TAA)", &m_enableTemporalFiltering))
                     {
-                        m_stream.m_streamStateDirty = true;
+                        MarkStreamDirty();
                     }
                     if (ImGui::IsItemHovered()) ShowTooltip("Smooths stochastic Bayer dither patterns into seamless photo-realistic alpha dissolves,\nand eliminates splat edge shimmer via temporal history accumulation.");
 
@@ -5038,19 +5164,19 @@ namespace Splat
                     {
                         if (ImGui::SliderFloat("Temporal Blend Weight (Alpha)", &m_temporalBlendWeight, 0.05f, 0.50f, "%.2f (Lower = Smoother)"))
                         {
-                            m_stream.m_streamStateDirty = true;
+                            MarkStreamDirty();
                         }
                         if (ImGui::IsItemHovered()) ShowTooltip("Blend weight for current frame. 0.10-0.15 delivers optimal 6-frame smooth dither dissipation without ghosting.");
 
                         if (ImGui::Checkbox("Sub-Pixel Camera Jitter (Halton 2,3)", &m_enableSubpixelJitter))
                         {
-                            m_stream.m_streamStateDirty = true;
+                            MarkStreamDirty();
                         }
                         if (ImGui::IsItemHovered()) ShowTooltip("Applies sub-pixel projection jitter to reconstruct crisp anti-aliased splat edges when stationary.");
 
                         if (ImGui::Checkbox("Variance Color Box Clamping (Anti-Ghosting)", &m_enableVarianceClamping))
                         {
-                            m_stream.m_streamStateDirty = true;
+                            MarkStreamDirty();
                         }
                         if (ImGui::IsItemHovered()) ShowTooltip("Clamps reprojected history to 3x3 neighborhood YCoCg bounding box to eliminate ghosting during rapid camera motion.");
                     }
@@ -5288,16 +5414,17 @@ namespace Splat
                         ImGui::SameLine();
                         if (ImGui::Button("Instant Full Load", ImVec2(width, 26)))
                         {
+                            WaitStreamJob();
                             m_stream.m_simulatedBytesDelivered = m_stream.m_totalStreamBytes;
                             m_stream.m_streamRefinementProgress = 1.0f;
-                            m_stream.m_streamStateDirty = true;
+                            MarkStreamDirty();
                             UpdateStreamingSimulation(1.0);
                         }
                     }
                     ImGui::Spacing();
                     if (ImGui::Checkbox("Freeze Rendering & Memory (Eliminate Flickering)", &m_freezeRenderingAndMemory))
                     {
-                        m_stream.m_streamStateDirty = true;
+                        MarkStreamDirty();
                     }
                     if (ImGui::IsItemHovered()) ShowTooltip("Completely freezes streaming simulation, LOD transitions, memory evictions, and edge recalculations.\nEliminates all flickering and jitter artifacts when movement is paused.");
 
@@ -5774,8 +5901,8 @@ namespace Splat
                     uint32_t statsTotalChunks = 0;
                     if (m_enableStreamingSimulation)
                     {
-                        statsTotalChunks = (uint32_t)m_stream.m_rendererSourceChunks.size();
-                        for (const auto* pChunk : m_stream.m_rendererSourceChunks)
+                        statsTotalChunks = (uint32_t)m_drawSources.size();
+                        for (const auto* pChunk : m_drawSources)
                         {
                             if (pChunk && pChunk->isSilhouette) statsEdgeChunks++;
                         }
@@ -6197,7 +6324,7 @@ namespace Splat
         ImGui::PushItemWidth(availWidth - 165.0f);
         if (ImGui::SliderFloat("##DecaySlider", &m_streamDecayRate, 0.0f, StreamRuntime::kMaxDecayRate, "Decay Rate: %.2f"))
         {
-            m_stream.m_streamStateDirty = true;
+            MarkStreamDirty();
             CalibrateDecay();
         }
         if (ImGui::IsItemHovered())
@@ -6222,7 +6349,7 @@ namespace Splat
         ImGui::SameLine();
         if (ImGui::Checkbox("Decay", &m_enableStreamDecay))
         {
-            m_stream.m_streamStateDirty = true;
+            MarkStreamDirty();
             CalibrateDecay();
         }
         if (ImGui::IsItemHovered())
@@ -6231,7 +6358,7 @@ namespace Splat
         }
         if (ImGui::Checkbox("Release Unused LOD Segments", &m_releaseUnusedSegments))
         {
-            m_stream.m_streamStateDirty = true;
+            MarkStreamDirty();
         }
         if (ImGui::IsItemHovered())
         {
@@ -6241,10 +6368,10 @@ namespace Splat
         ImGui::AlignTextToFramePadding();
         ImGui::TextUnformatted("Policy:");
         ImGui::SameLine();
-        if (ImGui::RadioButton("Conservative", m_streamingPolicy == 0)) { m_streamingPolicy = 0; if (!m_sceneIsEnvironment) m_objectStreamingPolicy = 0; m_stream.m_streamStateDirty = true; }
+        if (ImGui::RadioButton("Conservative", m_streamingPolicy == 0)) { m_streamingPolicy = 0; if (!m_sceneIsEnvironment) m_objectStreamingPolicy = 0; MarkStreamDirty(); }
         if (ImGui::IsItemHovered()) ShowTooltip("Loads only what the view needs: the blocks in view (plus a small margin), each down to its own level. Nothing streams in the background.");
         ImGui::SameLine();
-        if (ImGui::RadioButton("Greedy", m_streamingPolicy == 1)) { m_streamingPolicy = 1; if (!m_sceneIsEnvironment) m_objectStreamingPolicy = 1; m_stream.m_streamStateDirty = true; }
+        if (ImGui::RadioButton("Greedy", m_streamingPolicy == 1)) { m_streamingPolicy = 1; if (!m_sceneIsEnvironment) m_objectStreamingPolicy = 1; MarkStreamDirty(); }
         if (ImGui::IsItemHovered()) ShowTooltip("Keeps loading in the background regardless of the view, what is in view first. With Release Unused LOD Segments it loads every block of every level down to the finest level a visible block renders at (now level %d), model-wide, and releases only what lies finer.", m_stream.GreedyFloor());
 
         ImGui::Spacing();
@@ -6256,7 +6383,7 @@ namespace Splat
     // Whether the ray through window pixel (x, y) meets the model: any block of this frame's render list, by its bounding box
     bool SplatPakApp::ClickHitsModel(float x, float y) const
     {
-        if (m_Width == 0 || m_Height == 0 || m_stream.m_rendererMeshletChunks.empty()) return false;
+        if (m_Width == 0 || m_Height == 0 || m_drawChunks.empty()) return false;
         XMFLOAT3 eye, fwd, up(0.0f, 1.0f, 0.0f);
         if (m_state.poseCamera) { eye = m_state.poseEye; fwd = m_state.poseForward; up = m_state.poseUp; }
         else
@@ -6273,7 +6400,7 @@ namespace Splat
         XMStoreFloat3(&d, XMVector3Normalize(f + r * nx + u * ny));
         const float inv[3] = { 1.0f / (fabsf(d.x) > 1e-9f ? d.x : 1e-9f), 1.0f / (fabsf(d.y) > 1e-9f ? d.y : 1e-9f), 1.0f / (fabsf(d.z) > 1e-9f ? d.z : 1e-9f) };
         const float o[3] = { eye.x, eye.y, eye.z };
-        for (const MeshletChunkGPU& c : m_stream.m_rendererMeshletChunks)
+        for (const MeshletChunkGPU& c : m_drawChunks)
         {
             const float lo[3] = { c.aabbMin.x, c.aabbMin.y, c.aabbMin.z };
             const float hi[3] = { c.aabbMin.x + c.aabbExtents.x, c.aabbMin.y + c.aabbExtents.y, c.aabbMin.z + c.aabbExtents.z };
@@ -6295,7 +6422,7 @@ namespace Splat
         std::string label = std::string("Refinement Visualizer") + idSuffix;
         if (ImGui::Checkbox(label.c_str(), &m_showChunkStream))
         {
-            m_stream.m_streamStateDirty = true;
+            MarkStreamDirty();
         }
         if (ImGui::IsItemHovered()) ShowTooltip("(R, or click the model) Visualizer for progressive loading: every chunk that arrives is filled with a semi-transparent tint in its level's colour. The newest chunks -- the leading edge of the growing model -- glow bright, then settle to the regular tint and fade out. Press Evict to watch the whole model grow back in the scheduler's order. Named in the top-left banner while it is on.");
     }
@@ -8038,9 +8165,11 @@ namespace Splat
         // The render mode follows SplatRenderMode() at the next state selection; re-stamp the chunks'
         // dilationMorph now (the sorted pipeline's fade weight, or the splat value) without a re-partition
         const float morph = m_splatDrawAsDiscs ? 0.0f : 1.0f;
+        WaitStreamJob();
         for (auto& mc : m_stream.m_rendererMeshletChunks) mc.dilationMorph = morph;
+        for (auto& mc : m_drawChunks) mc.dilationMorph = morph;
         for (auto& lod : m_residentLODs) for (auto& mc : lod.meshletChunks) mc.dilationMorph = morph;
-        m_stream.m_streamStateDirty = true;
+        MarkStreamDirty();
     }
 
     // LOD quality test (see SplatPakApp.h). Runs on the static per-level sets (streaming off), so each capture
@@ -9669,7 +9798,7 @@ namespace Splat
         // a high frame rate. A shot that never settles is captured after 60 s and marked
         m_lodCalShotSeconds += m_deltaTime / 1000.0;
         uint64_t splats = 0;
-        for (const StreamChunk* pc : m_stream.m_rendererSourceChunks) splats += pc->rawSplats.size();
+        for (const StreamChunk* pc : m_drawSources) splats += pc->rawSplats.size();
         const bool still = (m_stream.m_lastActiveTransitions == 0 && splats == m_lodCalLastSplats);
         m_lodCalStableSeconds = still ? m_lodCalStableSeconds + m_deltaTime / 1000.0 : 0.0;
         m_lodCalStableFrames = still ? m_lodCalStableFrames + 1 : 0;
@@ -9677,8 +9806,8 @@ namespace Splat
         if (m_lodCalStableSeconds >= 2.5 || m_lodCalShotSeconds > 60.0)
         {
             shot.splats = splats;
-            shot.chunks = (uint32_t)m_stream.m_rendererSourceChunks.size();
-            for (const StreamChunk* pc : m_stream.m_rendererSourceChunks) shot.perLevel[std::min(7, std::max(0, pc->lodLevel))] += pc->rawSplats.size();
+            shot.chunks = (uint32_t)m_drawSources.size();
+            for (const StreamChunk* pc : m_drawSources) shot.perLevel[std::min(7, std::max(0, pc->lodLevel))] += pc->rawSplats.size();
             shot.seconds = (float)m_lodCalShotSeconds;
             shot.settled = (m_lodCalStableSeconds >= 2.5);
             m_pRenderer->RequestSceneCapture();
@@ -9807,7 +9936,7 @@ namespace Splat
             return;
         }
         uint64_t splats = 0;
-        for (const StreamChunk* pc : m_stream.m_rendererSourceChunks) splats += pc->rawSplats.size();
+        for (const StreamChunk* pc : m_drawSources) splats += pc->rawSplats.size();
         const bool still = (m_stream.m_lastActiveTransitions == 0 && splats == m_viewCapLastSplats);
         m_viewCapStableSeconds = still ? m_viewCapStableSeconds + m_deltaTime / 1000.0 : 0.0;
         m_viewCapLastSplats = splats;
@@ -10041,7 +10170,7 @@ namespace Splat
             }
             else
             {
-                for (const StreamChunk* pc : m_stream.m_rendererSourceChunks) { wanted++; have += pc->lodLevel <= m_stream.BlockTargetLOD(*pc, eye) ? 1 : 0; }
+                for (const StreamChunk* pc : m_drawSources) { wanted++; have += pc->lodLevel <= m_stream.BlockTargetLOD(*pc, eye) ? 1 : 0; }
             }
             m_loadFill = wanted ? (float)have / (float)wanted : 1.0f;
             if (m_loadFill >= 0.75f) m_loadingBlurArmed = false; // In: no veil until the next load, Evict or jump
@@ -10173,7 +10302,7 @@ namespace Splat
             return;
         }
         uint64_t splats = 0;
-        for (const StreamChunk* pc : m_stream.m_rendererSourceChunks) splats += pc->rawSplats.size();
+        for (const StreamChunk* pc : m_drawSources) splats += pc->rawSplats.size();
         const bool still = (m_stream.m_lastActiveTransitions == 0 && splats == m_camCapLastSplats);
         m_camCapStableSeconds = still ? m_camCapStableSeconds + m_deltaTime / 1000.0 : 0.0;
         m_camCapLastSplats = splats;
