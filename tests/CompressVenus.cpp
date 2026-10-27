@@ -160,6 +160,6 @@ int main(int argcIn, char** argvIn)
               << occlusion.size() << " occluder blocks in " << occlusionMips.mipCount << " mips (";
     for (uint32_t k = 0; k < occlusionMips.mipCount; k++)
         std::cout << (k ? " / " : "") << occlusionMips.blockCount[k];
-    std::cout << ")" << std::endl;
+    std::cout << "), occluder mesh " << (occluderMesh.Empty() ? 0 : occluderMesh.levels[0].TriangleCount()) << " triangles" << std::endl;
     return 0;
 }

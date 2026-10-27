@@ -44,7 +44,7 @@ int main(int argc, char** argv)
               << pkg.occlusionVoxels.size() << " cubes in " << pkg.occlusionMips.mipCount << " mips (";
     for (uint32_t k = 0; k < pkg.occlusionMips.mipCount; k++)
         std::cout << (k ? " / " : "") << pkg.occlusionMips.blockCount[k] << " @ " << pkg.occlusionMips.cellSize[k] << " m";
-    std::cout << ")" << std::endl;
+    std::cout << "); package occluder mesh " << (pkg.occluderMesh.Empty() ? 0 : pkg.occluderMesh.levels[0].TriangleCount()) << " triangles" << std::endl;
 
     Splat::OcclusionVolume::Grid grid;
     std::string trace;
