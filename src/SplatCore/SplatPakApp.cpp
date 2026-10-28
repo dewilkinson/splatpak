@@ -4378,7 +4378,7 @@ namespace Splat
             }
         }
 
-        // A click inside the loupe's box pins it where it is, and another unpins it (Space too: see OnEvent).
+        // A Shift+click inside the loupe's box pins it where it is, and another unpins it (Space too: see OnEvent).
         // A click is a press and release that hardly move: a left-drag that starts in the box still orbits.
         if (m_loupeEnabled && m_loupeRect.z > m_loupeRect.x)
         {
@@ -4386,7 +4386,9 @@ namespace Splat
             const ImVec2 half(0.5f * (m_loupeRect.z - m_loupeRect.x) / zoom, 0.5f * (m_loupeRect.w - m_loupeRect.y) / zoom);
             const ImVec2 m = io.MousePos;
             const bool inBox = fabsf(m.x - m_loupeCenter.x) <= half.x && fabsf(m.y - m_loupeCenter.y) <= half.y;
-            if (io.MouseClicked[0] && inBox && m_loupeDrag == 0 && !overInset && !io.WantCaptureMouse)
+            // Shift+click only: the box follows the mouse, so a plain click on the model (or the one after opening the app)
+            // would lock it unasked, now that the loupe is on by default
+            if (io.MouseClicked[0] && io.KeyShift && inBox && m_loupeDrag == 0 && !overInset && !io.WantCaptureMouse)
             {
                 m_loupeBoxPressed = true;
                 m_loupeBoxPressPos = m;
@@ -7485,7 +7487,7 @@ namespace Splat
         dl->AddRectFilled(ImVec2(destX + inset.x - ds.x - 10.0f, destY), ImVec2(destX + inset.x, destY + ds.y + 6.0f), IM_COL32(0, 0, 0, 170));
         dl->AddText(font, hintSize, ImVec2(destX + inset.x - ds.x - 5.0f, destY + 3.0f), frame, dismiss);
         // And how to hold the magnified region still, in the top-left corner (Space pins it, as a click in its box does)
-        const char* lock = "Click/Space to lock region";
+        const char* lock = "Shift+Click/Space to lock region";
         const ImVec2 ls = font->CalcTextSizeA(hintSize, FLT_MAX, 0.0f, lock);
         dl->AddRectFilled(ImVec2(destX, destY), ImVec2(destX + ls.x + 10.0f, destY + ls.y + 6.0f), IM_COL32(0, 0, 0, 170));
         dl->AddText(font, hintSize, ImVec2(destX + 5.0f, destY + 3.0f), frame, lock);
