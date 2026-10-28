@@ -857,7 +857,7 @@ namespace Splat
         // The loading veil (State::loadingBlurPx): armed by a load, an Evict or a jump to a training camera; while armed,
         // the scene is blurred by up to 0.8% of the window height, easing out as the fill (an environment: its residency
         // ring at its levels; an object: the drawn blocks at theirs) goes from 40% to 75%, then disarmed until the next.
-        bool        m_loadingBlurEnabled = true;   // Renderer tab, Loading Blur (config loading_blur)
+        bool        m_loadingBlurEnabled = false;  // Renderer tab, Loading Blur (config loading_blur); off by default
         bool        m_loadingBlurArmed = false;
         float       m_loadFill = 1.0f;              // 0..1, refreshed four times a second while armed
         double      m_loadFillTimer = 0.0;
