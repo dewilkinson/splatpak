@@ -5132,12 +5132,7 @@ namespace Splat
                         }
                         ImGui::PopItemWidth();
                     }
-                    if (ImGui::Checkbox("Demote Chunks on Zoom Out", &m_demoteChunks))
-                    {
-                        MarkStreamDirty();
-                    }
-                    if (ImGui::IsItemHovered()) ShowTooltip("Off: once a chunk has refined into its children it stays refined when you zoom out or its edge flag drops, so detail never fades back to the coarser level (Decay still reclaims memory). On: children cross-fade back to the parent and are evicted, as in v1.2.0.");
-
+                    // Demote Chunks on Zoom Out (m_demoteChunks) has no control: off, as it defaults; scripted runs still set it
                     ImGui::Separator();
 #if 0 // DYNAMIC SILHOUETTE: GPU silhouette chunk processing switched off for now (re-enable by restoring this block)
                     if (ImGui::Checkbox("Highlight Edge Chunks", &m_highlightSilhouetteChunks))
@@ -5149,11 +5144,6 @@ namespace Splat
 
                     DrawRefinementVisualizerControls("##Renderer");
 
-                    if (ImGui::Checkbox("Show ONLY Locked Chunks (Transition / Edge)", &m_showOnlyLockedChunks))
-                    {
-                        MarkStreamDirty();
-                    }
-                    if (ImGui::IsItemHovered()) ShowTooltip("Isolates active dynamic workload: hides static model geometry and renders ONLY chunks that are currently locked in transition or detected on the silhouette edge.");
 
 #if 0 // DYNAMIC SILHOUETTE: GPU silhouette chunk processing switched off for now (re-enable by restoring this block)
                     uint32_t liveEdgeChunks = 0;
@@ -5402,25 +5392,6 @@ namespace Splat
                         m_swapChain.SetVSync(m_vsync);
                     }
 
-                    if (m_pRenderer && m_pRenderer->GetRenderPath() != SplatRenderer::RenderPath::MeshShaders)
-                    {
-                        // No amplification (task) shader stage on this render path: the control is greyed out and
-                        // inert. Chunk backface culling still happens, per splat in the vertex shader, always on.
-                        bool fixedOn = true;
-                        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.35f);
-                        ImGui::Checkbox("Meshlet Backface Cone Culling (Task Shader)", &fixedOn);
-                        ImGui::PopStyleVar();
-                        if (ImGui::IsItemHovered()) ShowTooltip("Unavailable on this GPU path (%s): there is no amplification (task) shader stage. Chunk backface culling runs per splat in the vertex shader instead and is always on.", m_pRenderer->GetRenderPathDescription());
-                    }
-                    else
-                    {
-                        ImGui::Checkbox("Meshlet Backface Cone Culling (Task Shader)", &m_enableConeCulling);
-                        if (ImGui::IsItemHovered()) ShowTooltip("Task Shader (mainAS) culls ~50% of meshlet chunks facing away from the camera before mesh shaders and rasterization ever execute.");
-                    }
-
-                    ImGui::Checkbox("Use DX12 CopyQueue (Async DMA)", &m_useCopyQueue);
-                    if (ImGui::IsItemHovered()) ShowTooltip("Uses a dedicated D3D12_COMMAND_LIST_TYPE_COPY hardware DMA queue for PCIe buffer uploads in parallel with 3D rendering.");
-
                     bool detachToggle = m_detachCamera;
                     if (ImGui::Checkbox("Detach Camera (Freeze Culling Frustum)", &detachToggle))
                         SetDetachCamera(detachToggle);
@@ -5509,6 +5480,25 @@ namespace Splat
                     ImGui::SameLine();
                     ImGui::TextColored(m_useChunkedPipeline ? ImVec4(0.3f, 1.0f, 0.4f, 1.0f) : ImVec4(1.0f, 0.6f, 0.2f, 1.0f),
                         m_useChunkedPipeline ? "[Amplification Shader]" : "[Disabled]");
+
+                    if (m_pRenderer && m_pRenderer->GetRenderPath() != SplatRenderer::RenderPath::MeshShaders)
+                    {
+                        // No amplification (task) shader stage on this render path: the control is greyed out and
+                        // inert. Chunk backface culling still happens, per splat in the vertex shader, always on.
+                        bool fixedOn = true;
+                        ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.35f);
+                        ImGui::Checkbox("Meshlet Backface Cone Culling (Task Shader)", &fixedOn);
+                        ImGui::PopStyleVar();
+                        if (ImGui::IsItemHovered()) ShowTooltip("Unavailable on this GPU path (%s): there is no amplification (task) shader stage. Chunk backface culling runs per splat in the vertex shader instead and is always on.", m_pRenderer->GetRenderPathDescription());
+                    }
+                    else
+                    {
+                        ImGui::Checkbox("Meshlet Backface Cone Culling (Task Shader)", &m_enableConeCulling);
+                        if (ImGui::IsItemHovered()) ShowTooltip("Task Shader (mainAS) culls ~50% of meshlet chunks facing away from the camera before mesh shaders and rasterization ever execute.");
+                    }
+
+                    ImGui::Checkbox("Use DX12 CopyQueue (Async DMA)", &m_useCopyQueue);
+                    if (ImGui::IsItemHovered()) ShowTooltip("Uses a dedicated D3D12_COMMAND_LIST_TYPE_COPY hardware DMA queue for PCIe buffer uploads in parallel with 3D rendering.");
                 }
 
                 // Section 5: Spatial & Cluster Visualizers
