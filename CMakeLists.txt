@@ -60,11 +60,15 @@ add_custom_target(clean_stale_binaries
     COMMENT "Removing stale executables from bin/"
 )
 set_target_properties(clean_stale_binaries PROPERTIES FOLDER "Core")
-foreach(_exe SplatPak SplatPakViewer CompressVenus TestGPUSort TestBitonicCPU TestLoadPackage TestSplatCodec TestColourTransform TestShadowMesh TestGeometryCull TestOcclusionVolume)
+foreach(_exe SplatPak SplatPakViewer SplatPakWorker CompressVenus TestGPUSort TestBitonicCPU TestLoadPackage TestSplatCodec TestColourTransform TestShadowMesh TestGeometryCull TestOcclusionVolume)
     if(TARGET ${_exe})
         add_dependencies(${_exe} clean_stale_binaries)
     endif()
 endforeach()
+# SplatPak runs the RDO analysis in SplatPakWorker.exe beside it: building SplatPak alone must not leave it deleted
+if(TARGET SplatPak AND TARGET SplatPakWorker)
+    add_dependencies(SplatPak SplatPakWorker)
+endif()
 
 # Without this, Visual Studio picks the alphabetically-first project as the
 # startup project, which is ALL_BUILD (or Docs) - neither is runnable, so F5
