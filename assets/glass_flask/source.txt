@@ -1,0 +1,6 @@
+Source: Zenodo record MIC_Adria_2, object 21511 (catalog entry 00027)
+PLY: https://zenodo.org/records/18433232/files/21511.ply?download=1
+Record: https://zenodo.org/records/18433232
+Screenshot: https://zenodo.org/records/18433232/files/21511_thumb.png?download=1
+Licence: CC BY-NC-ND 4.0 (non-commercial, no derivatives)
+Downloaded: 2026-10-26
