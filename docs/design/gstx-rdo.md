@@ -9,7 +9,7 @@ Today the person baking picks the encoding by hand (SH Quality, SH Precision, de
 
 ## Phase 1: built (2026-10-26)
 - `src/SplatCore/RdoAnalysis.h` (the analysis, open: it uses the codec only through its public calls), `RdoProfile.h` (profiles),
-  the Compression (RDO) menu in `SplatPakApp`, `tests/TestRdo.cpp`. The analysis sits in the app rather than libs/gstx: nothing in
+  the Rate Distortion Optimization menu in `SplatPakApp`, `tests/TestRdo.cpp`. The analysis sits in the app rather than libs/gstx: nothing in
   it is proprietary, and it needs the packager's SH path.
 - Cthulhu (3.3 million splats, 6 levels): 20 candidates in 58 s (TestRdo; 82 s in the app, which also hashes the scan). Predicted
   sizes are 0.6-1.4% above the 12 packages of the hand sweep. `SHCoding::ParentMaps` lets one parent map serve every candidate:
@@ -28,7 +28,7 @@ Today the person baking picks the encoding by hand (SH Quality, SH Precision, de
 5. Bakes stay **reasonably fast**: phase 1 adds well under a minute to a Cthulhu bake.
 
 ## UI (user, 2026-10-26: the curve, with streaming time as a second way to set the target)
-The SH Quality and SH Precision combos give way to a **Compression (RDO)** menu of its own on the Package Bake tab: a new collapsible menu bar like the other sections (its open state remembered), so the curve, the sliders and the readouts have room (user, 2026-10-26). It holds:
+The SH Quality and SH Precision combos give way to a **Rate Distortion Optimization** menu of its own on the Package Bake tab: a new collapsible menu bar like the other sections (its open state remembered), so the curve, the sliders and the readouts have room (user, 2026-10-26). It holds:
 - **Analyse** runs the search's scoring pass and draws the scan's own rate-distortion curve: the best encoding at every size (the lower convex hull of the candidates), quality in dB against package size in MB.
 - **A handle on the curve** marks the chosen point; dragging it moves along the curve. The target can also be typed:
   - **Size** (MB) or **ratio** (x of the source);

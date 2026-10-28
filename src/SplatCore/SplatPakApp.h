@@ -507,7 +507,7 @@ namespace Splat
         uint8_t  m_shBandBits[3] = { 8, 8, 8 };     // What the bake requantises the SH to, per band: SH Precision's bits, or the RDO choice
         void     SetSHPrecision(int precision) { m_shPrecision = std::clamp(precision, 0, 3); for (uint8_t& b : m_shBandBits) b = SHBitsFor(m_shPrecision); }
 
-        // ---- Compression (RDO): docs/design/gstx-rdo.md, phase 1 -------------------------------------------------------
+        // ---- Rate Distortion Optimization: docs/design/gstx-rdo.md, phase 1 -------------------------------------------------------
         RdoAnalysisResult   m_rdo;                  // The last analysis (or a loaded profile's)
         uint64_t            m_rdoHash = 0;          // The scan it measured (BakeTuningCache hash)
         BakeParams          m_rdoParams;            // The bake it measured (levels and deadband decide its pyramid)
@@ -601,7 +601,7 @@ namespace Splat
         std::string m_reencodeSource, m_reencodeOutput; // The scan it bakes from, and the package it writes (without .gstx)
         bool        m_reencodeReload = false;       // A package was on screen: open the new one when written
         void   StepReencode();
-        // Bake or Save with a target (Compression (RDO)) and no current analysis: bake, analyse, apply the target's pick,
+        // Bake or Save with a target (Rate Distortion Optimization) and no current analysis: bake, analyse, apply the target's pick,
         // bake again if that changed the harmonics, then write the package when Save started it. Analyse is never required.
         enum class AutoRdo { Idle, Bake, Analyse, Apply, Save };
         AutoRdo     m_autoRdo = AutoRdo::Idle;
@@ -977,9 +977,10 @@ namespace Splat
         bool   m_rightPanelOpen[kRightSectionCount] = { true, true, true, true, true, true, true };
         bool   m_rightDragMoved = false;             // The title bar being dragged has moved its section: its click must not toggle it
         bool   RightPanelSectionHeader(int slot, int section, int& swapSlotA, int& swapSlotB); // Title bar of the section at this slot: open state, drag to reorder; true = draw the body
-        // Every other collapsing header's open state, by label, saved in config.json (menu_open) so menus reopen as left
+        // Every other collapsing header's open state, by its fixed id (titles can change), saved in config.json (menu_open)
+        // so menus reopen as left
         std::map<std::string, bool> m_menuOpen;
-        bool   MenuHeader(const char* label, bool defaultOpen = true); // CollapsingHeader with a remembered open state
+        bool   MenuHeader(const char* id, const char* title, bool defaultOpen = true); // CollapsingHeader with an open state remembered under id
         void  StepLodQualityTest();     // Once per frame, before the UI: moves the test along
         void  FinishLodQualityTest();   // Compares the captures and writes the report
     };

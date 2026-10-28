@@ -24,6 +24,22 @@ extern "C" { __declspec(dllexport) extern const char* D3D12SDKPath = ".\\D3D12\\
 
 namespace Splat
 {
+    // Section headers' fixed identifiers, keyed in config.json before them by their titles (read once, on load)
+    static const std::pair<const char*, const char*> kLegacyMenuKeys[] = {
+        { "1. Runtime LOD & Quality", "runtime-lod" },
+        { "Interior Occlusion Volume", "interior-occlusion" },
+        { "2. 3D Viewport & Splat Sizing", "viewport-sizing" },
+        { "3. Temporal Filtering & Anti-Aliasing (TAA)", "taa" },
+        { "4. Accelerators & Meshlet Pipeline", "accelerators" },
+        { "5. Spatial & Cluster Visualizers", "visualizers" },
+        { "Splat Loading##Presentation", "present-loading" },
+        { "Streaming##Presentation", "present-streaming" },
+        { "Optimizations##Presentation", "present-optimizations" },
+        { "Occlusion##Presentation", "present-occlusion" },
+        { "Compression (RDO)", "rdo" },
+        { "Encoding", "encoding" },
+    };
+
     static constexpr const char* kTraceLogFilename = "lod_transition_trace.log";
 
     // Every tooltip in the app: a smaller proportional face (s_tooltipFont, Segoe UI, registered in OnCreate), wrapped to a
@@ -908,7 +924,12 @@ namespace Splat
                                 if (end == std::string::npos) end = val.size();
                                 const std::string entry = val.substr(start, end - start);
                                 const size_t eq = entry.rfind('=');
-                                if (eq != std::string::npos && eq > 0) m_menuOpen[entry.substr(0, eq)] = entry[eq + 1] == '1';
+                                if (eq != std::string::npos && eq > 0)
+                                {
+                                    std::string key = entry.substr(0, eq);
+                                    for (const auto& legacy : kLegacyMenuKeys) if (key == legacy.first) key = legacy.second; // Saved under its old title
+                                    m_menuOpen[key] = entry[eq + 1] == '1';
+                                }
                                 start = end + 1;
                             }
                         }
@@ -3564,6 +3585,7 @@ namespace Splat
         m_stream.m_bytesPerRenderPoint = BytesPerRenderPoint();
         SyncStreamInputs();
         m_stream.InitStreamingSimulation();
+        m_drawSources.clear(); m_drawSourcesNext.clear(); // They point into the blocks the init just replaced
         ComputeSplatSoftness();
         m_ringBufferCapacityMB = m_stream.settings.ringBufferCapacityMB; // The runtime defaults the ring buffer to its slider ceiling
     }
@@ -4795,7 +4817,7 @@ namespace Splat
                 if (ImGui::IsItemHovered()) ShowTooltip("Sparsification deadband: wavelet detail coefficients below this threshold are zeroed out. Applied by Bake.");
 
                 // Every point bakes as a 3D Gaussian (a plain point cloud's are made for it, see PointCloudGaussians.h); how
-                // much view-dependent colour to keep, and at what precision, is the Compression (RDO) menu's choice
+                // much view-dependent colour to keep, and at what precision, is the Rate Distortion Optimization menu's choice
                 if (m_splatMode) DrawRdoMenu();
 
 
@@ -4837,7 +4859,7 @@ namespace Splat
                     if (ImGui::Button(label, ImVec2(-1, pending ? 44.0f : 32.0f)) && (pending || TargetUnmet()) && !chaining)
                         StartAutoRdo(std::string()); // Waits for an analysis under way, measures the curve if the target needs it, bakes
                     if (ImGui::IsItemHovered() && TargetUnmet() && !chaining)
-                        ShowTooltip("Bakes to the Compression (RDO) target. This scan's size-against-quality curve is not measured yet, so the bake finishes measuring it first (about a minute, once per scan: it is stored), then applies the target's choice.");
+                        ShowTooltip("Bakes to the Rate Distortion Optimization target. This scan's size-against-quality curve is not measured yet, so the bake finishes measuring it first (about a minute, once per scan: it is stored), then applies the target's choice.");
                     if (pending)
                     {
                         // Glow: rings of red fading outward, always there and brightest at the top of the breath
@@ -4915,7 +4937,7 @@ namespace Splat
             if (!m_rawSplats.empty() || m_isLoadedFromSFLW)
             {
                 // Section 1: Runtime LOD Settings
-                if (MenuHeader("1. Runtime LOD & Quality"))
+                if (MenuHeader("runtime-lod", "1. Runtime LOD & Quality"))
                 {
                     int maxLODIndex = std::max(0, (int)m_waveletResult.lodLevels.size() - 1);
                     if (maxLODIndex > 0)
@@ -5073,7 +5095,7 @@ namespace Splat
                 // loaded model actually has a baked volume or mesh (see LoadSFLWFile/ApplyBake).
                 if (!m_occlusionVoxels.empty() || HasOccluderMesh() || (m_shadowMesh && !m_shadowMesh->Empty()) || m_shadowMeshJob)
                 {
-                    if (MenuHeader("Interior Occlusion Volume"))
+                    if (MenuHeader("interior-occlusion", "Interior Occlusion Volume"))
                     {
                         if (ImGui::IsItemHovered())
                         {
@@ -5085,7 +5107,7 @@ namespace Splat
                 }
 
                 // Section 3: 3D Viewport & Splat Sizing
-                if (MenuHeader("2. 3D Viewport & Splat Sizing"))
+                if (MenuHeader("viewport-sizing", "2. 3D Viewport & Splat Sizing"))
                 {
                     ImGui::TextColored(ImVec4(1.0f, 0.85f, 0.3f, 1.0f), "Active Display: %u points", m_state.splatCount);
 
@@ -5304,7 +5326,7 @@ namespace Splat
                 }
 
                 // Section 3: Temporal Filtering & Anti-Aliasing
-                if (MenuHeader("3. Temporal Filtering & Anti-Aliasing (TAA)"))
+                if (MenuHeader("taa", "3. Temporal Filtering & Anti-Aliasing (TAA)"))
                 {
                     if (ImGui::Checkbox("Enable Temporal Dither Resolver (TAA)", &m_enableTemporalFiltering))
                     {
@@ -5335,7 +5357,7 @@ namespace Splat
                 }
 
                 // Section 4: Hardware Accelerators & Pipeline
-                if (MenuHeader("4. Accelerators & Meshlet Pipeline"))
+                if (MenuHeader("accelerators", "4. Accelerators & Meshlet Pipeline"))
                 {
                     if (ImGui::Checkbox("GPU Radix Sort", &m_gpuRadixSort))
                     {
@@ -5369,7 +5391,7 @@ namespace Splat
                 }
 
                 // Section 5: Spatial & Cluster Visualizers
-                if (MenuHeader("5. Spatial & Cluster Visualizers"))
+                if (MenuHeader("visualizers", "5. Spatial & Cluster Visualizers"))
                 {
                     const char* cubePresets[] = { "512 Cubes", "1,024 Cubes", "2,048 Cubes", "4,096 Cubes", "8,192 Cubes", "16,384 Cubes" };
                     int cubeValues[] = { 512, 1024, 2048, 4096, 8192, 16384 };
@@ -6879,18 +6901,19 @@ namespace Splat
     // asks for a swap with the neighbouring slot (applied after the loop, so no section is drawn twice); the
     // drag delta is then reset, so each further step needs the same distance again. A click that ends a drag
     // which moved the section leaves its open state as it was.
-    // A collapsing header that reopens as the user left it: its open state is kept by label in m_menuOpen and saved to
-    // config.json (menu_open) whenever it changes
-    bool SplatPakApp::MenuHeader(const char* label, bool defaultOpen)
+    // A collapsing header that reopens as the user left it: its open state is kept under its fixed id (not its
+    // title, which may change) in m_menuOpen and saved to config.json (menu_open) whenever it changes
+    bool SplatPakApp::MenuHeader(const char* id, const char* title, bool defaultOpen)
     {
-        auto it = m_menuOpen.find(label);
+        auto it = m_menuOpen.find(id);
         const bool stored = it != m_menuOpen.end() ? it->second : defaultOpen;
         ImGui::SetNextTreeNodeOpen(stored, ImGuiCond_Always);
-        const bool open = ImGui::CollapsingHeader(label);
+        const std::string label = std::string(title) + "###" + id; // ImGui's id is the part after ###
+        const bool open = ImGui::CollapsingHeader(label.c_str());
         // A click toggles it under the mouse; a header the window skips (folded, not yet laid out) returns false unhovered
         if (open != stored && ImGui::IsItemHovered())
         {
-            m_menuOpen[label] = open;
+            m_menuOpen[id] = open;
             SaveConfigFile();
         }
         return open;
@@ -8541,7 +8564,7 @@ namespace Splat
         SetNextSidePanelCollapse(m_presentPanelRect, m_presentPanelCollapsed);
         ImGui::Begin("Presentation Mode", nullptr, 0);
 
-        if (MenuHeader("Splat Loading##Presentation"))
+        if (MenuHeader("present-loading", "Splat Loading"))
         {
             ImGui::Indent();
             // A press applies the preset, also on the one already chosen (to put things back after a change)
@@ -8585,7 +8608,7 @@ namespace Splat
             }
             ImGui::Unindent();
         }
-        if (MenuHeader("Streaming##Presentation"))
+        if (MenuHeader("present-streaming", "Streaming"))
         {
             ImGui::Indent();
             if (ImGui::RadioButton("Clear##StreamPreset", m_presentStreamPreset == kPresetClear))
@@ -8597,7 +8620,7 @@ namespace Splat
             if (ImGui::IsItemHovered()) ShowTooltip("Removes the model and resets the view, ready to load one.");
             ImGui::Unindent();
         }
-        if (MenuHeader("Optimizations##Presentation"))
+        if (MenuHeader("present-optimizations", "Optimizations"))
         {
             ImGui::Indent();
             static const char* kOptName[kOptLevels] = { "Brute force", "+ Trimmed quads", "+ Sort on movement", "+ Culling", "+ Level of detail", "+ Streaming" };
@@ -8619,7 +8642,7 @@ namespace Splat
             ImGui::Text("%.0f fps, %.2f ms a frame", ImGui::GetIO().Framerate, 1000.0f / std::max(1.0f, ImGui::GetIO().Framerate));
             ImGui::Unindent();
         }
-        if (MenuHeader("Occlusion##Presentation"))
+        if (MenuHeader("present-occlusion", "Occlusion"))
         {
             ImGui::Indent();
             if (ImGui::RadioButton("Back of the Head##OccPreset", m_presentOcclusionPreset == kPresetBackOfHead))
@@ -8719,14 +8742,14 @@ namespace Splat
         ApplyFitDistance();
     }
 
-    // ---- Compression (RDO): docs/design/gstx-rdo.md, phase 1 ---------------------------------------------------------
+    // ---- Rate Distortion Optimization: docs/design/gstx-rdo.md, phase 1 ---------------------------------------------------------
 
     // The menu on the Package Bake tab: the progress of an analysis while one runs, the scan's size-against-quality curve
     // with the chosen point, the target (size, ratio, quality, or streaming time -- per view, the only bandwidth setting) with
     // Analyse at its bottom right, the result and the settings it implies, the override, and RDO profiles
     void SplatPakApp::DrawRdoMenu()
     {
-        if (!MenuHeader("Compression (RDO)")) return;
+        if (!MenuHeader("rdo", "Rate Distortion Optimization")) return;
         ImGui::Indent();
         const double mib = 1024.0 * 1024.0;
         const bool scanLoaded = !m_rawSplats.empty() && !m_isLoadedFromSFLW && m_sourceSHDegree > 0 && !m_waveletResult.lodLevels.empty();
@@ -8930,7 +8953,7 @@ namespace Splat
         if (!ImGui::BeginPopupModal(kPopup, nullptr, ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings)) return;
         const double src = (double)m_sourceFileBytes;
         const int fastest = RdoAnalysis::Pick(m_rdo, m_rdoTarget, src), quality = RdoAnalysis::PickKeepQuality(m_rdo, m_rdoTarget, src);
-        ImGui::TextUnformatted("No encoding of this scan meets the Compression (RDO) target.");
+        ImGui::TextUnformatted("No encoding of this scan meets the Rate Distortion Optimization target.");
         ImGui::Spacing();
         ImGui::Text("Closest:       %s", DescribeRdoPoint(fastest).c_str());
         if (quality >= 0 && quality != fastest) ImGui::Text("Keep quality:  %s", DescribeRdoPoint(quality).c_str());
@@ -9635,7 +9658,7 @@ namespace Splat
         const double firstSeconds = bw > 0.0 ? r.firstBytes / bw : 0.0, fullSeconds = bw > 0.0 ? r.fullBytes / bw : 0.0;
         if (bw > 0.0 && firstSeconds > m_rdoTarget.firstViewSeconds)
         {
-            snprintf(buf, sizeof(buf), "At %s the first picture takes %.1f s; the target is %.1f s (Compression (RDO) menu).", r.profile.c_str(), firstSeconds, m_rdoTarget.firstViewSeconds);
+            snprintf(buf, sizeof(buf), "At %s the first picture takes %.1f s; the target is %.1f s (Rate Distortion Optimization menu).", r.profile.c_str(), firstSeconds, m_rdoTarget.firstViewSeconds);
             r.warn[kEncFirstView] = buf;
             r.severity[kEncFirstView] = 3;
             if (r.levels - 1 < 6)
@@ -9654,7 +9677,7 @@ namespace Splat
         }
         if (r.viewBased && bw > 0.0 && fullSeconds > m_rdoTarget.fullDetailSeconds)
         {
-            snprintf(buf, sizeof(buf), "At %s a typical close view reaches full detail in %.1f s; the target is %.1f s (Compression (RDO) menu).", r.profile.c_str(), fullSeconds, m_rdoTarget.fullDetailSeconds);
+            snprintf(buf, sizeof(buf), "At %s a typical close view reaches full detail in %.1f s; the target is %.1f s (Rate Distortion Optimization menu).", r.profile.c_str(), fullSeconds, m_rdoTarget.fullDetailSeconds);
             r.warn[kEncFullDetail] = buf;
             r.severity[kEncFullDetail] = 3;
         }
@@ -9695,7 +9718,7 @@ namespace Splat
 
     void SplatPakApp::DrawEncodingPanel()
     {
-        if (!MenuHeader("Encoding")) return;
+        if (!MenuHeader("encoding", "Encoding")) return;
         const EncodingReport rep = AssessEncoding();
         if (!rep.valid) { ImGui::TextDisabled("Nothing baked yet."); return; }
         constexpr double kMiB = 1024.0 * 1024.0;
@@ -9755,7 +9778,7 @@ namespace Splat
         row(kEncOcclusion, line);
         ImGui::Separator();
         snprintf(line, sizeof(line), "Checked against: %s", rep.profile.c_str());
-        row(-1, line, "The Network Profile selected in the streaming simulation above, and the time targets of the Compression (RDO) menu.");
+        row(-1, line, "The Network Profile selected in the streaming simulation above, and the time targets of the Rate Distortion Optimization menu.");
         const double bw = rep.bandwidthMBps * kMiB;
         const char* scope = rep.viewBased ? "a typical close view" : "whole model";
         if (bw > 0.0) snprintf(line, sizeof(line), "First picture: %.1f MB, %.1f s (target %.1f s)", rep.firstBytes / kMiB, rep.firstBytes / bw, m_rdoTarget.firstViewSeconds);

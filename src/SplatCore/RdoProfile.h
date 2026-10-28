@@ -2,7 +2,7 @@
 // SplatPak -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// An RDO profile (.rdoprofile, JSON): everything the Compression (RDO) menu holds for one scan, saved so it can be loaded
+// An RDO profile (.rdoprofile, JSON): everything the Rate Distortion Optimization menu holds for one scan, saved so it can be loaded
 // again -- the scan's content hash and file, the bake parameters, the target, the override and the chosen encoding, the
 // analysis constants, and every measured candidate (so the curve comes back without analysing again). A profile applies
 // only to the scan whose hash it carries: loaded with that scan open, or by opening the .ply it names when that file still
