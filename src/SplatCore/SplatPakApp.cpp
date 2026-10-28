@@ -7482,12 +7482,12 @@ namespace Splat
         // How to put it away, in the top-right corner, in a smaller font
         const char* dismiss = "L to dismiss";
         ImFont* font = ImGui::GetFont();
-        const float hintSize = ImGui::GetFontSize() * 0.8f;
+        const float hintSize = ImGui::GetFontSize() * 0.8f + 1.5f; // About a point above 80%
         const ImVec2 ds = font->CalcTextSizeA(hintSize, FLT_MAX, 0.0f, dismiss);
         dl->AddRectFilled(ImVec2(destX + inset.x - ds.x - 10.0f, destY), ImVec2(destX + inset.x, destY + ds.y + 6.0f), IM_COL32(0, 0, 0, 170));
         dl->AddText(font, hintSize, ImVec2(destX + inset.x - ds.x - 5.0f, destY + 3.0f), frame, dismiss);
         // And how to hold the magnified region still, in the top-left corner (Space pins it, as a click in its box does)
-        const char* lock = "Shift+Click/Space to lock region";
+        const char* lock = "Shift+Click to lock region";
         const ImVec2 ls = font->CalcTextSizeA(hintSize, FLT_MAX, 0.0f, lock);
         dl->AddRectFilled(ImVec2(destX, destY), ImVec2(destX + ls.x + 10.0f, destY + ls.y + 6.0f), IM_COL32(0, 0, 0, 170));
         dl->AddText(font, hintSize, ImVec2(destX + 5.0f, destY + 3.0f), frame, lock);
