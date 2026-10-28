@@ -295,7 +295,8 @@ namespace Splat
             "  Once the model has fully streamed in, render it from each training camera (or those listed) at its own field of\n"
             "  view, write camera_<n>.png to the folder, and quit.\n"
             "\n"
-            "--bake-to <out.gstx> [--sh-degree <1-3>] [--sh-bits <8|6|5|4>] [--remember-settings]\n"
+            "--bake-to <out.gstx> [--sh-degree <1-3>] [--sh-bits <8|6|5|4>] [--remember-settings] [--headless]\n"
+            "  (--headless runs the bake and the save without a window or a D3D12 device, so it works with no GPU.)\n"
             "  (--remember-settings also remembers the settings for the scan in bake_tunings.json, as a bake from the Package Bake tab does.)\n"
             "  Bake the scan given on the command line with its default parameters (SH Quality degree and SH Precision bits as given;\n"
             "  degree 3 and 8 bits otherwise), save the package to <out.gstx> with its shadow mesh, and quit. The trace log records the size.\n"
@@ -11301,6 +11302,50 @@ namespace Splat
         LogTransitionTrace("View capture: written to %s", m_viewCapFolder.c_str());
         m_viewCapFolder.clear();
         PostQuitMessage(0);
+    }
+
+    int SplatPakApp::RunHeadless()
+    {
+        // Messages go to the console that started us, if any (SplatPakCli, a prompt); the trace log has the detail
+        const bool console = AttachConsole(ATTACH_PARENT_PROCESS) != FALSE;
+        auto say = [console](const std::string& text)
+        {
+            if (!console) return;
+            const std::string line = text + "\n";
+            DWORD written = 0;
+            WriteConsoleA(GetStdHandle(STD_ERROR_HANDLE), line.c_str(), (DWORD)line.size(), &written, nullptr);
+        };
+        int code = 0;
+        if (m_cliBakeOutput.empty() || strlen(m_inputPathBuf) == 0)
+        {
+            say("SplatPak --headless: needs a scan and --bake-to <package.gstx>");
+            code = 2;
+        }
+        else
+        {
+            LogTransitionTrace("Headless bake: %s -> %s (no window, no D3D12 device)", m_inputPathBuf, m_cliBakeOutput.c_str());
+            LoadConfigFile(); // The same defaults a windowed run starts from
+            // Operations run inline here (UseBackgroundOps is false with --bake-to), so the open's read and bake are done on return
+            const std::string out = m_cliBakeOutput;
+            std::string base = out;
+            if (base.size() > 5 && base.substr(base.size() - 5) == ".gstx") base.resize(base.size() - 5);
+            DeleteFileA((base + ".gstx").c_str()); // A stale package must not pass for this run's
+            if (!LoadFile(m_inputPathBuf))
+            {
+                say("SplatPak --headless: could not open " + std::string(m_inputPathBuf) + ": " + m_statusMessage);
+                code = 1;
+            }
+            else
+            {
+                StepCliBake(); // The windowed --bake-to's save, unchanged (its quit message has no window to reach)
+                const DWORD attributes = GetFileAttributesA((base + ".gstx").c_str());
+                code = (attributes != INVALID_FILE_ATTRIBUTES) ? 0 : 1;
+                say(code == 0 ? "SplatPak --headless: wrote " + base + ".gstx" : "SplatPak --headless: no package written: " + m_statusMessage);
+            }
+        }
+        CancelShadowMeshBuild(); // Its thread and the background compression's must end before the app object goes
+        if (console) FreeConsole();
+        return code;
     }
 
     // --bake-to: the startup load baked the scan inline (scripted runs do not use the worker); save it, inline too, and quit

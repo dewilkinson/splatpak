@@ -12,6 +12,7 @@
 #include "SplatPakApp.h"
 
 #include <DbgHelp.h>
+#include <memory>
 #pragma comment(lib, "DbgHelp.lib")
 
 // Two exception codes without a standard WinNT.h macro name -- MSVC's own C++ exception code
@@ -110,11 +111,13 @@ int Splat::RunSplatPakApp(HINSTANCE hInstance, LPSTR lpCmdLine, int nCmdShow, co
     // (file path, --render-path) is handed on to SplatPakApp::OnParseCommandLine as a rebuilt
     // command line. An unknown option shows the usage and exits with code 2.
     std::string forwarded;
+    bool headless = false; // --headless: no window and no D3D12 device; only --bake-to runs this way (SplatPakCli bake)
     {
         const std::vector<std::string> args = SplatPakApp::SplitCommandLine(lpCmdLine);
         for (size_t i = 0; i < args.size(); i++)
         {
             const std::string& a = args[i];
+            if (a == "--headless")    { headless = true; continue; }
             if (a == "--viewer")      { mode = SplatPakApp::Mode::Viewer; windowName = "Splat Viewer"; continue; }
             if (a == "--studio")      { mode = SplatPakApp::Mode::Studio; windowName = "SplatPak"; continue; }
             if (a == "--help" || a == "-h" || a == "/?" || a == "-?") { ShowUsage(windowName, ""); return 0; }
@@ -207,6 +210,16 @@ int Splat::RunSplatPakApp(HINSTANCE hInstance, LPSTR lpCmdLine, int nCmdShow, co
 
     SetUnhandledExceptionFilter(CrashDumpHandler);
     AddVectoredExceptionHandler(1, VectoredCrashHandler);
+
+    // Headless: the bake and the save are CPU-only (no renderer call on that path), so the app runs them without
+    // RunFramework, which is what creates the window and the D3D12 device. Same code as a windowed --bake-to.
+    if (headless)
+    {
+        auto app = std::make_unique<Splat::SplatPakApp>(windowName, mode); // Large: not on the stack
+        uint32_t width = 0, height = 0;
+        app->OnParseCommandLine(cmdBuf.data(), &width, &height);
+        return app->RunHeadless();
+    }
 
 #if defined(_DEBUG)
     {

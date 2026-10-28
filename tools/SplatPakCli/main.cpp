@@ -7,15 +7,16 @@
 //   SplatPakCli info <package.gstx> [--json]          header, levels, sections and view settings     (headless)
 //   SplatPakCli verify <package.gstx>                 reads and decodes every level and section      (headless)
 //   SplatPakCli set-background <package.gstx> solid <r,g,b> | gradient <r,g,b> <r,g,b> | none        (headless)
-//   SplatPakCli bake <scan> -o <package.gstx> [--sh-degree N] [--sh-bits N] [--no-precompress] [--remember]
+//   SplatPakCli bake <scan> -o <package.gstx> [--sh-degree N] [--sh-bits N] [--no-precompress] [--remember]    (headless)
 //   SplatPakCli view <package.gstx | scan>            opens SplatPak on it
 //   SplatPakCli capture <scan | package> [SplatPak capture options]
 //   SplatPakCli test lod-quality|lod-calibration <folder> | stream | ring [<scan | package>] [options]
 //   SplatPakCli app [--] <any SplatPak.exe arguments> every app flag, as SplatPak.exe --help lists them
 //
-// Headless commands create no window and no D3D12 device. The others start SplatPak.exe (beside this program) with the
-// matching flags and wait for it; until the bake moves into a library (docs/requirements/cli.md, phase 2) that includes
-// bake, which needs SplatPak's renderer. Exit codes: 0 success, 1 failure, 2 usage error. Results on stdout.
+// Headless commands create no window and no D3D12 device. bake runs SplatPak.exe --headless --bake-to: the app's own
+// bake and save, without its window or renderer, so the package is the one a windowed bake writes. The others start
+// SplatPak.exe (beside this program) with the matching flags and wait for it. Exit codes: 0 success, 1 failure, 2 usage
+// error. Results on stdout.
 #define NOMINMAX
 #include <windows.h>
 
@@ -39,9 +40,9 @@ namespace
 		"  info <package.gstx> [--json]        header, levels, sections and view settings\n"
 		"  verify <package.gstx>               read and decode every level and section; exit 1 on a bad package\n"
 		"  set-background <package.gstx> solid <r,g,b> | gradient <top r,g,b> <bottom r,g,b> | none   (0..1 each)\n"
-		"\n"
-		"Through SplatPak.exe (its renderer starts):\n"
 		"  bake <scan.ply|.splat|.sog> -o <package.gstx> [--sh-degree 1-3] [--sh-bits 8|6|5|4] [--no-precompress] [--remember]\n"
+		"\n"
+		"Through SplatPak.exe's window (its renderer starts):\n"
 		"  view <package.gstx | scan>\n"
 		"  capture <scan | package> [SplatPak capture options: --camera-capture <folder>, --capture-views <folder>, ...]\n"
 		"  test lod-quality <folder> | lod-calibration <folder> | stream | ring   [<scan | package>] [options]\n"
@@ -295,7 +296,7 @@ namespace
 			else return Usage("bake takes one scan");
 		}
 		if (scan.empty() || out.empty()) return Usage("bake needs <scan> -o <package.gstx>");
-		std::vector<std::string> full = { scan, "--bake-to", out };
+		std::vector<std::string> full = { scan, "--bake-to", out, "--headless" };
 		full.insert(full.end(), app.begin(), app.end());
 		const int code = RunApp(full);
 		// SplatPak quits 0 even when there was nothing to bake: the package on disk is the result

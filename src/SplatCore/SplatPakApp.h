@@ -71,6 +71,9 @@ namespace Splat
         static const char* CommandLineUsage();
 
         void OnParseCommandLine(LPSTR lpCmdLine, uint32_t* pWidth, uint32_t* pHeight) override;
+        // --headless --bake-to: the bake and the save without a window or a D3D12 device (AppEntry.cpp), after
+        // OnParseCommandLine. 0 = package written, 1 = failed, 2 = nothing to do (no scan or no --bake-to).
+        int  RunHeadless();
         void OnCreate() override;
         void OnDestroy() override;
         bool OnCloseRequested(bool escape);         // Asks to save an unsaved bake; waits for a save in progress (the window's close and Esc, through CloseGuardProc)
