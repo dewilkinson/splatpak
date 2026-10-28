@@ -5,7 +5,7 @@
 // Splat mode's per-splat depth ordering. Every frame the render list's chunks are expanded into
 // one slot per Gaussian (ExpandCS), each slot gets a 32-bit depth key measured from the viewer,
 // and the slots are sorted far-to-near by a 4-pass least-significant-digit radix sort
-// (HistogramCS, ScanCS, ScatterCS per 8-bit digit). The mesh/vertex shaders then draw the slots
+// (HistogramCS, ScanCS, ScanTotalsCS, ScatterCS per 8-bit digit). The mesh/vertex shaders then draw the slots
 // in sorted order, which is the same back-to-front per-splat order a reference splat viewer uses.
 //
 // Slots are padded to a multiple of BLOCK (1024) with sentinel pairs (key and value 0xFFFFFFFF);
@@ -75,7 +75,7 @@ StructuredBuffer<uint>          g_ChunkSlotBase : register(t2); // First slot of
 RWStructuredBuffer<uint2>       g_SlotInfo      : register(u0); // x = splat index, y = chunk index | SLOT_CULLED_BIT
 RWStructuredBuffer<uint2>       g_PairsIn       : register(u1); // x = key, y = slot
 RWStructuredBuffer<uint2>       g_PairsOut      : register(u2);
-RWStructuredBuffer<uint>        g_Hist          : register(u3); // [digit * numBlocks + block]
+RWStructuredBuffer<uint>        g_Hist          : register(u3); // [digit * numBlocks + block], then one total per SCAN_TILE of those
 
 struct OccluderVertex { float3 position; uint colour; uint normal; }; // ShadowMeshDisplay's 20-byte vertex
 StructuredBuffer<uint>           g_OccIndices  : register(t3);
@@ -94,6 +94,7 @@ RWStructuredBuffer<uint>         g_OccCulled   : register(u5); // [0] chunks, [1
 #define BLOCK 1024
 #define THREADS 256
 #define PER_THREAD 4
+#define SCAN_TILE 1024 // Histogram entries scanned by one ScanCS group
 
 uint FloatToOrderableUint(float f)
 {
@@ -334,33 +335,62 @@ void HistogramCS(uint3 groupId : SV_GroupID, uint threadId : SV_GroupThreadID)
     g_Hist[threadId * g_NumBlocks + block] = s_hist[threadId];
 }
 
-// Exclusive prefix sum over the whole digit-major histogram (256 * numBlocks entries), one group.
-groupshared uint s_scan[1024];
+// Exclusive prefix sum over the whole digit-major histogram (256 * numBlocks entries), in two steps:
+// ScanCS, one group per SCAN_TILE entries, scans its tile in place and stores the tile's total after the
+// histogram; ScanTotalsCS, one group, turns those totals into each tile's starting offset, which ScatterCS
+// adds. (A single group walking every tile in turn took most of a sort's time on a few million splats.)
+groupshared uint s_scan[SCAN_TILE];
 
-[numthreads(1024, 1, 1)]
-void ScanCS(uint threadId : SV_GroupThreadID)
+uint HistTotal() { return 256u * g_NumBlocks; }
+
+// Inclusive Hillis-Steele scan of s_scan; every thread of the group calls it
+void ScanShared(uint threadId)
 {
-    uint total = 256u * g_NumBlocks;
-    uint carry = 0;
-    for (uint tile = 0; tile < total; tile += 1024)
+    [unroll]
+    for (uint offset = 1; offset < SCAN_TILE; offset <<= 1)
     {
-        uint idx = tile + threadId;
-        uint v = (idx < total) ? g_Hist[idx] : 0u;
-        s_scan[threadId] = v;
+        uint add = (threadId >= offset) ? s_scan[threadId - offset] : 0u;
         GroupMemoryBarrierWithGroupSync();
-        [unroll]
-        for (uint offset = 1; offset < 1024; offset <<= 1)
-        {
-            uint add = (threadId >= offset) ? s_scan[threadId - offset] : 0u;
-            GroupMemoryBarrierWithGroupSync();
-            s_scan[threadId] += add;
-            GroupMemoryBarrierWithGroupSync();
-        }
-        uint inclusive = s_scan[threadId];
-        if (idx < total) g_Hist[idx] = carry + inclusive - v;
-        uint tileTotal = s_scan[1023];
+        s_scan[threadId] += add;
         GroupMemoryBarrierWithGroupSync();
-        carry += tileTotal;
+    }
+}
+
+[numthreads(SCAN_TILE, 1, 1)]
+void ScanCS(uint3 groupId : SV_GroupID, uint threadId : SV_GroupThreadID)
+{
+    uint total = HistTotal();
+    uint idx = groupId.x * SCAN_TILE + threadId;
+    uint v = (idx < total) ? g_Hist[idx] : 0u;
+    s_scan[threadId] = v;
+    GroupMemoryBarrierWithGroupSync();
+    ScanShared(threadId);
+    if (idx < total) g_Hist[idx] = s_scan[threadId] - v;
+    if (threadId == SCAN_TILE - 1) g_Hist[total + groupId.x] = s_scan[threadId];
+}
+
+[numthreads(SCAN_TILE, 1, 1)]
+void ScanTotalsCS(uint threadId : SV_GroupThreadID)
+{
+    // Each thread owns a run of consecutive tile totals: it sums them, the group scans the sums, and the
+    // thread then writes its run's offsets in turn. (No barrier sits inside a loop.)
+    uint total = HistTotal();
+    uint tiles = (total + SCAN_TILE - 1) / SCAN_TILE;
+    uint per = (tiles + SCAN_TILE - 1) / SCAN_TILE;
+    uint first = threadId * per;
+    uint sum = 0;
+    for (uint i = 0; i < per; i++)
+        if (first + i < tiles) sum += g_Hist[total + first + i];
+    s_scan[threadId] = sum;
+    GroupMemoryBarrierWithGroupSync();
+    ScanShared(threadId);
+    uint run = s_scan[threadId] - sum;
+    for (uint j = 0; j < per; j++)
+    {
+        if (first + j >= tiles) break;
+        uint v = g_Hist[total + first + j];
+        g_Hist[total + first + j] = run;
+        run += v;
     }
 }
 
@@ -370,7 +400,7 @@ groupshared uint s_key[BLOCK];
 groupshared uint s_val[BLOCK];
 groupshared uint s_key2[BLOCK];
 groupshared uint s_val2[BLOCK];
-groupshared uint s_zeroScan[THREADS];
+groupshared uint s_waveZeros[THREADS]; // One entry per wave (at most THREADS waves of one lane)
 groupshared uint s_digitStart[256];
 
 [numthreads(THREADS, 1, 1)]
@@ -387,7 +417,11 @@ void ScatterCS(uint3 groupId : SV_GroupID, uint threadId : SV_GroupThreadID)
     }
     GroupMemoryBarrierWithGroupSync();
 
-    // Eight stable 1-bit partitions on the digit's bits, least significant first.
+    // Eight stable 1-bit partitions on the digit's bits, least significant first. The zeros ahead of each
+    // thread come from a wave prefix sum plus the totals of the waves before it (lanes follow thread order).
+    uint lanes = WaveGetLaneCount();
+    uint wave = threadId / lanes;
+    uint waves = (THREADS + lanes - 1) / lanes;
     for (uint bit = 0; bit < 8; bit++)
     {
         uint shift = 8u * g_Pass + bit;
@@ -395,18 +429,17 @@ void ScatterCS(uint3 groupId : SV_GroupID, uint threadId : SV_GroupThreadID)
         [unroll]
         for (uint j1 = 0; j1 < PER_THREAD; j1++)
             zeros += 1u - ((s_key[myBase + j1] >> shift) & 1u);
-        s_zeroScan[threadId] = zeros;
+        uint zerosBefore = WavePrefixSum(zeros); // Exclusive
+        uint waveZeros = WaveActiveSum(zeros);
+        if (WaveIsFirstLane()) s_waveZeros[wave] = waveZeros;
         GroupMemoryBarrierWithGroupSync();
-        [unroll]
-        for (uint offset = 1; offset < THREADS; offset <<= 1)
+        uint totalZeros = 0;
+        for (uint w = 0; w < waves; w++)
         {
-            uint add = (threadId >= offset) ? s_zeroScan[threadId - offset] : 0u;
-            GroupMemoryBarrierWithGroupSync();
-            s_zeroScan[threadId] += add;
-            GroupMemoryBarrierWithGroupSync();
+            uint z = s_waveZeros[w];
+            totalZeros += z;
+            if (w < wave) zerosBefore += z;
         }
-        uint totalZeros = s_zeroScan[THREADS - 1];
-        uint zerosBefore = s_zeroScan[threadId] - zeros; // Exclusive
         [unroll]
         for (uint j2 = 0; j2 < PER_THREAD; j2++)
         {
@@ -445,7 +478,8 @@ void ScatterCS(uint3 groupId : SV_GroupID, uint threadId : SV_GroupThreadID)
     {
         uint i = myBase + j5;
         uint d = Digit(s_key[i]);
-        uint dest = g_Hist[d * g_NumBlocks + block] + (i - s_digitStart[d]);
+        uint h = d * g_NumBlocks + block;
+        uint dest = g_Hist[HistTotal() + h / SCAN_TILE] + g_Hist[h] + (i - s_digitStart[d]);
         g_PairsOut[dest] = uint2(s_key[i], s_val[i]);
     }
 }

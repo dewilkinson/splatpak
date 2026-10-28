@@ -266,6 +266,7 @@ namespace Splat
             CreateSortPSO("ExpandCS", &m_pSplatExpandPSO);
             CreateSortPSO("HistogramCS", &m_pSplatHistPSO);
             CreateSortPSO("ScanCS", &m_pSplatScanPSO);
+            CreateSortPSO("ScanTotalsCS", &m_pSplatScanTotalsPSO);
             CreateSortPSO("ScatterCS", &m_pSplatScatterPSO);
             CreateSortPSO("OccClearCS", &m_pOccClearPSO);
             CreateSortPSO("OccRasterCS", &m_pOccRasterPSO);
@@ -1302,6 +1303,7 @@ namespace Splat
         if (m_pSplatExpandPSO) { m_pSplatExpandPSO->Release(); m_pSplatExpandPSO = nullptr; }
         if (m_pSplatHistPSO) { m_pSplatHistPSO->Release(); m_pSplatHistPSO = nullptr; }
         if (m_pSplatScanPSO) { m_pSplatScanPSO->Release(); m_pSplatScanPSO = nullptr; }
+        if (m_pSplatScanTotalsPSO) { m_pSplatScanTotalsPSO->Release(); m_pSplatScanTotalsPSO = nullptr; }
         if (m_pSplatScatterPSO) { m_pSplatScatterPSO->Release(); m_pSplatScatterPSO = nullptr; }
         if (m_pSplatSortRootSig) { m_pSplatSortRootSig->Release(); m_pSplatSortRootSig = nullptr; }
         if (m_pSplatPSODisplay) { m_pSplatPSODisplay->Release(); m_pSplatPSODisplay = nullptr; }
@@ -1436,7 +1438,8 @@ namespace Splat
         makeUav(pairBytes, &m_pSlotInfoBuffer, "SplatRenderer::m_pSlotInfoBuffer");
         makeUav(pairBytes, &m_pSplatPairsA, "SplatRenderer::m_pSplatPairsA");
         makeUav(pairBytes, &m_pSplatPairsB, "SplatRenderer::m_pSplatPairsB");
-        makeUav((uint64_t)256u * (paddedSlots / 1024u) * 4u, &m_pSplatHistBuffer, "SplatRenderer::m_pSplatHistBuffer");
+        const uint64_t histEntries = (uint64_t)256u * (paddedSlots / 1024u);
+        makeUav((histEntries + (histEntries + 1023u) / 1024u) * 4u, &m_pSplatHistBuffer, "SplatRenderer::m_pSplatHistBuffer"); // Then ScanCS's tile totals
         m_slotInfoState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         m_splatPairsAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         m_splatSortCapacitySlots = paddedSlots;
@@ -1449,9 +1452,9 @@ namespace Splat
     {
         static uint32_t s_sortTraceFrame = 0;
         const bool traceThisFrame = ((s_sortTraceFrame++ % 3600) == 0); // A line a minute at most: only the "cannot run" cases are worth logging
-        if (!m_pSplatSortRootSig || !m_pSplatExpandPSO || !m_pSplatHistPSO || !m_pSplatScanPSO || !m_pSplatScatterPSO)
+        if (!m_pSplatSortRootSig || !m_pSplatExpandPSO || !m_pSplatHistPSO || !m_pSplatScanPSO || !m_pSplatScanTotalsPSO || !m_pSplatScatterPSO)
         {
-            if (traceThisFrame) LogTransitionTrace("RunSplatSort: pipeline missing (rootsig %d expand %d hist %d scan %d scatter %d)", m_pSplatSortRootSig != nullptr, m_pSplatExpandPSO != nullptr, m_pSplatHistPSO != nullptr, m_pSplatScanPSO != nullptr, m_pSplatScatterPSO != nullptr);
+            if (traceThisFrame) LogTransitionTrace("RunSplatSort: pipeline missing (rootsig %d expand %d hist %d scan %d totals %d scatter %d)", m_pSplatSortRootSig != nullptr, m_pSplatExpandPSO != nullptr, m_pSplatHistPSO != nullptr, m_pSplatScanPSO != nullptr, m_pSplatScanTotalsPSO != nullptr, m_pSplatScatterPSO != nullptr);
             return;
         }
         if (!m_pSplatGpuBuffer || !m_pChunkGpuBuffer || !m_pChunkSlotBaseGpu || pState->chunkCount == 0 || m_splatSlotCount == 0)
@@ -1657,6 +1660,9 @@ namespace Splat
             pCmdLst->Dispatch(numBlocks, 1, 1);
             pCmdLst->ResourceBarrier(1, &uavHist);
             pCmdLst->SetPipelineState(m_pSplatScanPSO);
+            pCmdLst->Dispatch((256u * numBlocks + 1023u) / 1024u, 1, 1);
+            pCmdLst->ResourceBarrier(1, &uavHist);
+            pCmdLst->SetPipelineState(m_pSplatScanTotalsPSO);
             pCmdLst->Dispatch(1, 1, 1);
             pCmdLst->ResourceBarrier(1, &uavHist);
             pCmdLst->SetPipelineState(m_pSplatScatterPSO);

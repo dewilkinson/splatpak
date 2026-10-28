@@ -460,6 +460,7 @@ namespace Splat
         ID3D12PipelineState*       m_pSplatExpandPSO = nullptr;
         ID3D12PipelineState*       m_pSplatHistPSO = nullptr;
         ID3D12PipelineState*       m_pSplatScanPSO = nullptr;
+        ID3D12PipelineState*       m_pSplatScanTotalsPSO = nullptr;
         ID3D12PipelineState*       m_pSplatScatterPSO = nullptr;
         // Occlusion culling of chunks in the sort (SplatSortCS.hlsl): the occluder mesh rasterised into a small depth grid
         ID3D12PipelineState*       m_pOccClearPSO = nullptr;
