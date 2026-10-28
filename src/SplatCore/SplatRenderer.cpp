@@ -814,13 +814,23 @@ namespace Splat
         }
     }
 
+    // The shadow mesh drawn indexed (shadowMeshIndexedVS): its index list, already uploaded for the shaders, as the index buffer
+    void SplatRenderer::DrawShadowMeshIndexed(ID3D12GraphicsCommandList* pCmdLst)
+    {
+        const D3D12_INDEX_BUFFER_VIEW ib = { m_pShadowMeshIndexBuffer->GetGPUVirtualAddress(), m_shadowMeshIndexCount * 4u, DXGI_FORMAT_R32_UINT };
+        pCmdLst->IASetIndexBuffer(&ib);
+        pCmdLst->DrawIndexedInstanced(m_shadowMeshIndexCount, 1, 0, 0, 0);
+    }
+
     // Releases every GPU resource/PSO/buffer created in OnCreate
     // View Shadow Mesh: ShadowMesh.hlsl's vertex and pixel shaders, opaque and depth-writing, in two render-target formats
     // like the occluder. A failure only loses the debug view.
     void SplatRenderer::CreateShadowMeshPipelines(SwapChain* pSwapChain)
     {
         D3D12_SHADER_BYTECODE vs = {}, ps = {}, flatPs = {}, occVs = {};
-        const bool ok = CompileShaderFromFile("ShadowMesh.hlsl", NULL, "shadowMeshVS", "-T vs_6_0", &vs) && vs.pShaderBytecode != nullptr &&
+        // The shadow mesh (View Shadow Mesh, the gap fill) is drawn indexed (shadowMeshIndexedVS): its vertices are shaded once,
+        // not once per triangle corner
+        const bool ok = CompileShaderFromFile("ShadowMesh.hlsl", NULL, "shadowMeshIndexedVS", "-T vs_6_0", &vs) && vs.pShaderBytecode != nullptr &&
                         CompileShaderFromFile("ShadowMesh.hlsl", NULL, "occluderMeshVS", "-T vs_6_0", &occVs) && occVs.pShaderBytecode != nullptr &&
                         CompileShaderFromFile("ShadowMesh.hlsl", NULL, "shadowMeshPS", "-T ps_6_0", &ps) && ps.pShaderBytecode != nullptr &&
                         CompileShaderFromFile("ShadowMesh.hlsl", NULL, "shadowMeshFlatPS", "-T ps_6_0", &flatPs) && flatPs.pShaderBytecode != nullptr;
@@ -3192,7 +3202,7 @@ namespace Splat
                 pCmdLst->SetGraphicsRootShaderResourceView(1, m_pShadowMeshIndexBuffer->GetGPUVirtualAddress());  // t0
                 pCmdLst->SetGraphicsRootShaderResourceView(2, m_pShadowMeshVertexBuffer->GetGPUVirtualAddress()); // t1
                 pCmdLst->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                pCmdLst->DrawInstanced(m_shadowMeshIndexCount, 1, 0, 0);
+                DrawShadowMeshIndexed(pCmdLst);
                 return;
             }
             // Splat mode with display-space blending draws into the UNORM view: use the occluder PSO built for it
@@ -3212,13 +3222,15 @@ namespace Splat
                 pCmdLst->SetGraphicsRootShaderResourceView(2, m_occluderMesh.vertices->GetGPUVirtualAddress());
                 pCmdLst->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
                 pCmdLst->DrawInstanced(m_occluderMesh.indexCount, 1, 0, 0);
+                GpuMark(pCmdLst, "occluder mesh");
                 ID3D12PipelineState* pFill = splatDisplayBlend ? m_pShadowMeshFillPSOUnorm : m_pShadowMeshFillPSO;
                 if (!pState->showOcclusionVolumeOnly && pFill != nullptr && m_shadowMeshIndexCount > 0)
                 {
                     pCmdLst->SetPipelineState(pFill);
                     pCmdLst->SetGraphicsRootShaderResourceView(1, m_pShadowMeshIndexBuffer->GetGPUVirtualAddress());
                     pCmdLst->SetGraphicsRootShaderResourceView(2, m_pShadowMeshVertexBuffer->GetGPUVirtualAddress());
-                    pCmdLst->DrawInstanced(m_shadowMeshIndexCount, 1, 0, 0);
+                    DrawShadowMeshIndexed(pCmdLst);
+                    GpuMark(pCmdLst, "gap fill");
                 }
                 return;
             }
@@ -3263,7 +3275,7 @@ namespace Splat
                 pCmdLst->SetGraphicsRootShaderResourceView(1, m_pShadowMeshIndexBuffer->GetGPUVirtualAddress());
                 pCmdLst->SetGraphicsRootShaderResourceView(2, m_pShadowMeshVertexBuffer->GetGPUVirtualAddress());
                 pCmdLst->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
-                pCmdLst->DrawInstanced(m_shadowMeshIndexCount, 1, 0, 0);
+                DrawShadowMeshIndexed(pCmdLst);
             }
 
             auto occluderEnd = std::chrono::high_resolution_clock::now();
@@ -3283,6 +3295,7 @@ namespace Splat
             pCmdLst->SetGraphicsRootShaderResourceView(2, 0);
             pCmdLst->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
             pCmdLst->DrawInstanced(6, 1, 0, 0);
+            GpuMark(pCmdLst, "grid");
             gridDrawn = true;
         };
         ID3D12PipelineState* pMainSplatPSO = (pState->enableOcclusionCulling && m_pPipelineStateOcclusionTest != nullptr)
@@ -3722,7 +3735,6 @@ namespace Splat
 
                 DrawOccluderPass();
                 DrawGridPass();
-                GpuMark(pCmdLst, "occluder+grid");
                 chunkedPassDrawn = true;
 
                 if (!pState->showOcclusionVolumeOnly && !pState->showShadowMesh)

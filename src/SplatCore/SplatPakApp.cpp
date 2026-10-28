@@ -8628,7 +8628,10 @@ namespace Splat
         // the same open shell the splats do.
         m_state.enableOcclusionCulling = m_cliOcclusion < 0 ? m_enableOcclusionCulling : (m_cliOcclusion == 1 && (HasOccluderMesh() || !m_occlusionVoxels.empty()));
         m_state.showOcclusionVolumeOnly = m_showOcclusionVolumeOnly;
-        // View Shadow Mesh: the drawn level, subdivided twice and smooth-shaded, rebuilt when the mesh or the level changes
+        // The shadow mesh on the GPU, rebuilt when the mesh, the level or its use changes. View Shadow Mesh: subdivided twice and
+        // smooth-shaded. Otherwise it is the gap fill under the splats (and the experimental shadow-mesh test), seen only through
+        // gaps: subdivided once. On Cthulhu close up, twice cost 1.0 ms of a 2.4 ms GPU frame, once 0.03 ms, and the picture
+        // matched twice within the captures' run-to-run noise (41.6 dB); not subdivided it lost detail (34 dB).
         {
             const bool hasMesh = m_shadowMesh && !m_shadowMesh->Empty();
             m_state.showShadowMesh = m_showShadowMesh && hasMesh && !m_state.showOcclusionVolumeOnly;
@@ -8636,11 +8639,13 @@ namespace Splat
             if (hasMesh)
             {
                 const int level = std::clamp(m_shadowMeshLevel, 0, (int)m_shadowMesh->levels.size() - 1);
-                if (m_shadowMeshGpuSerial != m_shadowMeshSerial || m_shadowMeshGpuLevel != level)
+                const int passes = m_state.showShadowMesh ? 2 : 1;
+                if (m_shadowMeshGpuSerial != m_shadowMeshSerial || m_shadowMeshGpuLevel != level || m_shadowMeshGpuPasses != passes)
                 {
-                    BuildShadowMeshDisplay(m_shadowMesh->levels[level], 2, m_shadowMeshGpu);
+                    BuildShadowMeshDisplay(m_shadowMesh->levels[level], passes, m_shadowMeshGpu);
                     m_shadowMeshGpuSerial = m_shadowMeshSerial;
                     m_shadowMeshGpuLevel = level;
+                    m_shadowMeshGpuPasses = passes;
                     m_shadowMeshVersion++;
                 }
                 m_state.pShadowMeshVertices = m_shadowMeshGpu.vertices.data();
@@ -8650,7 +8655,7 @@ namespace Splat
             }
             else
             {
-                if (m_shadowMeshGpuSerial != UINT32_MAX) { m_shadowMeshGpuSerial = UINT32_MAX; m_shadowMeshGpuLevel = -1; m_shadowMeshGpu = ShadowMeshDisplay{}; m_shadowMeshVersion++; }
+                if (m_shadowMeshGpuSerial != UINT32_MAX) { m_shadowMeshGpuSerial = UINT32_MAX; m_shadowMeshGpuLevel = -1; m_shadowMeshGpuPasses = -1; m_shadowMeshGpu = ShadowMeshDisplay{}; m_shadowMeshVersion++; }
                 m_state.pShadowMeshVertices = nullptr; m_state.shadowMeshVertexCount = 0;
                 m_state.pShadowMeshIndices = nullptr; m_state.shadowMeshIndexCount = 0;
             }

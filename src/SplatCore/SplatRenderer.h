@@ -375,6 +375,7 @@ namespace Splat
         // View Shadow Mesh: a classic graphics pipeline on every render path (ShadowMesh.hlsl), and its two upload buffers
         void CreateShadowMeshPipelines(CAULDRON_DX12::SwapChain* pSwapChain);
         void UpdateShadowMeshBuffers(const State* pState);
+        void DrawShadowMeshIndexed(ID3D12GraphicsCommandList* pCmdLst);
         static constexpr size_t kShadowMeshVertexBytes = 20; // ShadowMeshDisplay.h, ShadowMesh.hlsl
         // One uploaded mesh (20-byte vertices, 32-bit indices) in upload-heap buffers read as SRVs
         struct MeshBuffers

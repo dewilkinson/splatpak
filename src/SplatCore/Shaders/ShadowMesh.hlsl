@@ -46,15 +46,27 @@ float3 DecodeOctNormal(uint packed)
     return normalize(n);
 }
 
-ShadowMeshVSOut shadowMeshVS(uint vertexId : SV_VertexID)
+ShadowMeshVSOut ShadeVertex(ShadowMeshVertex v)
 {
-    const ShadowMeshVertex v = g_MeshVertices[g_MeshIndices[vertexId]];
     ShadowMeshVSOut o;
     o.world = v.position;
     o.pos = mul(g_ViewProj, float4(v.position, 1.0));
     o.color = float3(v.colour & 0xFF, (v.colour >> 8) & 0xFF, (v.colour >> 16) & 0xFF) / 255.0;
     o.normal = v.normal != 0 ? DecodeOctNormal(v.normal) : float3(0, 0, 0);
     return o;
+}
+
+ShadowMeshVSOut shadowMeshVS(uint vertexId : SV_VertexID)
+{
+    return ShadeVertex(g_MeshVertices[g_MeshIndices[vertexId]]);
+}
+
+// The same for an indexed draw (DrawIndexedInstanced with the index list as the index buffer): SV_VertexID is then the
+// index itself, and the GPU reuses a vertex's result across the triangles that share it -- a sixth of the work of the
+// pulled draw above on a subdivided mesh (the gap fill)
+ShadowMeshVSOut shadowMeshIndexedVS(uint vertexId : SV_VertexID)
+{
+    return ShadeVertex(g_MeshVertices[vertexId]);
 }
 
 // The occluder mesh under the splats: pushed g_OccluderPush back along the view ray. A splat is drawn as a camera-facing

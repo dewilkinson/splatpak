@@ -302,6 +302,7 @@ namespace Splat
         int      m_occlusionTest = 0;       // The sort's occlusion test: 0 the occluder mesh, 1 the shadow mesh's depth (experimental; SplatRenderer::State::occlusionTest); config occlusion_test, --occlusion-test
         ShadowMeshDisplay m_shadowMeshGpu;   // The drawn level, subdivided and smooth-shaded (ShadowMeshDisplay.h)
         int      m_shadowMeshGpuLevel = -1;
+        int      m_shadowMeshGpuPasses = -1;  // Its subdivision passes: 2 for View Shadow Mesh, none as the gap fill under the splats
         uint32_t m_shadowMeshSerial = 0;              // Bumped by every SetShadowMesh: a new mesh may reuse a freed one's address
         uint32_t m_shadowMeshGpuSerial = UINT32_MAX;  // The serial m_shadowMeshGpu was built from; UINT32_MAX = none
         void ReleaseModelMeshes();                    // Cancels the build and drops the shadow and occluder meshes of the model being replaced
