@@ -956,14 +956,15 @@ namespace Splat
         // Inset placement: opens at the top right of the viewport, then a left-button drag inside it moves it and one
         // on an edge or corner resizes it (UpdateCamera). Drag modes combine: two edge bits = a corner.
         static constexpr int kLoupeDragLeft = 1, kLoupeDragBottom = 2, kLoupeDragRight = 4, kLoupeDragTop = 8, kLoupeDragMove = 16;
-        ImVec2 m_loupeSize = ImVec2((float)kLoupeWidth, (float)kLoupeHeight);
-        ImVec2 m_loupePos = ImVec2(-1.0f, -1.0f);   // Inset top-left, window pixels; negative = not placed yet (top right of the viewport). Size and place are saved in config.json (loupe_size, loupe_pos) when a drag ends
+        ImVec2 m_loupeSize = ImVec2(320.0f, 220.0f); // Small by default (user, 2026-10-28)
+        ImVec2 m_loupePos = ImVec2(-1.0f, -1.0f);   // Inset top-left, window pixels; negative = not placed yet (the bottom right of the viewport). Size and place are saved in config.json (loupe_size, loupe_pos) when a drag ends
         ImVec4 m_loupeRect = ImVec4(0.0f, 0.0f, 0.0f, 0.0f); // Inset x0, y0, x1, y1 last frame (for grabbing it)
+        ImVec2 m_loupeWindowSize = ImVec2(0.0f, 0.0f); // The window size m_loupePos was last laid out in: a resize moves it with its nearest corner
         int    m_loupeDrag = 0;                      // The drag in progress (kLoupeDrag* bits); 0 = none
         int    m_loupeHover = 0;                     // What a drag would do from where the mouse is (highlighted)
-        bool   m_loupeEnabled = false;               // Off by default (user, 2026-10-26); L toggles it, remembered in config (loupe_enabled)
+        bool   m_loupeEnabled = true;                // On by default (user, 2026-10-28); L toggles it, remembered in config (loupe_enabled)
         float  m_loupeZoom = 8.0f;
-        int    m_loupeViz = 0;                       // Inset display: 0 normal, 1 splat outlines, 2 random colour per splat, 3 centres (Shift+V cycles it)
+        int    m_loupeViz = 1;                       // Inset display: 0 normal, 1 splat outlines (the default), 2 random colour per splat, 3 centres (Shift+V, or a click in the inset, cycles it)
         int    m_splatViz = 0;                       // The same display for the whole model (Renderer tab "Splat Display"; V cycles it)
         ImVec2 m_loupeCenter = ImVec2(-1.0f, -1.0f); // Back-buffer pixels; negative = not placed yet (centre of the view)
         bool   m_loupePinned = false;                // The box stays put instead of following the mouse (a click inside it, or Space, toggles)

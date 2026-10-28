@@ -4346,6 +4346,9 @@ namespace Splat
         {
             if (!io.MouseDown[0] || !m_loupeEnabled)
             {
+                // A click inside the inset (pressed and released without moving) cycles its display, as Shift+V does
+                if (m_loupeDrag == kLoupeDragMove && m_loupeEnabled && io.MouseDragMaxDistanceSqr[0] < 9.0f)
+                    m_loupeViz = (m_loupeViz + 1) % 4;
                 m_loupeDrag = 0;
                 SaveConfigFile(); // The inset's size and place are remembered (loupe_size, loupe_pos)
             }
@@ -6976,7 +6979,7 @@ namespace Splat
         {
             MarkStreamDirty();
         }
-        if (ImGui::IsItemHovered()) ShowTooltip("(R, or click the model) Visualizer for progressive loading: every chunk that arrives is filled with a semi-transparent tint in its level's colour. The newest chunks -- the leading edge of the growing model -- glow bright, then settle to the regular tint and fade out. Press Evict to watch the whole model grow back in the scheduler's order. Named in the top-left banner while it is on.");
+        if (ImGui::IsItemHovered()) ShowTooltip("(R, or click the model) Visualizer for progressive loading: every chunk that arrives is filled with a semi-transparent tint in its level's colour. The newest chunks -- the leading edge of the growing model -- glow bright, then settle to the regular tint and fade out. A chunk demoted back to its coarser level (zooming out, or its finer detail released) dims to deep red and recovers instead. Press Evict to watch the whole model grow back in the scheduler's order. Named in the top-left banner while it is on.");
     }
 
 
@@ -7404,8 +7407,15 @@ namespace Splat
             }
         }
         m_loupeEffectiveZoom = zoom;
-        if (m_loupePos.x < 0.0f)
-            m_loupePos = ImVec2((float)m_Width - m_rightPanelWidth - inset.x - 14.0f, std::max(56.0f, m_bannerBottomY + 10.0f));
+        if (m_loupePos.x < 0.0f) PlaceLoupeBottomRight(); // Not placed yet: tucked into the bottom right of the viewport
+        // A resized window keeps the inset where it was relative to its nearest corner: one tucked into the bottom right
+        // stays that far from the bottom right
+        else if (m_loupeWindowSize.x > 0.0f && (m_loupeWindowSize.x != (float)m_Width || m_loupeWindowSize.y != (float)m_Height))
+        {
+            if (m_loupePos.x + 0.5f * inset.x > 0.5f * m_loupeWindowSize.x) m_loupePos.x += (float)m_Width - m_loupeWindowSize.x;
+            if (m_loupePos.y + 0.5f * inset.y > 0.5f * m_loupeWindowSize.y) m_loupePos.y += (float)m_Height - m_loupeWindowSize.y;
+        }
+        m_loupeWindowSize = ImVec2((float)m_Width, (float)m_Height);
         // m_loupePos is the inset's home, where it was put; it is drawn there pushed clear of the panels and held inside the
         // window, without moving the home, so a panel opening over it displaces it only while the panel needs the room and
         // it snaps back once the space is free again
@@ -7464,10 +7474,22 @@ namespace Splat
         if (grabbed & kLoupeDragTop) dl->AddLine(ImVec2(x0, y0), ImVec2(x1, y0), grip, 4.0f);
         if (grabbed & kLoupeDragBottom) dl->AddLine(ImVec2(x0, y1), ImVec2(x1, y1), grip, 4.0f);
         static const char* s_vizNames[] = { "normal", "outlines", "colours", "centres" };
-        char label[64];
-        snprintf(label, sizeof(label), "Loupe %.1fx ([/])  %s (Shift+V)", zoom, s_vizNames[std::clamp(m_loupeViz, 0, 3)]);
+        char label[80];
+        snprintf(label, sizeof(label), "Loupe %.1fx ([/])  %s (click, Shift+V)", zoom, s_vizNames[std::clamp(m_loupeViz, 0, 3)]);
         dl->AddRectFilled(ImVec2(destX, destY + inset.y - 20.0f), ImVec2(destX + ImGui::CalcTextSize(label).x + 12.0f, destY + inset.y), IM_COL32(0, 0, 0, 170));
         dl->AddText(ImVec2(destX + 6.0f, destY + inset.y - 17.0f), frame, label);
+        // How to put it away, in the top-right corner, in a smaller font
+        const char* dismiss = "L to dismiss";
+        ImFont* font = ImGui::GetFont();
+        const float hintSize = ImGui::GetFontSize() * 0.8f;
+        const ImVec2 ds = font->CalcTextSizeA(hintSize, FLT_MAX, 0.0f, dismiss);
+        dl->AddRectFilled(ImVec2(destX + inset.x - ds.x - 10.0f, destY), ImVec2(destX + inset.x, destY + ds.y + 6.0f), IM_COL32(0, 0, 0, 170));
+        dl->AddText(font, hintSize, ImVec2(destX + inset.x - ds.x - 5.0f, destY + 3.0f), frame, dismiss);
+        // And how to hold the magnified region still, in the top-left corner (Space pins it, as a click in its box does)
+        const char* lock = "Click/Space to lock region";
+        const ImVec2 ls = font->CalcTextSizeA(hintSize, FLT_MAX, 0.0f, lock);
+        dl->AddRectFilled(ImVec2(destX, destY), ImVec2(destX + ls.x + 10.0f, destY + ls.y + 6.0f), IM_COL32(0, 0, 0, 170));
+        dl->AddText(font, hintSize, ImVec2(destX + 5.0f, destY + 3.0f), frame, lock);
     }
 
     // Faint three-line reminder of the camera bindings, tucked into the bottom-right corner of the

@@ -220,6 +220,18 @@ void ArrivalGlow(inout float3 color, float w, float lighting, uint lod)
     color += goldTint * (fade * 0.45 * g_ArrivalGlowIntensity) + hotTint * (heat * 0.6 * g_ArrivalGlowIntensity); // Emissive glow, brightest on the newest chunks
 }
 
+// Demotion glow (Refinement Visualizer): the reverse of the arrival glow, on a parent block fading back in over its
+// children. d runs 0.95 (just demoted) -> 0 (the packed wave is negative, -d). One colour for every level -- a deep red --
+// and no bloom: the block dims to red and recovers, so a demotion reads apart from any level's arrival glow.
+void DemotionGlow(inout float3 color, float d, float lighting)
+{
+    float life = saturate(d / 0.95);
+    float fade = life * life * (3.0 - 2.0 * life);
+    const float3 demoteTint = float3(0.78, 0.10, 0.16);
+    float opacity = saturate(0.70 * g_ArrivalGlowIntensity + 0.15) * fade;
+    color = lerp(color, demoteTint * (0.55 + 0.45 * lighting), opacity);
+}
+
 struct VSOut
 {
     float4 pos         : SV_POSITION;
@@ -673,6 +685,8 @@ bool BuildSplat(uint splatIndex, uint lod, float chunkBlendWeight, float chunkDi
             ArrivalGlow(litColor, w, lighting, lod);
         }
     }
+    else if (chunkIsSilhouette < -0.001 && g_ShowChunkStream == 1)
+        DemotionGlow(litColor, -chunkIsSilhouette, lighting); // A parent fading back in over its children
 
     if (frozenCulledSplat)
         // Detach Camera: culled by the frozen camera -- a dim red at 10% opacity per splat (mainPS). Dozens of
@@ -834,6 +848,7 @@ float3 SplatColor(uint splatIndex, float3 pos, float3 dc, float shScale, float w
     }
     color = max(color, 0.0);
     if (g_ShowChunkStream == 1 && wave > 0.0 && wave < 0.99) ArrivalGlow(color, wave, 1.0, lod);
+    else if (g_ShowChunkStream == 1 && wave < 0.0) DemotionGlow(color, -wave, 1.0); // Negative: a demotion
     if (toLinear) color = SRGBToLinear(color);
     return color;
 }
