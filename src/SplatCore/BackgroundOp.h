@@ -12,8 +12,10 @@
 
 #pragma once
 
+#include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <cmath>
 #include <cstdio>
 #include <functional>
 #include <memory>
@@ -24,23 +26,61 @@
 namespace Splat
 {
     // Written by the worker, read by the UI thread.
+    //
+    // A stage may own a range of the bar (from .. to): Within reports how far through the stage the work is, and between
+    // those reports the bar creeps on by the time the rest of the stage is expected to take (expectSeconds for all of
+    // it): steadily to 85% of what is left by then, then easing towards 98%, so it never claims the stage is done and a
+    // stage that runs to time ends with a small step. A Span maps every later fraction into part of the bar, so an
+    // operation that runs another one inside it (an open that bakes) keeps one bar. The bar never moves backwards.
     class Progress
     {
     public:
-        void Stage(const std::string& name, float fraction = 0.0f)
+        void Stage(const std::string& name, float fraction = 0.0f, float to = -1.0f, float expectSeconds = 0.0f)
         {
             {
                 std::lock_guard<std::mutex> lock(m_mutex);
                 CloseStage();
                 m_stage = name;
+                m_from = Map(fraction);
+                m_to = to < fraction ? m_from : Map(to);
+                m_expectSeconds = expectSeconds;
+                m_reportT = 0.0f;
+                m_reportTime = std::chrono::steady_clock::now();
             }
-            m_fraction = fraction;
+            m_fraction = Map(fraction);
         }
-        void Fraction(float fraction) { m_fraction = fraction; }
+        void Fraction(float fraction) { m_fraction = Map(fraction); }
+        // How far through the current stage's range, 0 .. 1
+        void Within(float t)
+        {
+            std::lock_guard<std::mutex> lock(m_mutex);
+            m_reportT = std::min(1.0f, std::max(0.0f, t));
+            m_reportTime = std::chrono::steady_clock::now();
+            m_fraction = m_from + (m_to - m_from) * m_reportT;
+        }
+        // Later fractions land in from .. to of the bar
+        void Span(float from, float to) { std::lock_guard<std::mutex> lock(m_mutex); m_spanFrom = from; m_spanTo = to; }
         bool Cancelled() const { return m_cancel.load(); }
         void Cancel() { m_cancel = true; }
         std::string StageName() const { std::lock_guard<std::mutex> lock(m_mutex); return m_stage; }
-        float GetFraction() const { return m_fraction.load(); }
+        float GetFraction() const
+        {
+            float f = m_fraction.load();
+            {
+                std::lock_guard<std::mutex> lock(m_mutex);
+                if (m_expectSeconds > 0.0f && m_to > m_from && m_reportT < 1.0f)
+                {
+                    // x: the time since the last report over the time the rest of the stage should take
+                    const float left = m_expectSeconds * (1.0f - m_reportT);
+                    const float x = std::chrono::duration<float>(std::chrono::steady_clock::now() - m_reportTime).count() / std::max(1e-3f, left);
+                    const float g = x < 0.85f ? x : 0.85f + 0.13f * (1.0f - std::exp(-(x - 0.85f) / 0.15f));
+                    const float at = m_from + (m_to - m_from) * m_reportT;
+                    f = std::max(f, at + (m_to - at) * g);
+                }
+                m_shown = std::max(m_shown, f);
+                return m_shown;
+            }
+        }
         // Two lines of figures under the stage name, kept across stages: line 0 what is being worked on, line 1 on how
         // many threads. DetailText joins those that are set.
         void Detail(int line, const std::string& text) { std::lock_guard<std::mutex> lock(m_mutex); m_detail[line & 1] = text; }
@@ -56,6 +96,7 @@ namespace Splat
         std::string Timings() { std::lock_guard<std::mutex> lock(m_mutex); CloseStage(); m_stage.clear(); return m_timings; }
 
     private:
+        float Map(float f) const { return m_spanFrom + (m_spanTo - m_spanFrom) * f; } // Under m_mutex, or with no span change racing
         void CloseStage()
         {
             const auto now = std::chrono::steady_clock::now();
@@ -70,6 +111,10 @@ namespace Splat
         mutable std::mutex m_mutex;
         std::string        m_stage, m_timings, m_detail[2];
         std::chrono::steady_clock::time_point m_stageStart = std::chrono::steady_clock::now();
+        float              m_from = 0.0f, m_to = 0.0f, m_expectSeconds = 0.0f, m_spanFrom = 0.0f, m_spanTo = 1.0f;
+        mutable float      m_shown = 0.0f;
+        float              m_reportT = 0.0f; // The last Within, and when
+        std::chrono::steady_clock::time_point m_reportTime = std::chrono::steady_clock::now();
         std::atomic<float> m_fraction{ 0.0f };
         std::atomic<bool>  m_cancel{ false };
         std::atomic<unsigned> m_threads{ 0 };

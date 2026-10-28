@@ -35,6 +35,7 @@
 #include <condition_variable>
 #include <string>
 #include <map>
+#include <unordered_map>
 #include "ShadowMeshDisplay.h"
 #include "RdoProfile.h"
 #include "EntropyProfile.h"
@@ -91,6 +92,7 @@ namespace Splat
         enum NavMode { NavOrbit = 0, NavFly = 1 };
         int  m_navMode = NavOrbit;
         void SetNavMode(int mode);
+        void RecenterCamera(); // The nav switch's Recenter button
         void DrawNavSwitch();
         // Mouse-look's movement: the mouse's own relative motion (raw input, WM_INPUT in CloseGuardProc), summed until the
         // camera takes it each frame. Warping the cursor back to the centre and reading its offset spun the view without
@@ -425,12 +427,17 @@ namespace Splat
         void        ApplyBake(BakeResult& result, const BakeParams& params, bool fitCamera);
         bool        StartOpenScan(const std::string& filepath, bool splatFile); // .ply / .splat: read and bake, then replace the model
         void        BuildResidentLODs(const BakeSource& source, const WaveletDecompositionResult& wavelet, const XMFLOAT3& aabbMin,
-                                      const XMFLOAT3& aabbMax, const SplatEncodeParams& splatParams, std::vector<ResidentLOD>& out) const;
+                                      const XMFLOAT3& aabbMax, const SplatEncodeParams& splatParams, std::vector<ResidentLOD>& out,
+                                      const std::function<void(float)>& onProgress = nullptr) const; // onProgress: the share of levels done
         void        BuildHeatmapClusterCubes(const SplatPointArray& points, const XMFLOAT3& aabbMin, const XMFLOAT3& aabbMax,
                                              const DetailGrid& detail, std::vector<HeatmapClusterCube>& out) const;
         bool        UseBackgroundOps() const;                      // False for scripted runs and before the first frames: those run inline
         bool        RunOperation(const std::string& title, BackgroundOp::Work work, BackgroundOp::Done done, bool quiet = false);
         void        DrawOperationDialog();
+        unsigned    BusyThreads();                                   // The dialog's live core count (see the .cpp)
+        std::chrono::steady_clock::time_point m_busySampleTime;
+        std::unordered_map<DWORD, uint64_t>   m_busyThreadTimes;     // Each thread's CPU time at the last sample
+        unsigned    m_busyThreads = 0;
         BackgroundOp m_op;
         BakeParams   m_bakedParams;
         bool         m_hasBakedParams = false;
@@ -629,8 +636,8 @@ namespace Splat
 
         float  m_neighborBufferMargin               = 1.35f;  // Frustum margin for pre-fetching local neighbours with Release Unused LOD Segments
         bool   m_enableDitheredTransitions  = true;   // Stochastic screen-space Bayer dithering for smooth LOD transitions
-        int    m_streamingPolicy            = 1;      // Streaming policy: 0 Conservative, 1 Greedy (StreamSettings::Policy); radio buttons under Release Unused LOD Segments
-        int    m_objectStreamingPolicy      = 1;      // The policy last chosen while viewing an object: what objects load with (an environment loads Conservative)
+        int    m_streamingPolicy            = 0;      // Streaming policy: 0 Conservative (the default), 1 Greedy (StreamSettings::Policy); radio buttons under Release Unused LOD Segments
+        int    m_objectStreamingPolicy      = 0;      // The policy last chosen while viewing an object: what objects load with (an environment loads Conservative)
         bool   m_releaseUnusedSegments      = true;   // On by default (user, 2026-10-26); scripted runs turn it off (they wait for the whole model). Streaming tab "Release Unused LOD Segments" (StreamRuntime::Settings::releaseUnusedSegments)
         bool   m_demoteChunks               = false;  // Demote Chunks on Zoom Out. Off: detail already shown stays when the view coarsens (decay can still drain it). On: it fades back to the coarser level and is dropped
         bool   m_autoSplatSize       = true;   // Auto Splat Size: disc radius from each level's point spacing (m_lodSpacing x m_autoSplatCoverage), not the size classes

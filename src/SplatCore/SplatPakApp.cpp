@@ -16,6 +16,7 @@
 #include <filesystem>
 #include <shobjidl.h>
 #include <shlobj.h>
+#include <tlhelp32.h>
 #include "BakeTuningCache.h"
 #include "RdoDispatcher.h"
 
@@ -132,6 +133,14 @@ namespace Splat
     static WNDPROC s_closeGuardBase = nullptr;
     static LRESULT CALLBACK CloseGuardProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 
+    // A button's breath (Bake Changes, Save after a bake), 0 .. 1 over a 3 s cycle: a cosine eased once more, so it
+    // lingers at the bottom and the top of each breath rather than bouncing between them
+    static float BreathPulse()
+    {
+        const float c = 0.5f - 0.5f * cosf((float)ImGui::GetTime() * 6.2832f / 3.0f);
+        return c * c * (3.0f - 2.0f * c);
+    }
+
     // The threads the current stage runs on, for the dialog's segmented core bar (one square per core, filled when in use)
     static void BakeThreads(Progress& progress, unsigned threads)
     {
@@ -142,6 +151,15 @@ namespace Splat
     static void BakeStage(Progress& progress, const char* name, float fraction, unsigned threads = 1)
     {
         progress.Stage(name, fraction);
+        BakeThreads(progress, threads);
+        LogTransitionTrace("Stage: %s", name);
+    }
+
+    // A stage that owns from .. to of the bar, expected to take about expectSeconds (the bar creeps on between its own
+    // Within reports by that)
+    static void BakeStage(Progress& progress, const char* name, float from, float to, float expectSeconds, unsigned threads = 1)
+    {
+        progress.Stage(name, from, to, expectSeconds);
         BakeThreads(progress, threads);
         LogTransitionTrace("Stage: %s", name);
     }
@@ -1285,6 +1303,30 @@ namespace Splat
         m_statusIsSuccess = true;
     }
 
+    // The nav switch's Recenter button. Orbit: the pivot goes back to the model (its centre; in an environment, the subject's
+    // or core's), the angle and distance kept, so a pan is undone. Fly: the eye stays and turns to face that point.
+    void SplatPakApp::RecenterCamera()
+    {
+        const XMFLOAT3 c = !m_sceneIsEnvironment ? m_center : m_subjectRadius > 0.0f ? m_subjectCentre : m_coreCentre;
+        if (m_navMode == NavOrbit)
+        {
+            m_target = c;
+        }
+        else
+        {
+            const XMFLOAT3 eye(m_target.x + m_distance * cosf(m_pitch) * sinf(m_yaw), m_target.y + m_distance * sinf(m_pitch),
+                               m_target.z + m_distance * cosf(m_pitch) * cosf(m_yaw));
+            const float dx = eye.x - c.x, dy = eye.y - c.y, dz = eye.z - c.z;
+            const float len = sqrtf(dx * dx + dy * dy + dz * dz);
+            if (len < 1e-4f) return; // Standing on it: no direction to face
+            m_yaw = atan2f(dx, dz);
+            m_pitch = std::clamp(asinf(std::clamp(dy / len, -1.0f, 1.0f)), -1.55f, 1.55f);
+            m_target = XMFLOAT3(eye.x - m_distance * cosf(m_pitch) * sinf(m_yaw), eye.y - m_distance * sinf(m_pitch),
+                                eye.z - m_distance * cosf(m_pitch) * cosf(m_yaw));
+        }
+        m_poseCameraIndex = -1; // Leaves a training camera's pose
+    }
+
     // Orbit <-> Fly. The eye stays where it is. Fly puts the target 1 m ahead of it (a walker's camera: the view no longer
     // pivots on a point it can only approach). Orbit pivots on the model: an object's centre, turning to face it; in an
     // environment, the point straight ahead at the subject's (or core's) distance, so the view does not jump.
@@ -2408,7 +2450,9 @@ namespace Splat
             progress.Detail(0, facts);
             // The .ply reader splits the file over the cores (PLYLoader::ThreadsFor; the count is estimated from the
             // file at 3DGS's 248 bytes per Gaussian until the header is read); the .splat reader is serial
-            BakeStage(progress, splatFile ? "Reading the .splat file" : "Reading the .ply file", 0.0f,
+            // The read and the settings check take the bar's first 6% and the bake the rest (Cthulhu: 0.35 s reading at
+            // about 2.3 GB/s, 0.5 s checking, 13 s baking)
+            BakeStage(progress, splatFile ? "Reading the .splat file" : "Reading the .ply file", 0.0f, 0.025f, (float)(opened->fileBytes / 2.3e9),
                 splatFile ? 1u : PLYLoader::ThreadsFor((uint32_t)std::min<uint64_t>(opened->fileBytes / 248, UINT32_MAX)));
             double origin[3] = { 0, 0, 0 };
             const bool read = splatFile ? SPLATLoader::LoadSPLAT(filepath, opened->points, origin, &opened->attributes)
@@ -2420,7 +2464,7 @@ namespace Splat
             // its point spacing (PointCloudGaussians.h), before it is cut into chunks
             if (opened->attributes.empty())
             {
-                BakeStage(progress, "Gaussians for the point cloud", 0.0f);
+                BakeStage(progress, "Gaussians for the point cloud", 0.025f);
                 const float sigma = PointCloudGaussians::Build(opened->points, opened->attributes);
                 LogTransitionTrace("Point cloud: %zu points shown as Gaussians of sigma %.5f (half the median point spacing)", opened->points.size(), sigma);
             }
@@ -2429,7 +2473,7 @@ namespace Splat
             // The settings last baked from this very file, when there are any
             if (useTunings)
             {
-                BakeStage(progress, "Checking for remembered bake settings", 0.0f);
+                BakeStage(progress, "Checking for remembered bake settings", 0.03f, 0.06f, (float)(opened->fileBytes / 1.6e9));
                 opened->hash = BakeTuningCache::HashFile(filepath);
                 const auto tunings = BakeTuningCache::Load();
                 const auto it = tunings.find(opened->hash);
@@ -2485,6 +2529,7 @@ namespace Splat
             source.splatMode = !opened->attributes.empty();
             source.shDegree = std::min((uint32_t)std::clamp(opened->params.shQuality, 0, 2) + 1u, opened->sourceSHDegree);
             memcpy(source.shBits, opened->params.shBandBits, 3);
+            progress.Span(0.06f, 1.0f);
             return RunBake(opened->params, source, settings, camera, opened->bake, progress);
         },
         [this, filepath, opened](bool ok, bool cancelled)
@@ -2750,7 +2795,7 @@ namespace Splat
         const StreamSettings settings = m_stream.settings;
         const StreamCamera camera = m_stream.camera;
         auto result = std::make_shared<BakeResult>();
-        RunOperation("Baking", [this, params, source, settings, camera, result](Progress& progress)
+        RunOperation("Baking Package", [this, params, source, settings, camera, result](Progress& progress)
         {
             return RunBake(params, source, settings, camera, *result, progress);
         },
@@ -2791,8 +2836,10 @@ namespace Splat
         if (points.empty()) return false;
         const auto tBake = std::chrono::high_resolution_clock::now();
 
-        // Stage fractions follow the stage times on Cthulhu (3.3 M Gaussians, the "Bake stages" trace line)
-        BakeStage(progress, "Measuring the model", 0.0f);
+        // Each stage's share of the bar follows its time on Cthulhu (3.3 M Gaussians, the "Bake stages" trace line: about
+        // 13 s in all), and its expected time is that scaled by this scan's size, for the bar's creep between reports
+        const float scale = (float)points.size() / 3.3e6f;
+        BakeStage(progress, "Measuring the model", 0.0f, 0.001f, 0.01f * scale);
         out.aabbMin = XMFLOAT3(1e9f, 1e9f, 1e9f);
         out.aabbMax = XMFLOAT3(-1e9f, -1e9f, -1e9f);
         for (const auto& s : points)
@@ -2804,13 +2851,13 @@ namespace Splat
         out.extents = XMFLOAT3(out.aabbMax.x - out.aabbMin.x, out.aabbMax.y - out.aabbMin.y, out.aabbMax.z - out.aabbMin.z);
 
         // Detail grid over the raw cloud: an input to the streaming order (see StreamOrder.h) that ships inside the package
-        BakeStage(progress, "Detail grid", 0.005f);
+        BakeStage(progress, "Detail grid", 0.001f, 0.003f, 0.03f * scale);
         out.detailGrid = DetailGrid::Build(points, out.aabbMin, out.aabbMax);
         LogTransitionTrace("DetailHeatmap: %ux%ux%u cells (%.4f m), %u occupied, built from %zu raw points",
             out.detailGrid.nx, out.detailGrid.ny, out.detailGrid.nz, out.detailGrid.cellSize, out.detailGrid.occupiedCells, points.size());
         if (progress.Cancelled()) return false;
 
-        BakeStage(progress, "Octree chunks", 0.01f);
+        BakeStage(progress, "Octree chunks", 0.003f, 0.012f, 0.12f * scale);
         out.chunks = SpatialOctree::PartitionIntoChunks(points, params.chunkSize);
         if (progress.Cancelled()) return false;
         {
@@ -2820,7 +2867,7 @@ namespace Splat
             progress.Detail(0, facts);
         }
 
-        BakeStage(progress, "Wavelet levels", 0.02f);
+        BakeStage(progress, "Wavelet levels", 0.012f, 0.17f, 2.1f * scale);
         out.waveletResult = LiftingWavelet::DecomposeChunk(points, params.maxLODs, params.deadbandMM / 1000.0f);
         // Splat mode: every coarse point takes the Gaussian merged from its two children (as the package will)
         if (source.splatMode && source.attributes) SplatCodec::MergeLevels(out.waveletResult, *source.attributes);
@@ -2836,7 +2883,9 @@ namespace Splat
         if (source.splatMode)
             SplatCodec::ComputeScaleRange(*source.attributes, (uint32_t)params.maxLODs, out.splatParams.scaleLog2Min, out.splatParams.scaleLog2Max);
 
-        BakeStage(progress, "Estimating the package size", 0.04f);
+        // Within it: encoding every level to 12%, compressing the records' and the harmonics' samples to 60%, the entropy
+        // measurement the rest (0.7, 2.8 and 2.4 s on Cthulhu)
+        BakeStage(progress, "Estimating the package size", 0.17f, 0.67f, 6.5f * scale);
         // Compression estimates
         // Package size as the bake would write it: every level ships in full inside the .gstx, so every
         // level's records (plus the SH stream in splat mode) are byte-plane shuffled and put through the
@@ -2871,9 +2920,14 @@ namespace Splat
             else lr.points = Quantizer::QuantizePoints(splats, out.aabbMin, out.aabbMax);
             levels.push_back(std::move(lr));
         };
+        const size_t levelCount = std::max<size_t>(1, out.waveletResult.lodLevels.size());
         encodeLevel(points, 0);
+        progress.Within(0.12f / (float)levelCount);
         for (size_t lvl = 1; lvl < out.waveletResult.lodLevels.size(); lvl++)
+        {
             encodeLevel(out.waveletResult.lodLevels[lvl].splats, (uint32_t)lvl);
+            progress.Within(0.12f * (float)(lvl + 1) / (float)levelCount);
+        }
         const float encodeSeconds = std::chrono::duration<float>(std::chrono::high_resolution_clock::now() - tEstimateStart).count();
 
         const uint32_t shStride = source.splatMode ? SplatCodec::SHRecordBytes(out.splatParams.shDegree) : 0u;
@@ -2959,6 +3013,7 @@ namespace Splat
             BakeThreads(progress, std::min<unsigned>(PayloadCodec::kMaxThreads, (unsigned)jobs.size()));
             PayloadCodec::CompressInPlace(jobs);
             BakeThreads(progress, 1);
+            progress.Within(sh ? 0.6f : 0.36f);
             size_t compressed = 0, compressedPlain = 0, compressedPaired = 0;
             for (const auto& s : samples) compressed += s.size();
             for (const auto& s : plainSamples) compressedPlain += s.size();
@@ -3036,12 +3091,12 @@ namespace Splat
             std::chrono::duration<float>(std::chrono::high_resolution_clock::now() - tEstimateStart).count(), encodeSeconds);
         if (progress.Cancelled()) return false;
 
-        BakeStage(progress, "Preparing the levels", 0.48f);
-        BuildResidentLODs(source, out.waveletResult, out.aabbMin, out.aabbMax, out.splatParams, out.residentLODs);
+        BakeStage(progress, "Preparing the levels", 0.67f, 0.84f, 2.2f * scale);
+        BuildResidentLODs(source, out.waveletResult, out.aabbMin, out.aabbMax, out.splatParams, out.residentLODs, [&](float t) { progress.Within(t); });
         if (progress.Cancelled()) return false;
 
         // A new streaming runtime, built here and swapped in whole by ApplyBake (see InitStreamingSimulation)
-        BakeStage(progress, "Building the stream", 0.78f);
+        BakeStage(progress, "Building the stream", 0.84f, 0.955f, 1.5f * scale);
         StreamRuntime& rt = out.stream;
         rt.settings = streamSettings;
         rt.camera = streamCamera;
@@ -3060,7 +3115,7 @@ namespace Splat
 
         if (params.occlusion)
         {
-            BakeStage(progress, "Occlusion volume", 0.92f);
+            BakeStage(progress, "Occlusion volume", 0.955f, 0.995f, 0.53f * scale);
             std::string trace;
             OcclusionVolume::BuildGrid(points, out.aabbMin, out.aabbMax, out.occlusionGrid, trace, 0, m_occlusionShaveBiasCells);
             if (!trace.empty()) LogTransitionTrace("%s", trace.c_str());
@@ -3070,7 +3125,7 @@ namespace Splat
             if (!trace.empty()) LogTransitionTrace("%s", trace.c_str());
         }
 
-        BakeStage(progress, "Heatmap", 0.99f);
+        BakeStage(progress, "Heatmap", 0.995f, 1.0f, 0.06f * scale);
         BuildHeatmapClusterCubes(points, out.aabbMin, out.aabbMax, out.detailGrid, out.heatmapCubes);
         progress.Fraction(1.0f);
         LogTransitionTrace("Bake stages: %s", progress.Timings().c_str());
@@ -3268,6 +3323,49 @@ namespace Splat
 
     // The modal progress dialog. It opens as soon as an operation starts so it blocks the UI at once, but stays
     // invisible (off screen, no dimming) until the operation has run for a second, so quick ones never flash it.
+    // The threads that used any CPU in the last quarter second (a core used for part of it counts whole), sampled from each
+    // thread's CPU time: the progress dialog's live core row. The app's own threads and its child processes' (the
+    // compression analysis runs in worker processes, RdoDispatcher)
+    unsigned SplatPakApp::BusyThreads()
+    {
+        const auto now = std::chrono::steady_clock::now();
+        if (std::chrono::duration<float>(now - m_busySampleTime).count() < 0.25f) return m_busyThreads;
+        m_busySampleTime = now;
+        HANDLE snap = CreateToolhelp32Snapshot(TH32CS_SNAPPROCESS | TH32CS_SNAPTHREAD, 0);
+        if (snap == INVALID_HANDLE_VALUE) return m_busyThreads;
+        std::vector<DWORD> pids = { GetCurrentProcessId() };
+        {
+            std::vector<std::pair<DWORD, DWORD>> parentOf; // (process, its parent)
+            PROCESSENTRY32 pe = { sizeof(pe) };
+            for (BOOL more = Process32First(snap, &pe); more; more = Process32Next(snap, &pe)) parentOf.emplace_back(pe.th32ProcessID, pe.th32ParentProcessID);
+            for (size_t i = 0; i < pids.size(); i++) // Children, and theirs
+                for (const auto& pp : parentOf)
+                    if (pp.second == pids[i] && pp.first != pids[i] && std::find(pids.begin(), pids.end(), pp.first) == pids.end()) pids.push_back(pp.first);
+        }
+        std::unordered_map<DWORD, uint64_t> times;
+        THREADENTRY32 te = { sizeof(te) };
+        unsigned busy = 0;
+        for (BOOL more = Thread32First(snap, &te); more; more = Thread32Next(snap, &te))
+        {
+            if (std::find(pids.begin(), pids.end(), te.th32OwnerProcessID) == pids.end()) continue;
+            HANDLE th = OpenThread(THREAD_QUERY_LIMITED_INFORMATION, FALSE, te.th32ThreadID);
+            if (!th) continue;
+            FILETIME created, exited, kernel, user;
+            if (GetThreadTimes(th, &created, &exited, &kernel, &user))
+            {
+                const uint64_t t = (((uint64_t)kernel.dwHighDateTime << 32) | kernel.dwLowDateTime) + (((uint64_t)user.dwHighDateTime << 32) | user.dwLowDateTime);
+                times[te.th32ThreadID] = t;
+                auto it = m_busyThreadTimes.find(te.th32ThreadID);
+                if (it != m_busyThreadTimes.end() && t > it->second) busy++;
+            }
+            CloseHandle(th);
+        }
+        CloseHandle(snap);
+        m_busyThreadTimes.swap(times);
+        m_busyThreads = std::min(busy, std::max(1u, std::thread::hardware_concurrency()));
+        return m_busyThreads;
+    }
+
     void SplatPakApp::DrawOperationDialog()
     {
         static const char* kPopup = "##Operation";
@@ -3290,21 +3388,16 @@ namespace Splat
             }
             else
             {
-                ImGui::Text("%s", m_op.Title().c_str());
-                ImGui::TextDisabled("%s", m_op.StageName().c_str());
+                // The operation as the main header ("Baking Package"), the stage under way beneath it, and one bar
+                const std::string stage = m_op.StageName();
+                ImGui::SetWindowFontScale(1.25f);
+                ImGui::TextUnformatted(m_op.Title().c_str());
+                ImGui::SetWindowFontScale(1.0f);
+                ImGui::TextColored(ImVec4(0.75f, 0.80f, 0.90f, 1.0f), "%s", stage.empty() ? "Starting..." : stage.c_str());
                 const float barWidth = 380.0f * m_uiScale;
-                // What the stage is working on and on how many cores (Progress::Detail): feedback during a long wait
-                const std::string detail = m_op.Detail();
-                if (!detail.empty())
-                {
-                    ImGui::PushTextWrapPos(ImGui::GetCursorPosX() + barWidth);
-                    ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.75f, 0.95f, 1.0f));
-                    ImGui::TextUnformatted(detail.c_str());
-                    ImGui::PopStyleColor();
-                    ImGui::PopTextWrapPos();
-                }
-                // The cores the stage runs on: a square per core across the bar's width, filled for each one in use
-                if (const unsigned used = m_op.Threads())
+                // The cores in use, live: a square per core across the bar's width, filled for each of the app's threads
+                // that ran at all in the last quarter second (BusyThreads)
+                if (const unsigned used = BusyThreads())
                 {
                     const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
                     ImGui::PushStyleColor(ImGuiCol_Text, ImVec4(0.55f, 0.75f, 0.95f, 1.0f));
@@ -3325,12 +3418,21 @@ namespace Splat
                         else dl->AddRect(a, b, IM_COL32(80, 90, 110, 255));
                     }
                     ImGui::Dummy(ImVec2(cores * pitch, ImGui::GetTextLineHeight()));
-                    if (ImGui::IsItemHovered()) ShowTooltip("%u of %u cores in use for this stage", used, cores);
+                    if (ImGui::IsItemHovered()) ShowTooltip("%u of %u cores in use (threads of the app that ran in the last quarter second)", std::min(used, cores), cores);
                 }
                 {
+                    const float fraction = m_op.Fraction();
                     char pct[16];
-                    snprintf(pct, sizeof(pct), "%.0f%%", m_op.Fraction() * 100.0f);
-                    ProgressBarCentred(m_op.Fraction(), ImVec2(barWidth, 0.0f), pct);
+                    snprintf(pct, sizeof(pct), "%.0f%%", fraction * 100.0f);
+                    ProgressBarCentred(fraction, ImVec2(barWidth, 0.0f), pct);
+                    // What the dialog shows, twice a second: how smoothly the bar moves through the stages
+                    static auto s_lastProgressLog = std::chrono::steady_clock::time_point();
+                    const auto now = std::chrono::steady_clock::now();
+                    if (now - s_lastProgressLog >= std::chrono::milliseconds(500))
+                    {
+                        s_lastProgressLog = now;
+                        LogTransitionTrace("Progress dialog: %.1f%% %s, %u cores busy", fraction * 100.0f, stage.c_str(), BusyThreads());
+                    }
                 }
                 ImGui::Dummy(ImVec2(0.0f, 10.0f * m_uiScale));
                 const float buttonWidth = 120.0f * m_uiScale;
@@ -3359,7 +3461,8 @@ namespace Splat
 
     // Every level of a source as resident, pre-quantized and pre-chunked render data (also used on the worker by a bake)
     void SplatPakApp::BuildResidentLODs(const BakeSource& source, const WaveletDecompositionResult& wavelet, const XMFLOAT3& aabbMin,
-                                        const XMFLOAT3& aabbMax, const SplatEncodeParams& splatParams, std::vector<ResidentLOD>& out) const
+                                        const XMFLOAT3& aabbMax, const SplatEncodeParams& splatParams, std::vector<ResidentLOD>& out,
+                                        const std::function<void(float)>& onProgress) const
     {
         out.clear();
         const auto& points = *source.points;
@@ -3409,6 +3512,8 @@ namespace Splat
                     RequantiseSH(out[lodIdx].splatSH.data(), out[lodIdx].splats.size(), SplatCodec::SHRecordBytes(splatParams.shDegree), shBits); // Draw what the package will hold
                     if (!m_splatDrawAsDiscs) for (auto& mc : out[lodIdx].meshletChunks) mc.dilationMorph = 1.0f; // Resident at load, sorted Gaussians: Gaussians at once (level 0 fade-in weight, see AppendChunkToRenderer); drawn as splats: the splat value (0)
                 }
+                // Level 0 holds half the Gaussians and the work, each level after it half the one before
+                if (onProgress) onProgress((1.0f - powf(0.5f, (float)(lodIdx + 1))) / (1.0f - powf(0.5f, (float)numLODs)));
             }
         }
         else
@@ -4757,20 +4862,6 @@ namespace Splat
             }
             if (ImGui::IsItemHovered()) ShowTooltip("Loads the configured benchmark dataset (default: %s) or generates synthetic points.", m_benchmarkDatasetPath.c_str());
 
-            if (!m_rawSplats.empty())
-            {
-                ImGui::Spacing();
-                ImGui::TextColored(ImVec4(0.3f, 1.0f, 0.5f, 1.0f), "Save Compressed Model:");
-                const bool savePending = BakePending();
-                if (savePending) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.45f);
-                if (ImGui::Button("Save Compressed Package (.gstx)...", ImVec2(-1, 28)) && !savePending)
-                {
-                    m_pendingAction = PendingAction::ExportStream;
-                }
-                if (savePending) ImGui::PopStyleVar();
-                if (ImGui::IsItemHovered()) ShowTooltip(savePending ? "Bake your changes first" : "Compresses and saves the displayed model, with its occlusion volume, into a single self-contained .gstx stream package.");
-            }
-
             ImGui::Spacing();
             ImGui::Separator();
 
@@ -4848,7 +4939,7 @@ namespace Splat
                     const ImVec4 base = brighter(ImGui::GetStyle().Colors[ImGuiCol_Button], 1.25f);
                     const ImVec4 red(0.66f, 0.17f, 0.15f, 1.0f), hot(0.90f, 0.30f, 0.24f, 1.0f), glow(1.0f, 0.36f, 0.30f, 1.0f);
                     ImVec4 face = base;
-                    const float pulse = (pending && !chaining) ? 0.5f - 0.5f * cosf((float)ImGui::GetTime() * 6.2832f / 2.0f) : 0.0f;
+                    const float pulse = (pending && !chaining) ? BreathPulse() : 0.0f;
                     if (pending) face = ImVec4(red.x + (hot.x - red.x) * pulse, red.y + (hot.y - red.y) * pulse, red.z + (hot.z - red.z) * pulse, 1.0f);
                     ImGui::PushStyleColor(ImGuiCol_Button, face);
                     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, brighter(face, 1.15f));
@@ -4856,10 +4947,11 @@ namespace Splat
                     const bool waitingForAnalysis = chaining && m_op.Busy() && m_op.Title() == "Analysing the compression";
                     const char* label = !chaining ? (pending ? "Bake Changes" : "Bake")
                                       : waitingForAnalysis ? "Finishing the analysis, then baking...###bake" : "Baking...###bake";
+                    const bool nothingToBake = !pending && !TargetUnmet() && !chaining; // Greyed: a press would do nothing
+                    if (nothingToBake) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.45f);
                     if (ImGui::Button(label, ImVec2(-1, pending ? 44.0f : 32.0f)) && (pending || TargetUnmet()) && !chaining)
                         StartAutoRdo(std::string()); // Waits for an analysis under way, measures the curve if the target needs it, bakes
-                    if (ImGui::IsItemHovered() && TargetUnmet() && !chaining)
-                        ShowTooltip("Bakes to the Rate Distortion Optimization target. This scan's size-against-quality curve is not measured yet, so the bake finishes measuring it first (about a minute, once per scan: it is stored), then applies the target's choice.");
+                    if (nothingToBake) ImGui::PopStyleVar();
                     if (pending)
                     {
                         // Glow: rings of red fading outward, always there and brightest at the top of the breath
@@ -4876,9 +4968,43 @@ namespace Splat
                         dl->PopClipRect();
                     }
                     ImGui::PopStyleColor(3);
-                    if (ImGui::IsItemHovered()) ShowTooltip(pending ? "Rebuilds the model with the parameters above. Until then the displayed model and Save use the last bake."
-                                                                          : "Nothing to bake: the displayed model matches the parameters above.");
+                    // A tooltip only when greyed, to say why (a button that can be pressed explains itself)
+                    if (nothingToBake && ImGui::IsItemHovered()) ShowTooltip("Nothing to bake: the displayed model matches the parameters above.");
                     if (pending) ImGui::TextColored(ImVec4(1.0f, 0.62f, 0.55f, 1.0f), "Changed, not yet baked: %s", PendingBakeChanges().c_str());
+                }
+                // Save, under Bake: dimmed while changes wait for a bake; after a bake that is not saved yet it breathes
+                // green, with a green glow, until the package is written
+                {
+                    const bool savePending = BakePending();
+                    const bool unsaved = m_bakeUnsaved && !savePending;
+                    const float pulse = unsaved ? BreathPulse() : 0.0f;
+                    const ImVec4 green(0.16f, 0.48f, 0.26f, 1.0f), hot(0.26f, 0.72f, 0.38f, 1.0f), glow(0.35f, 1.0f, 0.50f, 1.0f);
+                    if (unsaved)
+                    {
+                        const ImVec4 face(green.x + (hot.x - green.x) * pulse, green.y + (hot.y - green.y) * pulse, green.z + (hot.z - green.z) * pulse, 1.0f);
+                        ImGui::PushStyleColor(ImGuiCol_Button, face);
+                        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(std::min(1.0f, face.x * 1.15f), std::min(1.0f, face.y * 1.15f), std::min(1.0f, face.z * 1.15f), 1.0f));
+                    }
+                    if (savePending) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.45f);
+                    if (ImGui::Button("Save Compressed Package (.gstx)...", ImVec2(-1, 28)) && !savePending)
+                        m_pendingAction = PendingAction::ExportStream;
+                    if (savePending) ImGui::PopStyleVar();
+                    if (unsaved)
+                    {
+                        ImGui::PopStyleColor(2);
+                        ImDrawList* dl = ImGui::GetWindowDrawList();
+                        const ImVec2 a = ImGui::GetItemRectMin(), b = ImGui::GetItemRectMax();
+                        const float rounding = ImGui::GetStyle().FrameRounding;
+                        dl->PushClipRectFullScreen();
+                        for (int i = 1; i <= 9; i++)
+                        {
+                            const float fade = 1.0f - (float)(i - 1) / 9.0f;
+                            const float alpha = (0.14f + 0.30f * pulse) * fade * fade;
+                            dl->AddRect(ImVec2(a.x - i, a.y - i), ImVec2(b.x + i, b.y + i), ImGui::GetColorU32(ImVec4(glow.x, glow.y, glow.z, alpha)), rounding + i, ~0, 1.5f);
+                        }
+                        dl->PopClipRect();
+                    }
+                    if (savePending && ImGui::IsItemHovered()) ShowTooltip("Bake your changes first."); // Only when greyed, as Bake
                 }
                 ImGui::Spacing();
                 if (HasOccluderMesh())
@@ -5097,11 +5223,6 @@ namespace Splat
                 {
                     if (MenuHeader("interior-occlusion", "Interior Occlusion Volume"))
                     {
-                        if (ImGui::IsItemHovered())
-                        {
-                            if (HasOccluderMesh()) ShowTooltip("The baked occluder packaged with this model (a mesh of %zu triangles). It is built by the bake, from the splats, and fixed here.", m_occluderMesh->levels[0].TriangleCount());
-                            else ShowTooltip("The baked occluder solid packaged with this model (%zu cubes). It is built by the bake, from the splats, and fixed here.", m_occlusionVoxels.size());
-                        }
                         DrawOcclusionVolumeControls();
                     }
                 }
@@ -5890,7 +6011,7 @@ namespace Splat
                     DrawLODResidencyEqualizer();
                     break;
 
-                // Wavelet Multi-Resolution Pyramid Table
+                // Wavelet Pyramid Table
                 case kRightPyramid:
                 {
                     ImGui::Columns(4, "LODColumns");
@@ -6910,6 +7031,24 @@ namespace Splat
         ImGui::SetNextTreeNodeOpen(stored, ImGuiCond_Always);
         const std::string label = std::string(title) + "###" + id; // ImGui's id is the part after ###
         const bool open = ImGui::CollapsingHeader(label.c_str());
+        // What the section is for, a short paragraph on its title bar
+        static const std::pair<const char*, const char*> kTips[] = {
+            { "runtime-lod", "How detail is chosen while you view the model: coarser levels far away, full detail up close, and how smoothly one level changes into the next." },
+            { "interior-occlusion", "The solid core the bake builds inside the model. Splats behind it are hidden, so you don't see the far side through gaps in the near side, and the frame is faster." },
+            { "viewport-sizing", "How the view looks and behaves: splat softness, background, grid, the camera and frame-rate options." },
+            { "taa", "Smooths flicker and jagged edges by blending each frame with the ones before it." },
+            { "accelerators", "Speed-ups for drawing: sorting the splats on the GPU and keeping nearby splats together in memory." },
+            { "visualizers", "Overlays that show how the model is organised and streamed: density cubes, culled chunks, cluster bounds, and the streaming simulation." },
+            { "present-loading", "How a package loads into the view, for showing someone the app." },
+            { "present-streaming", "Watch the model stream in as it would over a network, and start it again." },
+            { "present-optimizations", "One slider from drawing every splat the slow way to using every optimization, with the frame rate at each step." },
+            { "present-occlusion", "Views that show what the solid core hides, and what shows through without it." },
+            { "rdo", "Finds the best trade between package size and picture quality. It measures this scan at many settings, then picks the smallest package that meets your target." },
+            { "encoding", "Checks the baked package against your targets and network, and says what to change when it falls short." },
+        };
+        if (ImGui::IsItemHovered())
+            for (const auto& tip : kTips)
+                if (strcmp(tip.first, id) == 0) ShowTooltip("%s", tip.second);
         // A click toggles it under the mouse; a header the window skips (folded, not yet laid out) returns false unhovered
         if (open != stored && ImGui::IsItemHovered())
         {
@@ -6923,7 +7062,7 @@ namespace Splat
     {
         static const char* s_titles[kRightSectionCount] = {
             "Real-Time Performance & Stage Timings", "5-Tier Compression Results", "LOD Residency",
-            "Wavelet Multi-Resolution Pyramid", "Input Model Metrics", "Geometry Optimisations & Culling Stats", "Spatial Partitioning" };
+            "Wavelet Pyramid", "Input Model Metrics", "Geometry Optimisations & Culling Stats", "Spatial Partitioning" };
         const ImGuiIO& io = ImGui::GetIO();
         if (!io.MouseDown[0] && !io.MouseReleased[0]) m_rightDragMoved = false;
 
@@ -6938,19 +7077,17 @@ namespace Splat
             SaveConfigFile();
         }
 
-        if (section == kRightResidency && ImGui::IsItemHovered() && !active)
-        {
-            ShowTooltip(
-                "Shows how much of each LOD level is currently resident in the simulated ring buffer\n"
-                "(green), locked mid-transition (orange), or protected as an active silhouette edge\n"
-                "(highlighted). Chunks stream in as the camera needs finer detail and drain out (via the\n"
-                "Decay control below) when no longer needed.\n\n"
-                "The fill rate is controlled by the Network Profiles / Bandwidth Throttle options on the\n"
-                "Streaming tab -- lower bandwidth means slower fill. The drain rate is controlled only by\n"
-                "the Decay Rate slider below and is independent of bandwidth: 0 = no decay, 10 = full\n"
-                "drain of every evictable level in 3 s on any bandwidth setting.\n\n"
-                "Drag any section's title bar up or down to reorder the panel.");
-        }
+        // What each section is for, a short paragraph on its title bar
+        static const char* s_tips[kRightSectionCount] = {
+            "How fast the app is drawing: frames per second, and how long each part of a frame takes.",
+            "How small the package gets, step by step: the raw scan, the GPU records, and each compression stage after them, down to the final size.",
+            "How much of each detail level is loaded right now. Levels fill as the camera needs more detail (as fast as the network setting allows) and drain again when Decay is on. Click a level's bar to keep it from being unloaded.",
+            "The model's detail levels, from full detail down to the coarsest. Each row shows how many points the level keeps and how far it strays from the full model. Click a row to view that level.",
+            "Facts about the loaded model: where it came from, how many points it has, its size in memory and its dimensions.",
+            "How much of the model is skipped each frame, and why: too far away to need full detail, off screen, facing away, or hidden behind the model's own solid core. Less drawn means a faster frame.",
+            "How the model is divided into chunks for streaming: the chunk size, how many there are and how full they are." };
+        if (ImGui::IsItemHovered() && !active)
+            ShowTooltip("%s\n\nDrag a title bar up or down to reorder the panel.", s_tips[section]);
 
         if (active && ImGui::IsMouseDragging(0, 4.0f))
         {
@@ -7215,9 +7352,11 @@ namespace Splat
         ImGui::PushStyleVar(ImGuiStyleVar_ItemSpacing, ImVec2(2.0f, 2.0f));
         const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
             ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing | ImGuiWindowFlags_NoCollapse;
+        ImVec2 switchPos(0, 0), switchSize(0, 0);
         if (ImGui::Begin("##NavSwitch", nullptr, flags))
         {
-            const float h = ImGui::GetFrameHeight() + 6.0f * m_uiScale;
+            ImGui::SetWindowFontScale(0.85f);
+            const float h = ImGui::GetFrameHeight() + 2.0f * m_uiScale;
             const ImU32 ink = IM_COL32(235, 235, 240, 255);
             auto modeButton = [&](int mode, const char* id, const char* label, const char* tip)
             {
@@ -7259,14 +7398,40 @@ namespace Splat
             modeButton(NavOrbit, "orbit", "Orbit", "Orbit (O): turn round the model. Left-drag or the arrows turn, A/D/Q/E circle it, W/S, the wheel or PageUp/PageDown move in and out, right-drag pans.");
             ImGui::SameLine();
             modeButton(NavFly, "fly", "Fly", "Fly (O): move through the scene. W/S/A/D or the arrows move, Q/E down and up, Shift 4x; drag to look, the wheel sets the speed; Tab captures the mouse for looking all the way round.");
-            if (m_navMode == NavFly)
+            ImGui::SameLine();
             {
-                ImGui::SameLine();
-                ImGui::SetCursorPosY(ImGui::GetCursorPosY() + (h - ImGui::GetTextLineHeight()) * 0.5f);
-                ImGui::TextColored(ImVec4(0.75f, 0.80f, 0.90f, 1.0f), " %.1f m/s ", FlySpeed());
+                // Recenter: a crosshair, a ring with four ticks and a dot
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.16f, 0.19f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.24f, 0.29f, 1.0f));
+                const ImVec2 p = ImGui::GetCursorScreenPos();
+                if (ImGui::Button("##recenter", ImVec2(h, h))) RecenterCamera();
+                ImGui::PopStyleColor(2);
+                if (ImGui::IsItemHovered()) ShowTooltip("Recenter: back on the model after a pan. Orbit pivots on its centre again (same angle and distance); Fly turns to face it.");
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                const ImVec2 c(p.x + h * 0.5f, p.y + h * 0.5f);
+                const float r = h * 0.26f;
+                dl->AddCircle(c, r, ink, 20, 1.6f);
+                dl->AddLine(ImVec2(c.x, c.y - r * 1.6f), ImVec2(c.x, c.y - r * 0.6f), ink, 1.6f);
+                dl->AddLine(ImVec2(c.x, c.y + r * 0.6f), ImVec2(c.x, c.y + r * 1.6f), ink, 1.6f);
+                dl->AddLine(ImVec2(c.x - r * 1.6f, c.y), ImVec2(c.x - r * 0.6f, c.y), ink, 1.6f);
+                dl->AddLine(ImVec2(c.x + r * 0.6f, c.y), ImVec2(c.x + r * 1.6f, c.y), ink, 1.6f);
+                dl->AddCircleFilled(c, 1.8f, ink, 8);
             }
+            switchPos = ImGui::GetWindowPos();
+            switchSize = ImGui::GetWindowSize();
         }
         ImGui::End();
+        // Fly's speed in a panel of its own beside the switch, so the switch keeps its size (and place) in both modes
+        if (m_navMode == NavFly && switchSize.x > 0.0f)
+        {
+            ImGui::SetNextWindowPos(ImVec2(switchPos.x + switchSize.x + 4.0f, switchPos.y + switchSize.y * 0.5f), ImGuiCond_Always, ImVec2(0.0f, 0.5f));
+            if (ImGui::Begin("##NavSpeed", nullptr, flags))
+            {
+                ImGui::SetWindowFontScale(0.85f);
+                ImGui::TextColored(ImVec4(0.75f, 0.80f, 0.90f, 1.0f), "%.1f m/s", FlySpeed());
+            }
+            ImGui::End();
+        }
         ImGui::PopStyleVar(3);
         ImGui::PopStyleColor();
     }
@@ -8191,6 +8356,14 @@ namespace Splat
         BeginFrame();
 
         ImGUI_UpdateIO(m_Width, m_Height);
+        // ImGui's clock (GetTime: the buttons' breathing, double-clicks, tooltip delays) from the real time between frames;
+        // left alone it adds 1/60 s a frame, which at a few hundred frames a second ran it several times fast and unevenly
+        {
+            static auto s_lastImGuiFrame = std::chrono::steady_clock::now();
+            const auto now = std::chrono::steady_clock::now();
+            ImGui::GetIO().DeltaTime = std::clamp(std::chrono::duration<float>(now - s_lastImGuiFrame).count(), 1e-5f, 0.25f);
+            s_lastImGuiFrame = now;
+        }
         ImGui::NewFrame();
 
         if (m_fitViewPending && m_Width > 0 && m_Height > 0)
