@@ -9092,7 +9092,8 @@ namespace Splat
         m_enableOcclusionCulling = m_optLevel >= 3 && (HasOccluderMesh() || !m_occlusionVoxels.empty());
         const bool lod = m_optLevel >= 4, streaming = m_optLevel >= 5;
         m_streamOnThread = streaming;
-        m_releaseUnusedSegments = streaming;
+        // Release Unused LOD Segments is left as it is (on by default): it saves memory, not frame time, and turning it off
+        // here left it off when streaming was switched on again by its own checkbox
         m_autoLOD = lod;
         if (lod) { m_lodScreenSpace = true; m_lodPerBlock = streaming; }
         else m_selectedPreviewLOD = 0;

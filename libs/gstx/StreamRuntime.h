@@ -106,9 +106,9 @@ namespace Splat
         // (as demoteChunks) and a finished demotion evicts the finer segments below it; requests and the
         // scheduler's prefetch stop at the view's level, and the view's own requests cover only what is in view
         // plus a neighbour buffer (neighborBufferMargin), so detail the view leaves is evicted and nothing streams
-        // it back. The two coarsest levels stay resident as always. Off (the default), everything that arrives
-        // stays, and the scheduler keeps prefetching down to level 0 until the whole model is resident.
-        bool            releaseUnusedSegments = false;
+        // it back. The two coarsest levels stay resident as always. On by default (as in SplatPak); off, everything
+        // that arrives stays, and the scheduler keeps prefetching down to level 0 until the whole model is resident.
+        bool            releaseUnusedSegments = true;
         // What streams besides the view's own requests. Conservative: only what the view needs -- the blocks in view plus
         // the neighbour buffer, each down to its own level -- and nothing in the background. Greedy (the default): the
         // stream carries on in the background regardless of the view; with releaseUnusedSegments it loads every block of
