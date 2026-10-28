@@ -1,0 +1,99 @@
+GSTx Binary License
+Version 1.0, September 2026
+
+Copyright (c) 2026 Dave Wilkinson / Blueshell LLC. All rights reserved.
+SPDX-License-Identifier: LicenseRef-Blueshell-GSTx-Binary
+
+This license covers the compiled library files in this directory and its
+subdirectories (the "Binaries"): gstx.lib as published here for the Debug
+and Release configurations, and any later build of the same library published in
+this directory. It does not cover the header files or the open stand-in source files
+in the parent directory, which are licensed under the Apache License, Version 2.0
+(see the LICENSE file at the root of the repository). The Apache License does not
+apply to the Binaries.
+
+1. Definitions
+
+   "Project" means the SplatPak repository in which this file is distributed
+   (https://github.com/dewilkinson/splatpak), including any copy, clone, fork, or
+   mirror of that repository, in whole or in part, and any software built from it,
+   whether or not modified.
+
+   "You" means any individual or legal entity exercising rights under this license.
+
+2. License grant
+
+   Subject to the terms of this license, Blueshell LLC grants You a worldwide,
+   non-exclusive, royalty-free, non-transferable license to:
+
+   (a) use the Binaries to build, run, develop, and test the Project and software
+       based on the Project;
+
+   (b) reproduce and distribute the Binaries, unmodified, as part of any copy, clone,
+       fork, or mirror of the Project repository, including on public hosting services
+       such as GitHub; and
+
+   (c) link the Binaries into executables and libraries built from the Project and
+       distribute those executables and libraries, for any purpose, including
+       commercial purposes.
+
+   Whenever You distribute the Binaries themselves in library form under (b), this
+   license file must accompany them.
+
+3. Restrictions
+
+   Except as expressly permitted in Section 2 or by applicable law, You may not:
+
+   (a) distribute the Binaries separately from the Project, or as part of any software
+       development kit, library, or product that is not built from the Project;
+
+   (b) modify, translate, adapt, decompile, disassemble, or reverse engineer the
+       Binaries, or attempt to derive their source code, algorithms, or internal data
+       formats from them, except to the extent that applicable law expressly permits
+       such activity notwithstanding a contractual restriction; or
+
+   (c) remove or alter any copyright notice, this license file, or the SPDX
+       identifier accompanying the Binaries.
+
+4. Patents
+
+   The grant in Section 2 includes a license under any patent claims owned or
+   controlled by Blueshell LLC that are necessarily infringed by the permitted use of
+   the unmodified Binaries. No other patent rights are granted.
+
+5. Source code
+
+   Nothing in this license grants any right to the source code of the Binaries, which
+   remains proprietary to Blueshell LLC.
+
+6. Trademarks
+
+   This license grants no rights to use the names "SplatPak", "Splat", "GSTx", "bluesec",
+   or "Blueshell", or any related logos or trademarks, except as required to describe
+   the origin of the Binaries.
+
+7. Termination
+
+   This license terminates automatically if You breach any of its terms. Upon
+   termination You must cease using and distributing the Binaries. Executables and
+   libraries that You distributed in compliance with Section 2(c) before termination
+   remain licensed under this license for their recipients.
+
+8. Disclaimer of warranty
+
+   THE BINARIES ARE PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+   FOR A PARTICULAR PURPOSE, TITLE, AND NON-INFRINGEMENT.
+
+9. Limitation of liability
+
+   IN NO EVENT SHALL BLUESHELL LLC OR ITS CONTRIBUTORS BE LIABLE FOR ANY CLAIM,
+   DAMAGES, OR OTHER LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT, OR OTHERWISE,
+   ARISING FROM, OUT OF, OR IN CONNECTION WITH THE BINARIES OR THE USE OR OTHER
+   DEALINGS IN THE BINARIES, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGES.
+
+10. Entire agreement
+
+   This license is the entire agreement between You and Blueshell LLC concerning the
+   Binaries. If any provision is held unenforceable, the remaining provisions remain
+   in effect.

@@ -1,0 +1,38 @@
+SplatPak
+Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
+
+This repository is licensed under the Apache License, Version 2.0 (see LICENSE), with
+the exceptions listed below. Each exception's own license governs the files it names.
+
+1. libs/gstx/prebuilt/
+   Prebuilt proprietary binaries of the gstx library (gstx.lib, Debug
+   and Release). Licensed under the GSTx Binary License in
+   libs/gstx/prebuilt/LICENSE.txt
+   (SPDX-License-Identifier: LicenseRef-Blueshell-GSTx-Binary).
+   In short: you may use them, copy them together with this repository (clones, forks and
+   mirrors included), and link them into builds of this project that you distribute; you
+   may not distribute them on their own or reverse engineer them. The Apache License does
+   not apply to these files. The headers and open stand-in sources in libs/gstx/
+   are Apache-2.0 like the rest of the repository.
+
+2. libs/cauldron/ and libs/cauldron-prebuilt/
+   AMD Cauldron framework, MIT License (libs/cauldron/license.txt), with its own
+   third-party notices in libs/cauldron/NOTICES.txt. libs/cauldron-prebuilt/ holds
+   binaries built from that source under the same terms.
+
+3. libs/brotli/
+   Google's Brotli compressor, MIT License (libs/brotli/LICENSE). Its sources are compiled
+   into the gstx library, the prebuilt binaries in libs/gstx/prebuilt/
+   included, as the entropy stage of the package format.
+
+4. assets/cthulu/ and assets/venus/
+   Example datasets (source .ply scans and the .gstx packages derived from them), each with its
+   own LICENSE.txt beside it:
+   - Cthulhu Statue by Christoph SCHINDELAR, https://superspl.at/scene/44e8fe8f,
+     CC BY 4.0 (attribution required; commercial use allowed).
+   - Venus de Milo (Louvre Museum) by Nicolas Diolez, https://superspl.at/scene/90e88a10,
+     CC BY-NC 4.0 (attribution required; NON-COMMERCIAL USE ONLY).
+   These licenses govern the datasets regardless of the software's terms.
+
+Binary distributions of this software must include this NOTICE file, the LICENSE file,
+and the license files referenced above.
