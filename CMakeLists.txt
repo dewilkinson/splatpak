@@ -48,6 +48,7 @@ add_subdirectory(src/SplatCore)   # splat_core: everything both executables shar
 add_subdirectory(src/DX12)
 add_subdirectory(tools/SplatPak)
 add_subdirectory(tools/SplatPakWorker)
+add_subdirectory(tools/SplatPakCli)
 add_subdirectory(tests)
 
 # Never run a stale binary: before any executable links, every .exe/.pdb in bin/ is deleted (both
@@ -60,7 +61,7 @@ add_custom_target(clean_stale_binaries
     COMMENT "Removing stale executables from bin/"
 )
 set_target_properties(clean_stale_binaries PROPERTIES FOLDER "Core")
-foreach(_exe SplatPak SplatPakViewer SplatPakWorker CompressVenus TestGPUSort TestBitonicCPU TestLoadPackage TestSplatCodec TestColourTransform TestShadowMesh TestGeometryCull TestOcclusionVolume)
+foreach(_exe SplatPak SplatPakViewer SplatPakWorker SplatPakCli CompressVenus TestGPUSort TestBitonicCPU TestLoadPackage TestSplatCodec TestColourTransform TestShadowMesh TestGeometryCull TestOcclusionVolume)
     if(TARGET ${_exe})
         add_dependencies(${_exe} clean_stale_binaries)
     endif()
