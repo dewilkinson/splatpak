@@ -119,6 +119,7 @@ namespace Splat
         void GenerateSyntheticScene(uint32_t count = 300000);
         void ProcessAndExport(const std::string& outputPath);
         void CloseDataset();
+        void UnloadModel();   // CloseDataset, and every resource of the model released (CPU memory and GPU buffers)
 
         void  LoadConfigFile();
         std::vector<std::string> ResolveRelativeCandidates(const std::string& relativePath) const; // cwd- and exe-relative places to look for a repo file
@@ -138,6 +139,7 @@ namespace Splat
             ExportPLY,
             ExportSPLAT,
             CloseDataset,
+            UnloadModel,           // The Package/Bake tab's Unload Model: the model and its resources freed (UnloadModel)
             ExitApp,
             LocateReencodeSource,  // Re-encode: the package's source scan was not found beside it
             ReencodeSaveAs         // Re-encode: where to write the package
@@ -559,6 +561,7 @@ namespace Splat
         // scanPath: a .ply to analyse in place of the loaded scan (a package's own scan, read from disk by the workers and never
         // loaded into the view); its curve then belongs to the package on screen
         void   StartRdoAnalysis(bool quiet = false, const std::string& scanPath = std::string());
+        void   ResetRdoAnalysis();                 // The graph's Reset Analysis: the analysis deleted, stored profiles too
         std::string FindPackageScan();             // The package's .ply in its folder, or one the user picks; empty = none
         bool   IsPackageOnScreen() const { return m_isLoadedFromSFLW && !m_packagePath.empty(); }
         // A target no encoding meets: Pick's closest (the fastest or smallest), or the best fidelity within half as much

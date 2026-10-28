@@ -1673,6 +1673,43 @@ namespace Splat
         m_statusIsSuccess = true;
     }
 
+    // Unload Model: the model and everything made from it go -- CloseDataset's clearing, then the memory it leaves (each
+    // level's render data, the Gaussians' attributes, the streaming runtime, the occlusion volume, the analysis) and the
+    // renderer's GPU buffers. The settings stay.
+    void SplatPakApp::UnloadModel()
+    {
+        if (m_op.Quiet()) m_op.RequestCancel(); // A background analysis of this scan
+        CloseDataset();                         // Also stops the shadow mesh build and the pre-save compression
+        WaitStreamJob();
+        const StreamSettings settings = m_stream.settings;
+        const StreamCamera camera = m_stream.camera;
+        m_stream = StreamRuntime();
+        m_stream.settings = settings;
+        m_stream.camera = camera;
+        auto release = [](auto& v) { std::decay_t<decltype(v)>().swap(v); }; // Clear and give the memory back
+        release(m_rawSplats); release(m_chunks); release(m_residentLODs); release(m_splatAttributes);
+        release(m_rendererSplats); release(m_rendererRawSplats); release(m_rendererOctreeChunks);
+        release(m_drawChunks); release(m_drawChunksNext); release(m_drawSources); release(m_drawSourcesNext);
+        release(m_occlusionVoxels); release(m_heatmapClusterCubes);
+        m_waveletResult = WaveletDecompositionResult();
+        m_occlusionMips = OcclusionMipTable{};
+        m_occlusionGrid = OcclusionVolume::Grid{};
+        m_detailGrid = DetailGrid{};
+        m_rdo = RdoAnalysisResult{};
+        m_rdoHash = 0;
+        m_rdoSourcePath.clear();
+        m_rdoPackagePath.clear();
+        m_packagePath.clear();
+        m_sourceFileBytes = 0;
+        m_bakeUnsaved = false;
+        m_state.pSplats = nullptr;
+        m_state.pSplatSH = nullptr;
+        if (m_pRenderer) m_pRenderer->ReleaseModelBuffers();
+        LogTransitionTrace("Unload Model: the model, its data and its GPU buffers released");
+        m_statusMessage = "Model unloaded: its memory and GPU buffers are freed.";
+        m_statusIsSuccess = true;
+    }
+
     // Shows a standard Win32 "Open File" dialog; returns the chosen path, or empty if cancelled
     std::string SplatPakApp::OpenFileDialog(const char* filter, const char* title, const char* defaultExt)
     {
@@ -4210,6 +4247,11 @@ namespace Splat
             m_statusIsSuccess = true;
             break;
         }
+        case PendingAction::UnloadModel:
+        {
+            UnloadModel();
+            break;
+        }
         case PendingAction::LocateReencodeSource:
         {
             std::string file = OpenFileDialog("3D Point Clouds & Splats (*.ply; *.splat)\0*.ply;*.splat\0All Files (*.*)\0*.*\0", "Locate the Package's Source Scan", "ply");
@@ -4994,6 +5036,14 @@ namespace Splat
                 m_pendingAction = PendingAction::GenerateBenchmark;
             }
             if (ImGui::IsItemHovered()) ShowTooltip("Loads the configured benchmark dataset (default: %s) or generates synthetic points.", m_benchmarkDatasetPath.c_str());
+            {
+                // Unload Model, last: greyed with nothing loaded
+                const bool loaded = !m_rawSplats.empty() || m_isLoadedFromSFLW || !m_residentLODs.empty();
+                if (!loaded) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.45f);
+                if (ImGui::Button("Unload Model", ImVec2(-1, 24)) && loaded) m_pendingAction = PendingAction::UnloadModel;
+                if (!loaded) ImGui::PopStyleVar();
+                if (!loaded && ImGui::IsItemHovered()) ShowTooltip("No model loaded.");
+            }
 
             ImGui::Spacing();
             ImGui::Separator();
@@ -9084,10 +9134,10 @@ namespace Splat
             else ImGui::TextDisabled("%s -- %.0f s elapsed", m_op.StageName().c_str(), elapsed);
         }
         else if (!scanLoaded && RdoFromPackage()) ImGui::TextDisabled("Stored in the package: %zu encodings, measured from its scan", m_rdo.points.size());
-        else if (!scanLoaded && IsPackageOnScreen()) ImGui::TextDisabled("Analyze .ply File measures this package's scan from disk");
+        else if (!scanLoaded && IsPackageOnScreen()) ImGui::TextDisabled("Analyze measures this package's scan from disk");
         else if (!scanLoaded) ImGui::TextDisabled("Open a .ply scan with spherical harmonics to analyse it");
         else if (pyramidPending) ImGui::TextDisabled("Bake the pending level and deadband changes first");
-        else if (!m_rdo.Valid()) ImGui::TextDisabled("Analyse draws this scan's size-against-quality curve");
+        else if (!m_rdo.Valid()) ImGui::TextDisabled("Analyze draws this scan's size-against-quality curve");
         else if (RdoStale()) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Measured for another scan or bake: analyse again");
         else ImGui::TextDisabled("%zu encodings measured in %.0f s", m_rdo.points.size(), m_rdo.seconds);
 
@@ -9095,7 +9145,12 @@ namespace Splat
         const bool fresh = !RdoStale() || (!scanLoaded && RdoFromPackage());
         // The curve when it is measured for this scan and bake; otherwise its frame, dimmed, with Analyse over the middle.
         // Analysing is optional: Bake and Save measure it themselves when a target needs it.
-        if (fresh) DrawRdoPlot();
+        if (fresh)
+        {
+            DrawRdoPlot();
+            // Reset: the analysis deleted (stored profiles too), to be measured again by Analyze or a Bake that needs it
+            if (!analysing && m_autoRdo == AutoRdo::Idle && ImGui::SmallButton("Reset Analysis")) ResetRdoAnalysis();
+        }
         else DrawRdoPlaceholder(((scanLoaded && !pyramidPending) || (!scanLoaded && IsPackageOnScreen())) && !analysing && m_autoRdo == AutoRdo::Idle, analysing, scanLoaded);
 
         // The target: always shown, so it can be set before anything is measured. A size target starts at the current
@@ -9323,16 +9378,15 @@ namespace Splat
             const ImVec2 ts = ImGui::CalcTextSize(xTitle);
             dl->AddText(ImVec2(0.5f * (a.x + b.x - ts.x), b.y + 17.0f), IM_COL32(150, 155, 170, 110), xTitle);
         }
-        // Analysing needs the scan itself (a package holds only its own encoding). With a package on screen, Analyze .ply File
-        // measures its scan from disk -- found beside it, or picked -- without loading it into the view
+        // Analysing needs the scan itself (a package holds only its own encoding). With a package on screen, Analyze measures
+        // its scan from disk -- found beside it, or picked -- without loading it into the view
         const ImVec2 size(130.0f, 30.0f);
-        const float buttonWidth = (analysing || !scanLoaded) ? 190.0f : size.x;
+        const float buttonWidth = analysing ? 190.0f : size.x;
         ImGui::SetCursorScreenPos(ImVec2(0.5f * (a.x + b.x - buttonWidth), 0.5f * (a.y + b.y - size.y)));
         if (!canAnalyse) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
         char text[48];
         if (analysing) snprintf(text, sizeof(text), "Analysing... %.0f%%##rdoCentre", m_op.Fraction() * 100.0f);
-        else if (!scanLoaded) snprintf(text, sizeof(text), "Analyze .ply File##rdoCentre");
-        else snprintf(text, sizeof(text), "Analyse##rdoCentre");
+        else snprintf(text, sizeof(text), "Analyze##rdoCentre");
         if (ImGui::Button(text, ImVec2(buttonWidth, size.y)) && canAnalyse)
         {
             if (scanLoaded) StartRdoAnalysis();
@@ -9703,6 +9757,31 @@ namespace Splat
             }
         }
         return false;
+    }
+
+    // The graph's Reset: the analysis on screen deleted, from memory and from the stored profiles (every one of this scan and
+    // pyramid), so the next Bake that needs it, or Analyze, measures it again. A package's own copy stays in its file.
+    void SplatPakApp::ResetRdoAnalysis()
+    {
+        const std::string folder = RdoProfileFolder();
+        RdoProfile p;
+        std::string path;
+        int deleted = 0;
+        while (FindRdoProfile(folder, m_rdoHash, m_rdoParams.maxLODs, m_rdoParams.deadbandMM, p, path))
+        {
+            std::error_code ec;
+            if (!std::filesystem::remove(path, ec)) break;
+            deleted++;
+        }
+        LogTransitionTrace("RDO: analysis reset (%d stored profile%s deleted)", deleted, deleted == 1 ? "" : "s");
+        m_rdo = RdoAnalysisResult{};
+        m_rdoHash = 0;
+        m_rdoChoice = -1;
+        m_rdoSourcePath.clear();
+        m_rdoPackagePath.clear();
+        m_lastRdoProfilePath.clear();
+        m_statusMessage = "RDO analysis deleted: Analyze, or a Bake that needs it, measures it again.";
+        m_statusIsSuccess = true;
     }
 
     // A fresh analysis, kept for the next time the same scan is analysed with the same pyramid: <scan>_L<levels>_D<deadband>.rdoprofile,

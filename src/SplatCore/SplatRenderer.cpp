@@ -1262,17 +1262,23 @@ namespace Splat
         }
     }
 
-    void SplatRenderer::OnDestroy()
+    // The model's GPU buffers (points, splat records and harmonics, the sort's): released, each to be created again at the
+    // next model's size when it is drawn. Unload Model frees them; OnDestroy too.
+    void SplatRenderer::ReleaseModelBuffers()
     {
+        FlushGPU();
         FlushCopyQueue();
-        if (m_pTimerHeap) { m_pTimerHeap->Release(); m_pTimerHeap = nullptr; }
-        if (m_pTimerReadback) { m_pTimerReadback->Release(); m_pTimerReadback = nullptr; }
-        if (m_copyFenceEvent) { CloseHandle(m_copyFenceEvent); m_copyFenceEvent = nullptr; }
-        if (m_pCopyFence) { m_pCopyFence->Release(); m_pCopyFence = nullptr; }
-        if (m_pGraphicsProgressFence) { m_pGraphicsProgressFence->Release(); m_pGraphicsProgressFence = nullptr; }
-        if (m_pCopyCmdList) { m_pCopyCmdList->Release(); m_pCopyCmdList = nullptr; }
-        if (m_pCopyAllocator) { m_pCopyAllocator->Release(); m_pCopyAllocator = nullptr; }
-        if (m_pCopyQueue) { m_pCopyQueue->Release(); m_pCopyQueue = nullptr; }
+        ReleaseModelBuffersNoFlush();
+        m_lastSplatsPtr = nullptr;
+        m_lastSplatCount = 0;
+        m_lastSplatSHPtr = nullptr;
+        m_needUploadToGpu = true;
+        m_needUploadChunkIndicesToGpu = true;
+        m_splatSortNeedsRun = true;
+    }
+
+    void SplatRenderer::ReleaseModelBuffersNoFlush()
+    {
         if (m_pPointBuffer) { m_pPointBuffer->Unmap(0, nullptr); m_pPointBuffer->Release(); m_pPointBuffer = nullptr; }
         if (m_pPointGpuBuffer) { m_pPointGpuBuffer->Release(); m_pPointGpuBuffer = nullptr; }
         if (m_pSplatGpuOutBuffer) { m_pSplatGpuOutBuffer->Release(); m_pSplatGpuOutBuffer = nullptr; }
@@ -1311,6 +1317,20 @@ namespace Splat
         if (m_pSplatPairsB) { m_pSplatPairsB->Release(); m_pSplatPairsB = nullptr; }
         if (m_pSplatHistBuffer) { m_pSplatHistBuffer->Release(); m_pSplatHistBuffer = nullptr; }
         m_splatSortCapacitySlots = 0;
+    }
+
+    void SplatRenderer::OnDestroy()
+    {
+        FlushCopyQueue();
+        if (m_pTimerHeap) { m_pTimerHeap->Release(); m_pTimerHeap = nullptr; }
+        if (m_pTimerReadback) { m_pTimerReadback->Release(); m_pTimerReadback = nullptr; }
+        if (m_copyFenceEvent) { CloseHandle(m_copyFenceEvent); m_copyFenceEvent = nullptr; }
+        if (m_pCopyFence) { m_pCopyFence->Release(); m_pCopyFence = nullptr; }
+        if (m_pGraphicsProgressFence) { m_pGraphicsProgressFence->Release(); m_pGraphicsProgressFence = nullptr; }
+        if (m_pCopyCmdList) { m_pCopyCmdList->Release(); m_pCopyCmdList = nullptr; }
+        if (m_pCopyAllocator) { m_pCopyAllocator->Release(); m_pCopyAllocator = nullptr; }
+        if (m_pCopyQueue) { m_pCopyQueue->Release(); m_pCopyQueue = nullptr; }
+        ReleaseModelBuffersNoFlush();
         if (m_pOccDepthBuffer) { m_pOccDepthBuffer->Release(); m_pOccDepthBuffer = nullptr; }
         if (m_pOccCountBuffer) { m_pOccCountBuffer->Release(); m_pOccCountBuffer = nullptr; }
         if (m_pOccCountReadback) { m_pOccCountReadback->Unmap(0, nullptr); m_pOccCountReadback->Release(); m_pOccCountReadback = nullptr; m_pOccCountMapped = nullptr; }

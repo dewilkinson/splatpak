@@ -227,6 +227,8 @@ namespace Splat
         void OnRender(State* pState, CAULDRON_DX12::SwapChain* pSwapChain);
 
         void FlushGPU() { if (m_pDevice) m_pDevice->GPUFlush(); }
+        void ReleaseModelBuffers();         // Unload Model: the model's GPU buffers freed (made again at the next model's size)
+        void ReleaseModelBuffersNoFlush();  // The same without waiting for the GPU (OnDestroy has already)
 
         const FrameTimingMetrics& GetTimingMetrics() const { return m_metrics; }
         const GeometryCullStats&  GetCullStats() const { return m_cullStats; }
