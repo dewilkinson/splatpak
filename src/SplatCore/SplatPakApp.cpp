@@ -9609,39 +9609,11 @@ namespace Splat
             dl->AddText(ImVec2(0.5f * (a.x + b.x - ts.x), b.y + 17.0f), axisText, xTitle);
         }
 
-        // The frontier as a smooth curve through its measured points: a monotone cubic (Fritsch-Carlson), which passes through
-        // every point and never overshoots, so it shows no rise or dip that was not measured
         const std::vector<size_t> frontier = m_rdo.Frontier();
+        for (size_t i = 1; i < frontier.size(); i++)
         {
-            const size_t n = frontier.size();
-            std::vector<double> fx(n), fy(n), slope(n, 0.0);
-            for (size_t i = 0; i < n; i++) { fx[i] = m_rdo.points[frontier[i]].bytes / mib; fy[i] = m_rdo.points[frontier[i]].psnr; }
-            std::vector<double> d(n > 0 ? n - 1 : 0);
-            for (size_t i = 0; i + 1 < n; i++) d[i] = fx[i + 1] > fx[i] ? (fy[i + 1] - fy[i]) / (fx[i + 1] - fx[i]) : 0.0;
-            if (n >= 2) { slope[0] = d[0]; slope[n - 1] = d[n - 2]; }
-            for (size_t i = 1; i + 1 < n; i++) slope[i] = (d[i - 1] * d[i] <= 0.0) ? 0.0 : (d[i - 1] + d[i]) * 0.5;
-            for (size_t i = 0; i + 1 < n; i++) // Limit the tangents so each piece stays monotone
-            {
-                if (d[i] == 0.0) { slope[i] = slope[i + 1] = 0.0; continue; }
-                const double a = slope[i] / d[i], b = slope[i + 1] / d[i], s = a * a + b * b;
-                if (s > 9.0) { const double t = 3.0 / std::sqrt(s); slope[i] = t * a * d[i]; slope[i + 1] = t * b * d[i]; }
-            }
-            const ImU32 curve = IM_COL32(90, 170, 255, 255);
-            for (size_t i = 0; i + 1 < n; i++)
-            {
-                const double h = fx[i + 1] - fx[i];
-                if (h <= 0.0) { dl->AddLine(ImVec2(X(fx[i]), Y(fy[i])), ImVec2(X(fx[i + 1]), Y(fy[i + 1])), curve, 2.0f); continue; }
-                constexpr int kSteps = 16;
-                ImVec2 prev(X(fx[i]), Y(fy[i]));
-                for (int k = 1; k <= kSteps; k++)
-                {
-                    const double t = (double)k / kSteps, t2 = t * t, t3 = t2 * t;
-                    const double y = (2 * t3 - 3 * t2 + 1) * fy[i] + (t3 - 2 * t2 + t) * h * slope[i] + (-2 * t3 + 3 * t2) * fy[i + 1] + (t3 - t2) * h * slope[i + 1];
-                    const ImVec2 at(X(fx[i] + t * h), Y(y));
-                    dl->AddLine(prev, at, curve, 2.0f);
-                    prev = at;
-                }
-            }
+            const RdoPoint& p0 = m_rdo.points[frontier[i - 1]], &p1 = m_rdo.points[frontier[i]];
+            dl->AddLine(ImVec2(X(p0.bytes / mib), Y(p0.psnr)), ImVec2(X(p1.bytes / mib), Y(p1.psnr)), IM_COL32(90, 170, 255, 255), 2.0f);
         }
         int hoverIndex = -1; float hoverDist = 9.0f;
         const ImVec2 mouse = ImGui::GetIO().MousePos;
