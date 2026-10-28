@@ -7460,8 +7460,7 @@ namespace Splat
             dl->AddRectFilled(boxMin, boxMax, IM_COL32(205, 208, 214, 28));
             dl->AddRect(boxMin, boxMax, IM_COL32(150, 110, 30, 255), 0.0f, ~0, 2.0f);
         }
-        else
-            dl->AddRect(boxMin, boxMax, frame, 0.0f, ~0, 1.5f);
+        // Following the mouse, no box is drawn (it distracted from the model under it): the inset shows the area
         dl->AddRect(ImVec2(destX - 1.0f, destY - 1.0f), ImVec2(destX + inset.x + 1.0f, destY + inset.y + 1.0f), frame, 0.0f, ~0, 2.0f);
         // What a drag would grab lights up under the mouse and while dragged: an edge (two for a corner), or the
         // whole frame for a move
