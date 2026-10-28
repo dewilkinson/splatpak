@@ -967,7 +967,7 @@ namespace Splat
         int    m_loupeViz = 1;                       // Inset display: 0 normal, 1 splat outlines (the default), 2 random colour per splat, 3 centres (Shift+V, or a click in the inset, cycles it)
         int    m_splatViz = 0;                       // The same display for the whole model (Renderer tab "Splat Display"; V cycles it)
         ImVec2 m_loupeCenter = ImVec2(-1.0f, -1.0f); // Back-buffer pixels; negative = not placed yet (centre of the view)
-        bool   m_loupePinned = false;                // The box stays put instead of following the mouse (a Shift+click inside it, or Space, toggles; off at every start)
+        bool   m_loupePinned = false;                // The box stays put instead of following the mouse (Space toggles it, a click inside the locked box unlocks it; off at every start)
         bool   m_loupeBoxPressed = false;            // The left button went down inside the box (a click toggles the pin on release)
         ImVec2 m_loupeBoxPressPos = ImVec2(0.0f, 0.0f);
         float  m_rightPanelWidth = 0.0f;             // From BuildUI, for placing the inset

@@ -4378,17 +4378,16 @@ namespace Splat
             }
         }
 
-        // A Shift+click inside the loupe's box pins it where it is, and another unpins it (Space too: see OnEvent).
-        // A click is a press and release that hardly move: a left-drag that starts in the box still orbits.
-        if (m_loupeEnabled && m_loupeRect.z > m_loupeRect.x)
+        // Space locks the loupe's box where it is and unlocks it (see OnEvent). A click inside a locked box unlocks it too;
+        // a click never locks it, as the box follows the mouse and any click on the model would. A click is a press and
+        // release that hardly move: a left-drag that starts in the box still orbits.
+        if (m_loupeEnabled && m_loupePinned && m_loupeRect.z > m_loupeRect.x)
         {
             const float zoom = std::max(1.0f, m_loupeEffectiveZoom); // As drawn last frame (a pinned box sizes itself; see DrawLoupeOverlay)
             const ImVec2 half(0.5f * (m_loupeRect.z - m_loupeRect.x) / zoom, 0.5f * (m_loupeRect.w - m_loupeRect.y) / zoom);
             const ImVec2 m = io.MousePos;
             const bool inBox = fabsf(m.x - m_loupeCenter.x) <= half.x && fabsf(m.y - m_loupeCenter.y) <= half.y;
-            // Shift+click only: the box follows the mouse, so a plain click on the model (or the one after opening the app)
-            // would lock it unasked, now that the loupe is on by default
-            if (io.MouseClicked[0] && io.KeyShift && inBox && m_loupeDrag == 0 && !overInset && !io.WantCaptureMouse)
+            if (io.MouseClicked[0] && inBox && m_loupeDrag == 0 && !overInset && !io.WantCaptureMouse)
             {
                 m_loupeBoxPressed = true;
                 m_loupeBoxPressPos = m;
@@ -4397,9 +4396,10 @@ namespace Splat
             {
                 m_loupeBoxPressed = false;
                 if (fabsf(m.x - m_loupeBoxPressPos.x) < 4.0f && fabsf(m.y - m_loupeBoxPressPos.y) < 4.0f)
-                    SetLoupePinned(!m_loupePinned);
+                    SetLoupePinned(false);
             }
         }
+        else m_loupeBoxPressed = false;
 
         // The loupe's box follows the mouse while it is over the viewport -- unless pinned, and not over the inset
         // itself, nor while the inset is being dragged (L toggles the loupe: see OnEvent).
@@ -4578,7 +4578,7 @@ namespace Splat
 
         // A left click on the model (pressed and released within 3 pixels, so not a drag that turns the view) toggles the
         // Refinement Visualizer, as R does
-        if (io.MouseClicked[0]) m_modelClickArmed = !io.WantCaptureMouse && m_loupeDrag == 0 && !scriptedCamera && !m_mouseLook && !shiftDown;
+        if (io.MouseClicked[0]) m_modelClickArmed = !io.WantCaptureMouse && m_loupeDrag == 0 && !m_loupeBoxPressed && !scriptedCamera && !m_mouseLook && !shiftDown; // A click in the locked loupe box unlocks it instead
         if (io.MouseReleased[0] && m_modelClickArmed)
         {
             m_modelClickArmed = false;
@@ -7487,7 +7487,7 @@ namespace Splat
         dl->AddRectFilled(ImVec2(destX + inset.x - ds.x - 10.0f, destY), ImVec2(destX + inset.x, destY + ds.y + 6.0f), IM_COL32(0, 0, 0, 170));
         dl->AddText(font, hintSize, ImVec2(destX + inset.x - ds.x - 5.0f, destY + 3.0f), frame, dismiss);
         // And how to hold the magnified region still, in the top-left corner (Space pins it, as a click in its box does)
-        const char* lock = "Shift+Click to lock region";
+        const char* lock = "SPACE to lock/unlock view";
         const ImVec2 ls = font->CalcTextSizeA(hintSize, FLT_MAX, 0.0f, lock);
         dl->AddRectFilled(ImVec2(destX, destY), ImVec2(destX + ls.x + 10.0f, destY + ls.y + 6.0f), IM_COL32(0, 0, 0, 170));
         dl->AddText(font, hintSize, ImVec2(destX + 5.0f, destY + 3.0f), frame, lock);
