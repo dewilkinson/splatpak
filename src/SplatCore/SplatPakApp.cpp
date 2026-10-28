@@ -6286,10 +6286,7 @@ namespace Splat
 
         // 4c. Camera control hints at the bottom-right of the viewport
         DrawControlHints(leftPanelWidth, rightPanelWidth);
-        DrawNavSwitch();
-
-        // 4d. Reset View button at the bottom-left of the viewport
-        DrawResetViewButton(leftPanelWidth);
+        DrawNavSwitch(); // With Reset View and Recenter beside Orbit / Fly
 
         // 4e. Loupe box and inset frame
         m_rightPanelWidth = rightPanelWidth;
@@ -6987,34 +6984,16 @@ namespace Splat
         return std::max(0.1f, std::min(1000.0f, hi));
     }
 
-    // "Reset View" button in the bottom-left corner of the viewport (just right of the left panel, just
-    // above the status bar): puts the camera back to the launch view -- the default orbit angle, centred
-    // on the model, at the distance that fits it between the control panels.
-    void SplatPakApp::DrawResetViewButton(float leftPanelWidth)
+    // The nav switch's Reset View button: the camera back to the launch view -- the default orbit angle, centred on the
+    // model, at the distance that fits it between the control panels. The culling camera, if detached, stays.
+    void SplatPakApp::ResetView()
     {
-        const float x = 10.0f + leftPanelWidth + 10.0f;
-        const float y = (float)m_Height - 32.0f - 6.0f;
-        ImGui::SetNextWindowPos(ImVec2(x, y), ImGuiCond_Always, ImVec2(0.0f, 1.0f)); // Pivot: bottom-left corner
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.02f, 0.02f, 0.03f, 0.55f));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
-        const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoSavedSettings |
-            ImGuiWindowFlags_NoFocusOnAppearing;
-        if (ImGui::Begin("##ResetViewButton", nullptr, flags))
-        {
-            if (ImGui::Button("Reset View", ImVec2(96.0f, 24.0f)))
-            {
-                m_yaw = 0.6f;
-                m_pitch = 0.35f;
-                m_target = m_center;
-                ApplyFitDistance();
-            }
-            if (ImGui::IsItemHovered()) ShowTooltip("Returns the camera to the launch view: the default angle, centred on the model, fitted between the control panels. The culling camera, if detached, is left where it is.");
-        }
-        ImGui::End();
-        ImGui::PopStyleVar(2);
-        ImGui::PopStyleColor();
+        if (m_navMode != NavOrbit) SetNavMode(NavOrbit);
+        m_yaw = 0.6f;
+        m_pitch = 0.35f;
+        m_target = m_center;
+        ApplyFitDistance();
+        m_poseCameraIndex = -1;
     }
 
     // The title bar of the right-panel section at this slot. The open state is ours (m_rightPanelOpen, saved in
@@ -7395,6 +7374,24 @@ namespace Splat
                 }
                 dl->AddText(ImVec2(p.x + h + 2.0f, p.y + (h - ImGui::GetTextLineHeight()) * 0.5f), ink, label);
             };
+            {
+                // Reset View: a house (home), left of the modes
+                ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.16f, 0.16f, 0.19f, 1.0f));
+                ImGui::PushStyleColor(ImGuiCol_ButtonHovered, ImVec4(0.24f, 0.24f, 0.29f, 1.0f));
+                const ImVec2 p = ImGui::GetCursorScreenPos();
+                if (ImGui::Button("##resetview", ImVec2(h, h))) ResetView();
+                ImGui::PopStyleColor(2);
+                if (ImGui::IsItemHovered()) ShowTooltip("Reset View: the starting angle, centred on the model and fitted to the window.");
+                ImDrawList* dl = ImGui::GetWindowDrawList();
+                const ImVec2 c(p.x + h * 0.5f, p.y + h * 0.5f);
+                const float r = h * 0.28f;
+                const ImVec2 roof(c.x, c.y - r * 1.15f), eaveL(c.x - r * 1.2f, c.y - r * 0.05f), eaveR(c.x + r * 1.2f, c.y - r * 0.05f);
+                dl->AddLine(eaveL, roof, ink, 1.6f);
+                dl->AddLine(roof, eaveR, ink, 1.6f);
+                dl->AddRect(ImVec2(c.x - r * 0.8f, c.y - r * 0.05f), ImVec2(c.x + r * 0.8f, c.y + r * 1.05f), ink, 0.0f, 0, 1.6f);
+                dl->AddRectFilled(ImVec2(c.x - r * 0.22f, c.y + r * 0.4f), ImVec2(c.x + r * 0.22f, c.y + r * 1.05f), ink); // The door
+            }
+            ImGui::SameLine();
             modeButton(NavOrbit, "orbit", "Orbit", "Orbit (O): turn round the model. Left-drag or the arrows turn, A/D/Q/E circle it, W/S, the wheel or PageUp/PageDown move in and out, right-drag pans.");
             ImGui::SameLine();
             modeButton(NavFly, "fly", "Fly", "Fly (O): move through the scene. W/S/A/D or the arrows move, Q/E down and up, Shift 4x; drag to look, the wheel sets the speed; Tab captures the mouse for looking all the way round.");
