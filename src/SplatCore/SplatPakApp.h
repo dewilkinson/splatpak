@@ -255,6 +255,32 @@ namespace Splat
         bool HasOccluderMesh() const { return m_occluderMesh && !m_occluderMesh->Empty(); }
         void SetOccluderMesh(std::shared_ptr<const ShadowMesh> mesh);
         std::shared_ptr<ShadowMeshJob>    m_shadowMeshJob;
+        // The package compressed in the background after a bake (StartPrecompress), into a temporary file, so Save only has to
+        // copy it into place. It reads the displayed model, so whatever replaces the model stops it first (StopPrecompress, beside
+        // CancelShadowMeshBuild); its threads run at the lowest priority, behind drawing and streaming.
+        struct PrecompressJob
+        {
+            std::thread thread;
+            std::atomic<bool> cancel{ false }, done{ false };
+            bool ok = false;                     // Set before done
+            std::atomic<float> fraction{ 0.0f };
+            std::string base;                    // The temporary package, without .gstx
+            uint64_t generation = 0;             // m_bakeGeneration it was made for
+            float splatRadius = 0.0f, deadbandMM = 0.0f;
+            int maxLODs = 0;
+            TransformStats stats;
+            std::shared_ptr<const ShadowMesh> mesh, occluder;
+            std::vector<OcclusionVoxelGPU> voxels;
+            OcclusionMipTable mips;
+            DetailGrid detailGrid;
+            SplatBakeInput splat;
+            bool sizeShown = false;              // Its exact size has replaced the estimate (UI thread)
+        };
+        std::shared_ptr<PrecompressJob> m_precompress;
+        uint64_t m_bakeGeneration = 0;           // Counts bakes applied: a precompressed package belongs to one
+        void     StartPrecompress();
+        void     StopPrecompress();
+        bool     PrecompressMatches() const;     // The precompressed package is of the model on screen, with today's settings
         bool     m_showShadowMesh = false;   // View Shadow Mesh (config show_shadow_mesh)
         bool     m_showGrid = true;          // Renderer tab, Show Grid: the editor grid at y = 0, this session (an environment starts with it off)
         bool     m_showGridSetting = true;   // The saved choice (config show_grid): what objects load with
@@ -530,7 +556,11 @@ namespace Splat
         bool   RdoFromPackage() const { return m_rdo.Valid() && !m_rdoPackagePath.empty() && m_rdoParams.maxLODs == m_bakedParams.maxLODs; }
         void   DrawRdoMenu();
         void   DrawRdoPlot();
-        void   StartRdoAnalysis(bool quiet = false);
+        // scanPath: a .ply to analyse in place of the loaded scan (a package's own scan, read from disk by the workers and never
+        // loaded into the view); its curve then belongs to the package on screen
+        void   StartRdoAnalysis(bool quiet = false, const std::string& scanPath = std::string());
+        std::string FindPackageScan();             // The package's .ply in its folder, or one the user picks; empty = none
+        bool   IsPackageOnScreen() const { return m_isLoadedFromSFLW && !m_packagePath.empty(); }
         // A target no encoding meets: Pick's closest (the fastest or smallest), or the best fidelity within half as much
         // again (RdoAnalysis::PickKeepQuality). -1 = not chosen yet: the menu warns, and Bake or Save asks before going on.
         int    m_rdoUnreachablePolicy = -1;
@@ -900,6 +930,7 @@ namespace Splat
         ImVec4 LevelTint(int lod, float saturation, float value) const;
         std::string m_cliBakeOutput;         // --bake-to: bake the command-line scan, save the package here and quit (StepCliBake)
         bool   m_cliRemember = false;            // --remember-settings: the bake's settings are also remembered for the scan (BakeTuningCache)
+        bool   m_noPrecompress = false;          // --no-precompress: no background compression after a bake (a measurement's baseline)
         void   StepCliBake();
         void  FinishLodCalibration();  // Compares the captures and writes the report
         void  SetSplatDrawAsDiscs(bool asSplats);        // Draw Splats as Splat, as the checkbox applies it (re-stamps the chunks' fade value)

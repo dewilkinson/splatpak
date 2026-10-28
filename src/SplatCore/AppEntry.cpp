@@ -128,7 +128,7 @@ int Splat::RunSplatPakApp(HINSTANCE hInstance, LPSTR lpCmdLine, int nCmdShow, co
                 forwarded += "--render-path " + args[++i] + " ";
                 continue;
             }
-            if (a == "--stream-test" || a == "--remember-settings" || a == "--level0" || a == "--no-taa" || a == "--no-subject" || a == "--ring-test" || a == "--opaque-debug" || a == "--far-tint")
+            if (a == "--stream-test" || a == "--remember-settings" || a == "--no-precompress" || a == "--level0" || a == "--no-taa" || a == "--no-subject" || a == "--ring-test" || a == "--opaque-debug" || a == "--far-tint")
             {
                 forwarded += a + " ";
                 continue;

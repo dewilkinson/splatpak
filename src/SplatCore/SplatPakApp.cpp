@@ -133,6 +133,9 @@ namespace Splat
     static WNDPROC s_closeGuardBase = nullptr;
     static LRESULT CALLBACK CloseGuardProc(HWND hWnd, UINT message, WPARAM wParam, LPARAM lParam);
 
+    // The compression analysis's operation: its progress dialog's header, and how the UI tells an analysis is running
+    static constexpr const char* kRdoOpTitle = "RDO Analysis";
+
     // A button's breath (Bake Changes, Save after a bake), 0 .. 1 over a 3 s cycle: a cosine eased once more, so it
     // lingers at the bottom and the top of each breath rather than bouncing between them
     static float BreathPulse()
@@ -358,6 +361,10 @@ namespace Splat
             else if (a == "--remember-settings")
             {
                 m_cliRemember = true;
+            }
+            else if (a == "--no-precompress")
+            {
+                m_noPrecompress = true;
             }
             else if (a == "--sh-degree" && i + 1 < args.size())
             {
@@ -2867,7 +2874,7 @@ namespace Splat
             progress.Detail(0, facts);
         }
 
-        BakeStage(progress, "Wavelet levels", 0.012f, 0.17f, 2.1f * scale);
+        BakeStage(progress, "Wavelet Decomposition", 0.012f, 0.17f, 2.1f * scale);
         out.waveletResult = LiftingWavelet::DecomposeChunk(points, params.maxLODs, params.deadbandMM / 1000.0f);
         // Splat mode: every coarse point takes the Gaussian merged from its two children (as the package will)
         if (source.splatMode && source.attributes) SplatCodec::MergeLevels(out.waveletResult, *source.attributes);
@@ -2883,9 +2890,9 @@ namespace Splat
         if (source.splatMode)
             SplatCodec::ComputeScaleRange(*source.attributes, (uint32_t)params.maxLODs, out.splatParams.scaleLog2Min, out.splatParams.scaleLog2Max);
 
-        // Within it: encoding every level to 12%, compressing the records' and the harmonics' samples to 60%, the entropy
-        // measurement the rest (0.7, 2.8 and 2.4 s on Cthulhu)
-        BakeStage(progress, "Estimating the package size", 0.17f, 0.67f, 6.5f * scale);
+        // The package size estimate, in three stages: encoding every level, compressing the records' and the harmonics'
+        // samples, and the entropy measurement (0.7, 2.8 and 2.4 s on Cthulhu)
+        BakeStage(progress, "Encoding every level", 0.17f, 0.23f, 0.7f * scale);
         // Compression estimates
         // Package size as the bake would write it: every level ships in full inside the .gstx, so every
         // level's records (plus the SH stream in splat mode) are byte-plane shuffled and put through the
@@ -2922,11 +2929,11 @@ namespace Splat
         };
         const size_t levelCount = std::max<size_t>(1, out.waveletResult.lodLevels.size());
         encodeLevel(points, 0);
-        progress.Within(0.12f / (float)levelCount);
+        progress.Within(1.0f / (float)levelCount);
         for (size_t lvl = 1; lvl < out.waveletResult.lodLevels.size(); lvl++)
         {
             encodeLevel(out.waveletResult.lodLevels[lvl].splats, (uint32_t)lvl);
-            progress.Within(0.12f * (float)(lvl + 1) / (float)levelCount);
+            progress.Within((float)(lvl + 1) / (float)levelCount);
         }
         const float encodeSeconds = std::chrono::duration<float>(std::chrono::high_resolution_clock::now() - tEstimateStart).count();
 
@@ -2953,6 +2960,7 @@ namespace Splat
         size_t packageBytes = sizeof(SFLWFileHeader);
         double plainEstimate = (double)sizeof(SFLWFileHeader), entropyPlain = 0.0, entropyYCoCg = 0.0;
         out.colourEstimate = ColourEstimate{};
+        BakeStage(progress, "Compressing samples", 0.23f, 0.47f, 2.8f * scale);
         for (int cls = 0; cls < 2; cls++)
         {
             const bool sh = (cls == 1);
@@ -3013,7 +3021,7 @@ namespace Splat
             BakeThreads(progress, std::min<unsigned>(PayloadCodec::kMaxThreads, (unsigned)jobs.size()));
             PayloadCodec::CompressInPlace(jobs);
             BakeThreads(progress, 1);
-            progress.Within(sh ? 0.6f : 0.36f);
+            progress.Within(sh ? 1.0f : 0.6f); // The records' samples are about 60% of the compressing
             size_t compressed = 0, compressedPlain = 0, compressedPaired = 0;
             for (const auto& s : samples) compressed += s.size();
             for (const auto& s : plainSamples) compressedPlain += s.size();
@@ -3049,6 +3057,7 @@ namespace Splat
         }
         // Tiers 2-4 in bits per byte (EntropyProfile.h): a few runs of every level in stored order, the harmonics measured
         // from their absolute values against the next coarser level as a whole (the package codes them per chunk)
+        BakeStage(progress, "Entropy measurement", 0.47f, 0.67f, source.splatMode ? 2.4f * scale : 0.0f);
         if (source.splatMode)
         {
             const auto t0 = std::chrono::high_resolution_clock::now();
@@ -3196,6 +3205,8 @@ namespace Splat
         if (m_enableStreamingSimulation) UpdateStreamingSimulation(0.0);
         LogTransitionTrace("Bake applied: %zu chunks, %zu levels, %zu occluder blocks", m_chunks.size(), m_waveletResult.lodLevels.size(), m_occlusionVoxels.size());
         StartShadowMeshBuild();
+        m_bakeGeneration++;
+        StartPrecompress(); // Save then only copies the package into place
     }
 
     // ---- Shadow mesh --------------------------------------------------------------------------------------
@@ -3232,8 +3243,99 @@ namespace Splat
         m_shadowMeshJob = job;
     }
 
+    // ---- Pre-save compression ----------------------------------------------------------------------------------
+    // After a bake the package is written in the background, exactly as Save would write it, into a temporary file: Save then
+    // copies it into place (and adds what only it knows: the RDO footer and the view). The model's data is read, not copied, so
+    // everything that replaces it stops the job first -- through CancelShadowMeshBuild, which every such place calls.
+
+    void SplatPakApp::StartPrecompress()
+    {
+        StopPrecompress();
+        if (m_rawSplats.empty() || m_chunks.empty() || IsViewerOnly() || Unattended() || m_noPrecompress) return;
+        auto job = std::make_shared<PrecompressJob>();
+        char temp[MAX_PATH] = {};
+        GetTempPathA(MAX_PATH, temp);
+        CreateDirectoryA((std::string(temp) + "SplatPak").c_str(), nullptr);
+        // Packages left by an instance that no longer runs (closed in a crash, or killed) go first
+        {
+            std::error_code ec;
+            for (const auto& e : std::filesystem::directory_iterator(std::string(temp) + "SplatPak", ec))
+            {
+                unsigned long pid = 0;
+                if (sscanf_s(e.path().filename().string().c_str(), "presave-%lu-", &pid) != 1 || pid == GetCurrentProcessId()) continue;
+                HANDLE h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, FALSE, pid);
+                DWORD code = 0;
+                const bool running = h && GetExitCodeProcess(h, &code) && code == STILL_ACTIVE;
+                if (h) CloseHandle(h);
+                if (!running) std::filesystem::remove(e.path(), ec);
+            }
+        }
+        char name[64];
+        snprintf(name, sizeof(name), "SplatPak\\presave-%lu-%llu", GetCurrentProcessId(), (unsigned long long)m_bakeGeneration);
+        job->base = std::string(temp) + name;
+        job->generation = m_bakeGeneration;
+        job->splatRadius = m_state.splatRadius;
+        job->deadbandMM = m_deadbandThresholdMM;
+        job->maxLODs = m_maxLODLevels;
+        job->voxels = m_occlusionVoxels;
+        job->mips = m_occlusionMips;
+        job->detailGrid = m_detailGrid;
+        job->splat.attributes = &m_splatAttributes;
+        job->splat.shDegree = BakeSHDegree();
+        memcpy(job->splat.shBits, m_bakedParams.shBandBits, 3);
+        const bool splatMode = m_splatMode;
+        const uint64_t sourceBytes = m_sourceFileBytes;
+        auto meshJob = m_shadowMeshJob;
+        job->thread = std::thread([this, job, splatMode, sourceBytes, meshJob]()
+        {
+            // Behind the frame: this thread and the compression pool it starts run at the lowest priority
+            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
+            PayloadCodec::t_workerInit = []() { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST); };
+            if (meshJob) // The package carries the shadow and occluder meshes: wait for them, as Save does
+            {
+                while (!meshJob->done.load())
+                {
+                    if (job->cancel.load()) { job->done = true; return; }
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
+                job->mesh = meshJob->result;
+                job->occluder = meshJob->occluder;
+            }
+            const bool occluderMesh = job->occluder && !job->occluder->Empty();
+            const std::vector<OcclusionVoxelGPU> noVoxels;
+            const OcclusionMipTable noMips;
+            const auto t0 = std::chrono::steady_clock::now();
+            LogTransitionTrace("Pre-save compression started (%s.gstx)", job->base.c_str());
+            job->ok = StreamPackager::PackageDataset(job->base, m_chunks, job->maxLODs, job->deadbandMM / 1000.0f, job->splatRadius,
+                occluderMesh ? noVoxels : job->voxels, sourceBytes, occluderMesh ? &noMips : &job->mips, &job->detailGrid, splatMode ? &job->splat : nullptr,
+                PayloadCodec::kDefault, [job](float f) { job->fraction = f; return !job->cancel.load(); },
+                PAYLOAD_TRANSFORMS_DEFAULT, &job->stats, job->mesh.get(), job->occluder.get());
+            LogTransitionTrace("Pre-save compression %s in %.1f s", job->ok ? "done" : job->cancel.load() ? "stopped" : "failed",
+                std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
+            job->done = true;
+        });
+        m_precompress = job;
+    }
+
+    void SplatPakApp::StopPrecompress()
+    {
+        if (!m_precompress) return;
+        m_precompress->cancel = true;
+        if (m_precompress->thread.joinable()) m_precompress->thread.join();
+        std::remove((m_precompress->base + ".gstx").c_str());
+        m_precompress.reset();
+    }
+
+    bool SplatPakApp::PrecompressMatches() const
+    {
+        const PrecompressJob* j = m_precompress.get();
+        return j && j->generation == m_bakeGeneration && j->splatRadius == m_state.splatRadius && j->deadbandMM == m_deadbandThresholdMM
+            && j->maxLODs == m_maxLODLevels && !(j->done.load() && !j->ok);
+    }
+
     void SplatPakApp::CancelShadowMeshBuild()
     {
+        StopPrecompress(); // It reads the model too, and waits for this build
         if (!m_shadowMeshJob) return;
         m_shadowMeshJob->cancel = true;
         if (m_shadowMeshJob->thread.joinable()) m_shadowMeshJob->thread.join();
@@ -3837,8 +3939,35 @@ namespace Splat
         auto meshJob = m_shadowMeshJob;
         auto meshHeld = std::make_shared<std::shared_ptr<const ShadowMesh>>(m_shadowMesh);
         auto occluderHeld = std::make_shared<std::shared_ptr<const ShadowMesh>>(m_occluderMesh);
-        RunOperation("Saving " + name, [this, partial, splatInput, transformStats, meshJob, meshHeld, occluderHeld](Progress& progress)
+        auto pre = PrecompressMatches() ? m_precompress : nullptr; // Compressed in the background since the bake: only copied
+        RunOperation("Saving " + name, [this, partial, splatInput, transformStats, meshJob, meshHeld, occluderHeld, pre](Progress& progress)
         {
+            if (pre)
+            {
+                // What the background compression has left (none, once it is done), then its file copied into place
+                BakeStage(progress, "Compressing the payloads", 0.0f);
+                while (!pre->done.load())
+                {
+                    if (progress.Cancelled()) return false; // The background job goes on, for the next Save
+                    progress.Fraction(0.97f * pre->fraction.load());
+                    std::this_thread::sleep_for(std::chrono::milliseconds(50));
+                }
+                if (pre->ok)
+                {
+                    BakeStage(progress, "Writing the package", 0.97f);
+                    std::error_code ec;
+                    std::filesystem::copy_file(pre->base + ".gstx", partial + ".gstx", std::filesystem::copy_options::overwrite_existing, ec);
+                    if (!ec)
+                    {
+                        *transformStats = pre->stats;
+                        *meshHeld = pre->mesh;
+                        *occluderHeld = pre->occluder;
+                        LogTransitionTrace("Save: the package compressed in the background since the bake, copied into place");
+                        return true;
+                    }
+                    LogTransitionTrace("Save: could not copy the precompressed package (%s): compressing again", ec.message().c_str());
+                }
+            }
             // One payload per chunk and level, compressed on up to PayloadCodec::kMaxThreads threads
             const size_t payloads = m_chunks.size() * (size_t)(m_maxLODLevels + 1);
             const unsigned compressThreads = (unsigned)std::min<size_t>(PayloadCodec::kMaxThreads, std::max<size_t>(1, payloads));
@@ -4856,6 +4985,10 @@ namespace Splat
             {
                 m_pendingAction = PendingAction::OpenFile;
             }
+            if (ImGui::Button("Load Compressed Model (.gstx)...", ImVec2(-1, 26)))
+            {
+                m_pendingAction = PendingAction::OpenCompressedFile;
+            }
             if (ImGui::Button("Generate Synthetic Benchmark", ImVec2(-1, 24)))
             {
                 m_pendingAction = PendingAction::GenerateBenchmark;
@@ -4944,7 +5077,7 @@ namespace Splat
                     ImGui::PushStyleColor(ImGuiCol_Button, face);
                     ImGui::PushStyleColor(ImGuiCol_ButtonHovered, brighter(face, 1.15f));
                     ImGui::PushStyleColor(ImGuiCol_ButtonActive, brighter(pending ? red : base, 0.85f));
-                    const bool waitingForAnalysis = chaining && m_op.Busy() && m_op.Title() == "Analysing the compression";
+                    const bool waitingForAnalysis = chaining && m_op.Busy() && m_op.Title() == kRdoOpTitle;
                     const char* label = !chaining ? (pending ? "Bake Changes" : "Bake")
                                       : waitingForAnalysis ? "Finishing the analysis, then baking...###bake" : "Baking...###bake";
                     const bool nothingToBake = !pending && !TargetUnmet() && !chaining; // Greyed: a press would do nothing
@@ -5005,6 +5138,28 @@ namespace Splat
                         dl->PopClipRect();
                     }
                     if (savePending && ImGui::IsItemHovered()) ShowTooltip("Bake your changes first."); // Only when greyed, as Bake
+                    // The background compression for Save (StartPrecompress): its progress, then the package's exact size
+                    if (!savePending && PrecompressMatches())
+                    {
+                        PrecompressJob& pre = *m_precompress;
+                        if (!pre.done.load())
+                            ImGui::TextDisabled("Compressing for Save in the background: %.0f%%", pre.fraction.load() * 100.0f);
+                        else
+                        {
+                            if (!pre.sizeShown)
+                            {
+                                std::error_code ec;
+                                const auto bytes = std::filesystem::file_size(pre.base + ".gstx", ec);
+                                if (!ec)
+                                {
+                                    m_compressedSizeMB = (float)((double)bytes / (1024.0 * 1024.0));
+                                    m_compressionRatio = m_rawFileSizeMB > 0.0f ? m_rawFileSizeMB / std::max(0.001f, m_compressedSizeMB) : 0.0f;
+                                }
+                                pre.sizeShown = true;
+                            }
+                            ImGui::TextDisabled("Compressed: %.1f MB, saved at once", m_compressedSizeMB);
+                        }
+                    }
                 }
                 ImGui::Spacing();
                 if (HasOccluderMesh())
@@ -5052,11 +5207,9 @@ namespace Splat
                 ImGui::TextDisabled("No active model loaded in renderer.");
             }
 
-            if (ImGui::Button("Load Compressed Model (.gstx)...", ImVec2(-1, 26)))
-            {
+            // Load Compressed Model sits under Open Raw Point Cloud on the Package/Bake tab; the viewer, which has no such tab, keeps it here
+            if (IsViewerOnly() && ImGui::Button("Load Compressed Model (.gstx)...", ImVec2(-1, 26)))
                 m_pendingAction = PendingAction::OpenCompressedFile;
-            }
-            if (ImGui::IsItemHovered()) ShowTooltip("Directly loads and streams a pre-compressed .gstx model from disk, overriding memory data structures.");
 
             ImGui::Separator();
 
@@ -8913,7 +9066,7 @@ namespace Splat
         ImGui::Indent();
         const double mib = 1024.0 * 1024.0;
         const bool scanLoaded = !m_rawSplats.empty() && !m_isLoadedFromSFLW && m_sourceSHDegree > 0 && !m_waveletResult.lodLevels.empty();
-        const bool analysing = m_op.Busy() && m_op.Title() == "Analysing the compression";
+        const bool analysing = m_op.Busy() && m_op.Title() == kRdoOpTitle;
         // The analysis measures the baked pyramid: only a pending change to it (levels, deadband, chunks) must be baked first;
         // a pending SH change is what the analysis is for
         const BakeParams current = CurrentBakeParams();
@@ -8931,6 +9084,7 @@ namespace Splat
             else ImGui::TextDisabled("%s -- %.0f s elapsed", m_op.StageName().c_str(), elapsed);
         }
         else if (!scanLoaded && RdoFromPackage()) ImGui::TextDisabled("Stored in the package: %zu encodings, measured from its scan", m_rdo.points.size());
+        else if (!scanLoaded && IsPackageOnScreen()) ImGui::TextDisabled("Analyze .ply File measures this package's scan from disk");
         else if (!scanLoaded) ImGui::TextDisabled("Open a .ply scan with spherical harmonics to analyse it");
         else if (pyramidPending) ImGui::TextDisabled("Bake the pending level and deadband changes first");
         else if (!m_rdo.Valid()) ImGui::TextDisabled("Analyse draws this scan's size-against-quality curve");
@@ -8942,7 +9096,7 @@ namespace Splat
         // The curve when it is measured for this scan and bake; otherwise its frame, dimmed, with Analyse over the middle.
         // Analysing is optional: Bake and Save measure it themselves when a target needs it.
         if (fresh) DrawRdoPlot();
-        else DrawRdoPlaceholder(scanLoaded && !pyramidPending && !analysing && m_autoRdo == AutoRdo::Idle, analysing, scanLoaded);
+        else DrawRdoPlaceholder(((scanLoaded && !pyramidPending) || (!scanLoaded && IsPackageOnScreen())) && !analysing && m_autoRdo == AutoRdo::Idle, analysing, scanLoaded);
 
         // The target: always shown, so it can be set before anything is measured. A size target starts at the current
         // bake's size rather than 0 MB, which nothing meets.
@@ -9169,24 +9323,29 @@ namespace Splat
             const ImVec2 ts = ImGui::CalcTextSize(xTitle);
             dl->AddText(ImVec2(0.5f * (a.x + b.x - ts.x), b.y + 17.0f), IM_COL32(150, 155, 170, 110), xTitle);
         }
-        // Analysing needs the scan itself (a package holds only its own encoding): without one the button says so instead
+        // Analysing needs the scan itself (a package holds only its own encoding). With a package on screen, Analyze .ply File
+        // measures its scan from disk -- found beside it, or picked -- without loading it into the view
         const ImVec2 size(130.0f, 30.0f);
         const float buttonWidth = (analysing || !scanLoaded) ? 190.0f : size.x;
         ImGui::SetCursorScreenPos(ImVec2(0.5f * (a.x + b.x - buttonWidth), 0.5f * (a.y + b.y - size.y)));
         if (!canAnalyse) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.5f);
         char text[48];
         if (analysing) snprintf(text, sizeof(text), "Analysing... %.0f%%##rdoCentre", m_op.Fraction() * 100.0f);
-        else if (!scanLoaded) snprintf(text, sizeof(text), "Open the .ply scan##rdoCentre");
+        else if (!scanLoaded) snprintf(text, sizeof(text), "Analyze .ply File##rdoCentre");
         else snprintf(text, sizeof(text), "Analyse##rdoCentre");
-        if (ImGui::Button(text, ImVec2(buttonWidth, size.y)) && canAnalyse) StartRdoAnalysis();
+        if (ImGui::Button(text, ImVec2(buttonWidth, size.y)) && canAnalyse)
+        {
+            if (scanLoaded) StartRdoAnalysis();
+            else
+            {
+                const std::string scan = FindPackageScan();
+                if (!scan.empty()) StartRdoAnalysis(false, scan);
+            }
+        }
         if (!canAnalyse) ImGui::PopStyleVar();
-        if (ImGui::IsItemHovered() && !scanLoaded && !analysing)
-            ShowTooltip("The analysis encodes the original scan every way it can be encoded, so it needs the .ply scan open (File > Open).\n"
-                        "A package holds only its own encoding; one saved after an analysis carries that analysis and shows its curve.");
-        else if (ImGui::IsItemHovered())
-            ShowTooltip("Measures every spherical-harmonics encoding of this scan (degree, and bits per band): its package size, exactly as Save\n"
-                        "would compress it, its colour fidelity against the source, and what a typical view downloads. About a minute, once per\n"
-                        "scan (it is stored). Optional: Bake and Save measure it themselves when the target needs it.");
+        // A tooltip only when greyed, to say why
+        if (!canAnalyse && !analysing && ImGui::IsItemHovered())
+            ShowTooltip(!scanLoaded ? "Open a package or a .ply scan first." : "Bake the pending level and deadband changes first.");
         ImGui::SetCursorScreenPos(ImVec2(origin.x, origin.y + height));
         ImGui::Dummy(ImVec2(width, 1.0f));
     }
@@ -9363,19 +9522,36 @@ namespace Splat
         for (int p = 0; p < 4; p++) if (kSHPrecisionBits[p] == s.shBits[0]) m_shPrecision = p;
     }
 
-    void SplatPakApp::StartRdoAnalysis(bool quiet)
+    // The scan a package was baked from: the one .ply in its folder, else the .ply named as the package, else the user's pick
+    std::string SplatPakApp::FindPackageScan()
     {
+        namespace fs = std::filesystem;
+        std::error_code ec;
+        const fs::path pkg(m_packagePath);
+        std::vector<fs::path> plys;
+        for (const auto& e : fs::directory_iterator(pkg.parent_path(), ec))
+            if (e.is_regular_file() && _stricmp(e.path().extension().string().c_str(), ".ply") == 0) plys.push_back(e.path());
+        if (plys.size() == 1) return plys[0].string();
+        for (const auto& p : plys) if (_stricmp(p.stem().string().c_str(), pkg.stem().string().c_str()) == 0) return p.string();
+        return OpenFileDialog("PLY scan (*.ply)\0*.ply\0", "The scan this package was baked from");
+    }
+
+    void SplatPakApp::StartRdoAnalysis(bool quiet, const std::string& scanPath)
+    {
+        // A package's own scan, from disk (its hash is taken there): the package keeps the curve
+        const bool packageScan = !scanPath.empty();
         auto result = std::make_shared<RdoAnalysisResult>();
-        auto hash = std::make_shared<uint64_t>(m_sourceHash);
+        auto hash = std::make_shared<uint64_t>(packageScan ? 0 : m_sourceHash);
         auto reused = std::make_shared<std::string>(); // The stored profile used instead of analysing
-        const std::string path = m_loadedFilePath;
+        const std::string path = packageScan ? scanPath : m_loadedFilePath;
+        const std::string loaded = m_loadedFilePath;
         const std::string folder = RdoProfileFolder();
         const int maxLODs = m_bakedParams.maxLODs;
         const float deadbandMM = m_bakedParams.deadbandMM;
-        const uint32_t sourceSHDegree = m_sourceSHDegree;
+        const uint32_t sourceSHDegree = packageScan ? 3u : m_sourceSHDegree; // Unknown until read: the workers measure what it has
         m_rdoStart = std::chrono::steady_clock::now();
-        LogTransitionTrace("RDO: analysing %s%s", path.c_str(), quiet ? " (in the background)" : "");
-        RunOperation("Analysing the compression", [this, result, hash, reused, path, folder, maxLODs, deadbandMM, sourceSHDegree, quiet](Progress& progress)
+        LogTransitionTrace("RDO: analysing %s%s", path.c_str(), quiet ? " (in the background)" : packageScan ? " (the package's scan, not loaded)" : "");
+        RunOperation(kRdoOpTitle, [this, result, hash, reused, path, folder, maxLODs, deadbandMM, sourceSHDegree, quiet, packageScan](Progress& progress)
         {
             if (*hash == 0)
             {
@@ -9419,17 +9595,17 @@ namespace Splat
                 const bool ok = RdoDispatcher::Analyse(base, sourceSHDegree, worker, folder, report, *result, error);
                 LogTransitionTrace("RDO: %s through %s%s%s", ok ? "analysed" : "failed", worker.c_str(), ok ? "" : ": ", ok ? "" : error.c_str());
                 if (ok || error == "cancelled") return ok;
-                if (quiet) return false; // In this process it would read the scan the UI is free to change
+                if (quiet || packageScan) return false; // In this process it would read the scan the UI is free to change (or one not loaded)
                 LogTransitionTrace("RDO: falling back to this process");
             }
-            else if (quiet) return false;
+            else if (quiet || packageScan) return false;
             std::vector<const SplatPointArray*> levels;
             levels.push_back(&m_rawSplats);
             for (size_t l = 1; l < m_waveletResult.lodLevels.size(); l++) levels.push_back(&m_waveletResult.lodLevels[l].splats);
             return RdoAnalysis::Analyse(levels, m_splatAttributes, &m_waveletResult.mergedAttributes, m_splatParams, m_sourceSHDegree,
                 report, *result);
         },
-        [this, result, hash, reused, path, quiet](bool ok, bool cancelled)
+        [this, result, hash, reused, path, loaded, quiet, packageScan](bool ok, bool cancelled)
         {
             if (!ok)
             {
@@ -9438,13 +9614,13 @@ namespace Splat
                 m_statusIsSuccess = false;
                 return;
             }
-            if (m_loadedFilePath != path) return; // Another scan opened meanwhile
+            if (m_loadedFilePath != loaded) return; // Another scan or package opened meanwhile
             result->unitBytes.clear(); result->unitError.clear(); // Summed into each point's regionSaving
             m_rdo = std::move(*result);
             m_rdoHash = *hash;
             m_rdoSourcePath = path;
-            m_rdoPackagePath.clear();
-            if (m_sourceHash == 0) m_sourceHash = *hash;
+            m_rdoPackagePath = packageScan ? m_packagePath : std::string(); // A package's scan: the curve is the package's (RdoFromPackage)
+            if (m_sourceHash == 0 && !packageScan) m_sourceHash = *hash;
             m_rdoParams = m_bakedParams;
             // A first target: the size of what is set now
             if (m_rdoTarget.sizeMB <= 0.0)

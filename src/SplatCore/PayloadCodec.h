@@ -77,6 +77,10 @@ namespace Splat
             return PayloadDecode::Decompress(src, srcSize, dst, dstSize, codec); // The one reader, in the codec library
         }
 
+        // Run first on each pool thread that CompressInPlace starts, when the calling thread has set one: a background job
+        // (SplatPakApp's pre-save compression) sets it to lower its workers' priority, so drawing frames always comes first
+        static inline thread_local void (*t_workerInit)() = nullptr;
+
         // Every payload replaced by its compressed form. Brotli runs across the cores (up to kMaxThreads);
         // the library stage runs one payload after another, as it is not known to be reentrant.
         // progress, when given, is polled on the calling thread with the fraction of payloads done; returning false
@@ -99,7 +103,8 @@ namespace Splat
             };
             const unsigned threads = codec != PAYLOAD_CODEC_BROTLI ? 1u : std::max(1u, std::min({ std::thread::hardware_concurrency(), kMaxThreads, (unsigned)payloads.size() }));
             std::vector<std::thread> pool;
-            for (unsigned t = progress ? 0 : 1; t < threads; t++) pool.emplace_back(work);
+            void (*init)() = t_workerInit;
+            for (unsigned t = progress ? 0 : 1; t < threads; t++) pool.emplace_back([&work, init]() { if (init) init(); work(); });
             bool keepGoing = true;
             if (!progress) work();
             else
