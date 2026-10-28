@@ -9125,16 +9125,10 @@ namespace Splat
         const BakeParams current = CurrentBakeParams();
         const bool pyramidPending = current.maxLODs != m_bakedParams.maxLODs || current.deadbandMM != m_bakedParams.deadbandMM || current.chunkSize != m_bakedParams.chunkSize;
 
-        // Progress while it runs, otherwise where things stand
+        // Where things stand. An analysis shows its progress in the progress dialog; one in the background (no dialog) gets a line here
         if (analysing)
         {
-            const float f = m_op.Fraction();
-            const double elapsed = std::chrono::duration<double>(std::chrono::steady_clock::now() - m_rdoStart).count();
-            char overlay[64];
-            snprintf(overlay, sizeof(overlay), "%.0f%%", f * 100.0f);
-            ProgressBarCentred(f, ImVec2(-1.0f, 0.0f), overlay);
-            if (f > 0.02f) ImGui::TextDisabled("%s -- %.0f s elapsed, about %.0f s left", m_op.StageName().c_str(), elapsed, elapsed * (1.0 - f) / f);
-            else ImGui::TextDisabled("%s -- %.0f s elapsed", m_op.StageName().c_str(), elapsed);
+            if (m_op.Quiet()) ImGui::TextDisabled("Analysing in the background: %.0f%%", m_op.Fraction() * 100.0f);
         }
         else if (!scanLoaded && RdoFromPackage()) ImGui::TextDisabled("Stored in the package: %zu encodings, measured from its scan", m_rdo.points.size());
         else if (!scanLoaded && IsPackageOnScreen()) ImGui::TextDisabled("Analyze measures this package's scan from disk");
@@ -9606,7 +9600,6 @@ namespace Splat
         const int maxLODs = m_bakedParams.maxLODs;
         const float deadbandMM = m_bakedParams.deadbandMM;
         const uint32_t sourceSHDegree = packageScan ? 3u : m_sourceSHDegree; // Unknown until read: the workers measure what it has
-        m_rdoStart = std::chrono::steady_clock::now();
         LogTransitionTrace("RDO: analysing %s%s", path.c_str(), quiet ? " (in the background)" : packageScan ? " (the package's scan, not loaded)" : "");
         RunOperation(kRdoOpTitle, [this, result, hash, reused, path, folder, maxLODs, deadbandMM, sourceSHDegree, quiet, packageScan](Progress& progress)
         {
