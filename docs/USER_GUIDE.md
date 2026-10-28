@@ -100,6 +100,10 @@ This is where you examine a model. The controls that matter most:
 
 This tab simulates delivery over a constrained connection. It is useful for demonstrations and for stressing the level-of-detail system.
 
+![Cthulhu streaming in with the Refinement Visualizer on](images/sp-04.png)
+
+*Cthulhu streaming in at full bandwidth with the Refinement Visualizer on. Each block takes its level's colour as it arrives (gold for full detail, blue for the level above it). On the right, the LOD Residency bars show how much of each level is loaded, and the culling stats show how much of the model is drawn.*
+
 - The tab is grouped under three headings: **Network Bandwidth**, **Stream Load** and **Scheduler**. **Network Bandwidth** offers 3G (0.2 MB/s), 4G (2 MB/s), 5G (7.5 MB/s) and Full presets, each button showing its rate and the selected one lit, or a slider for any bandwidth. Streaming is unthrottled until you pick one.
 - **Decay Rate** sets how fast detail that is out of view drains from memory. 0 disables decay. 10 drains every evictable level in about ten seconds whatever the bandwidth, and 5 takes twice as long. Hover over the slider for the implied drain time. **Evict** clears everything but the two coarsest levels at once.
 - **Release Unused LOD Segments**, on by default, evicts a level's segments as soon as nothing draws them any more. Zoom out, or turn away, and the finer segments fade back to their coarser parents, then leave memory, so the residency map frees up. The two coarsest levels always stay resident. Off, everything that arrives stays.
