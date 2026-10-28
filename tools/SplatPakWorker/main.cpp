@@ -12,7 +12,9 @@
 //
 // Progress lines on stderr: "progress <0..1> <stage>". Exit code 0 with a part written; 1 with a part carrying the error.
 
+#include <algorithm>
 #include <cstdio>
+#include <cstring>
 #include <fstream>
 #include <iostream>
 #include <string>
@@ -74,7 +76,15 @@ int main(int argc, char** argv)
     if (!parsed) { part.error = "bad job: " + error; return Finish(part, outPath); }
     part.scanHash = job.scanHash;
 
-    auto progress = [](float f, const char* stage) { fprintf(stderr, "progress %.3f %s\n", f, stage); fflush(stderr); return true; };
+    // One fraction for the whole job (RdoAnalysis::JobProgress), never moving back
+    auto progress = [](float f, const char* stage)
+    {
+        static float last = 0.0f;
+        last = std::max(last, RdoAnalysis::JobProgress(stage, f, last));
+        fprintf(stderr, "progress %.3f %s\n", last, stage);
+        fflush(stderr);
+        return true;
+    };
     progress(0.0f, "Checking the scan");
     if (job.scanHash != 0 && BakeTuningCache::HashFile(job.scan) != job.scanHash)
     {

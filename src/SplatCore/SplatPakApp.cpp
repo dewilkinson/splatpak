@@ -9553,13 +9553,17 @@ namespace Splat
         LogTransitionTrace("RDO: analysing %s%s", path.c_str(), quiet ? " (in the background)" : packageScan ? " (the package's scan, not loaded)" : "");
         RunOperation(kRdoOpTitle, [this, result, hash, reused, path, folder, maxLODs, deadbandMM, sourceSHDegree, quiet, packageScan](Progress& progress)
         {
+            // The bar: hashing the scan 0-4% (creeping by its size, read at about 1.5 GB/s), the stored analyses 4-5%, the
+            // measurement the rest -- one fraction for the whole job (the workers' mean, or RdoAnalysis::JobProgress here)
             if (*hash == 0)
             {
-                BakeStage(progress, "Hashing the scan", 0.0f);
+                std::error_code ec;
+                const double bytes = (double)std::filesystem::file_size(path, ec);
+                BakeStage(progress, "Hashing the scan", 0.0f, 0.04f, ec ? 0.0f : (float)(bytes / 1.5e9));
                 *hash = BakeTuningCache::HashFile(path);
             }
             {
-                BakeStage(progress, "Looking for a stored analysis", 0.0f);
+                BakeStage(progress, "Looking for a stored analysis", 0.04f);
                 RdoProfile stored;
                 if (FindRdoProfile(folder, *hash, maxLODs, deadbandMM, stored, *reused))
                 {
@@ -9567,11 +9571,14 @@ namespace Splat
                     return true;
                 }
             }
+            progress.Span(0.05f, 1.0f);
             auto report = [&progress](float f, const char* stage)
             {
                 if (progress.StageName() != stage) progress.Stage(stage, f); else progress.Fraction(f);
                 return !progress.Cancelled();
             };
+            float inProcess = 0.0f; // This process's analysis reports each stage from 0
+            auto reportStages = [&](float f, const char* stage) { inProcess = std::max(inProcess, RdoAnalysis::JobProgress(stage, f, inProcess)); return report(inProcess, stage); };
             // Through the workers when SplatPakWorker.exe is beside the app (RdoDispatcher.h: one job per SH degree, side by
             // side); otherwise here, in this process
             char exe[MAX_PATH] = {};
@@ -9603,7 +9610,7 @@ namespace Splat
             levels.push_back(&m_rawSplats);
             for (size_t l = 1; l < m_waveletResult.lodLevels.size(); l++) levels.push_back(&m_waveletResult.lodLevels[l].splats);
             return RdoAnalysis::Analyse(levels, m_splatAttributes, &m_waveletResult.mergedAttributes, m_splatParams, m_sourceSHDegree,
-                report, *result);
+                reportStages, *result);
         },
         [this, result, hash, reused, path, loaded, quiet, packageScan](bool ok, bool cancelled)
         {

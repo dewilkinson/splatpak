@@ -453,6 +453,24 @@ namespace Splat
         uint32_t                   m_splatSlotCount = 0;             // Sum of the render list's splat counts
         bool                       m_splatSortNeedsRun = true;
         bool                       m_sortFrustumCull = true; // State::frustumCull at the last sort: a change re-sorts
+        // GPU pass timings: timestamps written at marks through the frame (GpuMark, each labelled with the work since the mark
+        // before), read back kGpuTimerFrames frames later so the CPU never waits. Every heartbeat logs each pass's average and
+        // worst; a frame far over the average logs its own breakdown (the stutter hunt).
+        static constexpr uint32_t  kGpuMarks = 16, kGpuTimerFrames = 6;
+        ID3D12QueryHeap*           m_pTimerHeap = nullptr;
+        ID3D12Resource*            m_pTimerReadback = nullptr;
+        uint64_t                   m_timerFreq = 0;
+        uint32_t                   m_timerFrame = 0;
+        uint32_t                   m_timerCount[kGpuTimerFrames] = {};
+        const char*                m_timerLabels[kGpuTimerFrames][kGpuMarks] = {};
+        struct GpuPassStat { const char* label; double sum, max; uint32_t n; };
+        std::vector<GpuPassStat>   m_gpuPassStats;
+        double                     m_gpuFrameSum = 0.0, m_gpuFrameMax = 0.0, m_gpuFrameAvg = 0.0;
+        uint32_t                   m_gpuFrames = 0;
+        std::chrono::steady_clock::time_point m_lastSlowFrameLog;
+        void GpuTimerBegin(ID3D12GraphicsCommandList* pCmdLst);
+        void GpuMark(ID3D12GraphicsCommandList* pCmdLst, const char* label);
+        void GpuTimerEnd(ID3D12GraphicsCommandList* pCmdLst);
         uint32_t                   m_heartbeatSorts = 0;             // Splat sorts and render-list uploads since the last heartbeat line
         uint32_t                   m_heartbeatListUploads = 0;
         uint32_t                   m_heartbeatCopiesInFlight = 0; // List uploads that found the previous list's copy still running (what tore the list before the upload ring)

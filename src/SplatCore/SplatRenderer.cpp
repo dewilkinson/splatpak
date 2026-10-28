@@ -596,6 +596,20 @@ namespace Splat
         if (m_renderPath == RenderPath::MeshShaders)
             m_pDevice->GetDevice()->CreateCommandSignature(&sigDesc, nullptr, IID_PPV_ARGS(&m_pCommandSignature));
 
+        // GPU pass timings (GpuMark): a timestamp query heap and its readback ring
+        {
+            D3D12_QUERY_HEAP_DESC qd = {};
+            qd.Type = D3D12_QUERY_HEAP_TYPE_TIMESTAMP;
+            qd.Count = kGpuMarks * kGpuTimerFrames;
+            if (SUCCEEDED(m_pDevice->GetDevice()->CreateQueryHeap(&qd, IID_PPV_ARGS(&m_pTimerHeap))) &&
+                SUCCEEDED(m_pDevice->GetDevice()->CreateCommittedResource(&CD3DX12_HEAP_PROPERTIES(D3D12_HEAP_TYPE_READBACK), D3D12_HEAP_FLAG_NONE,
+                    &CD3DX12_RESOURCE_DESC::Buffer((UINT64)qd.Count * 8u), D3D12_RESOURCE_STATE_COPY_DEST, nullptr, IID_PPV_ARGS(&m_pTimerReadback))))
+            {
+                SetName(m_pTimerReadback, "SplatRenderer::m_pTimerReadback");
+                m_pDevice->GetGraphicsQueue()->GetTimestampFrequency(&m_timerFreq);
+            }
+        }
+
         // Create Dedicated DX12 Hardware DMA Copy Queue for asynchronous PCIe transfers
         D3D12_COMMAND_QUEUE_DESC copyQueueDesc = {};
         copyQueueDesc.Type     = D3D12_COMMAND_LIST_TYPE_COPY;
@@ -1251,6 +1265,8 @@ namespace Splat
     void SplatRenderer::OnDestroy()
     {
         FlushCopyQueue();
+        if (m_pTimerHeap) { m_pTimerHeap->Release(); m_pTimerHeap = nullptr; }
+        if (m_pTimerReadback) { m_pTimerReadback->Release(); m_pTimerReadback = nullptr; }
         if (m_copyFenceEvent) { CloseHandle(m_copyFenceEvent); m_copyFenceEvent = nullptr; }
         if (m_pCopyFence) { m_pCopyFence->Release(); m_pCopyFence = nullptr; }
         if (m_pGraphicsProgressFence) { m_pGraphicsProgressFence->Release(); m_pGraphicsProgressFence = nullptr; }
@@ -1444,6 +1460,72 @@ namespace Splat
         m_splatPairsAState = D3D12_RESOURCE_STATE_UNORDERED_ACCESS;
         m_splatSortCapacitySlots = paddedSlots;
         m_splatSortNeedsRun = true;
+    }
+
+    // ---- GPU pass timings --------------------------------------------------------------------------------------
+
+    // The frame's first mark; first, the frame kGpuTimerFrames back (long finished: the swap chain keeps fewer in flight)
+    // is read and added to the heartbeat's figures, and logged on its own when it ran far over the average
+    void SplatRenderer::GpuTimerBegin(ID3D12GraphicsCommandList* pCmdLst)
+    {
+        if (!m_pTimerHeap || !m_pTimerReadback || m_timerFreq == 0) return;
+        const uint32_t slot = m_timerFrame % kGpuTimerFrames;
+        const uint32_t n = m_timerCount[slot];
+        if (m_timerFrame >= kGpuTimerFrames && n >= 2)
+        {
+            const D3D12_RANGE range = { (SIZE_T)slot * kGpuMarks * 8u, (SIZE_T)(slot * kGpuMarks + n) * 8u };
+            const uint64_t* ticks = nullptr;
+            if (SUCCEEDED(m_pTimerReadback->Map(0, &range, (void**)&ticks)) && ticks)
+            {
+                const uint64_t* t = ticks + slot * kGpuMarks;
+                const double toMs = 1000.0 / (double)m_timerFreq;
+                const double total = (double)(t[n - 1] - t[0]) * toMs;
+                char breakdown[512];
+                int at = snprintf(breakdown, sizeof(breakdown), "%.2f ms:", total);
+                for (uint32_t i = 1; i < n; i++)
+                {
+                    const double ms = t[i] >= t[i - 1] ? (double)(t[i] - t[i - 1]) * toMs : 0.0;
+                    const char* label = m_timerLabels[slot][i];
+                    auto it = std::find_if(m_gpuPassStats.begin(), m_gpuPassStats.end(), [&](const GpuPassStat& s) { return strcmp(s.label, label) == 0; });
+                    if (it == m_gpuPassStats.end()) { m_gpuPassStats.push_back({ label, 0.0, 0.0, 0 }); it = m_gpuPassStats.end() - 1; }
+                    it->sum += ms; it->max = std::max(it->max, ms); it->n++;
+                    if (at > 0 && at < (int)sizeof(breakdown)) at += snprintf(breakdown + at, sizeof(breakdown) - at, " %s %.2f", label, ms);
+                }
+                // A frame over twice the running average (and over 4 ms) is a stutter candidate: its breakdown, twice a second at most
+                const auto now = std::chrono::steady_clock::now();
+                if (m_gpuFrameAvg > 0.0 && total > 2.0 * m_gpuFrameAvg && total > 4.0 && now - m_lastSlowFrameLog > std::chrono::milliseconds(500))
+                {
+                    m_lastSlowFrameLog = now;
+                    LogTransitionTrace("GPU slow frame (average %.2f ms) %s", m_gpuFrameAvg, breakdown);
+                }
+                m_gpuFrameAvg = m_gpuFrameAvg > 0.0 ? m_gpuFrameAvg * 0.95 + total * 0.05 : total;
+                m_gpuFrameSum += total; m_gpuFrameMax = std::max(m_gpuFrameMax, total); m_gpuFrames++;
+                const D3D12_RANGE none = { 0, 0 };
+                m_pTimerReadback->Unmap(0, &none);
+            }
+        }
+        m_timerCount[slot] = 0;
+        GpuMark(pCmdLst, "start");
+    }
+
+    void SplatRenderer::GpuMark(ID3D12GraphicsCommandList* pCmdLst, const char* label)
+    {
+        if (!m_pTimerHeap) return;
+        const uint32_t slot = m_timerFrame % kGpuTimerFrames;
+        uint32_t& n = m_timerCount[slot];
+        if (n >= kGpuMarks) return;
+        pCmdLst->EndQuery(m_pTimerHeap, D3D12_QUERY_TYPE_TIMESTAMP, slot * kGpuMarks + n);
+        m_timerLabels[slot][n++] = label;
+    }
+
+    // The frame's marks copied to its readback slot (read kGpuTimerFrames frames later)
+    void SplatRenderer::GpuTimerEnd(ID3D12GraphicsCommandList* pCmdLst)
+    {
+        if (!m_pTimerHeap) return;
+        const uint32_t slot = m_timerFrame % kGpuTimerFrames;
+        if (m_timerCount[slot] > 0)
+            pCmdLst->ResolveQueryData(m_pTimerHeap, D3D12_QUERY_TYPE_TIMESTAMP, slot * kGpuMarks, m_timerCount[slot], m_pTimerReadback, (UINT64)slot * kGpuMarks * 8u);
+        m_timerFrame++;
     }
 
     // Splat mode: expands the render list into slots and sorts them far-to-near (SplatSortCS.hlsl).
@@ -2657,6 +2739,18 @@ namespace Splat
             m_heartbeatCopiesInFlight = 0;
             m_heartbeatSorts = 0;
             m_heartbeatListUploads = 0;
+            // The GPU's own time per pass since the last heartbeat (GpuMark): average / worst, in the order first recorded
+            if (m_gpuFrames > 0)
+            {
+                char line[768];
+                int at = snprintf(line, sizeof(line), "GPU passes over %u frames (ms, average/worst): frame %.2f/%.2f;", m_gpuFrames, m_gpuFrameSum / m_gpuFrames, m_gpuFrameMax);
+                for (const GpuPassStat& s : m_gpuPassStats)
+                    if (s.n > 0 && at > 0 && at < (int)sizeof(line)) at += snprintf(line + at, sizeof(line) - at, " %s %.2f/%.2f", s.label, s.sum / s.n, s.max);
+                LogTransitionTrace("%s", line);
+                for (GpuPassStat& s : m_gpuPassStats) s = { s.label, 0.0, 0.0, 0 };
+                m_gpuFrameSum = m_gpuFrameMax = 0.0;
+                m_gpuFrames = 0;
+            }
         }
 
         // Throttle CPU so it does not overwrite in-flight command allocator / dynamic buffers
@@ -2694,6 +2788,7 @@ namespace Splat
 
         ID3D12DescriptorHeap* descriptorHeaps[] = { m_resourceViewHeaps.GetCBV_SRV_UAVHeap() };
         pCmdLst->SetDescriptorHeaps(1, descriptorHeaps);
+        GpuTimerBegin(pCmdLst);
 
         ID3D12Resource* pBackBuffer = pSwapChain->GetCurrentBackBufferResource();
         bool useTemporal = pState->enableTemporalFiltering && (m_pTemporalPSO != nullptr) && (m_pTemporalRootSig != nullptr);
@@ -2739,6 +2834,7 @@ namespace Splat
         pCmdLst->RSSetViewports(1, &viewport);
         pCmdLst->RSSetScissorRects(1, &scissor);
         DrawBackdrop(pCmdLst, pState, !splatDisplayBlend);
+        GpuMark(pCmdLst, "backdrop");
 
         // Active viewing camera
         const float cy = cosf(pState->camPitch), sy = sinf(pState->camPitch);
@@ -2968,6 +3064,7 @@ namespace Splat
 
             D3D12_RESOURCE_BARRIER toPresent = CD3DX12_RESOURCE_BARRIER::Transition(pBackBuffer, D3D12_RESOURCE_STATE_RENDER_TARGET, D3D12_RESOURCE_STATE_PRESENT);
             pCmdLst->ResourceBarrier(1, &toPresent);
+            GpuTimerEnd(pCmdLst);
             pCmdLst->Close();
 
             ID3D12CommandList* pCmdLists[] = { pCmdLst };
@@ -3236,6 +3333,7 @@ namespace Splat
                 pCmdLst->SetGraphicsRootConstantBufferView(0, cbAddress);
                 draw();
             }
+            GpuMark(pCmdLst, "splats");
         };
         // Solid splat depth (State::solidDepth): the splats' solid cores into depth first, through a copy of the pass's
         // constant buffer with solidPass set; the blended pass after it is depth-tested against them.
@@ -3597,11 +3695,14 @@ namespace Splat
                 {
                     XMFLOAT4X4 cullVP;
                     XMStoreFloat4x4(&cullVP, pState->detachCullCamera ? cViewProj : unjitteredViewProj);
+                    GpuMark(pCmdLst, "setup");
                     RunSplatSort(pCmdLst, pState, eyePos, forwardNorm, cullVP);
+                    GpuMark(pCmdLst, "sort");
                 }
 
                 DrawOccluderPass();
                 DrawGridPass();
+                GpuMark(pCmdLst, "occluder+grid");
                 chunkedPassDrawn = true;
 
                 if (!pState->showOcclusionVolumeOnly && !pState->showShadowMesh)
@@ -3651,7 +3752,9 @@ namespace Splat
                             pCmdLst->SetGraphicsRootDescriptorTable(1, m_compositeTableSRVs.GetGPU());
                             pCmdLst->SetPipelineState(pCompositePSO);
                             pCmdLst->IASetPrimitiveTopology(D3D_PRIMITIVE_TOPOLOGY_TRIANGLELIST);
+                            GpuMark(pCmdLst, "splat layer");
                             pCmdLst->DrawInstanced(3, 1, 0, 0);
+                            GpuMark(pCmdLst, "composite");
                             D3D12_RESOURCE_BARRIER toWrite[2] = {
                                 CD3DX12_RESOURCE_BARRIER::Transition(m_splatLayer.GetResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_RENDER_TARGET),
                                 CD3DX12_RESOURCE_BARRIER::Transition(m_depthBuffer.GetResource(), D3D12_RESOURCE_STATE_PIXEL_SHADER_RESOURCE, D3D12_RESOURCE_STATE_DEPTH_WRITE) };
@@ -4116,7 +4219,9 @@ namespace Splat
 
                 uint32_t groupsX = (m_width + 7) / 8;
                 uint32_t groupsY = (m_height + 7) / 8;
+                GpuMark(pCmdLst, "scene");
                 pCmdLst->Dispatch(groupsX, groupsY, 1);
+                GpuMark(pCmdLst, "TAA");
             }
 
             // Post-temporal transitions: Blit resolved output to backbuffer
@@ -4279,7 +4384,9 @@ namespace Splat
 
         // Draw ImGui UI on top
         auto uiStart = std::chrono::high_resolution_clock::now();
+        GpuMark(pCmdLst, "post");
         m_imGui.Draw(pCmdLst);
+        GpuMark(pCmdLst, "UI");
         auto uiEnd = std::chrono::high_resolution_clock::now();
         m_metrics.uiDrawTimeMs = std::chrono::duration<float, std::milli>(uiEnd - uiStart).count();
         if (m_captureRequested && m_captureWithUI) issueCapture();
@@ -4289,6 +4396,7 @@ namespace Splat
             pCmdLst->ResourceBarrier(1, &toPresent);
         }
 
+        GpuTimerEnd(pCmdLst);
         pCmdLst->Close();
 
         ID3D12CommandList* pCmdLists[] = { pCmdLst };

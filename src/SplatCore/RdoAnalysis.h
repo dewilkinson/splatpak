@@ -154,6 +154,21 @@ namespace Splat
         constexpr int    kViewCount = 8;         // Directions of the typical views (the --capture-views ones)
         constexpr float  kViewConeDegrees = 30.0f; // Half-angle of a view's cone (a 45-degree vertical field of view, wider across)  // Package-quality windows that scale a batch (spread over it)
 
+        // One fraction for a whole analysis job from a stage's own 0..1 (Analyse and the worker report each stage from 0):
+        // each stage's share of the job, from the glass flask's (1.4 M Gaussians: 6 s to the compression, 33 s compressing).
+        // An unknown stage keeps `last`.
+        inline float JobProgress(const char* stage, float f, float last)
+        {
+            struct Share { const char* stage; float from, to; };
+            static const Share kShares[] = {
+                { "Checking the scan", 0.00f, 0.01f }, { "Reading the scan", 0.01f, 0.03f }, { "Building the levels", 0.03f, 0.09f },
+                { "Encoding the levels", 0.09f, 0.12f }, { "Measuring the records", 0.12f, 0.15f }, { "Measuring the candidates", 0.15f, 0.16f },
+                { "Scoring the colour", 0.16f, 0.17f }, { "Coding SH residuals", 0.17f, 0.18f }, { "Compressing", 0.18f, 1.00f }, { "Done", 1.0f, 1.0f } };
+            for (const Share& s : kShares)
+                if (strcmp(s.stage, stage) == 0) return s.from + (s.to - s.from) * std::min(1.0f, std::max(0.0f, f));
+            return last;
+        }
+
         // The candidates: per degree the source carries, uniform bits and the tapers that keep the low bands finer
         inline std::vector<RdoSettings> Candidates(uint32_t sourceDegree)
         {
