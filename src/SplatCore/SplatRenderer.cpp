@@ -3131,7 +3131,8 @@ namespace Splat
         pCB->arrivalGlowHue = pState->arrivalGlowHue;
         pCB->autoSplatSize = pState->autoSplatSize ? 1u : 0u;
         pCB->culledPass = 0;
-        pCB->autoSplatPad1[0] = 0.0f; pCB->autoSplatPad1[1] = 0.0f;
+        pCB->gridHeight = pState->gridHeight;
+        pCB->autoSplatPad1 = 0.0f;
         pCB->lodRadiusAlign[0] = 0.0f; pCB->lodRadiusAlign[1] = 0.0f;
         for (int l = 0; l < 8; l++) pCB->lodRadius[l] = pState->lodRadius[l];
         for (int l = 0; l < 8; l++) pCB->splatDiscRadius[l] = pState->splatDiscRadius[l];

@@ -757,6 +757,7 @@ namespace Splat
                         if (line.find("\"occluder_inset_edges\":") != std::string::npos)
                             m_occluderInsetEdges = std::clamp((float)atof(line.c_str() + line.find(':', line.find("\"occluder_inset_edges\":")) + 1), 0.0f, 8.0f);
                         if (line.find("\"loading_blur\":") != std::string::npos) m_loadingBlurEnabled = line.find("true") != std::string::npos;
+                        if (line.find("\"loading_blur_environment\":") != std::string::npos) m_loadingBlurEnvironment = line.find("true") != std::string::npos;
                         if (line.find("\"loupe_enabled\":") != std::string::npos) m_loupeEnabled = line.find("true") != std::string::npos;
                         if (readPair("\"loupe_size\":", "loupe_size=", w, h) && w >= 160.0f && h >= 120.0f)
                             m_loupeSize = ImVec2(w, h);
@@ -875,12 +876,13 @@ namespace Splat
                         if (image != "\x01" && q0 != std::string::npos && q1 > q0) m_bgImagePath = image.substr(q0 + 1, q1 - q0 - 1);
                     }
 
-                    // Camera control hints overlay on/off (JSON or INI); see DrawControlHints.
+                    // The camera legend on/off (JSON or INI); see DrawControlHints. A new key: the boxed hints it replaced
+                    // ("show_control_hints") were often turned off, and the watermark should start on.
                     {
-                        size_t hPos = line.find("\"show_control_hints\":");
+                        size_t hPos = line.find("\"show_camera_legend\":");
                         size_t eqPos = std::string::npos;
                         if (hPos != std::string::npos) eqPos = line.find(':', hPos);
-                        else if (line.find("show_control_hints=") != std::string::npos) eqPos = line.find('=');
+                        else if (line.find("show_camera_legend=") != std::string::npos) eqPos = line.find('=');
                         if (eqPos != std::string::npos)
                         {
                             std::string val = line.substr(eqPos + 1);
@@ -1051,7 +1053,7 @@ namespace Splat
             out << "  \"default_max_lods\": 4,\n";
             out << "  \"default_deadband_mm\": 3.0,\n";
             out << "  \"occlusion_shave_bias\": " << m_occlusionShaveBiasCells << ",\n";
-            out << "  \"show_control_hints\": " << (m_showControlHints ? "true" : "false") << ",\n";
+            out << "  \"show_camera_legend\": " << (m_showControlHints ? "true" : "false") << ",\n";
             out << "  \"show_grid\": " << (m_showGridSetting ? "true" : "false") << ",\n";
             {
                 char colours[256];
@@ -1072,6 +1074,7 @@ namespace Splat
             out << "  \"splat_coarse_gaussian_cap\": " << m_splatCoarseGaussianCap << ",\n";
             out << "  \"occluder_inset_edges\": " << m_occluderInsetEdges << ",\n";
             out << "  \"loading_blur\": " << (m_loadingBlurEnabled ? "true" : "false") << ",\n";
+            out << "  \"loading_blur_environment\": " << (m_loadingBlurEnvironment ? "true" : "false") << ",\n";
             out << "  \"loupe_enabled\": " << (m_loupeEnabled ? "true" : "false") << ",\n";
             out << "  \"loupe_size\": \"" << (int)m_loupeSize.x << "," << (int)m_loupeSize.y << "\",\n";
             if (m_loupePos.x >= 0.0f) out << "  \"loupe_pos\": \"" << (int)m_loupePos.x << "," << (int)m_loupePos.y << "\",\n";
@@ -1312,9 +1315,14 @@ namespace Splat
 
     // The nav switch's Recenter button. Orbit: the pivot goes back to the model (its centre; in an environment, the subject's
     // or core's), the angle and distance kept, so a pan is undone. Fly: the eye stays and turns to face that point.
+    XMFLOAT3 SplatPakApp::OrbitCentre() const
+    {
+        return !m_sceneIsEnvironment ? m_center : m_subjectRadius > 0.0f ? m_subjectCentre : m_coreCentre;
+    }
+
     void SplatPakApp::RecenterCamera()
     {
-        const XMFLOAT3 c = !m_sceneIsEnvironment ? m_center : m_subjectRadius > 0.0f ? m_subjectCentre : m_coreCentre;
+        const XMFLOAT3 c = OrbitCentre();
         if (m_navMode == NavOrbit)
         {
             m_target = c;
@@ -2060,7 +2068,7 @@ namespace Splat
                                        PackageLoad& out, Progress& progress) const
     {
         const unsigned cores = std::max(1u, std::thread::hardware_concurrency());
-        BakeStage(progress, "Reading the package", 0.0f);
+        BakeStage(progress, "Reading package", 0.0f);
         {
             std::ifstream in(ResolvePackagePath(filepath), std::ios::ate | std::ios::binary);
             out.packageBytes = in.is_open() ? (uint64_t)in.tellg() : 0;
@@ -2090,7 +2098,7 @@ namespace Splat
         for (size_t l = 1; l < numLODs; l++)
             for (size_t c = 0; c < numChunks; c++)
                 if (l < pkg.chunkManifests[c].lods.size() && l < pkg.chunkLODSplats[c].size()) pieces.push_back({ c, l });
-        BakeStage(progress, "Decoding the levels", 0.05f, cores);
+        BakeStage(progress, "Decoding levels", 0.05f, cores);
         std::atomic<size_t> decoded{ 0 };
         LoadParallelFor(pieces.size(), cores, [&](size_t i)
         {
@@ -2142,7 +2150,7 @@ namespace Splat
         if (progress.Cancelled()) return false;
 
         // The renderer's level 0 in meshlet order (64 splats per meshlet chunk), and quantised in that order
-        BakeStage(progress, "Preparing the levels", 0.45f, cores);
+        BakeStage(progress, "Preparing levels", 0.45f, cores);
         {
             std::vector<MeshletChunkGPU> meshlets;
             SpatialOctree::PartitionIntoMeshletChunks(out.rawSplats, meshlets, 64, m_enableMortonOrder);
@@ -2232,7 +2240,7 @@ namespace Splat
         if (progress.Cancelled()) return false;
 
         // A new streaming runtime, built here and swapped in whole by ApplyPackageLoad (as a bake's is)
-        BakeStage(progress, "Building the stream", 0.8f);
+        BakeStage(progress, "Building stream package", 0.8f);
         StreamRuntime& rt = out.stream;
         rt.settings = streamSettings;
         rt.camera = streamCamera;
@@ -2250,7 +2258,7 @@ namespace Splat
         rt.InitStreamingSimulation();
         if (progress.Cancelled()) return false;
 
-        BakeStage(progress, "Measuring the package", 0.95f);
+        BakeStage(progress, "Measuring package", 0.95f);
         for (size_t c = 0; c < numChunks; c++)
         {
             for (const auto& lod : pkg.chunkManifests[c].lods) out.recordBytes += lod.uncompressedByteSize;
@@ -2496,7 +2504,7 @@ namespace Splat
             // file at 3DGS's 248 bytes per Gaussian until the header is read); the .splat reader is serial
             // The read and the settings check take the bar's first 6% and the bake the rest (Cthulhu: 0.35 s reading at
             // about 2.3 GB/s, 0.5 s checking, 13 s baking)
-            BakeStage(progress, splatFile ? "Reading the .splat file" : "Reading the .ply file", 0.0f, 0.025f, (float)(opened->fileBytes / 2.3e9),
+            BakeStage(progress, splatFile ? "Reading .splat file" : "Reading .ply file", 0.0f, 0.025f, (float)(opened->fileBytes / 2.3e9),
                 splatFile ? 1u : PLYLoader::ThreadsFor((uint32_t)std::min<uint64_t>(opened->fileBytes / 248, UINT32_MAX)));
             double origin[3] = { 0, 0, 0 };
             const bool read = splatFile ? SPLATLoader::LoadSPLAT(filepath, opened->points, origin, &opened->attributes)
@@ -2508,7 +2516,7 @@ namespace Splat
             // its point spacing (PointCloudGaussians.h), before it is cut into chunks
             if (opened->attributes.empty())
             {
-                BakeStage(progress, "Gaussians for the point cloud", 0.025f);
+                BakeStage(progress, "Point cloud Gaussians", 0.025f);
                 const float sigma = PointCloudGaussians::Build(opened->points, opened->attributes);
                 LogTransitionTrace("Point cloud: %zu points shown as Gaussians of sigma %.5f (half the median point spacing)", opened->points.size(), sigma);
             }
@@ -2517,7 +2525,7 @@ namespace Splat
             // The settings last baked from this very file, when there are any
             if (useTunings)
             {
-                BakeStage(progress, "Checking for remembered bake settings", 0.03f, 0.06f, (float)(opened->fileBytes / 1.6e9));
+                BakeStage(progress, "Checking saved bake settings", 0.03f, 0.06f, (float)(opened->fileBytes / 1.6e9));
                 opened->hash = BakeTuningCache::HashFile(filepath);
                 const auto tunings = BakeTuningCache::Load();
                 const auto it = tunings.find(opened->hash);
@@ -2761,6 +2769,25 @@ namespace Splat
         r99 = r[std::min(r.size() - 1, r.size() * 99 / 100)];
     }
 
+    // Where the grid goes: the floor under the core, the height below which only a sliver of the Gaussians within `radius`
+    // of the centre (across the ground) lie. A low percentile, not the minimum, so a stray floater below cannot drop it.
+    float SplatPakApp::SceneFloor(const SplatPointArray& pts, const XMFLOAT3& centre, float radius)
+    {
+        const size_t step = std::max<size_t>(1, pts.size() / 200000);
+        std::vector<float> ys;
+        for (size_t i = 0; i < pts.size(); i += step)
+        {
+            const XMFLOAT3& p = pts[i].position;
+            if ((p.x - centre.x) * (p.x - centre.x) + (p.z - centre.z) * (p.z - centre.z) <= radius * radius) ys.push_back(p.y);
+        }
+        if (ys.empty()) return 0.0f;
+        std::vector<float> sorted = ys;
+        std::sort(sorted.begin(), sorted.end());
+        auto at = [&](double q) { return sorted[std::min(sorted.size() - 1, (size_t)(q * sorted.size()))]; };
+        LogTransitionTrace("SceneFloor: %zu samples, min %.3f p0.1 %.3f p0.5 %.3f p1 %.3f p5 %.3f median %.3f", sorted.size(), sorted.front(), at(0.001), at(0.005), at(0.01), at(0.05), at(0.5));
+        return at(0.005);
+    }
+
     // How far the subject reaches from its centre: the radius at which the density of points (per unit volume, in thin
     // shells about the centre) first falls below a tenth of the density within the innermost shells. Capped at maxRadius.
     float SplatPakApp::SubjectRadius(const SplatPointArray& points, const XMFLOAT3& centre, float maxRadius)
@@ -2883,7 +2910,7 @@ namespace Splat
         // Each stage's share of the bar follows its time on Cthulhu (3.3 M Gaussians, the "Bake stages" trace line: about
         // 13 s in all), and its expected time is that scaled by this scan's size, for the bar's creep between reports
         const float scale = (float)points.size() / 3.3e6f;
-        BakeStage(progress, "Measuring the model", 0.0f, 0.001f, 0.01f * scale);
+        BakeStage(progress, "Measuring model", 0.0f, 0.001f, 0.01f * scale);
         out.aabbMin = XMFLOAT3(1e9f, 1e9f, 1e9f);
         out.aabbMax = XMFLOAT3(-1e9f, -1e9f, -1e9f);
         for (const auto& s : points)
@@ -2929,7 +2956,7 @@ namespace Splat
 
         // The package size estimate, in three stages: encoding every level, compressing the records' and the harmonics'
         // samples, and the entropy measurement (0.7, 2.8 and 2.4 s on Cthulhu)
-        BakeStage(progress, "Encoding every level", 0.17f, 0.23f, 0.7f * scale);
+        BakeStage(progress, "Encoding levels", 0.17f, 0.23f, 0.7f * scale);
         // Compression estimates
         // Package size as the bake would write it: every level ships in full inside the .gstx, so every
         // level's records (plus the SH stream in splat mode) are byte-plane shuffled and put through the
@@ -3137,12 +3164,12 @@ namespace Splat
             std::chrono::duration<float>(std::chrono::high_resolution_clock::now() - tEstimateStart).count(), encodeSeconds);
         if (progress.Cancelled()) return false;
 
-        BakeStage(progress, "Preparing the levels", 0.67f, 0.84f, 2.2f * scale);
+        BakeStage(progress, "Preparing levels", 0.67f, 0.84f, 2.2f * scale);
         BuildResidentLODs(source, out.waveletResult, out.aabbMin, out.aabbMax, out.splatParams, out.residentLODs, [&](float t) { progress.Within(t); });
         if (progress.Cancelled()) return false;
 
         // A new streaming runtime, built here and swapped in whole by ApplyBake (see InitStreamingSimulation)
-        BakeStage(progress, "Building the stream", 0.84f, 0.955f, 1.5f * scale);
+        BakeStage(progress, "Building stream package", 0.84f, 0.955f, 1.5f * scale);
         StreamRuntime& rt = out.stream;
         rt.settings = streamSettings;
         rt.camera = streamCamera;
@@ -3992,7 +4019,7 @@ namespace Splat
             {
                 // What the background compression has left (none, once it is done), at normal priority while this waits, then
                 // its file copied into place
-                BakeStage(progress, "Brotli compression (finishing what began after the bake)", 0.0f);
+                BakeStage(progress, "Brotli compression (finishing)", 0.0f);
                 s_precompressUrgent = true;
                 while (!pre->done.load())
                 {
@@ -4003,7 +4030,7 @@ namespace Splat
                 s_precompressUrgent = false;
                 if (pre->ok)
                 {
-                    BakeStage(progress, "Writing the package", 0.97f);
+                    BakeStage(progress, "Writing package", 0.97f);
                     std::error_code ec;
                     std::filesystem::copy_file(pre->base + ".gstx", partial + ".gstx", std::filesystem::copy_options::overwrite_existing, ec);
                     if (!ec)
@@ -4028,7 +4055,7 @@ namespace Splat
             // A shadow mesh still being built after the bake goes into this package too: wait for it
             if (meshJob)
             {
-                BakeStage(progress, "Finishing the shadow mesh", 0.0f);
+                BakeStage(progress, "Finishing shadow mesh", 0.0f);
                 while (!meshJob->done.load())
                 {
                     if (progress.Cancelled()) return false;
@@ -4041,14 +4068,14 @@ namespace Splat
             const bool occluderMesh = *occluderHeld && !(*occluderHeld)->Empty();
             const std::vector<OcclusionVoxelGPU> noVoxels;
             const OcclusionMipTable noMips;
-            BakeStage(progress, "Encoding the levels", 0.0f);
+            BakeStage(progress, "Encoding levels", 0.0f);
             return StreamPackager::PackageDataset(partial, m_chunks, m_maxLODLevels, m_deadbandThresholdMM / 1000.0f, m_state.splatRadius,
                 occluderMesh ? noVoxels : m_occlusionVoxels, m_sourceFileBytes, occluderMesh ? &noMips : &m_occlusionMips, &m_detailGrid, m_splatMode ? splatInput.get() : nullptr, PayloadCodec::kDefault,
                 [&progress, transformStats, compressThreads](float fraction)
                 {
                     // The packager's stages by their share of the bar (StreamPackager.h): encoding, Brotli, writing.
                     // The transform figures are complete once encoding is (the packager fills them before compressing).
-                    std::string stage = fraction < 0.03f ? "Encoding the levels" : fraction < 0.97f ? "Brotli compression" : "Writing the package";
+                    std::string stage = fraction < 0.03f ? "Encoding levels" : fraction < 0.97f ? "Brotli compression" : "Writing package";
                     if (fraction >= 0.03f && fraction < 0.97f && transformStats->shBytes + transformStats->recordBytes > 0.0)
                     {
                         char buf[64];
@@ -4274,13 +4301,6 @@ namespace Splat
                 m_packageSource = file;
                 StartReencodeProfilePlan();
             }
-            break;
-        }
-        case PendingAction::ReencodeSaveAs:
-        {
-            std::string savePath = SaveFileDialog("GSTx Package (*.gstx)\0*.gstx\0", "gstx", "Re-encode To");
-            if (savePath.size() > 5 && savePath.substr(savePath.size() - 5) == ".gstx") savePath.resize(savePath.size() - 5);
-            if (!savePath.empty()) m_reencodeOutput = savePath;
             break;
         }
         case PendingAction::ExitApp:
@@ -5525,8 +5545,8 @@ namespace Splat
                     }
                     if (ImGui::Checkbox("Show Grid##Viewport", &m_showGrid) && !m_sceneIsEnvironment) { m_showGridSetting = m_showGrid; SaveConfigFile(); } // In an environment, this scene only
                     if (ImGui::IsItemHovered()) ShowTooltip("An editor grid on the ground plane through the origin (y = 0), as in Unreal's viewport: lines at every power of ten, the finer ones fading in as you move closer, the X axis red and the Z axis green. The model draws over it.");
-                    if (ImGui::Checkbox("Loading Blur##Viewport", &m_loadingBlurEnabled)) SaveConfigFile(); // Remembered (loading_blur)
-                    if (ImGui::IsItemHovered()) ShowTooltip("Blurs the scene while it first loads (and after Evict or a jump to a training camera), easing out as the area around you fills in from 40%% to 75%%, so the coarsest levels read as soft rather than as specks and blobs. Moving around normally never blurs.");
+                    if (ImGui::Checkbox("Loading Blur##Viewport", &LoadingBlurSetting())) SaveConfigFile(); // Remembered per scene kind (loading_blur, loading_blur_environment)
+                    if (ImGui::IsItemHovered()) ShowTooltip("Blurs the scene while it first loads (and after Evict or a jump to a training camera), easing out as the area around you fills in from 40%% to 75%%, so the coarsest levels read as soft rather than as specks and blobs. Moving around normally never blurs. Remembered separately for environments (on at first) and objects (off at first).");
 
                     // Background: Recommended (the package's, or estimated from the scan), a preset, a colour, a gradient or an image
                     {
@@ -5601,11 +5621,11 @@ namespace Splat
                         }
                     }
 
-                    if (ImGui::Checkbox("Show Camera Control Hints##Viewport", &m_showControlHints))
+                    if (ImGui::Checkbox("Show Control UI##Viewport", &m_showControlHints))
                     {
                         SaveConfigFile();
                     }
-                    if (ImGui::IsItemHovered()) ShowTooltip("Shows or hides the faint rotate / zoom / pan reminder in the bottom-right corner of the viewport. Remembered across sessions.");
+                    if (ImGui::IsItemHovered()) ShowTooltip("Shows or hides the camera controls, as faint watermark text in the bottom-left corner of the viewport. Remembered across sessions.");
 
                     if (ImGui::Checkbox("VSync (Lock Framerate to Display)", &m_vsync))
                     {
@@ -6203,9 +6223,12 @@ namespace Splat
 
                     const ImVec4 green(0.3f, 1.0f, 0.4f, 1.0f);
                     // End to end: the source file against the package (every tier, and every level of detail, included)
-                    row("Total compression", &green, "The source scan against the package: every tier together, with every level of detail the package streams.",
+                    const int packageLevels = std::max(1, (int)m_waveletResult.lodLevels.size());
+                    row(format("Package Size (%d lvls)", packageLevels).c_str(), &green,
+                        format("The source scan against the package: every tier together. The package holds all %d levels of detail it streams, not only the full-detail level 0 the scan has, "
+                               "which is why it is larger than level 0 alone would be.", packageLevels),
                         format("%.2f MB", m_compressedSizeMB),
-                        format("The raw point cloud, %.2f MB, against the package, %.2f MB (%s).", m_rawFileSizeMB, m_compressedSizeMB,
+                        format("The raw point cloud, %.2f MB, against the package with its %d levels, %.2f MB (%s).", m_rawFileSizeMB, packageLevels, m_compressedSizeMB,
                                m_isLoadedFromSFLW ? "the file's real size" : "estimated until the package is written"),
                         ratioText(m_rawFileSizeMB, m_compressedSizeMB), ratioTip("The raw point cloud", "the package", m_rawFileSizeMB, m_compressedSizeMB, "MB"), true);
                     ImGui::Columns(1);
@@ -7198,10 +7221,24 @@ namespace Splat
     }
 
     // The nav switch's Reset View button: the camera back to the launch view -- the default orbit angle, centred on the
-    // model, at the distance that fits it between the control panels. The culling camera, if detached, stays.
+    // model, at the distance that fits it between the control panels. An environment goes back to where it opened: its
+    // training camera (or inside its core) in its navigation mode. The culling camera, if detached, stays.
     void SplatPakApp::ResetView()
     {
         if (m_navMode != NavOrbit) SetNavMode(NavOrbit);
+        if (m_sceneIsEnvironment)
+        {
+            if (m_launchCamera >= 0 && m_launchCamera < (int)m_trainingCameras.size())
+                ViewTrainingCamera(m_launchCamera); // In orbit, so the fly switch below puts its target 1 m ahead of the eye
+            else
+            {
+                m_target = m_coreCentre;
+                m_distance = std::max(0.5f, m_coreRadius50 * 0.5f);
+                m_poseCameraIndex = -1;
+            }
+            SetNavMode(m_launchNavMode);
+            return;
+        }
         m_yaw = 0.6f;
         m_pitch = 0.35f;
         m_target = m_center;
@@ -7487,42 +7524,24 @@ namespace Splat
         dl->AddRectFilled(ImVec2(destX + inset.x - ds.x - 10.0f, destY), ImVec2(destX + inset.x, destY + ds.y + 6.0f), IM_COL32(0, 0, 0, 170));
         dl->AddText(font, hintSize, ImVec2(destX + inset.x - ds.x - 5.0f, destY + 3.0f), frame, dismiss);
         // And how to hold the magnified region still, in the top-left corner (Space pins it, as a click in its box does)
-        const char* lock = "SPACE to lock/unlock view";
+        const char* lock = "SPACE to toggle viewfinder lock";
         const ImVec2 ls = font->CalcTextSizeA(hintSize, FLT_MAX, 0.0f, lock);
         dl->AddRectFilled(ImVec2(destX, destY), ImVec2(destX + ls.x + 10.0f, destY + ls.y + 6.0f), IM_COL32(0, 0, 0, 170));
         dl->AddText(font, hintSize, ImVec2(destX + 5.0f, destY + 3.0f), frame, lock);
     }
 
-    // Faint three-line reminder of the camera bindings, tucked into the bottom-right corner of the
-    // viewport just above the status bar and left of the right panel. Deliberately understated (dim
-    // text on a barely-there backing, no interaction) so it reads as part of the canvas rather than a
-    // control. The bindings listed must match UpdateCamera: left-drag or Left/Right arrows orbit; the
-    // wheel, Up/Down, PageUp/PageDown and +/- zoom; W/S/A/D/Q/E fly and right-drag looks; Shift with any
-    // drag or with the arrow keys pans.
-    void SplatPakApp::DrawControlHints(float leftPanelWidth, float rightPanelWidth)
+    // The camera legend: the bindings as watermark text in the bottom-left corner of the viewport, just above the status
+    // bar and right of the left panel (the loupe has the bottom right, the Orbit / Fly switch the bottom centre). No
+    // backing and no interaction, faint enough to read as part of the canvas. The bindings listed must match
+    // UpdateCamera: left-drag or Left/Right arrows orbit; the wheel, Up/Down, PageUp/PageDown and +/- zoom; W/S/A/D/Q/E
+    // fly and right-drag looks; Shift with any drag or with the arrow keys pans.
+    void SplatPakApp::DrawControlHints(float, float)
     {
-        if (!m_showControlHints) return; // "Show Camera Control Hints" unchecked on the Renderer tab's viewport section
-
-        // Bottom-right of the viewport: just left of the right panel and just above the status bar. On a
-        // window too narrow for a viewport strip it stays put over the model (still readable) rather
-        // than being hidden -- never pushed under the left panel, though.
-        const float rightEdge  = std::max(10.0f + leftPanelWidth + 260.0f, (float)m_Width - rightPanelWidth - 20.0f);
-        const float bottomEdge = (float)m_Height - 32.0f - 6.0f;
-
-        ImGui::PushFont(m_pHintFont); // Proportional Segoe UI; NULL falls back to the default font
-        ImGui::SetNextWindowPos(ImVec2(rightEdge, bottomEdge), ImGuiCond_Always, ImVec2(1.0f, 1.0f)); // Pivot: bottom-right corner
-        // Understated in size and placement, but legible: near-white text on a solid dark backing,
-        // because the model usually runs behind this corner.
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, ImVec4(0.02f, 0.02f, 0.03f, 0.72f));
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 4.0f);
-        ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(10.0f, 7.0f));
-        const ImGuiWindowFlags flags = ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize | ImGuiWindowFlags_NoMove |
-            ImGuiWindowFlags_NoScrollbar | ImGuiWindowFlags_NoInputs | ImGuiWindowFlags_AlwaysAutoResize |
-            ImGuiWindowFlags_NoSavedSettings | ImGuiWindowFlags_NoFocusOnAppearing;
-        if (ImGui::Begin("##ControlHints", nullptr, flags))
+        if (!m_showControlHints) return; // "Show Control UI" unchecked on the Renderer tab's viewport section
+        if (m_residentLODs.empty() && m_rawSplats.empty()) return; // Nothing loaded: nothing to move round
         {
-            const ImVec4 label(1.00f, 0.92f, 0.60f, 1.00f); // Warm off-white for the verb
-            const ImVec4 keys (0.90f, 0.90f, 0.94f, 1.00f); // Light grey for the bindings
+            const ImVec4 label(0.85f, 0.85f, 0.90f, 0.42f); // The verb, a shade brighter than its bindings
+            const ImVec4 keys (0.85f, 0.85f, 0.90f, 0.28f);
             struct Hint { const char* verb; const char* binding; };
             const Hint hints[] = {                         // "\xC2\xB7" = middle dot (U+00B7), in the default Latin glyph range
                 { "Mode",   m_navMode == NavFly ? "Fly \xC2\xB7 O to orbit" : "Orbit \xC2\xB7 O to fly" },
@@ -7530,21 +7549,36 @@ namespace Splat
                 { "Move",   m_navMode == NavFly ? (m_mouseLook ? "W/S/A/D or arrows \xC2\xB7 Q/E down/up \xC2\xB7 Tab/Esc release mouse" : "W/S/A/D or arrows \xC2\xB7 Q/E down/up \xC2\xB7 Shift x4 \xC2\xB7 wheel speed")
                                                 : "W/S \xC2\xB7 wheel \xC2\xB7 PageUp/PageDown" },
                 { "Pan",    m_navMode == NavFly ? "Shift + drag \xC2\xB7 Shift + arrows" : "right-drag \xC2\xB7 Shift + drag \xC2\xB7 Shift + arrows" },
-                { "Splats", "V display" },
-                { "Loupe",  m_loupeEnabled ? "L off \xC2\xB7 [/] magnify \xC2\xB7 Shift+V display \xC2\xB7 click box/Space pin" : "L" },
+                { "View Mode: V (Inset, Shift+V)", nullptr }, // Whole lines, not in the columns
+                { "Toggle Inset: L", nullptr },
+                { "Refinement Visualizer: R", nullptr },
             };
-            const float bindingColumn = ImGui::CalcTextSize("Rotate").x + 14.0f; // Fixed verb column so the proportional font still lines up
+            ImGui::PushFont(m_pHintFont); // Proportional Segoe UI; NULL falls back to the default font
+            ImFont* font = ImGui::GetFont();
+            const float size = ImGui::GetFontSize() * 0.9f;
+            const float line = size * 1.25f;
+            const float bindingColumn = font->CalcTextSizeA(size, FLT_MAX, 0.0f, "Rotate").x + 12.0f; // Fixed verb column so the proportional font still lines up
+            const float left = (m_leftPanelRect.z > m_leftPanelRect.x ? m_leftPanelRect.z : 0.0f) + 14.0f;
+            const float bottom = (float)m_Height - 32.0f - 8.0f; // Above the status bar
+            float y = bottom - line * (float)IM_ARRAYSIZE(hints);
+            // The overlay draws over every window, so the legend is cut short of the Orbit / Fly switch (centred in the
+            // viewport) and of the loupe wherever it is placed, rather than writing across them
+            const float viewRight = m_rightPanelRect.z > m_rightPanelRect.x ? m_rightPanelRect.x : (float)m_Width;
+            float clipRight = 0.5f * (left - 14.0f + viewRight) - 110.0f * m_uiScale;
+            if (m_loupeEnabled && m_loupeRect.z > m_loupeRect.x && m_loupeRect.y < bottom && m_loupeRect.w > y && m_loupeRect.z > left)
+                clipRight = std::min(clipRight, m_loupeRect.x - 8.0f);
+            if (clipRight - left < bindingColumn + 40.0f) { ImGui::PopFont(); return; } // No room for it
+            ImDrawList* dl = ImGui::GetOverlayDrawList();
+            dl->PushClipRect(ImVec2(left, y), ImVec2(clipRight, bottom + line));
             for (const Hint& h : hints)
             {
-                ImGui::TextColored(label, "%s", h.verb);
-                ImGui::SameLine(bindingColumn);
-                ImGui::TextColored(keys, "%s", h.binding);
+                dl->AddText(font, size, ImVec2(left, y), ImGui::GetColorU32(label), h.verb);
+                if (h.binding) dl->AddText(font, size, ImVec2(left + bindingColumn, y), ImGui::GetColorU32(keys), h.binding);
+                y += line;
             }
+            dl->PopClipRect();
+            ImGui::PopFont();
         }
-        ImGui::End();
-        ImGui::PopStyleVar(2);
-        ImGui::PopStyleColor();
-        ImGui::PopFont();
     }
 
     // The Orbit / Fly switch: two icon buttons at the bottom centre of the viewport (clear of the status overlay at its
@@ -8671,6 +8705,9 @@ namespace Splat
             const bool hasMesh = m_shadowMesh && !m_shadowMesh->Empty();
             m_state.showShadowMesh = m_showShadowMesh && hasMesh && !m_state.showOcclusionVolumeOnly;
             m_state.showGrid = m_showGrid;
+            // The grid is a visual reference: the scene stands on it (SceneFloor), wherever y = 0 happens to be. At y = 0 it
+            // cut through Cthulhu's plinth, which reaches 5.5 cm below.
+            m_state.gridHeight = m_gridHeight;
             if (hasMesh)
             {
                 const int level = std::clamp(m_shadowMeshLevel, 0, (int)m_shadowMesh->levels.size() - 1);
@@ -9726,11 +9763,11 @@ namespace Splat
             {
                 std::error_code ec;
                 const double bytes = (double)std::filesystem::file_size(path, ec);
-                BakeStage(progress, "Hashing the scan", 0.0f, 0.04f, ec ? 0.0f : (float)(bytes / 1.5e9));
+                BakeStage(progress, "Hashing scan", 0.0f, 0.04f, ec ? 0.0f : (float)(bytes / 1.5e9));
                 *hash = BakeTuningCache::HashFile(path);
             }
             {
-                BakeStage(progress, "Looking for a stored analysis", 0.04f);
+                BakeStage(progress, "Finding stored analysis", 0.04f);
                 RdoProfile stored;
                 if (FindRdoProfile(folder, *hash, maxLODs, deadbandMM, stored, *reused))
                 {
@@ -9772,7 +9809,11 @@ namespace Splat
                 if (quiet || packageScan) return false; // In this process it would read the scan the UI is free to change (or one not loaded)
                 LogTransitionTrace("RDO: falling back to this process");
             }
-            else if (quiet || packageScan) return false;
+            else
+            {
+                LogTransitionTrace("RDO: %s not found%s", worker.c_str(), (quiet || packageScan) ? "; a package's scan is analysed only there" : ", analysing in this process");
+                if (quiet || packageScan) return false;
+            }
             std::vector<const SplatPointArray*> levels;
             levels.push_back(&m_rawSplats);
             for (size_t l = 1; l < m_waveletResult.lodLevels.size(); l++) levels.push_back(&m_waveletResult.lodLevels[l].splats);
@@ -10351,17 +10392,13 @@ namespace Splat
         if (any) ImGui::PopStyleColor(3);
         if (!any || !idle) ImGui::PopStyleVar();
         if (ImGui::IsItemHovered())
-            ShowTooltip(any ? "Bakes the package again from its source scan with what the warnings recommend, analysing the compression\nfor this network first when it has not been, then saves it and opens it. Asks before replacing anything."
+            ShowTooltip(any ? "Bakes the package again from its source scan with what the warnings recommend, analysing the compression\nfor this network first when it has not been. Nothing is written: Save writes the new package."
                             : rep.Any() ? "Already encoded for this network: the RDO choice is the encoding on screen, so a re-encode would write the same package.\nThe flagged rows are as close as this scan gets; their tooltips say what else would help."
                                         : "Nothing to fix for this network profile.");
         if (pressed && any && idle)
         {
             m_reencodeReport = rep;
-            m_reencodeReload = rep.package;
             m_reencodeSource = rep.package ? FindSourceScan() : m_loadedFilePath;
-            std::string out = !m_packagePath.empty() ? m_packagePath : std::filesystem::path(m_loadedFilePath).replace_extension(".gstx").string();
-            if (out.size() > 5 && _stricmp(out.c_str() + out.size() - 5, ".gstx") == 0) out.resize(out.size() - 5);
-            m_reencodeOutput = out;
             m_reencode = Reencode::Confirm;
             StartReencodeProfilePlan();
             ImGui::OpenPopup("Re-encode##confirm");
@@ -10387,13 +10424,6 @@ namespace Splat
             else ImGui::Text("Source scan: %s", m_reencodeSource.c_str());
             ImGui::SameLine();
             if (ImGui::SmallButton("Locate...")) m_pendingAction = PendingAction::LocateReencodeSource;
-            ImGui::Text("Writes: %s.gstx", m_reencodeOutput.c_str());
-            ImGui::SameLine();
-            if (ImGui::SmallButton("Change...")) m_pendingAction = PendingAction::ReencodeSaveAs;
-            {
-                std::error_code ec;
-                if (std::filesystem::exists(m_reencodeOutput + ".gstx", ec)) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.35f, 1.0f), "That package is replaced.");
-            }
             if (!m_reencodeProfileReady && m_reencodeProfilePlan.valid() && m_reencodeProfilePlan.wait_for(std::chrono::seconds(0)) == std::future_status::ready)
             {
                 m_reencodeProfile = m_reencodeProfilePlan.get();
@@ -10404,13 +10434,13 @@ namespace Splat
             else if (m_reencodeProfile.reuse) ImGui::Text("Profile: %s (stored already, reused)", m_reencodeProfile.path.c_str());
             else ImGui::Text("Profile saved as: %s", m_reencodeProfile.path.c_str());
             if (ImGui::IsItemHovered()) ShowTooltip("The compression analysis this re-encode uses, kept in the rdo-profiles folder: an identical stored one (the same scan, levels and deadband) is reused instead of analysing again.");
-            ImGui::TextDisabled("Steps: open the scan, bake, analyse the compression for this network (about a minute,\nunless it has been), bake with its choice, save%s.", m_reencodeReload ? ", open the new package" : "");
+            ImGui::TextDisabled("Steps: open the scan, bake, analyse the compression for this network (about a minute,\nunless it has been), bake with its choice. Nothing is written: Save writes the package.");
             ImGui::Spacing();
             if (m_reencodeSource.empty()) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.45f);
             if (ImGui::Button("Re-encode", ImVec2(140, 0)) && !m_reencodeSource.empty())
             {
                 m_reencode = Reencode::Open;
-                LogTransitionTrace("Re-encode: %s -> %s.gstx for %s", m_reencodeSource.c_str(), m_reencodeOutput.c_str(), r.profile.c_str());
+                LogTransitionTrace("Re-encode: %s for %s", m_reencodeSource.c_str(), r.profile.c_str());
                 ImGui::CloseCurrentPopup();
             }
             if (m_reencodeSource.empty()) ImGui::PopStyleVar();
@@ -10466,7 +10496,8 @@ namespace Splat
     }
 
     // One step of a re-encode per frame, each once the operation before it has finished: open the source scan, apply the
-    // structural fixes and bake, analyse the compression for the network (unless done), bake with its pick, save, reopen
+    // structural fixes and bake, analyse the compression for the network (unless done), bake with its pick. The bake is
+    // left on screen unsaved: Save is the only thing that writes a package.
     void SplatPakApp::StepReencode()
     {
         if (m_reencode == Reencode::Idle || m_reencode == Reencode::Confirm || m_op.Busy()) return;
@@ -10505,30 +10536,22 @@ namespace Splat
                 if (RdoStale()) { FailReencode("the compression analysis did not finish."); return; }
                 ApplyRdoChoice(PickForTarget());
                 if (BakePending()) StartBake(false);
-                m_reencode = Reencode::Save;
+                m_reencode = Reencode::Finish;
                 return;
-            case Reencode::Save:
-                if (BakePending()) { FailReencode("the bake did not finish."); return; }
-                m_packagePath.clear();
-                ProcessAndExport(m_reencodeOutput);
-                m_reencode = Reencode::Reload;
-                return;
-            case Reencode::Reload:
+            case Reencode::Finish:
             {
                 m_reencode = Reencode::Idle;
-                if (m_packagePath.empty()) { FailReencode("the package could not be written."); return; }
+                if (BakePending()) { FailReencode("the bake did not finish."); return; }
                 // Remembered for the scan, so opening it again bakes the same way
                 BakeTuning t;
                 t.chunkSize = m_chunkSize; t.maxLODs = m_maxLODLevels; t.shQuality = m_splatSHQuality; t.shPrecision = m_shPrecision;
                 for (int b = 0; b < 3; b++) t.shBits[b] = m_shBandBits[b];
                 t.deadbandMM = m_deadbandThresholdMM; t.occlusion = m_generateOcclusionVolume; t.file = m_loadedFilePath;
                 if (m_sourceHash != 0) BakeTuningCache::Store(m_sourceHash, t);
-                const std::string written = m_packagePath;
-                const std::string saved = m_statusMessage;
-                if (m_reencodeReload && !LoadSFLWFile(written)) { FailReencode("the new package was written but could not be opened: " + written); return; }
-                m_statusMessage = "Re-encoded for " + r.profile + ": " + saved + (m_lastRdoProfilePath.empty() ? std::string() : "; profile " + m_lastRdoProfilePath);
+                m_statusMessage = "Re-encoded for " + r.profile + ", not saved yet: Save writes the package" +
+                                  (m_lastRdoProfilePath.empty() ? std::string() : "; profile " + m_lastRdoProfilePath);
                 m_statusIsSuccess = true;
-                LogTransitionTrace("Re-encode: wrote %s", written.c_str());
+                LogTransitionTrace("Re-encode: baked for %s, left for Save", r.profile.c_str());
                 return;
             }
             default: return;
@@ -10871,7 +10894,8 @@ namespace Splat
         m_trainingCameraPick = index;
         m_autoRotate = false;
         const XMFLOAT3 f = c.forward;
-        const float toCentre = (m_center.x - c.eye.x) * f.x + (m_center.y - c.eye.y) * f.y + (m_center.z - c.eye.z) * f.z;
+        const XMFLOAT3 o = OrbitCentre(); // An environment pivots near its subject, not the far middle of its bounds
+        const float toCentre = (o.x - c.eye.x) * f.x + (o.y - c.eye.y) * f.y + (o.z - c.eye.z) * f.z;
         const float d = std::max(0.5f, toCentre);
         m_target = XMFLOAT3(c.eye.x + f.x * d, c.eye.y + f.y * d, c.eye.z + f.z * d);
         m_distance = d;
@@ -11000,6 +11024,7 @@ namespace Splat
         if (m_sceneClassFor == m_loadedFilePath || m_residentLODs.empty() || m_residentLODs[0].rawSplats.empty()) return;
         m_sceneClassFor = m_loadedFilePath;
         MeasureCore(m_residentLODs[0].rawSplats, m_coreCentre, m_coreRadius50, m_coreRadius99);
+        m_gridHeight = SceneFloor(m_residentLODs[0].rawSplats, m_coreCentre, m_coreRadius50);
         ArmLoadingBlur(); // A new scene: veiled until its first levels and ring are in
         m_sceneIsEnvironment = m_coreRadius50 > 0.0f && m_coreRadius99 > 3.0f * m_coreRadius50;
         // A package that states its scene (GSTXVEW1) is taken at its word
@@ -11059,6 +11084,8 @@ namespace Splat
             opened = ", opened inside its core";
         }
         SetNavMode(pv.navigation == "orbit" ? NavOrbit : NavFly);
+        m_launchCamera = startCamera;
+        m_launchNavMode = m_navMode;
         m_statusMessage = "Environment scene (half within " + std::to_string((int)std::lround(m_coreRadius50)) + " m, 99% within " +
                           std::to_string((int)std::lround(m_coreRadius99)) + " m): occlusion volume and grid off, Conservative streaming" + opened + ". Fly: W/S/A/D/Q/E move, drag to look; O to orbit.";
         m_statusIsSuccess = true;
@@ -11088,7 +11115,7 @@ namespace Splat
             m_loadFill = wanted ? (float)have / (float)wanted : 1.0f;
             if (m_loadFill >= 0.75f) m_loadingBlurArmed = false; // In: no veil until the next load, Evict or jump
         }
-        if (!m_loadingBlurEnabled || !m_loadingBlurArmed) return;
+        if (!LoadingBlurSetting() || !m_loadingBlurArmed) return;
         const float t = std::clamp((m_loadFill - 0.40f) / 0.35f, 0.0f, 1.0f);
         const float strength = 1.0f - t * t * (3.0f - 2.0f * t); // Smoothstep out between 40% and 75%
         m_state.loadingBlurPx = 0.008f * (float)m_Height * strength;

@@ -166,7 +166,8 @@ namespace Splat
             // Its visualisation (SplatComposite.hlsl), a mask: 1 over the occlusion volume, how much of it shows through the
             // splats (black none .. red all); 2 elsewhere, the splats' coverage (green). Either one draws the splats layered.
             uint32_t                 opaqueDebug = 0;
-            bool                     showGrid = true;       // The editor grid on the y = 0 plane (Grid.hlsl)
+            bool                     showGrid = true;       // The editor grid (Grid.hlsl)
+            float                    gridHeight = 0.0f;     // The height of its plane: an object's floor, so it stands on the grid
             // Occluder mesh (format 13): the occlusion volume as a mesh, drawn in its place (same vertex layout)
             const void*              pOccluderMeshVertices = nullptr;
             uint32_t                 occluderMeshVertexCount = 0;
@@ -302,7 +303,8 @@ namespace Splat
             float      arrivalGlowHue;        // Refinement visualizer hue rotation, degrees
             uint32_t   autoSplatSize;         // Auto splat size on/off (see State)
             uint32_t   culledPass;            // Detach Camera: 0 = draw the splats the frozen camera sees, 1 = draw only the ones it culled (the red volume)
-            float      autoSplatPad1[2];
+            float      gridHeight;            // The grid plane's height, State::gridHeight (Grid.hlsl reads it with packoffset)
+            float      autoSplatPad1;
             float      lodRadiusAlign[2];     // Pads to the next 16-byte row: the shader's float4 g_LodRadius[2] starts on one, so without this every field from here on was read 8 bytes off
             float      lodRadius[8];          // Disc radius per LOD level, world units (two float4 rows in the shader)
             // Splat mode
@@ -328,6 +330,7 @@ namespace Splat
             uint32_t   fullQuads;             // 1 = !State::trimQuads
         };
         static_assert(offsetof(SplatCB, occluderPush) == 500, "SplatCB::occluderPush must stay at c31.y: ShadowMesh.hlsl reads it with packoffset");
+        static_assert(offsetof(SplatCB, gridHeight) == 288, "SplatCB::gridHeight must stay at c18.x: Grid.hlsl reads it with packoffset");
         static_assert(offsetof(SplatCB, splatDiscRadius) % 16 == 0, "SplatCB::splatDiscRadius must start a 16-byte row: the shader reads it as float4 g_SplatDiscRadius[2]");
         static_assert(sizeof(SplatCB) % 16 == 0, "SplatCB must be a whole number of 16-byte rows");
 

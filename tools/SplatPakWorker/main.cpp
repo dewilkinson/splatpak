@@ -85,14 +85,14 @@ int main(int argc, char** argv)
         fflush(stderr);
         return true;
     };
-    progress(0.0f, "Checking the scan");
+    progress(0.0f, "Checking scan");
     if (job.scanHash != 0 && BakeTuningCache::HashFile(job.scan) != job.scanHash)
     {
         part.error = "the scan is missing or differs from the job's (hash mismatch): " + job.scan;
         return Finish(part, outPath);
     }
 
-    progress(0.0f, "Reading the scan");
+    progress(0.0f, "Reading scan");
     SplatPointArray points;
     SplatAttributeArray attrs;
     double origin[3] = {};
@@ -104,7 +104,7 @@ int main(int argc, char** argv)
     const uint32_t sourceDegree = SourceDegree(attrs);
 
     // The pyramid as the bake builds it (SplatPakApp::RunBake): the whole model decomposed, the coarse levels merged
-    progress(0.0f, "Building the levels");
+    progress(0.0f, "Building levels");
     WaveletDecompositionResult wavelet = LiftingWavelet::DecomposeChunk(points, (uint32_t)job.levels, job.deadbandMM / 1000.0f);
     SplatCodec::MergeLevels(wavelet, attrs);
     SplatEncodeParams params;

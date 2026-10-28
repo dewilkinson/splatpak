@@ -128,8 +128,9 @@ cbuffer SplatCB : register(b0)
     float    g_ArrivalGlowHue;       // Refinement visualizer hue rotation, degrees (0 = gold)
     uint     g_AutoSplatSize;        // 1 = disc radius from the level's point spacing (g_LodRadius), 0 = size classes x g_Radius
     uint     g_CulledPass;           // Detach Camera: 0 = the splats the frozen camera sees, 1 = only the ones it culled (the red volume)
-    float2   g_AutoSplatPad1;
-    float4   g_LodRadius[2];         // Auto splat size: disc radius per LOD level (world units), index = lodLevel 0..7; 0 = level unknown
+    float    g_GridHeight;           // Read by Grid.hlsl only: the height of its plane
+    float    g_AutoSplatPad1;
+    float4   g_LodRadius[2];        // Auto splat size: disc radius per LOD level (world units), index = lodLevel 0..7; 0 = level unknown
     // Splat mode
     float4x4 g_View;                 // World to view (right-handed: in front of the camera is negative z)
     float2   g_Viewport;             // Render target size in pixels

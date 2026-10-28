@@ -161,9 +161,9 @@ namespace Splat
         {
             struct Share { const char* stage; float from, to; };
             static const Share kShares[] = {
-                { "Checking the scan", 0.00f, 0.01f }, { "Reading the scan", 0.01f, 0.03f }, { "Building the levels", 0.03f, 0.09f },
-                { "Encoding the levels", 0.09f, 0.12f }, { "Measuring the records", 0.12f, 0.15f }, { "Measuring the candidates", 0.15f, 0.16f },
-                { "Scoring the colour", 0.16f, 0.17f }, { "Coding SH residuals", 0.17f, 0.18f }, { "Compressing", 0.18f, 1.00f }, { "Done", 1.0f, 1.0f } };
+                { "Checking scan", 0.00f, 0.01f }, { "Reading scan", 0.01f, 0.03f }, { "Building levels", 0.03f, 0.09f },
+                { "Encoding levels", 0.09f, 0.12f }, { "Measuring records", 0.12f, 0.15f }, { "Measuring candidates", 0.15f, 0.16f },
+                { "Scoring colour", 0.16f, 0.17f }, { "Coding SH residuals", 0.17f, 0.18f }, { "Compressing", 0.18f, 1.00f }, { "Done", 1.0f, 1.0f } };
             for (const Share& s : kShares)
                 if (strcmp(s.stage, stage) == 0) return s.from + (s.to - s.from) * std::min(1.0f, std::max(0.0f, f));
             return last;
@@ -441,7 +441,7 @@ namespace Splat
                 std::vector<size_t> mine;
                 for (size_t c = 0; c < nc; c++) if (candidates[c].shDegree == degree) mine.push_back(c);
                 if (mine.empty()) continue;
-                if (progress && !progress((float)done / (float)nc, "Encoding the levels")) return false;
+                if (progress && !progress((float)done / (float)nc, "Encoding levels")) return false;
 
                 // Every level encoded at this degree, at 8 bits
                 SplatEncodeParams params = baseParams;
@@ -455,7 +455,7 @@ namespace Splat
                 // The records' size, once (they barely depend on the SH choice)
                 if (out.recordBytes == 0.0)
                 {
-                    if (progress && !progress((float)done / (float)nc, "Measuring the records")) return false;
+                    if (progress && !progress((float)done / (float)nc, "Measuring records")) return false;
                     std::vector<std::vector<uint8_t>> w;
                     std::vector<size_t> firstWindow(numLevels + 1, 0);
                     for (size_t l = 0; l < numLevels; l++)
@@ -499,10 +499,10 @@ namespace Splat
                 for (size_t c : mine)
                 {
                     const RdoSettings& cand = candidates[c];
-                    if (progress && !progress((float)done / (float)nc, "Measuring the candidates")) return false;
+                    if (progress && !progress((float)done / (float)nc, "Measuring candidates")) return false;
                     std::vector<std::vector<uint8_t>> sh(sh8);
                     for (size_t l = 0; l < numLevels; l++) RequantiseSH(sh[l].data(), recs[l].size(), shBytes, cand.shBits);
-                    if (progress && !progress((float)done / (float)nc, "Scoring the colour")) return false;
+                    if (progress && !progress((float)done / (float)nc, "Scoring colour")) return false;
 
                     // Distortion over the sample, per unit
                     const uint32_t coeffs = SplatCodec::SHCoefficientsPerChannel(degree), sourceCoeffs = SplatCodec::SHCoefficientsPerChannel(std::min(sourceDegree, 3u));

@@ -141,8 +141,7 @@ namespace Splat
             CloseDataset,
             UnloadModel,           // The Package/Bake tab's Unload Model: the model and its resources freed (UnloadModel)
             ExitApp,
-            LocateReencodeSource,  // Re-encode: the package's source scan was not found beside it
-            ReencodeSaveAs         // Re-encode: where to write the package
+            LocateReencodeSource   // Re-encode: the package's source scan was not found beside it
         };
 
         void BuildUI();
@@ -336,7 +335,7 @@ namespace Splat
         float m_lodPixelSpacing      = 1.0f;
         bool  m_lodPerBlock          = true;                     // Screen-space LOD per block (on by default): each block's level from its own distance to the eye (BlockTargetLOD); off = one level for the whole model from its near side. At 1 px it draws 57% fewer splats than the model-wide level but is visibly softer, since a coarse level drawn as merged Gaussians does not match a finer one even at sub-pixel point spacing; a lower pixel threshold trades some of the saving back
         bool  m_autoRotate           = false; // Disabled by default
-        bool  m_showControlHints     = true;  // Viewport: draw the faint rotate/zoom/pan reminder at the bottom-right (see DrawControlHints); saved in config.json
+        bool  m_showControlHints     = true;  // Viewport: the camera legend, watermark text at the bottom left (see DrawControlHints); saved in config.json
         int         m_renderPathOverride = -1;     // "render_path" from config.json or --render-path: -1 auto, else SplatRenderer::RenderPath to force (testing)
         std::string m_renderPathConfig = "auto";  // The config value as written back (auto / mesh / vs6 / vs5); --render-path never changes it
         bool        m_renderPathFromCommandLine = false; // --render-path was given: it wins over config.json for this run only
@@ -449,6 +448,7 @@ namespace Splat
         std::string PendingBakeChanges() const;                    // The changed parameters by name, for the tab
         static BakeParams DefaultBakeParams(const SplatPointArray& points, BakeParams keep); // Chunk size, levels and deadband from the scan's size (an environment's from its core)
         static void MeasureCore(const SplatPointArray& points, XMFLOAT3& centre, float& radius50, float& radius99);
+        static float SceneFloor(const SplatPointArray& points, const XMFLOAT3& centre, float radius);
         BakeSource  LoadedBakeSource() const;
         void        StartBake(bool fitCamera);                     // Bakes the loaded scan with the tab's parameters
         bool        RunBake(const BakeParams& params, const BakeSource& source, const StreamSettings& streamSettings,
@@ -643,11 +643,10 @@ namespace Splat
         std::string m_packagePath;                  // The .gstx on screen (opened, or saved this session); empty = none
         mutable std::string m_packageSourceFor, m_packageSource; // FindSourceScan's cache: the package and its source scan
         std::string FindSourceScan() const;         // The package's source scan: beside it (.ply / .splat), or remembered in bake_tunings.json
-        enum class Reencode { Idle, Confirm, Open, Structure, Analyse, Bake, Save, Reload };
+        enum class Reencode { Idle, Confirm, Open, Structure, Analyse, Bake, Finish };
         Reencode    m_reencode = Reencode::Idle;
         EncodingReport m_reencodeReport;            // What the re-encode fixes (taken when it was confirmed)
-        std::string m_reencodeSource, m_reencodeOutput; // The scan it bakes from, and the package it writes (without .gstx)
-        bool        m_reencodeReload = false;       // A package was on screen: open the new one when written
+        std::string m_reencodeSource;               // The scan it bakes from (the bake is left unsaved: Save writes it)
         void   StepReencode();
         // Bake or Save with a target (Rate Distortion Optimization) and no current analysis: bake, analyse, apply the target's pick,
         // bake again if that changed the harmonics, then write the package when Save started it. Analyse is never required.
@@ -768,7 +767,7 @@ namespace Splat
         void  DrawLODResidencyEqualizer();
         void  DrawOcclusionVolumeControls();
         void  DrawRenderModeBanner(float leftPanelWidth, float rightPanelWidth); // "[X Mode Enabled]" overlay for every active toggle that alters the rendered model (see BuildUI)
-        void  DrawControlHints(float leftPanelWidth, float rightPanelWidth);     // Faint rotate / zoom / pan reminder at the bottom-right of the viewport (mirrors UpdateCamera's bindings)
+        void  DrawControlHints(float leftPanelWidth, float rightPanelWidth);     // The camera legend, watermark text at the bottom left of the viewport (mirrors UpdateCamera's bindings)
         void  ResetView();                                                       // The nav switch's Reset View: default angle, centred, fitted
         bool  m_fitViewPending = false;                                           // Set when a load framed the camera before the window had a size; the first sized frame re-fits once
         float m_lastFitDistance = 0.0f;                                           // Fit distance for the current window size; on resize the camera distance is rescaled by newFit / this so the model keeps its relative size
@@ -878,10 +877,15 @@ namespace Splat
         std::string m_sceneClassFor;                // The m_loadedFilePath it was decided for
         XMFLOAT3    m_coreCentre = { 0.0f, 0.0f, 0.0f };
         float       m_coreRadius50 = 0.0f, m_coreRadius99 = 0.0f; // Radii about the core centre holding half and 99% of level 0
+        float       m_gridHeight = 0.0f;                             // The grid's plane: the scene's floor (SceneFloor)
         // What an environment is of (PackageView's subject): where its training cameras converge, out to where level 0's
         // density falls to a tenth of the centre's; streamed first. Radius 0 = none.
         XMFLOAT3    m_subjectCentre = { 0.0f, 0.0f, 0.0f };
         float       m_subjectRadius = 0.0f;
+        XMFLOAT3    OrbitCentre() const;            // What Recenter and a training camera's orbit pivot on: the centre, or the subject's (core's)
+        // The view an environment opened at, for Reset View: its training camera (-1 = inside its core) and navigation
+        int         m_launchCamera = -1;
+        int         m_launchNavMode = 0;
         bool        m_noSubject = false;            // --no-subject: no boost (the measurement's baseline)
         int         m_cliOcclusion = -1;            // --occlusion on|off: the volume culls and depth-tests (or not) this run; -1 = the setting
         int         m_cliOpaqueSurface = -1;        // --opaque-front on|off: Opaque Front Surface this run; -1 = the setting
@@ -898,7 +902,9 @@ namespace Splat
         // The loading veil (State::loadingBlurPx): armed by a load, an Evict or a jump to a training camera; while armed,
         // the scene is blurred by up to 0.8% of the window height, easing out as the fill (an environment: its residency
         // ring at its levels; an object: the drawn blocks at theirs) goes from 40% to 75%, then disarmed until the next.
-        bool        m_loadingBlurEnabled = false;  // Renderer tab, Loading Blur (config loading_blur); off by default
+        bool        m_loadingBlurEnabled = false;  // Renderer tab, Loading Blur for objects (config loading_blur); off by default
+        bool        m_loadingBlurEnvironment = true; // The same for environments (loading_blur_environment): on, as they stream in around you
+        bool&       LoadingBlurSetting() { return m_sceneIsEnvironment ? m_loadingBlurEnvironment : m_loadingBlurEnabled; }
         bool        m_loadingBlurArmed = false;
         float       m_loadFill = 1.0f;              // 0..1, refreshed four times a second while armed
         double      m_loadFillTimer = 0.0;

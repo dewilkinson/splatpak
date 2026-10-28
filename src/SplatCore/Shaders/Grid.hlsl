@@ -2,22 +2,24 @@
 // SplatPak -- Copyright (c) 2026 Dave Wilkinson / Blueshell LLC
 // SPDX-License-Identifier: Apache-2.0
 //
-// The editor grid, in the style of Unreal Engine's viewport: the y = 0 plane through the origin, drawn per pixel on one
+// The editor grid, in the style of Unreal Engine's viewport: the horizontal plane at g_GridHeight, the scene's floor (a
+// visual reference, so the model stands on it wherever its origin is), drawn per pixel on one
 // large quad centred under the camera. Lines at every power of ten from a decade below the camera's height, each decade
 // fading in as its cells grow past a few pixels (so the grid never shimmers and always shows a sensible scale); the X
 // axis (z = 0) in red and the Z axis (x = 0) in green, Unreal's colours for its two ground axes; everything fading out
 // with distance. Depth-tested against what the occluders wrote, not depth-writing, drawn before the splats so they
 // blend over it. A classic vertex/pixel pipeline with no input layout, like ShadowMesh.hlsl, so it runs on every path.
 
-// The leading members of SplatCB (Splat.hlsl); only these are read here
+// The members of SplatCB (Splat.hlsl) read here, at their offsets (static_asserts in SplatRenderer.h hold them there)
 cbuffer SplatCB : register(b0)
 {
-    float4x4 g_ViewProj;
-    float3   g_CamRight;
-    float    g_Radius;
-    float3   g_CamUp;
-    float    g_Time;
-    float3   g_ViewerEyePos;
+    float4x4 g_ViewProj     : packoffset(c0);
+    float3   g_CamRight     : packoffset(c4);
+    float    g_Radius       : packoffset(c4.w);
+    float3   g_CamUp        : packoffset(c5);
+    float    g_Time         : packoffset(c5.w);
+    float3   g_ViewerEyePos : packoffset(c6);
+    float    g_GridHeight   : packoffset(c18.x);
 };
 
 struct GridVSOut
@@ -36,7 +38,7 @@ GridVSOut gridVS(uint vertexId : SV_VertexID)
     const float reach = GridReach();
     const float2 xz = g_ViewerEyePos.xz + corners[vertexId] * reach;
     GridVSOut o;
-    o.world = float3(xz.x, 0.0, xz.y);
+    o.world = float3(xz.x, g_GridHeight, xz.y);
     o.pos = mul(g_ViewProj, float4(o.world, 1.0));
     return o;
 }
@@ -60,9 +62,12 @@ float DecadeVisibility(float2 p, float spacing)
 
 float4 gridPS(GridVSOut i) : SV_Target0
 {
+    // Seen from below the floor the grid would lie in front of the model, yet the splats are drawn over it, so it seemed to
+    // float above the model: from below there is no grid
+    if (g_ViewerEyePos.y < g_GridHeight) discard;
     const float2 p = i.world.xz;
     // The finest decade: a tenth of the camera's height above the plane (at least a millimetre)
-    const float base = pow(10.0, floor(log10(max(abs(g_ViewerEyePos.y), 0.01)))) * 0.1;
+    const float base = pow(10.0, floor(log10(max(abs(g_ViewerEyePos.y - g_GridHeight), 0.01)))) * 0.1;
     float alpha = 0.0;
     float spacing = base;
     [unroll] for (int k = 0; k < 4; k++)
