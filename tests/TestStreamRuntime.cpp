@@ -10,6 +10,11 @@
 //
 //   TestStreamRuntime [package] [--conservative] [--release] [--far]
 //   TestStreamRuntime [package] --time [--viz]
+//   TestStreamRuntime assets/bicycle/bicycle.gstx --environment [--env-distance <m>] [--env-pitch <radians>]
+//
+// --environment streams an environment as SplatPak does (Conservative, Release Unused, per-block levels, the residency
+// ring) with the eye fixed and the view turning as Fly does, and checks each view after the turn draws about as much
+// level 0 as a fresh load at that view, and that under 1% of the blocks in view sit coarser than their own level.
 //
 // --conservative / --release choose the streaming policy and Release Unused LOD Segments; --far stops the approach at
 // two model sizes, so the view renders a coarser level and the policies differ. With any of them the run checks the
@@ -38,11 +43,17 @@ using namespace Splat;
 int main(int argc, char** argv)
 {
     std::string path = "assets/cthulu/cthulu.gstx";
-    bool conservative = false, release = false, far = false, timeRun = false, viz = false;
+    bool conservative = false, release = false, far = false, timeRun = false, viz = false, envRun = false;
+    // --environment: the bicycle's subject and ring as SplatPak measures them; the eye 4 m from the subject
+    XMFLOAT3 envSubject(0.42f, -0.39f, -0.28f);
+    float envSubjectRadius = 2.26f, envRing = 8.27f, envDistance = 4.0f, envPitch = 0.3f;
     for (int a = 1; a < argc; a++)
     {
         const std::string arg = argv[a];
-        if (arg == "--conservative") conservative = true;
+        if (arg == "--environment") envRun = true;
+        else if (arg == "--env-distance" && a + 1 < argc) envDistance = (float)atof(argv[++a]);
+        else if (arg == "--env-pitch" && a + 1 < argc) envPitch = (float)atof(argv[++a]);
+        else if (arg == "--conservative") conservative = true;
         else if (arg == "--release") release = true;
         else if (arg == "--far") far = true;
         else if (arg == "--time") timeRun = true;
@@ -111,6 +122,139 @@ int main(int argc, char** argv)
     rt.InitStreamingSimulation();
     printf("%s: %zu levels, %zu blocks, %.1f MB\n", path.c_str(), numLevels, rt.m_allStreamChunkPtrs.size(), rt.m_totalStreamBytes / (1024.0f * 1024.0f));
     rt.ClearResidentStream();
+
+    if (envRun)
+    {
+        // An environment as SplatPak streams the bicycle: Conservative, Release Unused, per-block levels at 1 px, the
+        // residency ring, unthrottled. The eye stays put and turns as Fly does. Each view is settled once after a turn
+        // and once from a fresh start (Evict at that view); the two render lists must draw about the same level 0.
+        auto setup = [&](StreamRuntime& r)
+        {
+            StreamSettings& st = r.settings;
+            st.streamingPolicy = StreamSettings::Policy::Conservative;
+            st.releaseUnusedSegments = true;
+            st.unthrottledBandwidth = true;
+            st.autoLOD = true; st.lodScreenSpace = true; st.lodPerBlock = true; st.lodPixelSpacing = 1.0f;
+            st.environmentScene = true;
+            st.residencyRingRadius = envRing;
+            st.subjectCentre = envSubject; st.subjectRadius = envSubjectRadius;
+            r.camera.width = 1456; r.camera.height = 939;
+        };
+        // The eye: envDistance from the subject at yaw 0, pitch envPitch; then the view turns about it (Fly: target 1 m ahead)
+        const XMFLOAT3 eye(envSubject.x + envDistance * cosf(envPitch) * sinf(0.0f), envSubject.y + envDistance * sinf(envPitch),
+                           envSubject.z + envDistance * cosf(envPitch) * cosf(0.0f));
+        auto look = [&](StreamRuntime& r, float yaw)
+        {
+            r.camera.yaw = yaw; r.camera.pitch = envPitch; r.camera.distance = 1.0f;
+            r.camera.target = XMFLOAT3(eye.x - cosf(envPitch) * sinf(yaw), eye.y - sinf(envPitch), eye.z - cosf(envPitch) * cosf(yaw));
+        };
+        auto drawn = [&](StreamRuntime& r, uint32_t* splats)
+        {
+            for (int l = 0; l < kMaxStreamLevels; l++) splats[l] = 0;
+            for (uint32_t i = 0; i < r.FrameChunkCount() && i < r.m_rendererMeshletChunks.size(); i++)
+            {
+                const MeshletChunkGPU& c = r.m_rendererMeshletChunks[i];
+                if (c.lodLevel < (uint32_t)kMaxStreamLevels) splats[c.lodLevel] += c.splatCount;
+            }
+        };
+        auto print = [&](const char* name, const uint32_t* s)
+        {
+            printf("  %-8s", name);
+            for (size_t l = 0; l < numLevels; l++) printf("  L%zu %8u", l, s[l]);
+            printf("\n");
+        };
+        auto settle = [&](StreamRuntime& r, int frames) { for (int f = 0; f < frames; f++) r.UpdateStreamingSimulation(1.0 / 60.0); };
+        setup(rt);
+        rt.InitStreamingSimulation();
+        rt.ClearResidentStream();
+        look(rt, 0.0f);
+        settle(rt, 600);
+        int failures = 0;
+        for (float turn : { 1.5708f, 3.1416f, 4.7124f, 0.0f })
+        {
+            // Turn over half a second, then settle 10 s
+            const float from = rt.camera.yaw;
+            float to = turn;
+            for (int f = 1; f <= 30; f++) { look(rt, from + (to - from) * f / 30.0f); rt.UpdateStreamingSimulation(1.0 / 60.0); }
+            settle(rt, 600);
+            StreamRuntime fresh;
+            fresh.m_levels = rt.m_levels; fresh.m_waveletLevels = rt.m_waveletLevels;
+            fresh.m_aabbMin = rt.m_aabbMin; fresh.m_aabbMax = rt.m_aabbMax; fresh.m_center = rt.m_center; fresh.m_extents = rt.m_extents;
+            fresh.m_lodSortFrameMin = rt.m_lodSortFrameMin; fresh.m_lodSortFrameMax = rt.m_lodSortFrameMax;
+            fresh.m_detailGrid = rt.m_detailGrid; fresh.m_splatMode = true; fresh.m_splatParams = rt.m_splatParams; fresh.m_bytesPerRenderPoint = rt.m_bytesPerRenderPoint;
+            setup(fresh);
+            fresh.InitStreamingSimulation();
+            fresh.ClearResidentStream();
+            look(fresh, turn);
+            settle(fresh, 600);
+            uint32_t a[kMaxStreamLevels], b[kMaxStreamLevels];
+            drawn(rt, a); drawn(fresh, b);
+            printf("Yaw %.0f deg:\n", turn * 57.29578f);
+            print("turned", a);
+            print("fresh", b);
+            // The drawn blocks in view (a cone round the view direction, the frame's diagonal), by how far they sit
+            // from their own target level (BlockTargetLOD): coarser than it means the view is waiting on detail
+            {
+                // The runtime's own frustum (StreamRuntime::UpdateStreamingSimulation, the orbit camera)
+                const XMMATRIX viewProj = XMMatrixMultiply(XMMatrixLookAtRH(XMLoadFloat3(&eye), XMLoadFloat3(&rt.camera.target), XMVectorSet(0.0f, 1.0f, 0.0f, 0.0f)),
+                                                           XMMatrixPerspectiveFovRH(XM_PIDIV4, 1456.0f / 939.0f, 0.1f, 500.0f));
+                XMFLOAT4X4 vp;
+                XMStoreFloat4x4(&vp, viewProj);
+                float planes[6][4] = {
+                    { vp._14 + vp._11, vp._24 + vp._21, vp._34 + vp._31, vp._44 + vp._41 }, { vp._14 - vp._11, vp._24 - vp._21, vp._34 - vp._31, vp._44 - vp._41 },
+                    { vp._14 + vp._12, vp._24 + vp._22, vp._34 + vp._32, vp._44 + vp._42 }, { vp._14 - vp._12, vp._24 - vp._22, vp._34 - vp._32, vp._44 - vp._42 },
+                    { vp._13, vp._23, vp._33, vp._43 }, { vp._14 - vp._13, vp._24 - vp._23, vp._34 - vp._33, vp._44 - vp._43 } };
+                for (auto& pl : planes) { const float len = sqrtf(pl[0] * pl[0] + pl[1] * pl[1] + pl[2] * pl[2]); for (float& v : pl) v /= len; }
+                auto inFrustum = [&](const XMFLOAT3& c, float r)
+                {
+                    for (const auto& pl : planes) if (pl[0] * c.x + pl[1] * c.y + pl[2] * c.z + pl[3] < -r) return false;
+                    return true;
+                };
+                uint32_t atTarget = 0, coarser = 0, coarserSplats = 0, finer = 0;
+                uint32_t targets[kMaxStreamLevels] = {};
+                uint32_t reasons[6] = {};
+                for (uint32_t i = 0; i < rt.FrameChunkCount() && i < rt.m_rendererSourceChunks.size(); i++)
+                {
+                    const StreamChunk* c = rt.m_rendererSourceChunks[i];
+                    if (!c) continue;
+                    if (!inFrustum(c->center, c->radius)) continue;
+                    const int t = rt.BlockTargetLOD(*c, eye);
+                    targets[std::clamp(t, 0, kMaxStreamLevels - 1)]++;
+                    if (c->lodLevel == t) atTarget++;
+                    else if (c->lodLevel > t)
+                    {
+                        coarser++; coarserSplats += (uint32_t)c->rawSplats.size();
+                        // Why it has not refined: its children's state
+                        const int fl = (int)c->lodLevel - 1;
+                        const auto& kids = rt.m_lodStreamChunks[fl];
+                        int resident = 0, requested = 0, pending = 0, outOfView = 0, none = 0;
+                        for (size_t ci = c->childBegin; ci < std::min(c->childEnd, kids.size()); ci++)
+                        {
+                            const StreamChunk& k = kids[ci];
+                            const bool kIn = inFrustum(k.center, k.radius * rt.settings.neighborBufferMargin);
+                            if (k.isResident) resident++;
+                            else if (k.isEvictionPending) pending++;
+                            else if (k.isRequested) requested++;
+                            else if (!kIn) outOfView++;
+                            else none++;
+                        }
+                        const int kidCount = (int)(std::min(c->childEnd, kids.size()) - c->childBegin);
+                        const int why = kidCount <= 0 ? 0 : (resident == kidCount ? 1 : pending ? 2 : requested ? 3 : outOfView ? 4 : 5);
+                        reasons[why]++;
+                    }
+                    else finer++;
+                }
+                printf("  in view: %u blocks at their target, %u coarser (%u splats), %u finer; targets", atTarget, coarser, coarserSplats, finer);
+                for (size_t l = 0; l < numLevels; l++) printf(" L%zu %u", l, targets[l]);
+                printf("\n  coarser because: no children %u, all children resident %u, a child eviction-pending %u, a child requested %u, a child outside the view %u, a child neither %u\n",
+                    reasons[0], reasons[1], reasons[2], reasons[3], reasons[4], reasons[5]);
+                if (coarser * 100 > atTarget) { printf("  FAIL: over 1%% of the blocks in view sit coarser than their level\n"); failures++; }
+            }
+            if (a[0] < b[0] * 0.8) { printf("  FAIL: level 0 after the turn is %.0f%% of a fresh load's\n", b[0] ? 100.0 * a[0] / b[0] : 0.0); failures++; }
+        }
+        printf("TestStreamRuntime environment: %s\n", failures ? "FAIL" : "ok");
+        return failures ? 1 : 0;
+    }
 
     if (timeRun)
     {

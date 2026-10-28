@@ -215,6 +215,9 @@ namespace Splat
         float ContinuousLodAtDepth(float viewDepth) const;
         bool PerBlockLodActive() const;
         int BlockTargetLOD(const StreamChunk& c, const XMFLOAT3& eye) const;
+        // The finest level a block is needed at: its own target, or its parent's when that is finer (the parent refines
+        // into all of its children at once, a child that is farther than the parent's nearest point included)
+        int BlockNeededLOD(const StreamChunk& c, const XMFLOAT3& eye) const;
         // Environment scenes: whether a block lies in the residency ring around the eye (settings.residencyRingRadius;
         // a flattened disc, its height half its radius)
         bool InResidencyRing(const StreamChunk& c, const XMFLOAT3& eye) const
