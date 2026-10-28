@@ -25,7 +25,7 @@ The SplatPak plugin decodes one level of a package when it loads and draws it fo
 | Plugin component | `USplatComponent` | The settings of Goal 3; ticks in the editor and in game; finds the view (active level viewport, or the player camera manager), converts it to model space (the component transform with the Y-up to Z-up conversion), runs `UpdateStreamingSimulation`, and sends the render list (`FrameChunkCount()` meshlets) to the scene proxy. One runtime per component. |
 | Plugin rendering | `FSplatDrawable`, `SplatShaders.h`, `SplatDisc.usf` | Records and SH of every level uploaded once (the unified buffers the meshlets' `splatOffset` refers to); the meshlet buffer re-uploaded each frame from the render list. The disc shader reads each meshlet's `LodLevel`, `BlendWeight` (dithered cross-fade, 8x8 Bayer, SplatPak's sign convention) and `IsSilhouette` (the arrival wave), and applies `ArrivalGlow` with the level hue table. |
 | Plugin tests | `SplatPakRendering` tests | A runtime test on a bundled scan: scripted camera, N frames; the render list starts at the coarsest level, refines, and every meshlet's records lie inside the uploaded buffers. |
-| Sample scene | `UE5Splats` test scene | The sample model streams with the visualizer on. |
+| Sample scene | `UE5SplatStream` test scene | The sample model streams with the visualizer on. |
 
 ## Data flow
 ```mermaid

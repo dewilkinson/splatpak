@@ -3,7 +3,7 @@
 //
 // The plain data types the library's public headers share with every host: the GPU splat and meshlet records, the
 // CPU splat point and its 3D Gaussian attributes, and the occlusion volume's blocks. Self-contained (the standard
-// library and DirectXMath), so a host that stages only libs/gstx (the UE5Splats plugin) can include the runtime's
+// library and DirectXMath), so a host that stages only libs/gstx (the UE5SplatStream plugin) can include the runtime's
 // headers. src/SplatCore/WaveletTypes.h, the package format, includes it.
 
 #pragma once

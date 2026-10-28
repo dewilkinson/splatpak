@@ -21,7 +21,7 @@ and, during a save, from the full payloads (entropy only, which is cheap).
 | Readers | `src/SplatCore/StreamPackager.h` (load), `libs/gstx/PayloadDecode.*`, streaming runtime decode path | Undo after the unshuffle when the header bit is set |
 | Estimate and UI | `src/SplatCore/SplatPakApp.cpp/.h` | The size estimate runs both variants on its sample; `BakeResult` carries the figures; Statistics row; save stage text |
 | Tools | `tools/CompressVenus`, `tests/TestSplatCodec.cpp`, `tests/TestLoadPackage.cpp` | `--no-colour-transform` flag; byte-identical round trip check |
-| UE5Splats | `Plugins/SplatPak/Source/SplatPakRendering/Private/SplatPackageCore.cpp`, its tests; ThirdParty GSTx headers via `BuildCodec.ps1` | Read version 11 and undo the transform |
+| UE5SplatStream | `Plugins/SplatPak/Source/SplatPakRendering/Private/SplatPackageCore.cpp`, its tests; ThirdParty GSTx headers via `BuildCodec.ps1` | Read version 11 and undo the transform |
 
 ## The transform
 For one triple (r, g, b) of unsigned bytes, all arithmetic modulo 256, and `h(v)` the arithmetic right shift by one
@@ -58,6 +58,6 @@ every triple is transformed in place; the record's colour is bytes 10, 11, 12.
 3. PayloadDecode and the streaming runtime path. Done when: stream test and calibration runs match.
 4. Estimate figures, Statistics row, save stage, trace. Done when: criteria 4, 5.
 5. Spec clause 8.1 and the header table. Done when: criterion 8.
-6. UE5Splats: headers via BuildCodec, SplatPackageCore, tests, RenderCheck; Fab staging refreshed. Done when:
+6. UE5SplatStream: headers via BuildCodec, SplatPackageCore, tests, RenderCheck; Fab staging refreshed. Done when:
    criterion 6.
 7. Regenerate the bundled packages; measure load and bake time. Done when: criterion 7.

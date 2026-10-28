@@ -8,7 +8,7 @@ Date: 2026-10-25
 Saving a package bakes a smooth, closed shadow mesh from the level 0 splats in the codec library, in three levels
 of detail, and writes it as an optional section of a new format version (12; version 11 is colour decorrelation). Every reader loads the section
 through the library's open decoder. SplatPak reports the triangle counts and can draw the finest level as a
-wireframe debug view. UE5Splats' importer turns the section into a hidden static mesh asset (three classic LODs,
+wireframe debug view. UE5SplatStream's importer turns the section into a hidden static mesh asset (three classic LODs,
 no Nanite) that the splat component uses for shadows, Lumen's distance fields and collision. Packages without the
 section load exactly as before.
 
@@ -25,10 +25,10 @@ section load exactly as before.
 | Bake | `src/SplatCore/SplatPakApp.cpp/.h` | Build the mesh on save; status line and Input Model Metrics counts; `Show Shadow Mesh` checkbox (config key `show_shadow_mesh`) with a banner row |
 | Renderer | `src/SplatCore/SplatRenderer.cpp/.h`, `src/SplatCore/Shaders/ShadowMeshWire.hlsl` (new) | A line-list pass that draws the finest level over the splats, depth-tested |
 | Tools | `tests/CompressVenus.cpp`, `tests/TestLoadPackage.cpp`, `tests/TestShadowMesh.cpp` (new), `tests/CMakeLists.txt` | Bake the mesh; print level counts; check closedness and fidelity |
-| UE5Splats format core | `Plugins/SplatPak/Source/SplatPakRendering/Public/SplatPackageCore.h`, `Private/SplatPackageCore.cpp` | Read version 12 and the mesh section |
-| UE5Splats import | `Plugins/SplatPak/Source/SplatPakEditor/Private/SplatAssetFactory.cpp` | Create `<name>_ShadowMesh` (UStaticMesh, three LODs, distance field on, collision from the mesh, no Nanite) and link it from the splat asset |
-| UE5Splats runtime | `Plugins/SplatPak/Source/SplatPak/Public/SplatAsset.h`, `SplatComponent.h/.cpp` | `USplatAsset::ShadowMesh`; the component owns a hidden `UStaticMeshComponent` and exposes Cast Shadow, Affect Lumen and Collision |
-| UE5Splats tests | `Private/Tests/SplatPackageCoreTests.cpp`, `SplatPackageTests.cpp`, new trace test | Section read for every bundled package; line trace against the visible surface |
+| UE5SplatStream format core | `Plugins/SplatPak/Source/SplatPakRendering/Public/SplatPackageCore.h`, `Private/SplatPackageCore.cpp` | Read version 12 and the mesh section |
+| UE5SplatStream import | `Plugins/SplatPak/Source/SplatPakEditor/Private/SplatAssetFactory.cpp` | Create `<name>_ShadowMesh` (UStaticMesh, three LODs, distance field on, collision from the mesh, no Nanite) and link it from the splat asset |
+| UE5SplatStream runtime | `Plugins/SplatPak/Source/SplatPak/Public/SplatAsset.h`, `SplatComponent.h/.cpp` | `USplatAsset::ShadowMesh`; the component owns a hidden `UStaticMeshComponent` and exposes Cast Shadow, Affect Lumen and Collision |
+| UE5SplatStream tests | `Private/Tests/SplatPackageCoreTests.cpp`, `SplatPackageTests.cpp`, new trace test | Section read for every bundled package; line trace against the visible surface |
 
 ## Data flow
 ```mermaid
@@ -59,7 +59,7 @@ The bake builds the mesh once, after the level hierarchy and the occlusion volum
 ## Public / private placement
 - Private: `libs/gstx/ShadowMesh.cpp` only (added to the sync's stripped paths, stand-in at the same path).
 - Public: the header, the section codec, the format change and specification, the bake and viewer code, the tests,
-  and all of UE5Splats.
+  and all of UE5SplatStream.
 - No public file includes the private source; the stand-in links in its place.
 
 ## Decisions
@@ -85,7 +85,7 @@ The bake builds the mesh once, after the level hierarchy and the occlusion volum
 - Bake time: time CompressVenus on Cthulhu before and after. Criterion 5.
 - App smoke test: Show Shadow Mesh on every render path, a version 11 or older package disables it. Criterion 13.
 - Pixel identity: render the same package with and without its section; compare. Criterion 6.
-- UE5Splats: automation tests read every bundled section (criterion 7) and line-trace the model (criterion 9);
+- UE5SplatStream: automation tests read every bundled section (criterion 7) and line-trace the model (criterion 9);
   a RenderCheck screenshot of the shadow (criterion 8); the distance field visualisation (criterion 10).
 - Stand-in: build with `-DGSTX_USE_PREBUILT=OFF`, bake, confirm no section and that bundled packages load. Criterion 11.
 
@@ -113,10 +113,10 @@ The bake builds the mesh once, after the level hierarchy and the occlusion volum
    criterion 13 on all three render paths.
 6. `tests/TestShadowMesh.cpp`, `tests/CMakeLists.txt`, the sync's stripped paths and stub list. Done when: the
    test is in the build and a `--no-push` sync passes with the stand-in.
-7. UE5Splats format core and its tests: read version 12 and the section. Done when: criterion 7.
-8. UE5Splats import and runtime: the static mesh asset, the hidden component, the three checkboxes. Done when:
+7. UE5SplatStream format core and its tests: read version 12 and the section. Done when: criterion 7.
+8. UE5SplatStream import and runtime: the static mesh asset, the hidden component, the three checkboxes. Done when:
    criteria 8, 9 and 10.
-9. Regenerate the bundled packages and UE5Splats' demo assets. Done when: every bundled package is version 12 with
+9. Regenerate the bundled packages and UE5SplatStream's demo assets. Done when: every bundled package is version 12 with
    a section of at most 1 MB (criterion 4).
 
 Method detail for step 2: docs/private/gstx-shadow-mesh-design.md.

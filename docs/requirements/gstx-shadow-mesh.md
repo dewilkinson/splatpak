@@ -7,7 +7,7 @@ Owner: Dave Wilkinson
 ## Goal
 A splat model placed in Unreal casts shadows that match its visible shape, contributes to Lumen and has
 collision, all from one smooth, low-polygon mesh that SplatPak bakes into the package. This replaces
-UE5Splats' planned shadow proxy built from the interior occlusion volume (UE5Splats D20).
+UE5SplatStream's planned shadow proxy built from the interior occlusion volume (UE5SplatStream D20).
 
 ## User-visible behaviour
 - **SplatPak, Package Bake tab.** Saving a package also bakes a shadow mesh. There are no new controls: the
@@ -22,7 +22,7 @@ UE5Splats' planned shadow proxy built from the interior occlusion volume (UE5Spl
   Model Metrics. A **Show Shadow Mesh** checkbox (off by default, remembered like the other debug views)
   draws the finest level as a wireframe over the splats, with a banner row naming it, as the other debug
   toggles do. It is disabled, with a tooltip saying why, for a package without a mesh.
-- **UE5Splats.** Importing a package that carries a mesh also creates a hidden mesh for it. A placed splat
+- **UE5SplatStream.** Importing a package that carries a mesh also creates a hidden mesh for it. A placed splat
   model then:
   - casts shadows from every light type, virtual shadow maps included;
   - contributes to Lumen through a mesh distance field;
@@ -32,7 +32,7 @@ UE5Splats' planned shadow proxy built from the interior occlusion volume (UE5Spl
 
 ## Non-goals
 - Soft or partly transparent shadows (hair, foliage, fuzzy edges cast solid shadows).
-- Splats receiving shadows or Unreal lighting (UE5Splats step 1b).
+- Splats receiving shadows or Unreal lighting (UE5SplatStream step 1b).
 - Using the mesh for SplatPak's occlusion culling; the interior occlusion volume keeps that role.
 - Animated or deforming models, and editing the mesh.
 - A triangle-budget control (the budget is automatic).
@@ -54,7 +54,7 @@ UE5Splats' planned shadow proxy built from the interior occlusion volume (UE5Spl
 - Private (`libs/gstx`): building the mesh from the splats, simplifying it and deriving its levels of
   detail. Public documents describe it only as "a smooth mesh following the visible surface".
 - Public: the format section and its specification, the reader in SplatPak, the console tools and
-  UE5Splats, the SplatPak readouts, and UE5Splats' shadow, Lumen and collision use.
+  UE5SplatStream, the SplatPak readouts, and UE5SplatStream's shadow, Lumen and collision use.
 - The open stand-in library bakes no mesh (its packages have no mesh section), and reads packages that
   have one.
 
@@ -73,15 +73,15 @@ UE5Splats' planned shadow proxy built from the interior occlusion volume (UE5Spl
    Metrics report the triangle counts.
 5. Cthulhu's bake takes at most 20% longer than at the start of this work (same machine, Release).
 6. Version 10 `.gstx` and version 9 `.sflw` packages still load in SplatPak, the Viewer, `TestLoadPackage`
-   and UE5Splats, and SplatPak's splat rendering of a version 12 package is pixel-identical to the same
+   and UE5SplatStream, and SplatPak's splat rendering of a version 12 package is pixel-identical to the same
    package without its mesh.
-7. UE5Splats' automation tests read the mesh section of every bundled package and check its level and
+7. UE5SplatStream's automation tests read the mesh section of every bundled package and check its level and
    triangle counts against the package.
-8. In UE5Splats' test scene, the Cthulhu package casts a shadow under a directional light with virtual
+8. In UE5SplatStream's test scene, the Cthulhu package casts a shadow under a directional light with virtual
    shadow maps; a screenshot shows the shadow's outline matching the model's silhouette.
-9. In UE5Splats, a line trace aimed at the model hits within 2% of the bounding-box diagonal of the
+9. In UE5SplatStream, a line trace aimed at the model hits within 2% of the bounding-box diagonal of the
    visible surface, checked by an automation test; with Collision off it passes through.
-10. In UE5Splats, the model's mesh distance field appears in Unreal's distance field visualisation, and
+10. In UE5SplatStream, the model's mesh distance field appears in Unreal's distance field visualisation, and
     turning Affect Lumen off removes it.
 11. The public stand-in build (`-DGSTX_USE_PREBUILT=OFF`) bakes packages without a mesh section and reads
     the bundled packages that have one.

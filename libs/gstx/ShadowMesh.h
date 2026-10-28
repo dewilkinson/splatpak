@@ -5,7 +5,7 @@
 // The shadow mesh of a .gstx package (format version 12, Clause 12 of docs/GSTX_FORMAT_SPECIFICATION.md): a smooth,
 // closed, low-polygon mesh following the visible surface of the level 0 splats, in up to three levels of detail,
 // coloured per vertex from the splats' base (DC) colour. Hosts use it for shadows, distance fields and collision
-// (UE5Splats) and as a coarse stand-in for the model (SplatPak's View Shadow Mesh). Data types only, with no other
+// (UE5SplatStream) and as a coarse stand-in for the model (SplatPak's View Shadow Mesh). Data types only, with no other
 // dependency, so every host can include it; the builder is declared in ShadowMeshBuilder.h and the section's encoding
 // is in ShadowMeshCodec.h.
 

@@ -19,7 +19,7 @@ its prediction exactly as the writer did. Spec Clause 8.2.
 | Format | `libs/gstx/ColourTransform.h`, `src/SplatCore/WaveletTypes.h`, `docs/GSTX_FORMAT_SPECIFICATION.md` | `PAYLOAD_TRANSFORM_SH_RESIDUAL`, the precision fields, `PAYLOAD_TRANSFORMS_DEFAULT` (what a writer sets) apart from `_KNOWN` (what a reader accepts); version 14; Clause 8.2 |
 | Writer | `src/SplatCore/StreamPackager.h` | Every level of a chunk encoded first, then the residuals finest first, then YCoCg on the coarsest level's SH only |
 | Reader | `src/SplatCore/StreamPackager.h` | YCoCg undone on the coarsest level only; after all payloads are read, each chunk restored coarsest first, chunks across the cores |
-| Unreal | `UE5Splats/.../SplatPackageCore` | Version 14; the plugin draws the DC colour only and never decodes SH, so it only accepts the bits |
+| Unreal | `UE5SplatStream/.../SplatPackageCore` | Version 14; the plugin draws the DC colour only and never decodes SH, so it only accepts the bits |
 
 ## Decisions
 - **Integer prediction.** The parent's SH times the ratio of the two f16 SH scales: the ratio is an exact fixed-point
