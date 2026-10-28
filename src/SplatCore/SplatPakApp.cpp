@@ -6175,7 +6175,8 @@ namespace Splat
                             m_entropy.valid ? ratioTip("Tier 3", "Tier 4", m_entropy.tier3, m_entropy.tier4, "bit/B") : std::string());
                     }
 
-                    row("Tier 5: Brotli", nullptr, "Tier 5 Entropy Codec: the transformed byte planes Brotli-compressed at quality 11: the package as it is written.",
+                    row("Tier 5: Brotli", nullptr, "Tier 5 Entropy Codec: the transformed byte planes Brotli-compressed at quality 11: the package as it is written.\n"
+                        "The package holds every level of detail for streaming, about twice the full-detail data of Tier 2, so it can come out a little larger than Tier 2.",
                         format("%.2f MB", m_compressedSizeMB),
                         format("%.2f MB: %s.%s", m_compressedSizeMB, m_isLoadedFromSFLW ? "the package file's real size" : "estimated from a sample of the bake (Save writes the real file)",
                                m_transformedMB > 0.0f ? format("\n%.2f bits per byte of the %.2f MB the codec receives%s.", 8.0f * m_compressedSizeMB / std::max(0.001f, m_transformedMB), m_transformedMB,
@@ -6184,10 +6185,12 @@ namespace Splat
                         m_transformedMB > 0.0f ? ratioTip("What the codec receives", "the package", m_transformedMB, m_compressedSizeMB, "MB") : std::string());
 
                     const ImVec4 green(0.3f, 1.0f, 0.4f, 1.0f);
-                    row("Total compression", &green, "Pinned to the Tier 2 (GPU quantization) ratio: the reduction every splat gets from the fixed-size packed format, independent of how well the codec compresses a given model's bytes.",
-                        format("%.2f MB", tier2MB),
-                        format("The raw point cloud, %.2f MB, against Tier 2, %.2f MB.", m_rawFileSizeMB, tier2MB),
-                        ratioText(m_rawFileSizeMB, tier2MB), ratioTip("The raw point cloud", "Tier 2", m_rawFileSizeMB, tier2MB, "MB"), true);
+                    // End to end: the source file against the package (every tier, and every level of detail, included)
+                    row("Total compression", &green, "The source scan against the package: every tier together, with every level of detail the package streams.",
+                        format("%.2f MB", m_compressedSizeMB),
+                        format("The raw point cloud, %.2f MB, against the package, %.2f MB (%s).", m_rawFileSizeMB, m_compressedSizeMB,
+                               m_isLoadedFromSFLW ? "the file's real size" : "estimated until the package is written"),
+                        ratioText(m_rawFileSizeMB, m_compressedSizeMB), ratioTip("The raw point cloud", "the package", m_rawFileSizeMB, m_compressedSizeMB, "MB"), true);
                     ImGui::Columns(1);
                     {
                         // The outer border
