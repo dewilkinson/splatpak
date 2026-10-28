@@ -551,6 +551,14 @@ namespace Splat
         int                 m_rdoChoice = -1;       // Index into m_rdo.points
         bool                m_rdoOverride = false;  // The SH settings are set by hand instead of by the target
         int                 m_rdoNetwork = 1;       // Streaming target's link: 0 3G, 1 4G, 2 5G, 3 custom
+        // The menu's edits, committed by Apply (ApplyRdoEdits); they follow the applied values while nothing is staged
+        RdoAnalysis::Target m_rdoTargetEdit;
+        int                 m_rdoNetworkEdit = 1;
+        bool                m_rdoOverrideEdit = false;
+        int                 m_splatSHQualityEdit = 2, m_shPrecisionEdit = 0;
+        bool                m_rdoUserEdited = false; // The user has changed the copy (it stops following the applied values)
+        bool   RdoEditsPending() const;
+        void   ApplyRdoEdits(bool analysisFresh);
         std::unique_ptr<RdoProfile> m_pendingRdoProfile; // A profile waiting for its scan to finish opening
         bool   RdoStale() const { return !m_rdo.Valid() || m_rdoHash == 0 || m_rdoHash != m_sourceHash || m_rdoParams.maxLODs != m_bakedParams.maxLODs || m_rdoParams.deadbandMM != m_bakedParams.deadbandMM; }
         // The analysis an opened package carries (PackageRdoFooter): its scan is not loaded, so RdoStale cannot match the hash,

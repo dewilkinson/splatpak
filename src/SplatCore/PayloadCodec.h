@@ -77,8 +77,9 @@ namespace Splat
             return PayloadDecode::Decompress(src, srcSize, dst, dstSize, codec); // The one reader, in the codec library
         }
 
-        // Run first on each pool thread that CompressInPlace starts, when the calling thread has set one: a background job
-        // (SplatPakApp's pre-save compression) sets it to lower its workers' priority, so drawing frames always comes first
+        // Run before each payload on the threads CompressInPlace compresses on, when the calling thread has set one: a background
+        // job (SplatPakApp's pre-save compression) sets their priority with it -- the lowest, so drawing frames always comes first,
+        // until a Save is waiting for the job
         static inline thread_local void (*t_workerInit)() = nullptr;
 
         // Every payload replaced by its compressed form. Brotli runs across the cores (up to kMaxThreads);
@@ -92,10 +93,12 @@ namespace Splat
             size_t totalBytes = 0;
             for (const auto* p : payloads) totalBytes += p->size();
             std::atomic<size_t> next{ 0 }, finished{ 0 }, finishedBytes{ 0 };
+            void (*init)() = t_workerInit;
             auto work = [&]()
             {
                 for (size_t i; (i = next.fetch_add(1)) < payloads.size(); finished++)
                 {
+                    if (init) init();
                     const size_t bytes = payloads[i]->size();
                     *payloads[i] = Compress(*payloads[i], codec, quality);
                     finishedBytes += bytes;
@@ -103,8 +106,7 @@ namespace Splat
             };
             const unsigned threads = codec != PAYLOAD_CODEC_BROTLI ? 1u : std::max(1u, std::min({ std::thread::hardware_concurrency(), kMaxThreads, (unsigned)payloads.size() }));
             std::vector<std::thread> pool;
-            void (*init)() = t_workerInit;
-            for (unsigned t = progress ? 0 : 1; t < threads; t++) pool.emplace_back([&work, init]() { if (init) init(); work(); });
+            for (unsigned t = progress ? 0 : 1; t < threads; t++) pool.emplace_back(work);
             bool keepGoing = true;
             if (!progress) work();
             else

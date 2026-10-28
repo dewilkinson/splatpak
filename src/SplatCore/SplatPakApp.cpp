@@ -3285,9 +3285,18 @@ namespace Splat
     // copies it into place (and adds what only it knows: the RDO footer and the view). The model's data is read, not copied, so
     // everything that replaces it stops the job first -- through CancelShadowMeshBuild, which every such place calls.
 
+    // Set while a Save waits for the pre-save compression: its threads go from the lowest priority to normal, so the wait is
+    // no longer than a Save of its own would take (one job at a time)
+    static std::atomic<bool> s_precompressUrgent{ false };
+    static void PrecompressPriority()
+    {
+        SetThreadPriority(GetCurrentThread(), s_precompressUrgent.load() ? THREAD_PRIORITY_NORMAL : THREAD_PRIORITY_LOWEST);
+    }
+
     void SplatPakApp::StartPrecompress()
     {
         StopPrecompress();
+        s_precompressUrgent = false;
         if (m_rawSplats.empty() || m_chunks.empty() || IsViewerOnly() || Unattended() || m_noPrecompress) return;
         auto job = std::make_shared<PrecompressJob>();
         char temp[MAX_PATH] = {};
@@ -3325,9 +3334,9 @@ namespace Splat
         auto meshJob = m_shadowMeshJob;
         job->thread = std::thread([this, job, splatMode, sourceBytes, meshJob]()
         {
-            // Behind the frame: this thread and the compression pool it starts run at the lowest priority
-            SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST);
-            PayloadCodec::t_workerInit = []() { SetThreadPriority(GetCurrentThread(), THREAD_PRIORITY_LOWEST); };
+            // Behind the frame: this thread and the compression pool it starts run at the lowest priority (normal once a Save waits)
+            PrecompressPriority();
+            PayloadCodec::t_workerInit = &PrecompressPriority;
             if (meshJob) // The package carries the shadow and occluder meshes: wait for them, as Save does
             {
                 while (!meshJob->done.load())
@@ -3345,7 +3354,7 @@ namespace Splat
             LogTransitionTrace("Pre-save compression started (%s.gstx)", job->base.c_str());
             job->ok = StreamPackager::PackageDataset(job->base, m_chunks, job->maxLODs, job->deadbandMM / 1000.0f, job->splatRadius,
                 occluderMesh ? noVoxels : job->voxels, sourceBytes, occluderMesh ? &noMips : &job->mips, &job->detailGrid, splatMode ? &job->splat : nullptr,
-                PayloadCodec::kDefault, [job](float f) { job->fraction = f; return !job->cancel.load(); },
+                PayloadCodec::kDefault, [job](float f) { job->fraction = f; PrecompressPriority(); return !job->cancel.load(); },
                 PAYLOAD_TRANSFORMS_DEFAULT, &job->stats, job->mesh.get(), job->occluder.get());
             LogTransitionTrace("Pre-save compression %s in %.1f s", job->ok ? "done" : job->cancel.load() ? "stopped" : "failed",
                 std::chrono::duration<double>(std::chrono::steady_clock::now() - t0).count());
@@ -3981,14 +3990,17 @@ namespace Splat
         {
             if (pre)
             {
-                // What the background compression has left (none, once it is done), then its file copied into place
-                BakeStage(progress, "Compressing the payloads", 0.0f);
+                // What the background compression has left (none, once it is done), at normal priority while this waits, then
+                // its file copied into place
+                BakeStage(progress, "Brotli compression (finishing what began after the bake)", 0.0f);
+                s_precompressUrgent = true;
                 while (!pre->done.load())
                 {
-                    if (progress.Cancelled()) return false; // The background job goes on, for the next Save
+                    if (progress.Cancelled()) { s_precompressUrgent = false; return false; } // The background job goes on, for the next Save
                     progress.Fraction(0.97f * pre->fraction.load());
                     std::this_thread::sleep_for(std::chrono::milliseconds(50));
                 }
+                s_precompressUrgent = false;
                 if (pre->ok)
                 {
                     BakeStage(progress, "Writing the package", 0.97f);
@@ -4036,7 +4048,7 @@ namespace Splat
                 {
                     // The packager's stages by their share of the bar (StreamPackager.h): encoding, Brotli, writing.
                     // The transform figures are complete once encoding is (the packager fills them before compressing).
-                    std::string stage = fraction < 0.03f ? "Encoding the levels" : fraction < 0.97f ? "Compressing the payloads" : "Writing the package";
+                    std::string stage = fraction < 0.03f ? "Encoding the levels" : fraction < 0.97f ? "Brotli compression" : "Writing the package";
                     if (fraction >= 0.03f && fraction < 0.97f && transformStats->shBytes + transformStats->recordBytes > 0.0)
                     {
                         char buf[64];
@@ -5193,7 +5205,7 @@ namespace Splat
                     {
                         PrecompressJob& pre = *m_precompress;
                         if (!pre.done.load())
-                            ImGui::TextDisabled("Compressing for Save in the background: %.0f%%", pre.fraction.load() * 100.0f);
+                            ImGui::TextDisabled("Brotli compression for Save, in the background: %.0f%%", pre.fraction.load() * 100.0f);
                         else
                         {
                             if (!pre.sizeShown)
@@ -9143,7 +9155,6 @@ namespace Splat
         else if (RdoStale()) ImGui::TextColored(ImVec4(1.0f, 0.75f, 0.3f, 1.0f), "Measured for another scan or bake: analyse again");
         else ImGui::TextDisabled("%zu encodings measured in %.0f s", m_rdo.points.size(), m_rdo.seconds);
 
-        bool changed = false;
         const bool fresh = !RdoStale() || (!scanLoaded && RdoFromPackage());
         // The curve when it is measured for this scan and bake; otherwise its frame, dimmed, with Analyse over the middle.
         // Analysing is optional: Bake and Save measure it themselves when a target needs it.
@@ -9155,50 +9166,70 @@ namespace Splat
         }
         else DrawRdoPlaceholder(((scanLoaded && !pyramidPending) || (!scanLoaded && IsPackageOnScreen())) && !analysing && m_autoRdo == AutoRdo::Idle, analysing, scanLoaded);
 
-        // The target: always shown, so it can be set before anything is measured. A size target starts at the current
-        // bake's size rather than 0 MB, which nothing meets.
+        // The target and the settings below are edited as a copy and committed by Apply (greyed with nothing to commit). A field
+        // that matches what is applied is drawn mid-light grey; a changed one white, until it is applied or set back. With
+        // nothing staged the copy follows the applied settings, so a loaded profile or the target's own choice shows here.
+        // A size target starts at the current bake's size rather than 0 MB, which nothing meets.
         if (m_rdoTarget.sizeMB <= 0.0 && m_compressedSizeMB > 0.0f) m_rdoTarget.sizeMB = std::ceil(m_compressedSizeMB * 10.0) / 10.0;
+        // The copy follows the applied settings until the user edits it (a point picked on the curve applies at once), and
+        // again once the edits match what is applied
+        if (!m_rdoUserEdited || !RdoEditsPending())
         {
-            int mode = (int)m_rdoTarget.mode;
-            changed |= ImGui::RadioButton("Size##rdo", &mode, 0); ImGui::SameLine();
-            changed |= ImGui::RadioButton("Ratio##rdo", &mode, 1); ImGui::SameLine();
-            changed |= ImGui::RadioButton("Quality##rdo", &mode, 2); ImGui::SameLine();
-            changed |= ImGui::RadioButton("Streaming Delivery##rdo", &mode, 3);
+            m_rdoUserEdited = false;
+            m_rdoTargetEdit = m_rdoTarget;
+            m_rdoNetworkEdit = m_rdoNetwork;
+            m_rdoOverrideEdit = m_rdoOverride;
+            m_splatSHQualityEdit = m_splatSHQuality;
+            m_shPrecisionEdit = m_shPrecision;
+        }
+        const RdoAnalysis::Target targetBefore = m_rdoTargetEdit;
+        const int networkBefore = m_rdoNetworkEdit, qualityBefore = m_splatSHQualityEdit, precisionBefore = m_shPrecisionEdit;
+        const bool overrideBefore = m_rdoOverrideEdit;
+        const ImVec4 kApplied(0.62f, 0.62f, 0.66f, 1.0f), kEdited(1.0f, 1.0f, 1.0f, 1.0f);
+        auto shade = [&](bool same) { ImGui::PushStyleColor(ImGuiCol_Text, same ? kApplied : kEdited); };
+        {
+            RdoAnalysis::Target& t = m_rdoTargetEdit;
+            int mode = (int)t.mode;
+            shade(t.mode == m_rdoTarget.mode);
+            ImGui::RadioButton("Size##rdo", &mode, 0); ImGui::SameLine();
+            ImGui::RadioButton("Ratio##rdo", &mode, 1); ImGui::SameLine();
+            ImGui::RadioButton("Quality##rdo", &mode, 2); ImGui::SameLine();
+            ImGui::RadioButton("Streaming Delivery##rdo", &mode, 3);
+            ImGui::PopStyleColor();
             if (ImGui::IsItemHovered()) ShowTooltip("The only bandwidth setting: how fast a typical close view of the model streams in over a link.\n"
                                                           "A viewer downloads the blocks a view needs, coarse first, not the whole package.");
-            m_rdoTarget.mode = (RdoAnalysis::TargetMode)mode;
+            t.mode = (RdoAnalysis::TargetMode)mode;
 
             ImGui::PushItemWidth(120.0f);
-            auto inputD = [&](const char* label, double& v, float step, float fast, int decimals, const char* tip)
+            auto inputD = [&](const char* label, double& v, double applied, float step, float fast, int decimals, const char* tip)
             {
                 float f = (float)v;
-                if (ImGui::InputFloat(label, &f, step, fast, decimals)) { v = std::max(0.0f, f); changed = true; }
+                shade(v == applied);
+                if (ImGui::InputFloat(label, &f, step, fast, decimals)) v = std::max(0.0f, f);
+                ImGui::PopStyleColor();
                 if (ImGui::IsItemHovered()) ShowTooltip("%s", tip);
             };
-            switch (m_rdoTarget.mode)
+            switch (t.mode)
             {
-                case RdoAnalysis::TargetMode::Size:    inputD("MB, at most##rdoSize", m_rdoTarget.sizeMB, 1.0f, 10.0f, 1, "The largest package to accept: the best quality that fits is chosen."); break;
-                case RdoAnalysis::TargetMode::Ratio:   inputD("x smaller than the source##rdoRatio", m_rdoTarget.ratio, 0.1f, 1.0f, 2, "The source file's size over the package's, at least."); break;
-                case RdoAnalysis::TargetMode::Quality: inputD("dB colour fidelity, at least##rdoQ", m_rdoTarget.qualityDb, 0.5f, 2.0f, 1, "The smallest package that keeps at least this colour fidelity (the graph's vertical axis)."); break;
+                case RdoAnalysis::TargetMode::Size:    inputD("MB, at most##rdoSize", t.sizeMB, m_rdoTarget.sizeMB, 1.0f, 10.0f, 1, "The largest package to accept: the best quality that fits is chosen."); break;
+                case RdoAnalysis::TargetMode::Ratio:   inputD("x smaller than the source##rdoRatio", t.ratio, m_rdoTarget.ratio, 0.1f, 1.0f, 2, "The source file's size over the package's, at least."); break;
+                case RdoAnalysis::TargetMode::Quality: inputD("dB colour fidelity, at least##rdoQ", t.qualityDb, m_rdoTarget.qualityDb, 0.5f, 2.0f, 1, "The smallest package that keeps at least this colour fidelity (the graph's vertical axis)."); break;
                 case RdoAnalysis::TargetMode::Streaming:
                 {
                     static const char* s_links[] = { "3G (0.2 MB/s)", "4G (2 MB/s)", "5G (7.5 MB/s)", "Custom" };
                     static const double s_linkMBps[] = { 0.2, 2.0, 7.5 };
-                    if (ImGui::Combo("Network##rdoNet", &m_rdoNetwork, s_links, IM_ARRAYSIZE(s_links)))
-                    {
-                        if (m_rdoNetwork < 3) m_rdoTarget.bandwidthMBps = s_linkMBps[m_rdoNetwork];
-                        changed = true;
-                    }
-                    if (m_rdoNetwork == 3) inputD("MB/s##rdoBw", m_rdoTarget.bandwidthMBps, 0.1f, 1.0f, 2, "The link's bandwidth.");
-                    inputD("s to a view's first picture##rdoFirst", m_rdoTarget.firstViewSeconds, 0.5f, 2.0f, 1, "A typical close view's coarse picture (its share of the two coarsest levels) must arrive within this time.");
-                    inputD("s to a view's full detail##rdoFull", m_rdoTarget.fullDetailSeconds, 1.0f, 10.0f, 1, "A typical close view's full detail (the blocks it needs, at every level) must arrive within this time.");
+                    shade(m_rdoNetworkEdit == m_rdoNetwork);
+                    if (ImGui::Combo("Network##rdoNet", &m_rdoNetworkEdit, s_links, IM_ARRAYSIZE(s_links)) && m_rdoNetworkEdit < 3)
+                        t.bandwidthMBps = s_linkMBps[m_rdoNetworkEdit];
+                    ImGui::PopStyleColor();
+                    if (m_rdoNetworkEdit == 3) inputD("MB/s##rdoBw", t.bandwidthMBps, m_rdoTarget.bandwidthMBps, 0.1f, 1.0f, 2, "The link's bandwidth.");
+                    inputD("s to a view's first picture##rdoFirst", t.firstViewSeconds, m_rdoTarget.firstViewSeconds, 0.5f, 2.0f, 1, "A typical close view's coarse picture (its share of the two coarsest levels) must arrive within this time.");
+                    inputD("s to a view's full detail##rdoFull", t.fullDetailSeconds, m_rdoTarget.fullDetailSeconds, 1.0f, 10.0f, 1, "A typical close view's full detail (the blocks it needs, at every level) must arrive within this time.");
                     break;
                 }
             }
             ImGui::PopItemWidth();
         }
-        if (changed) m_rdoUnreachablePolicy = -1; // A new target: an unreachable one is asked about again
-        if (changed && !m_rdoOverride && fresh) ApplyRdoChoice(PickForTarget());
         if (fresh && !m_rdoOverride && !TargetReachable()) DrawRdoUnreachableChoice();
 
         if (fresh && m_rdoChoice >= 0 && m_rdoChoice < (int)m_rdo.points.size())
@@ -9220,20 +9251,24 @@ namespace Splat
             ImGui::TextDisabled("-> chosen when you Bake or Save (measured first, about a minute once per scan)");
         if (scanLoaded)
         {
-            if (ImGui::Checkbox("Override settings##rdo", &m_rdoOverride) && !m_rdoOverride && fresh)
-                ApplyRdoChoice(PickForTarget());
+            shade(m_rdoOverrideEdit == m_rdoOverride);
+            ImGui::Checkbox("Override settings##rdo", &m_rdoOverrideEdit);
+            ImGui::PopStyleColor();
             if (ImGui::IsItemHovered()) ShowTooltip("Set the harmonics by hand instead of by the target; the curve marks where that lands.");
         }
 
         // By hand: with Override on, or for a scan with no harmonics to choose
-        if (m_rdoOverride || !scanLoaded)
+        if (m_rdoOverrideEdit || !scanLoaded)
         {
             static const char* s_shNames[] = { "Low (degree 1, 9 bytes per splat)", "Medium (degree 2, 24 bytes per splat)", "High (degree 3, 45 bytes per splat)" };
-            ImGui::Combo("SH Quality", &m_splatSHQuality, s_shNames, IM_ARRAYSIZE(s_shNames));
+            shade(m_splatSHQualityEdit == m_splatSHQuality);
+            ImGui::Combo("SH Quality", &m_splatSHQualityEdit, s_shNames, IM_ARRAYSIZE(s_shNames));
+            ImGui::PopStyleColor();
             if (ImGui::IsItemHovered()) ShowTooltip("How much of the view-dependent colour (spherical harmonics) the package keeps. Low keeps the first band, which carries most of the tint shift with viewing angle; Medium adds the second band (sharper highlights) at about 2.7 times the harmonics bytes; High keeps all three bands the source has, at five times the harmonics bytes.");
             static const char* s_precisionNames[] = { "8 bits (lossless)", "6 bits", "5 bits", "4 bits" };
-            int precision = m_shPrecision;
-            if (ImGui::Combo("SH Precision", &precision, s_precisionNames, IM_ARRAYSIZE(s_precisionNames))) SetSHPrecision(precision);
+            shade(m_shPrecisionEdit == m_shPrecision);
+            ImGui::Combo("SH Precision", &m_shPrecisionEdit, s_precisionNames, IM_ARRAYSIZE(s_precisionNames));
+            ImGui::PopStyleColor();
             if (ImGui::IsItemHovered()) ShowTooltip("Bits per spherical-harmonics coefficient, every band. Fewer bits round the view-dependent colour to coarser steps, which compresses much better.\n"
                                                           "Measured on Cthulhu (rendered views against 8 bits): 4 bits makes the package 41%% smaller with no measurable difference;\n"
                                                           "dropping to degree 2 costs about 11 dB. Analyse finds the best for your scan and target.");
@@ -9243,6 +9278,23 @@ namespace Splat
                 ImGui::TextDisabled("The source carries degree %u: the bake keeps degree %u", m_sourceSHDegree, BakeSHDegree());
         }
 
+        // Any field the user changed this frame marks the copy as theirs
+        const RdoAnalysis::Target& te = m_rdoTargetEdit;
+        const bool targetEdited = te.mode != targetBefore.mode || te.sizeMB != targetBefore.sizeMB || te.ratio != targetBefore.ratio || te.qualityDb != targetBefore.qualityDb
+                               || te.bandwidthMBps != targetBefore.bandwidthMBps || te.firstViewSeconds != targetBefore.firstViewSeconds || te.fullDetailSeconds != targetBefore.fullDetailSeconds;
+        if (targetEdited || networkBefore != m_rdoNetworkEdit || qualityBefore != m_splatSHQualityEdit
+            || precisionBefore != m_shPrecisionEdit || overrideBefore != m_rdoOverrideEdit)
+            m_rdoUserEdited = true;
+
+        // Apply: commits the edits above (greyed with nothing to commit)
+        {
+            const bool pending = RdoEditsPending();
+            if (!pending) ImGui::PushStyleVar(ImGuiStyleVar_Alpha, 0.45f);
+            if (ImGui::Button("Apply##rdo", ImVec2(110.0f, 0.0f)) && pending) ApplyRdoEdits(fresh);
+            if (!pending) ImGui::PopStyleVar();
+            if (!pending && ImGui::IsItemHovered()) ShowTooltip("Nothing to apply: the settings above are in use.");
+        }
+
         // Profiles
         if (ImGui::Button("Save Profile...", ImVec2(110.0f, 0.0f)) && m_rdo.Valid() && !RdoStale()) SaveRdoProfile();
         if (ImGui::IsItemHovered()) ShowTooltip("Saves this scan's analysis, target and settings, with the scan's content hash, to a .rdoprofile file.");
@@ -9250,6 +9302,42 @@ namespace Splat
         if (ImGui::Button("Load Profile...", ImVec2(110.0f, 0.0f)) && !m_op.Busy()) LoadRdoProfile();
         if (ImGui::IsItemHovered()) ShowTooltip("Loads a .rdoprofile: for the scan open now, or by opening the .ply it names when that file is unchanged.");
         ImGui::Unindent();
+    }
+
+    // Whether the menu holds edits Apply would commit. The SH fields count only when set by hand (Override, in the edits):
+    // otherwise the target chooses them, and they may change under a staged edit.
+    bool SplatPakApp::RdoEditsPending() const
+    {
+        const RdoAnalysis::Target& a = m_rdoTargetEdit, &b = m_rdoTarget;
+        const bool target = a.mode != b.mode || a.sizeMB != b.sizeMB || a.ratio != b.ratio || a.qualityDb != b.qualityDb
+                         || a.bandwidthMBps != b.bandwidthMBps || a.firstViewSeconds != b.firstViewSeconds || a.fullDetailSeconds != b.fullDetailSeconds;
+        const bool byHand = m_rdoOverrideEdit && (m_splatSHQualityEdit != m_splatSHQuality || m_shPrecisionEdit != m_shPrecision);
+        return target || m_rdoNetworkEdit != m_rdoNetwork || m_rdoOverrideEdit != m_rdoOverride || byHand;
+    }
+
+    // Apply: the edits become the settings, and the target picks again when it decides (Override off, the analysis current)
+    void SplatPakApp::ApplyRdoEdits(bool analysisFresh)
+    {
+        const RdoAnalysis::Target& a = m_rdoTargetEdit, &b = m_rdoTarget;
+        const bool targetChanged = a.mode != b.mode || a.sizeMB != b.sizeMB || a.ratio != b.ratio || a.qualityDb != b.qualityDb
+                                || a.bandwidthMBps != b.bandwidthMBps || a.firstViewSeconds != b.firstViewSeconds || a.fullDetailSeconds != b.fullDetailSeconds
+                                || m_rdoNetworkEdit != m_rdoNetwork;
+        const bool overrideChanged = m_rdoOverrideEdit != m_rdoOverride;
+        m_rdoTarget = m_rdoTargetEdit;
+        m_rdoNetwork = m_rdoNetworkEdit;
+        m_rdoOverride = m_rdoOverrideEdit;
+        if (m_rdoOverride)
+        {
+            m_splatSHQuality = m_splatSHQualityEdit;
+            if (m_shPrecisionEdit != m_shPrecision) SetSHPrecision(m_shPrecisionEdit);
+        }
+        if (targetChanged) m_rdoUnreachablePolicy = -1; // A new target: an unreachable one is asked about again
+        if (!m_rdoOverride && analysisFresh && (targetChanged || overrideChanged)) ApplyRdoChoice(PickForTarget());
+        // The edits now show what is in use (the target's pick included), and follow it again
+        m_splatSHQualityEdit = m_splatSHQuality;
+        m_shPrecisionEdit = m_shPrecision;
+        m_rdoUserEdited = false;
+        LogTransitionTrace("RDO: settings applied (target %s, override %s)", targetChanged ? "changed" : "kept", m_rdoOverride ? "on" : "off");
     }
 
     int SplatPakApp::PickFor(const RdoAnalysis::Target& t) const
