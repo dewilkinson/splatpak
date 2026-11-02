@@ -1,5 +1,8 @@
 # gstx (public build)
 
+**This repository does not currently hold the prebuilt library described below, so a build uses
+the open stand-ins in section 2. The complete app is the release download.**
+
 This is the public version of this repository. The algorithmic core of the project lives in
 this directory: the lifting-wavelet LOD decomposition, the compression codec, the interior
 occlusion volume generator, and the streaming scheduler's ordering (which regions of a model

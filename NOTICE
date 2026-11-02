@@ -5,15 +5,13 @@ This repository is licensed under the Apache License, Version 2.0 (see LICENSE),
 the exceptions listed below. Each exception's own license governs the files it names.
 
 1. libs/gstx/prebuilt/
-   Prebuilt proprietary binaries of the gstx library (gstx.lib, Debug
-   and Release). Licensed under the GSTx Binary License in
+   Prebuilt proprietary binaries of the gstx library (gstx.lib, Debug and Release), wherever
+   distributed, are licensed under the GSTx Binary License in
    libs/gstx/prebuilt/LICENSE.txt
    (SPDX-License-Identifier: LicenseRef-Blueshell-GSTx-Binary).
-   In short: you may use them, copy them together with this repository (clones, forks and
-   mirrors included), and link them into builds of this project that you distribute; you
-   may not distribute them on their own or reverse engineer them. The Apache License does
-   not apply to these files. The headers and open stand-in sources in libs/gstx/
-   are Apache-2.0 like the rest of the repository.
+   This repository no longer holds them; copies distributed earlier stay under that license.
+   The Apache License does not apply to those binaries. The headers and open stand-in sources
+   in libs/gstx/ are Apache-2.0 like the rest of the repository.
 
 2. libs/cauldron/ and libs/cauldron-prebuilt/
    AMD Cauldron framework, MIT License (libs/cauldron/license.txt), with its own
@@ -22,8 +20,8 @@ the exceptions listed below. Each exception's own license governs the files it n
 
 3. libs/brotli/
    Google's Brotli compressor, MIT License (libs/brotli/LICENSE). Its sources are compiled
-   into the gstx library, the prebuilt binaries in libs/gstx/prebuilt/
-   included, as the entropy stage of the package format.
+   into the gstx library, prebuilt binaries included, as the entropy stage of the package
+   format.
 
 4. assets/cthulu/ and assets/venus/
    Example datasets (source .ply scans and the .gstx packages derived from them), each with its
